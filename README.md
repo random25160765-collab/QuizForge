@@ -15,6 +15,8 @@
 >
 > 出题规则也在 `.codebuddy/skills/`：`quizforge-author` 是格式契约，四个层 skill
 > 负责「这题算不算这一层」；从材料批量出题的流程见 `references/pipeline.md`。
+>
+> 为什么这么设计（业务立论）：`docs/THESIS.md`。
 
 ---
 

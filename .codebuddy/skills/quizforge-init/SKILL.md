@@ -32,7 +32,7 @@ Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。同�
 | `theme/` | 前端运行时（两形态共用）：`app.css` + `runtime/*.js`；改完要 `make web` / `make build` |
 | `api/` | FastAPI 后端：题库导入、跨设备增量同步、按账号隔离的 AI 转发 |
 | `.codebuddy/skills/` | 出题 skill（本仓自包含，跟着仓库走） |
-| `docs/` | `STATUS.md`（当前状态）· `DESIGN.md`（设计说明）· 截图 |
+| `docs/` | `STATUS.md`（当前状态）· `THESIS.md`（**业务立论**：为什么这么设计）· `DESIGN.md`（设计说明）· 截图 |
 | `draft/` | 人写的母本与草稿（母本留档，已入库；与机器生成的 `maps/` 分开） |
 | `maps/` | 机器生成的切片索引与覆盖矩阵（**尚未创建**） |
 | `reference/` | → `/mnt/f/Documents` 的**只读**软链：手册、论文、教科书 |
@@ -62,6 +62,7 @@ Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。同�
 | 查字段怎么填、确认某题格式对不对 | `quizforge-author` + `references/format.md` |
 | 从一份材料出一批题（几道） | `references/from-source.md` |
 | 面对一本书 / 一套手册 / 几百篇论文批量出题 | `references/pipeline.md` |
+| 拿不准某个设计取舍该往哪边倒 | `docs/THESIS.md`（业务立论——所有取舍的根据） |
 | 改 UI | 先看 `docs/STATUS.md` 的 UI 约定；再改 `theme/`（UI 无 skill，规则写在代码注释里） |
 | 后端 / 同步 / 入库 | 直接读 `api/app/`（无 skill） |
 
