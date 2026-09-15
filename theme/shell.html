@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="generator" content="quizforge">
+<!--
+  主题必须在**样式之前**定下来。
+  否则首帧会先用 shell 里写死的 data-theme="dark" 画一屏深色，再被脚本改成
+  用户存的浅色 —— 浅色用户每次进这个页面都会先闪一下黑。
+  同样的事在 landing.html / login.html 里各做了一份（它们是独立模板）。
+-->
+<script>
+  (function () {
+    var theme = 'dark';
+    try {
+      var saved = JSON.parse(localStorage.getItem('quizforge.v1.settings') || '{}');
+      if (saved.theme) theme = saved.theme;
+    } catch (e) {}
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<!--@INJECT:BASE@-->
+<title>__QUIZFORGE_TITLE__</title>
+<!--
+  样式注入点。
+  离线构建塞 <style> 内联，在线构建塞 <link rel=stylesheet>。
+  刻意用「一个粗粒度标记」而不是每份 CSS 一个标记：
+  离线与在线共用这一份 shell，顶栏之类的结构才不会两边漂移。
+-->
+<!--@INJECT:HEAD_ASSETS@-->
+</head>
+<body data-page="__QUIZFORGE_PAGE__">
+
+<!-- 顶部导航：品牌 / 主导航 / 全局动作。主导航项由页面脚本按需填充。 -->
+<header class="topbar" role="banner">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html" aria-label="quizforge 首页" title="返回首页">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 21 L12 8 L19 21"></path>
+          <path d="M8.2 16.4 h7.6"></path>
+          <path d="M22.5 10.5 v11"></path>
+          <path d="M22.5 21.5 c3.2 0 4.6-1.6 5-4.6"></path>
+        </svg>
+      </span>
+    </a>
+
+    <nav class="mainnav" id="mainnav" aria-label="主导航"></nav>
+
+    <div class="topbar-actions">
+      <!-- 同步异常提示。正常同步时整块不渲染 ——
+           跨设备场景下用户需要知道的只有「出问题了」，不是「正在同步」。 -->
+      <button class="sync-note" id="sync-note" type="button" hidden
+              title="点击立即重试" aria-live="polite"></button>
+      <button class="icon-btn" id="btn-theme" type="button" title="切换浅色/深色主题" aria-label="切换主题">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
+        </svg>
+      </button>
+      <a class="icon-btn" href="wrongbook.html" id="btn-wrongbook" title="错题本" aria-label="错题本">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5.5A1.5 1.5 0 0 1 4 18.5Z"></path>
+          <path d="M8 9h7M8 13h5"></path>
+        </svg>
+      </a>
+      <button class="icon-btn" id="btn-settings" type="button" title="设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.3a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.7 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 7 2.6h.1A1.7 1.7 0 0 0 8.7 1V1a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15 2.7a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 7v.1a1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4H22a1.7 1.7 0 0 0-1.6 1Z"></path>
+        </svg>
+      </button>
+    </div>
+  </div>
+  <div class="topbar-progress" id="topbar-progress" aria-hidden="true"></div>
+</header>
+
+<main class="view" id="view" role="main">
+<!--@INJECT:BODY@-->
+</main>
+
+<footer class="statusbar" id="statusbar" role="contentinfo"></footer>
+
+<div class="toast-root" id="toast-root" aria-live="polite" aria-atomic="false"></div>
+<div class="modal-root" id="modal-root" hidden></div>
+
+<!-- 脚本注入点：离线构建内联全部脚本，在线构建按序引入 /assets/runtime/*.js -->
+<!--@INJECT:SCRIPTS@-->
+</body>
+</html>

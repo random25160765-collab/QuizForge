@@ -1,0 +1,154 @@
+{
+  "_comment": [
+    "掌握度校准夹具。tools/selftest.mjs 与 api/tests/test_mastery.py 同时断言这份数据。",
+    "两侧算法必须给出完全一致的结果，否则界面上会同时出现互相矛盾的结论。",
+    "now 是固定的时间基准，夹具不能依赖运行时刻，否则会有偶发失败。"
+  ],
+  "halflifeDays": 30,
+  "now": 1789459200000,
+  "cases": [
+    {
+      "name": "fresh_first_correct",
+      "desc": "首次就答对：正确率尚可但证据不足，且无连对加成",
+      "input": {
+        "attempts": 1,
+        "correct": 1,
+        "streak": 0,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 47,
+      "expectBand": "fair"
+    },
+    {
+      "name": "three_in_a_row",
+      "desc": "3 次全对且连对 3 次",
+      "input": {
+        "attempts": 3,
+        "correct": 3,
+        "streak": 3,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 73,
+      "expectBand": "solid"
+    },
+    {
+      "name": "streak_bonus_is_capped",
+      "desc": "连对加成封顶在 3 次；streak=10 应与 streak=3 同分",
+      "input": {
+        "attempts": 3,
+        "correct": 3,
+        "streak": 10,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 73,
+      "expectBand": "solid"
+    },
+    {
+      "name": "stale_60_days",
+      "desc": "5 次全对但 60 天没碰：记忆新鲜度衰减到 1/4",
+      "input": {
+        "attempts": 5,
+        "correct": 5,
+        "streak": 3,
+        "lastAt": 1784275200000,
+        "now": 1789459200000
+      },
+      "expectScore": 57,
+      "expectBand": "fair"
+    },
+    {
+      "name": "stale_180_days",
+      "desc": "半年没碰，即使全对也接近遗忘",
+      "input": {
+        "attempts": 10,
+        "correct": 10,
+        "streak": 3,
+        "lastAt": 1773907200000,
+        "now": 1789459200000
+      },
+      "expectScore": 55,
+      "expectBand": "fair"
+    },
+    {
+      "name": "all_wrong",
+      "desc": "4 次全错",
+      "input": {
+        "attempts": 4,
+        "correct": 0,
+        "streak": 0,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 14,
+      "expectBand": "weak"
+    },
+    {
+      "name": "clamped_at_100",
+      "desc": "50 次全对：加成会溢出，必须被夹到 100",
+      "input": {
+        "attempts": 50,
+        "correct": 50,
+        "streak": 10,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 100,
+      "expectBand": "mastered"
+    },
+    {
+      "name": "never_attempted",
+      "desc": "从未作答",
+      "input": {
+        "attempts": 0,
+        "correct": 0,
+        "streak": 0,
+        "lastAt": 0,
+        "now": 1789459200000
+      },
+      "expectScore": 0,
+      "expectBand": "new"
+    },
+    {
+      "name": "partial_not_counted",
+      "desc": "只有 correct/attempts/streak/lastAt 参与计算，其它字段无关",
+      "input": {
+        "attempts": 1,
+        "correct": 1,
+        "streak": 0,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 47,
+      "expectBand": "fair"
+    },
+    {
+      "name": "half_up_at_32_5",
+      "desc": "原始分恰好 32.5：取整方式的分水岭",
+      "input": {
+        "attempts": 6,
+        "correct": 2,
+        "streak": 0,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 33,
+      "expectBand": "weak"
+    },
+    {
+      "name": "half_up_at_41_5",
+      "desc": "原始分恰好 41.5，且跨越薄弱/一般的档位边界",
+      "input": {
+        "attempts": 6,
+        "correct": 2,
+        "streak": 3,
+        "lastAt": 1789459200000,
+        "now": 1789459200000
+      },
+      "expectScore": 42,
+      "expectBand": "fair"
+    }
+  ]
+}

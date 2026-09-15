@@ -1,0 +1,13 @@
+<div id="app-root" data-page="quiz">
+  <!--
+    首屏骨架：脚本还没跑起来时，浏览器先画这一屏。
+    没有它的话，新文档的第一帧只有顶栏 + 一片空白深色画布 —— 从首页点「继续刷题」
+    就会先闪一下黑屏（在线版还要等 /auth/me、/bank、/progress 三个请求回来）。
+    文案与 boot.js 里 showState 的首屏状态保持一致，交接时看不出换过。
+  -->
+  <div class="bootstate">
+    <div class="bootstate__icon"><span class="bootstate__spinner"></span></div>
+    <h1 class="bootstate__title">正在载入…</h1>
+    <p class="bootstate__text">校验登录状态并读取题库</p>
+  </div>
+</div>

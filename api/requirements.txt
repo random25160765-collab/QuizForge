@@ -1,0 +1,34 @@
+# quizforge 后端依赖
+#
+# 本机安装：
+#     python3 -m venv api/.venv && api/.venv/bin/pip install -r api/requirements.txt
+# 或直接：
+#     docker compose up -d
+
+# --- Web 框架 ---
+fastapi>=0.115
+uvicorn[standard]>=0.32
+
+# --- 数据层 ---
+sqlalchemy>=2.0.36
+alembic>=1.14
+psycopg[binary]>=3.2          # PostgreSQL 驱动；[binary] 免装 libpq
+
+# --- 校验与配置 ---
+pydantic>=2.10
+pydantic-settings>=2.7
+
+# --- 认证 ---
+argon2-cffi>=23.1             # 密码哈希（argon2id）
+
+# --- 题库导入（复用 tools/ 下的解析器）---
+PyYAML>=6.0
+
+# --- 服务端调用模型 ---
+httpx>=0.28
+
+# --- 测试 ---
+pytest>=8.3
+
+# EmailStr 校验
+email-validator>=2.2

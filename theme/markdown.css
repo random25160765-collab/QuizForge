@@ -1,0 +1,236 @@
+/* ===========================================================================
+ * markdown.css —— 题面渲染样式：Markdown、代码块、语法高亮、KaTeX 公式
+ * ========================================================================= */
+
+.md {
+  --md-code-bg: #0A0F15;
+  --md-code-line: #2C3B4A;
+  --md-quote: var(--pri);
+  color: var(--fg);
+  font-size: calc(15px * var(--font-scale, 1));
+  line-height: 1.78;
+  word-break: break-word;
+}
+html[data-theme='light'] .md {
+  --md-code-bg: #F2F5F9;
+  --md-code-line: #D2DCE6;
+}
+
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+
+.md__p { margin: 0 0 0.95em; }
+
+.md__h {
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 1.5em 0 0.6em;
+  letter-spacing: -0.01em;
+}
+.md__h1 { font-size: 1.5em; }
+.md__h2 { font-size: 1.28em; }
+.md__h3 { font-size: 1.14em; }
+.md__h4, .md__h5, .md__h6 { font-size: 1.03em; color: var(--fg2); }
+.md__h1, .md__h2 { padding-bottom: 0.3em; border-bottom: 1px solid var(--line); }
+
+.md__list { margin: 0 0 0.95em; padding-left: 1.35em; }
+.md__list .md__list { margin: 0.3em 0 0.3em; }
+.md__li { margin: 0.28em 0; }
+.md__li::marker { color: var(--pri); }
+
+.md__li--task { list-style: none; margin-left: -1.35em; display: flex; gap: 0.55em; align-items: flex-start; }
+.md__check {
+  flex: none;
+  width: 1.05em; height: 1.05em;
+  margin-top: 0.32em;
+  border: 1.5px solid var(--line);
+  border-radius: 4px;
+  position: relative;
+}
+.md__li--task.is-done .md__check { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 22%, transparent); }
+.md__li--task.is-done .md__check::after {
+  content: '';
+  position: absolute; left: 0.28em; top: 0.1em;
+  width: 0.3em; height: 0.55em;
+  border: solid var(--ok); border-width: 0 2px 2px 0;
+  transform: rotate(40deg);
+}
+
+.md__quote {
+  margin: 0 0 0.95em;
+  padding: 0.6em 1em;
+  border-left: 3px solid var(--md-quote);
+  background: color-mix(in srgb, var(--pri) 7%, transparent);
+  border-radius: 0 10px 10px 0;
+  color: var(--fg2);
+}
+
+.md__hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
+
+.md__tablewrap { overflow-x: auto; margin: 0 0 1em; border-radius: 12px; border: 1px solid var(--line); }
+.md__table { border-collapse: collapse; width: 100%; font-size: 0.95em; }
+.md__table th, .md__table td { padding: 0.55em 0.85em; border-bottom: 1px solid var(--line); text-align: left; }
+.md__table thead th { background: var(--bg3); color: var(--fg2); font-weight: 600; white-space: nowrap; }
+.md__table tbody tr:last-child td { border-bottom: 0; }
+.md__table tbody tr:hover td { background: color-mix(in srgb, var(--pri) 5%, transparent); }
+
+.md a { color: var(--pri); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--pri) 40%, transparent); }
+.md a:hover { border-bottom-color: var(--pri); }
+
+.md mark {
+  background: color-mix(in srgb, var(--amber) 26%, transparent);
+  color: inherit;
+  padding: 0.05em 0.28em;
+  border-radius: 4px;
+}
+.md del { color: var(--fg3); }
+
+.md__raw { margin: 0 0 1em; }
+
+/* ------------------------------------------------------------- 行内代码 */
+
+.icode {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  padding: 0.13em 0.42em;
+  border-radius: 6px;
+  background: var(--bg3);
+  border: 1px solid var(--line);
+  color: var(--pri3);
+  white-space: nowrap;
+}
+html[data-theme='light'] .icode { color: #0E7C6B; }
+
+/* ------------------------------------------------------------- 代码块 */
+
+.codeblock {
+  margin: 0 0 1em;
+  border: 1px solid var(--md-code-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--md-code-bg);
+}
+.codeblock__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4em 0.75em;
+  background: color-mix(in srgb, var(--md-code-line) 60%, transparent);
+  border-bottom: 1px solid var(--md-code-line);
+}
+.codeblock__lang {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg3);
+}
+.codeblock__copy {
+  font-size: 11.5px;
+  font-family: inherit;
+  color: var(--fg3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.codeblock__copy:hover { color: var(--pri); border-color: color-mix(in srgb, var(--pri) 45%, transparent); background: color-mix(in srgb, var(--pri) 10%, transparent); }
+.codeblock__copy.is-done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+
+.codeblock__pre {
+  margin: 0;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: calc(12.8px * var(--font-scale, 1));
+  line-height: 1.62;
+  tab-size: 4;
+}
+.codeblock__pre code { font-family: inherit; white-space: pre; }
+
+/* ------------------------------------------------------- 语法高亮配色 */
+
+:root {
+  --tok-kw: #FF7BC4;
+  --tok-type: #6FD3E8;
+  --tok-builtin: #7FD5A8;
+  --tok-const: #F0A868;
+  --tok-str: #C7E88B;
+  --tok-num: #F7C46C;
+  --tok-com: #5D6E7E;
+  --tok-pre: #C4A6FF;
+  --tok-reg: #7FB4FF;
+  --tok-var: #E4A0F7;
+  --tok-key: #8FD1FF;
+  --tok-fn: #FFD479;
+  --tok-deco: #FFB86B;
+  --tok-attr: #FFB86B;
+}
+html[data-theme='light'] {
+  --tok-kw: #C2196B;
+  --tok-type: #0B7285;
+  --tok-builtin: #1B7F4B;
+  --tok-const: #B45309;
+  --tok-str: #3F7A16;
+  --tok-num: #9A5B00;
+  --tok-com: #7A8B99;
+  --tok-pre: #6D28D9;
+  --tok-reg: #1D4ED8;
+  --tok-var: #86198F;
+  --tok-key: #0369A1;
+  --tok-fn: #B45309;
+  --tok-deco: #B45309;
+  --tok-attr: #B45309;
+}
+
+.tok-kw { color: var(--tok-kw); font-weight: 600; }
+.tok-type { color: var(--tok-type); }
+.tok-builtin { color: var(--tok-builtin); }
+.tok-const { color: var(--tok-const); }
+.tok-str { color: var(--tok-str); }
+.tok-num { color: var(--tok-num); }
+.tok-com { color: var(--tok-com); font-style: italic; }
+.tok-pre { color: var(--tok-pre); }
+.tok-reg { color: var(--tok-reg); }
+.tok-var { color: var(--tok-var); }
+.tok-key { color: var(--tok-key); }
+.tok-fn { color: var(--tok-fn); }
+.tok-deco, .tok-attr { color: var(--tok-deco); }
+
+/* ------------------------------------------------------------- 公式 */
+
+.katex {
+  font-size: 1.06em;
+  color: var(--fg);
+}
+.mathblock {
+  margin: 0.85em 0;
+  padding: 0.2em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.mathblock .katex-display { margin: 0.4em 0; }
+.mathblock--raw { font-family: var(--font-mono); color: var(--amber); font-size: 0.9em; }
+
+.math-error {
+  font-family: var(--font-mono);
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  border-radius: 6px;
+  padding: 0 0.3em;
+}
+
+/* -------------------------------------------------------- 打印 */
+
+@media print {
+  .md { color: #000; }
+  .codeblock { break-inside: avoid; background: #F7F7F7; border-color: #CCC; }
+  .codeblock__copy { display: none; }
+  :root {
+    --tok-kw: #C2196B; --tok-type: #0B7285; --tok-builtin: #1B7F4B; --tok-const: #B45309;
+    --tok-str: #3F7A16; --tok-num: #9A5B00; --tok-com: #7A8B99; --tok-pre: #6D28D9;
+    --tok-reg: #1D4ED8; --tok-var: #86198F; --tok-key: #0369A1; --tok-deco: #B45309;
+  }
+}

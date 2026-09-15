@@ -1,0 +1,72 @@
+# quizforge 一键起后端 + 数据库
+#
+#   1) 可选：把 AI 密钥放进环境变量（不设则 AI 批改自动关闭）
+#      注意这里**不需要**会话签名密钥：会话令牌是随机串、库里只存哈希，
+#      没有需要服务端签名或验签的环节（详见 api/app/config.py 的说明）
+#        export QF_AI_API_KEY=sk-xxx  QF_AI_BASE_URL=https://api.deepseek.com/v1  QF_AI_MODEL=deepseek-chat
+#   2) docker compose up -d --build
+#   3) 首次导入题库：docker compose exec api python -m app.cli.import_bank
+
+name: quizforge
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: quizforge
+      POSTGRES_PASSWORD: quizforge
+      POSTGRES_DB: quizforge
+      # 内容全是中文与代码，固定 UTF8 + C locale 让排序/索引行为可预期
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      # 只绑本机，避免开发机的 5432 直接暴露到局域网
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quizforge -d quizforge"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      QF_DEBUG: "false"
+      QF_DATABASE_URL: postgresql+psycopg://quizforge:quizforge@db:5432/quizforge
+      # 部署在 HTTPS 后面时在 .env 里改成 true
+      QF_COOKIE_SECURE: "${QF_COOKIE_SECURE:-false}"
+      QF_WEB_DIR: /app/web
+      # 导入器要复用 tools/ 下的解析器、主题树与校验器
+      QF_TOOLS_DIR: /app/tools
+      QF_QUESTIONS_DIR: /app/questions
+      QF_TOPICS_FILE: /app/meta/topics.yaml
+      # AI：**没有密钥**。接口地址 / 模型 / 密钥都由每个用户在自己的
+      # 设置面板里填，存在各自的账号里（服务端只做转发，因为不少供应商
+      # 不允许浏览器直连）。这里只留两个实例级策略。
+      QF_AI_ENABLED: "${QF_AI_ENABLED:-true}"
+      QF_AI_DAILY_QUOTA: "${QF_AI_DAILY_QUOTA:-0}"
+      QF_AI_TIMEOUT_MS: "${QF_AI_TIMEOUT_MS:-90000}"
+    volumes:
+      # 题库与考纲只读挂载：改题后重新导入即可，不用重建镜像
+      - ./questions:/app/questions:ro
+      - ./meta:/app/meta:ro
+      # 前端产物**不挂载**：镜像由 Dockerfile 的多阶段构建自带一份。
+      # 靠 `./api/web:/app/web` 提供的话，api/web 在 .gitignore 里，
+      # 干净机器上部署时挂载目录是空的，页面直接白屏。
+      # 本机迭代用 make api-dev（宿主 uvicorn 直接读 api/web），不需要这个挂载。
+    ports:
+      # 宿主端口可用 .env 里的 API_PORT 覆盖（容器内固定 8000）
+      - "${API_PORT:-8100}:8000"
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  pgdata:

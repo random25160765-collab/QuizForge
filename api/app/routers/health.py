@@ -1,0 +1,112 @@
+"""健康检查与运行时自述。
+
+`/api/health` 必须不依赖鉴权 —— 部署探针与前端启动自检都要能打它。
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from .. import __version__
+from ..config import get_settings
+from ..db import get_db
+from ..models import BankVersion, Question, Topic
+
+router = APIRouter(prefix="/api", tags=["health"])
+
+
+@router.get("/health")
+def health(db: Session = Depends(get_db)) -> dict:
+    settings = get_settings()
+
+    database_ok = True
+    detail = ""
+    try:
+        question_count = db.scalar(select(func.count()).select_from(Question).where(Question.retired_at.is_(None)))
+        topic_count = db.scalar(select(func.count()).select_from(Topic).where(Topic.retired_at.is_(None)))
+        current = db.scalar(select(BankVersion).where(BankVersion.is_current.is_(True)).order_by(BankVersion.id.desc()))
+        bank = {
+            "loaded": bool(question_count),
+            "questions": int(question_count or 0),
+            "topics": int(topic_count or 0),
+            "versionHash": current.content_hash if current else "",
+            "importedAt": current.imported_at.isoformat() if current else "",
+        }
+        bank["subjectList"] = _subject_list(db)
+        bank["typeCount"] = int(
+            db.scalar(
+                select(func.count(func.distinct(Question.type))).where(Question.retired_at.is_(None))
+            )
+            or 0
+        )
+    except Exception as exc:  # 数据库没起来时也要能回答，否则探针只会看到连接错误
+        database_ok = False
+        detail = str(exc).splitlines()[0][:200]
+        bank = {
+            "loaded": False,
+            "questions": 0,
+            "topics": 0,
+            "versionHash": "",
+            "importedAt": "",
+            "subjectList": [],
+            "typeCount": 0,
+        }
+
+    return {
+        "ok": database_ok,
+        "version": __version__,
+        "database": {"ok": database_ok, "detail": detail},
+        "bank": bank,
+        # AI 的接口与密钥属于**每个用户自己的设置**，服务端不持有，
+        # 所以这里只说「本实例允不允许用」，不回显任何用户凭据。
+        # 这个接口不需要登录，更不该暴露别人的配置。
+        "ai": {
+            "enabled": settings.ai_enabled,
+            "mode": "per-user",
+            "dailyQuota": settings.ai_daily_quota,
+        },
+    }
+
+
+def _subject_list(db: Session) -> list[dict]:
+    """一级学科 + 各自题数，供首页的「覆盖范围」使用。
+
+    覆盖范围属于公开信息（离线产物里本来就内联着整份题库），
+    所以放在无需登录的健康检查里没有泄露问题。
+
+    题数按**子树**汇总：题挂到知识点一级，但首页要显示的是学科总量。
+    `descendants` 已经把整棵子树摊平存在一行里，所以这里不需要递归。
+    两条查询搞定，不做 N+1。
+    """
+    subjects = db.scalars(
+        select(Topic).where(Topic.retired_at.is_(None), Topic.depth == 1)
+    ).all()
+    counts = dict(
+        db.execute(
+            select(Question.topic, func.count())
+            .where(Question.retired_at.is_(None))
+            .group_by(Question.topic)
+        ).all()
+    )
+
+    out: list[dict] = []
+    for row in sorted(subjects, key=lambda item: (item.order_index, item.key)):
+        # descendants 是否含自身取决于构建侧的实现，这里取并集，两种都能对上
+        keys = set(row.descendants or []) | {row.key}
+        total = sum(int(counts.get(key, 0) or 0) for key in keys)
+        # 一道题都没有的学科不列 —— 与刷题应用里的筛选器同一条规则
+        if total <= 0:
+            continue
+        out.append(
+            {
+                "key": row.key,
+                "name": row.name,
+                "color": row.color,
+                "count": total,
+                # 方向（一级分组）：首页据此算出「N 个方向」，不必再单独查一次
+                "group": row.group_key,
+            }
+        )
+    return out
