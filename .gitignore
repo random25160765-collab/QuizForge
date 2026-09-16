@@ -43,6 +43,11 @@ pipeline/state.sqlite3*
 __pycache__/
 *.pyc
 
+# 浏览器自测的产物（2026-09-17）
+# playwright-cli 把控制台日志与页面快照写在**当前工作目录**，在仓库根跑一次就到这里。
+# 它们是可重建的临时物，不该进版本库，也不该在 git status 里刷存在感。
+/.playwright-cli/
+
 # 流水线中间产物：知识空间已在数据库里，这些随时可重跑（2026-09-16）
 maps/**/extract/
 maps/**/figures/
