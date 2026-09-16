@@ -80,6 +80,7 @@ def materials_with_gaps(limit: int) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    sys.stdout.reconfigure(line_buffering=True)  # 重定向到文件时也要能实时看
     parser = argparse.ArgumentParser(prog="python -m pipeline.drive", description="状态机自动跑")
     parser.add_argument("--iterations", type=int, default=6, help="最多几轮（每轮会花 token）")
     parser.add_argument("--material", help="只推某一份材料（默认：缺口最大的 3 份）")
@@ -102,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         slugs = [args.material] if args.material else materials_with_gaps(args.per_round_materials)
         for slug in slugs:
             code, out = _run(["pipeline.dispatch", "--material", slug, "--kind", "all"])
-            print(f"  派工 {slug[:40]:40s} {out[-1] if out else code}")
+            line = next((x for x in out if "新建" in x or "已存在" in x), out[-1] if out else str(code))
+            print(f"  派工 {slug[:40]:40s} {line}")
 
         code, out = _run(
             [
@@ -120,6 +122,11 @@ def main(argv: list[str] | None = None) -> int:
 
         code, out = _run(["pipeline.promote", "--apply"])
         print(f"  发布 {out[-1] if out else code}")
+        if any("已发布" in line and " 0 道" not in line for line in out):
+            # 前端页面把题库**内联**进产物，发布之后必须重建，否则浏览器看到的还是旧数量
+            # （实测：库里有 500 多道，页面上仍显示 109）
+            subprocess.run(["make", "web"], cwd=str(config.ROOT), capture_output=True, text=True)
+            subprocess.run(["make", "build"], cwd=str(config.ROOT), capture_output=True, text=True)
 
         code, out = _run(["pipeline.rework", "--apply"])
         print(f"  回流 {out[-1] if out else code}")
