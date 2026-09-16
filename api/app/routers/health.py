@@ -13,6 +13,9 @@ from .. import __version__
 from ..config import get_settings
 from ..db import get_db
 from ..models import BankVersion, Question, Topic
+# 与 /api/bank 的 ETag 共用同一套"实时指纹"：两个地方口径不同的话，
+# 前端会按其中一个判断"题库没变"，另一个改了也没用（实测就是这样卡住的）
+from .bank import _current_hash as _live_hash
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -31,7 +34,9 @@ def health(db: Session = Depends(get_db)) -> dict:
             "loaded": bool(question_count),
             "questions": int(question_count or 0),
             "topics": int(topic_count or 0),
-            "versionHash": current.content_hash if current else "",
+            # 前端拿这个值判断"题库有没有变"——必须跟着实时数据走，
+            # 否则它和 /api/bank 的 ETag 一样会永远停在导入那一刻（实测踩过：界面停在 109 道）
+            "versionHash": _live_hash(db),
             "importedAt": current.imported_at.isoformat() if current else "",
         }
         bank["subjectList"] = _subject_list(db)

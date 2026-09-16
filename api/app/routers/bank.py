@@ -26,10 +26,26 @@ router = APIRouter(prefix="/api", tags=["bank"])
 
 
 def _current_hash(db) -> str:  # noqa: ANN001
-    version = db.scalars(
-        select(BankVersion).where(BankVersion.is_current.is_(True)).order_by(BankVersion.id.desc())
-    ).first()
-    return version.content_hash if version else "empty"
+    """题库指纹**必须来自实时数据**，不能来自导入快照。
+
+    实测踩过：`BankVersion.content_hash` 是"导入那一刻"的旧哈希 ——
+    导完之后流水线又发布了 500 多道题，这个哈希一直没变 ✗，
+    于是客户端带 `If-None-Match` 来问、服务端一直回 **304** ✗，
+    用户界面（工作台与选题）永远停在旧的 109 道 ✔。
+
+    现在按"在库、未退役题目的数量 + 最近更新时间 + 最大 id"算指纹：
+    每次发布都会变，且不必扫全表正文。
+    """
+    import hashlib  # noqa: PLC0415
+
+    from sqlalchemy import text  # noqa: PLC0415
+
+    row = db.execute(
+        text(
+            "SELECT COUNT(*), MAX(updated_at), MAX(id) FROM questions WHERE retired_at IS NULL"
+        )
+    ).one()
+    return hashlib.sha256(f"{row[0]}|{row[1]}|{row[2]}".encode("utf-8")).hexdigest()
 
 
 @router.get("/bank")
