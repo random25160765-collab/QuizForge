@@ -54,3 +54,5 @@ make skills-link WORKSPACE=~     # 或指定别的工作区根
 
 - `format.md` —— 字段速查 + 五种题型的完整模板（含代码填空与法式大题）
 - `from-source.md` —— 从现有资料（书稿、仓库、笔记）批量出题的流程与注意事项
+
+| `quizforge-pipeline` | 跑流水线的运行手册：权威在数据库、状态机、常用命令、卡住怎么判断 |
