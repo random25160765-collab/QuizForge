@@ -53,3 +53,22 @@
 ## 待校验的题目
 
 {{QUESTION}}
+
+## 每个问题的字段（必须按这个结构写，流水线要据此分档处理）
+
+`problems` 里每一条都写成：
+
+```json
+{
+  "kind": "fact | unique | out_of_scope | layer | distractor | format",
+  "severity": "repairable | fundamental",
+  "field": "answer | layer | sections.answer | options | topic | ...",
+  "expected": "<你认为正确的值，写不出来就留空>",
+  "detail": "<人话：错在哪、材料里哪一行是依据>"
+}
+```
+
+- `repairable`：**在原题上做最小改动就能修好**（改层级、改小节名、补一个选项、把答案改对）。
+- `fundamental`：**这道题的基本设定就不成立**（材料根本没这个依据、考点不在材料里、
+  问法本身错了）—— 修不好，只能弃。
+  宁可如实写 `fundamental`，也不要为了让它"能改"而降级描述：弃题不丢人，改坏的题留在库里才丢人。
