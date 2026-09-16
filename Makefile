@@ -33,33 +33,6 @@ WEB_OUT   ?= api/web
 
 all: vendor check build
 
-help:
-	@echo "quizforge 目标："
-	@echo "  ---- 离线单文件 ----"
-	@echo "  make test              题库校验 + 前端逻辑自测（判分/渲染/SM2/掌握度/持久化）"
-	@echo "  make vendor            离线同步 vendor/katex（不联网）"
-	@echo "  make check             校验 questions/ 下的题库"
-	@echo "  make build             构建可发布的 $(OUT)/{index,quiz,wrongbook}.html（不含密钥）"
-	@echo "  make build-local       构建 $(LOCAL_OUT)/，把 config/ai.local.json 的接口与密钥内置"
-	@echo "  make split             额外按主题拆分出多个 HTML"
-	@echo "  make new TOPIC=cpp-stl-iterator TYPE=single   生成一道新题（TOPIC 取主题树任意一层）"
-	@echo "  make serve-local PORT=8080  起本地服务器指向 $(LOCAL_OUT)"
-	@echo "  make serve PORT=8080        起本地服务器指向 $(OUT)"
-	@echo "  ---- 在线 SaaS ----"
-	@echo "  make web               构建在线前端到 $(WEB_OUT)/（页面 + /assets）"
-	@echo "  make db-up             起 PostgreSQL 容器（127.0.0.1:5432）"
-	@echo "  make api-venv          创建后端虚拟环境并装依赖"
-	@echo "  make api-migrate       alembic upgrade head"
-	@echo "  make api-dev           启动后端热重载（127.0.0.1:$(API_PORT)）"
-	@echo "  make api-test          后端 pytest"
-	@echo "  make docker-up         整套（db + api）跑在容器里，宿主 \$${API_PORT:-8100}"
-	@echo "  make env-init          生成部署用的 .env（docker compose 会自动读取）"
-	@echo "  make db-backup         把数据库导出到 $(HOME)/quizforge-backups/"
-	@echo "  make api-migrate-auto M=\"说明\"  按模型改动自动生成迁移"
-	@echo "  make clean             清理 $(OUT)/ 与 $(LOCAL_OUT)/"
-	@echo "  ---- 出题 skill ----"
-	@echo "  make skills-link       把仓库内的 skill 注册到工作区（WORKSPACE=.. 可改）"
-
 vendor:
 	@$(PYTHON) tools/vendor.py
 
@@ -235,3 +208,15 @@ coverage-gaps:
 # 状态机自动跑：出题 → 校验 → 发布 → 打回重出，收敛即停
 drive:
 	@$(VENV)/bin/python -m pipeline.drive $(ARGS)
+
+# ---------------------------------------------------------------- 帮助
+# 新 session 先看这个：目标按用途分组，流水线那几条是最常用的。
+help:
+	@echo "quizforge · 常用目标"
+	@echo ""
+	@echo "  上手        make db-up · make db-restore · make check · make test · make api-dev"
+	@echo "  流水线      make coverage · make coverage-gaps MATERIAL=x · make drive [ARGS=...]"
+	@echo "              四步：dispatch → worker → promote --apply → rework --apply（drive 已含）"
+	@echo "  数据库      make db-dump / db-restore（快照进版本库）· make bank-export / bank-import"
+	@echo "  校验构建    make check · make test · make build · make web"
+	@echo "  服务        make api-dev（http://127.0.0.1:8100）· docker-up / docker-down · make skills-link"

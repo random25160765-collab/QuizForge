@@ -66,12 +66,15 @@ Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。同�
 | 拿不准某个设计取舍该往哪边倒 | `docs/THESIS.md`（业务立论——所有取舍的根据） |
 | 改 UI | 先看 `docs/STATUS.md` 的 UI 约定；再改 `theme/`（UI 无 skill，规则写在代码注释里） |
 | 后端 / 同步 / 入库 | 直接读 `api/app/`（无 skill） |
+| **跑流水线 / 补缺口 / 查为什么没进度** | **`quizforge-pipeline`**（状态机、常用命令、卡住怎么办 ✗ —— 先读它再动手 ✔） |
 
 ## 常用命令
 
 ```bash
-make check        # 题库校验，必须 0 error（基线在 docs/STATUS.md）
-make test         # 校验 + 前端逻辑自测（判分/渲染/SM2/掌握度/持久化）
+make help         # 目标清单（按用途分组，含流水线那几条）
+make coverage     # 覆盖率对账：哪些材料出过题、还剩多少点
+make drive        # 状态机自动跑：出题 → 校验 → 发布 → 打回重出，收敛即停
+make check        # 题库校验，必须 0 error（基线在 docs/STATUS.md；题库来自数据库，物化后即删）
 make build        # 离线单文件 → dist/
 make web          # 在线前端 → api/web/
 make db-up        # PostgreSQL 容器（127.0.0.1:5432）
