@@ -265,6 +265,9 @@ async def run_author(llm: LLM, payload: dict):
         items.append(
             {
                 "front": meta,
+                # 作者声明这道题考的是包内哪个点 —— 校验通过时据此写"题↔点的边"，
+                # 那是"哪些点已经出过题"的唯一精确依据（防重复出题）。
+                "point": question.get("point"),
                 "markdown": body,
                 "sources": ranges,
                 # 校验窗口 = 本题依据 ∪ 任务包里该点的全部出处。
@@ -284,7 +287,9 @@ async def run_author(llm: LLM, payload: dict):
         raise LLMError("整包题目都因依据无法定位被丢弃 —— quote 不是逐字原文？")
 
     subject = str(payload.get("subject") or "tt-arch")
-    written, dropped = dbstore.insert_drafts(subject, items)
+    written, dropped = dbstore.insert_drafts(
+        subject, items, [str(p.get("key") or "") for p in (payload.get("points") or [])]
+    )
     if not written:
         raise LLMError(f"整包题目都没能入库：{dropped}")
     if dropped:

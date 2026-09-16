@@ -51,6 +51,7 @@
         "chapter": "TT-Metalium",
         "source": "METALIUM_GUIDE.md: Circular Buffer 段（L82–L89）"
       },
+      "point": "<任务包里某个知识点的 key —— 这道题考的就是它>",
       "markdown": "题干……\n\n## 选项\n- A. ...\n- B. ...\n\n## 答案\nB\n\n## 解析\n### 选项辨析\n- **A 错**：<错在哪 + 什么人会选它>\n",
       "quote": "<从材料原文里逐字复制的关键句（程序据此定位依据行号）>"
     }
