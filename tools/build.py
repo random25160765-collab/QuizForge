@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import json
+import os
 import re
 import sys
 import time
@@ -44,7 +45,8 @@ from question_parser import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-QUESTIONS_DIR = ROOT / "questions"
+# 题库的权威在数据库；这里指向 `make bank-materialize` 生成的临时目录（默认 /tmp/qf-bank）。
+QUESTIONS_DIR = Path(os.environ.get("QF_QUESTIONS_DIR") or (ROOT / "questions"))
 THEME_DIR = ROOT / "theme"
 RUNTIME_DIR = THEME_DIR / "runtime"
 PAGES_DIR = THEME_DIR / "pages"

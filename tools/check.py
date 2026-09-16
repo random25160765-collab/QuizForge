@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -38,8 +39,10 @@ from question_parser import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-QUESTIONS_DIR = ROOT / "questions"
-TOPICS_FILE = ROOT / "meta" / "topics.yaml"
+# 题库与考纲的**权威在数据库**，仓库里不再放"一题一个文件"的小文件。
+# `make bank-materialize` 把库导出一个临时目录，下面两个环境变量指向它（与 Docker 同名）。
+QUESTIONS_DIR = Path(os.environ.get("QF_QUESTIONS_DIR") or (ROOT / "questions"))
+TOPICS_FILE = Path(os.environ.get("QF_TOPICS_FILE") or (ROOT / "meta" / "topics.yaml"))
 
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
