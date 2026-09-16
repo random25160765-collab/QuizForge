@@ -539,6 +539,21 @@
   /** 热力图右侧的累计统计 */
   /** 热力图上方：按主题筛选。GitHub 的贡献图也能按仓库筛，同一套思路。 */
   function heatTopicRow() {
+    // 只列**刷过**的学科（判据与热力图同源：同一张天表、同一个 126 天窗口）。
+    // 这排筛选项服务于热力图，而热力图画的是「我练过什么」——
+    // 没练过的学科点进去必然是空图（此前按题库题数列，于是每个学科都能点、点了全空）。
+    var active = store.activityBySubject(126);
+    var items = pruneEmpty(
+      D.subjects.map(function (t) {
+        return { key: t.key, label: t.name, count: active[t.key] || 0 };
+      }),
+      // 当前选中的那个即使被裁掉也要留着，否则取消不掉
+      state.heatTopic ? [state.heatTopic] : []
+    );
+    // 一个学科都没刷过：整行不显示。留一个光秃秃的「主题」标签，
+    // 比不显示更让人困惑 —— 与其它筛选行同一条约定（addRow 会跳过 null）。
+    if (!items.length) return null;
+
     var row = h('div.filterbar', { style: { marginBottom: '14px' } });
     row.appendChild(h('span.filterbar__label', { text: '主题' }));
     var group = h('div.filterbar__group');
@@ -561,13 +576,7 @@
       );
     }
     chip('', '全部');
-    // 只列有题的学科；当前选中的那个即使被筛没了也要留着，否则取消不掉
-    pruneEmpty(
-      D.subjects.map(function (t) {
-        return { key: t.key, label: t.name, count: D.bankStats.byTopic[t.key] || 0 };
-      }),
-      state.heatTopic ? [state.heatTopic] : []
-    ).forEach(function (item) {
+    items.forEach(function (item) {
       chip(item.key, item.label);
     });
     row.appendChild(group);

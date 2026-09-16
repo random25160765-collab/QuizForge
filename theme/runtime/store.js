@@ -582,6 +582,17 @@
         if (typeof value === 'number') normalized[key] = { answers: value, correct: 0 };
         else if (value && typeof value === 'object') {
           normalized[key] = { answers: Number(value.answers) || 0, correct: Number(value.correct) || 0 };
+          // topics 必须原样留下 —— 热力图按主题筛选全靠它。
+          // 之前这里把它丢了，于是「按主题筛热力图永远是空的」（点了没反应的观感），
+          // 更糟的是 touchDay 会把 days() 写回 localStorage，丢掉的版本就此落盘、永久损坏。
+          if (value.topics && typeof value.topics === 'object') {
+            var topics = {};
+            Object.keys(value.topics).forEach(function (k) {
+              var n = Number(value.topics[k]) || 0;
+              if (n > 0) topics[k] = n;
+            });
+            if (Object.keys(topics).length) normalized[key].topics = topics;
+          }
         }
       });
       daysCache = normalized;
@@ -616,8 +627,17 @@
     return bucket;
   }
 
+  /**
+   * 今天的桶 —— **只读，不建**。
+   *
+   * 建桶会把它写进天表，而「连续练习」原来就是靠「今天有没有桶」判断今天是否
+   * 已经练过的：一个空桶足以让它以为今天练了、然后停在 0。
+   * 实测的复现路径：今天没练过（只有昨天练过）时刷新是「1 天」，
+   * 随便点一下触发重渲染就变「0 天」，而近 7 天的活跃天数还是 1。
+   */
   function today() {
-    return dayBucket(QF.ui.dayKey());
+    var table = days();
+    return table[QF.ui.dayKey()] || { answers: 0, correct: 0 };
   }
 
   /**
@@ -649,6 +669,34 @@
         out.push({ date: key, answers: sum, correct: sum });
       } else {
         out.push({ date: key, answers: bucket.answers, correct: bucket.correct });
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return out;
+  }
+
+  /**
+   * 最近 n 天里每个**学科**（一级主题）各练了多少题。
+   *
+   * 热力图的主题筛选项取自这里，而不是取自题库题数 ——
+   * 热力图画的是「我练过什么」，只有在同一个时间窗里有作答的学科才值得作为筛选项出现。
+   * 此前按题库题数列，于是没刷过的学科也能点，点进去必然是空图（"显示我没做题"）。
+   *
+   * 键是 `touchDay` 写入的一级主题键（题目的 topicPath[0]），与 D.subjects 的 key 同源。
+   */
+  function activityBySubject(n) {
+    var count = n || 126;
+    var table = days();
+    var cursor = new Date();
+    cursor.setHours(0, 0, 0, 0);
+    cursor.setDate(cursor.getDate() - (count - 1));
+    var out = {};
+    for (var i = 0; i < count; i++) {
+      var bucket = table[QF.ui.dayKey(cursor)];
+      if (bucket && bucket.topics) {
+        Object.keys(bucket.topics).forEach(function (key) {
+          out[key] = (out[key] || 0) + bucket.topics[key];
+        });
       }
       cursor.setDate(cursor.getDate() + 1);
     }
@@ -727,18 +775,21 @@
     var table = days();
     var cursor = new Date();
     var count = 0;
-    // 今天还没做过就从昨天开始算，避免「连续天数」在早上归零
-    if (!table[QF.ui.dayKey(cursor)]) cursor.setDate(cursor.getDate() - 1);
+    // 今天还没做过就从昨天开始算，避免「连续天数」在早上归零。
+    // 判据必须是「这天有作答」，不能是「表里有这个键」——
+    // 空桶（answers 为 0）也算有键，会被当成「今天练过了」，然后停在 0。
+    if (!dayAnswered(table, cursor)) cursor.setDate(cursor.getDate() - 1);
     for (var i = 0; i < 1000; i++) {
-      var key = QF.ui.dayKey(cursor);
-      if (table[key] && table[key].answers > 0) {
-        count += 1;
-        cursor.setDate(cursor.getDate() - 1);
-      } else {
-        break;
-      }
+      if (!dayAnswered(table, cursor)) break;
+      count += 1;
+      cursor.setDate(cursor.getDate() - 1);
     }
     return count;
+  }
+
+  function dayAnswered(table, date) {
+    var bucket = table[QF.ui.dayKey(date)];
+    return !!(bucket && bucket.answers > 0);
   }
 
   /* ---------------------------------------------------------- 统计 */
@@ -1085,6 +1136,7 @@
     touchDay: touchDay,
     today: today,
     daySeries: daySeries,
+    activityBySubject: activityBySubject,
     recentTotals: recentTotals,
     streak: streak,
     stats: stats,
