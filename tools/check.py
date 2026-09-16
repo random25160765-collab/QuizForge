@@ -44,6 +44,22 @@ ROOT = Path(__file__).resolve().parent.parent
 QUESTIONS_DIR = Path(os.environ.get("QF_QUESTIONS_DIR") or (ROOT / "questions"))
 TOPICS_FILE = Path(os.environ.get("QF_TOPICS_FILE") or (ROOT / "meta" / "topics.yaml"))
 
+
+def _rel(path: Path) -> str:
+    """报告里显示的路径。
+
+    题库物化在**仓库外的临时目录**（见 Makefile 的 `check`/`test`），
+    直接 `relative_to(ROOT)` 会抛 ValueError 把整个校验带崩 —— 这是实测踩过的，
+    所以取不到仓库相对路径就退回「questions/ 之后的那段」，再不行就文件名。
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        parts = path.parts
+        if "questions" in parts:
+            return "/".join(parts[parts.index("questions") + 1 :])
+        return path.name
+
 _FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _SECTION_RE = re.compile(r"^ {0,3}##\s+(.+?)\s*#*\s*$")
@@ -62,7 +78,7 @@ class Diagnostic:
 
     def render(self) -> str:
         try:
-            shown = self.path.relative_to(ROOT)
+            shown = _rel(self.path)
         except ValueError:
             shown = self.path
         return f"{shown}:{self.line}: {self.level}: {self.message}"
@@ -291,7 +307,7 @@ def main(argv: list[str]) -> int:
                         "ERROR",
                         path,
                         1,
-                        f"id「{qid}」与 {seen[qid].relative_to(ROOT)} 重复",
+                        f"id「{qid}」与 {_rel(seen[qid])} 重复",
                     ),
                 )
             else:

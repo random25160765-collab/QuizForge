@@ -36,18 +36,8 @@ all: vendor check build
 vendor:
 	@$(PYTHON) tools/vendor.py
 
-check: bank-materialize-all
-	@$(BANK_ENV) $(PYTHON) tools/check.py; status=$$?; $(MAKE) -s bank-clean; exit $$status
-
-test: bank-materialize-all
-	@$(BANK_ENV) $(PYTHON) tools/check.py
-	@$(BANK_ENV) $(PYTHON) tools/build.py -q
-	@node tools/selftest.mjs
-	@$(MAKE) -s bank-clean
-
-build: bank-materialize
-	@$(BANK_ENV) $(PYTHON) tools/build.py --incremental
-	@$(MAKE) -s bank-clean
+# check / test / build 三个目标在文件末尾附近定义 —— 它们都要先"从库物化到临时目录"，
+# 定义在一起才看得清那一串前置条件（见「题库来自数据库」一节）。
 
 build-full:
 	@$(PYTHON) tools/build.py
@@ -170,22 +160,64 @@ bank-export:
 bank-import:
 	@$(VENV)/bin/python -m pipeline.bankfile import --path $(CURDIR)/bank.json
 
+# ---------------------------------------------------------------- 知识图谱
+# merge 把 981 个点归并成概念（幂等，可反复跑）；edges 派共现边；
+# relate 让模型给反复共现的概念对判语义关系（花 LLM 的钱，按 --limit 控制规模）。
+graph:
+	@$(VENV)/bin/python -m pipeline.graph_build merge
+	@$(VENV)/bin/python -m pipeline.graph_build edges
+	@$(VENV)/bin/python -m pipeline.graph_build stats
+
+graph-relate:
+	@$(VENV)/bin/python -m pipeline.graph_build relate --limit $(or $(LIMIT),400)
+
+graph-export:
+	@$(VENV)/bin/python -m pipeline.graph_build export --out $(CURDIR)/graph.json
+
 # ---------------------------------------- 题库来自数据库（仓库里不留小文件）
-# 权威在 Postgres；下面两个目标把库物化成一个临时目录，构建/校验工具去读它。
-BANK_DIR ?= $(CURDIR)/.bank-cache
-BANK_ENV  = QF_QUESTIONS_DIR=$(BANK_DIR)/questions QF_TOPICS_FILE=$(BANK_DIR)/meta/topics.yaml
+# 权威在 Postgres；构建与校验都先把库物化到一个**全新的临时目录**再读它。
+#
+# 为什么是"全新临时目录"而不是一个固定的缓存目录：物化是"只写不清"的，
+# 固定目录会**跨轮次累积** —— 同一道题在改过 topic 之后会以两个文件名共存，
+# 于是 `check` 报"id 重复"，产物里混进早已不该存在的题（实测踩过：
+# dist/data.json 停在两千多道旧题的版本上，后端对账测试因此莫名失败）。
+# 每次换目录，就不存在"上一轮的残渣"这个问题。
+#
+# 清理交给 Python（shutil.rmtree），不走 shell 的 rm：临时目录里有两千多个文件，
+# 走 shell 会被"批量删除需要确认"拦下，而这是流水线自己的中间产物，不该打扰人。
+BANK_MATERIALIZE = $(VENV)/bin/python -m pipeline.bankfile materialize
 
 # 校验连草稿一起看（草稿也必须符合契约，只是还不对外发布）
-bank-materialize-all:
-	@$(VENV)/bin/python -m pipeline.bankfile materialize --out $(BANK_DIR) --status all
+check:
+	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
+	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
+	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(PYTHON) tools/check.py; \
+	status=$$?; $(PYTHON) -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" $$BANK; \
+	exit $$status
 
-# 构建只要已发布的题
-bank-materialize:
-	@$(VENV)/bin/python -m pipeline.bankfile materialize --out $(BANK_DIR)
+test:
+	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
+	PUB=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
+	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
+	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(PYTHON) tools/check.py; \
+	status=$$?; \
+	if [ $$status -eq 0 ]; then \
+	  $(BANK_MATERIALIZE) --out $$PUB >/dev/null; \
+	  QF_QUESTIONS_DIR=$$PUB/questions QF_TOPICS_FILE=$$PUB/meta/topics.yaml $(PYTHON) tools/build.py -q; \
+	  status=$$?; \
+	fi; \
+	if [ $$status -eq 0 ]; then node tools/selftest.mjs; status=$$?; fi; \
+	$(PYTHON) -c "import shutil,sys; [shutil.rmtree(p, ignore_errors=True) for p in sys.argv[1:]]" $$BANK $$PUB; \
+	exit $$status
 
-# 用完即删：文件只在命令执行期间存在，仓库里不留题库小文件
-bank-clean:
-	@rm -rf $(BANK_DIR)
+# 构建只要已发布的题。**不用 --incremental**：增量缓存只看物化目录里的文件，
+# 而题库的权威在数据库 —— 库里改了，物化出来同名同路径，缓存就会把旧产物认成新的。
+build:
+	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
+	$(BANK_MATERIALIZE) --out $$BANK >/dev/null; \
+	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(PYTHON) tools/build.py; \
+	status=$$?; $(PYTHON) -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" $$BANK; \
+	exit $$status
 
 # ---------------------------------------------- 数据库快照（必须进版本库）
 # 题库、考纲、知识空间的**唯一权威在数据库**；仓库里已经没有它们的小文件，

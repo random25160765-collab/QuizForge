@@ -815,3 +815,84 @@
     }
   }
 })();
+
+/* 根因诊断 —— 错题本顶部补一块"根因"。
+ *
+ * 过去这里只列"你错过了哪些题"；现在把题号交给服务端（题 → 考点 → 前置考点），
+ * 换回一条人话：先补哪个考点、一共几步。
+ * 离线产物没有服务端，那就什么都不显示 —— 不能因为拿不到诊断把错题本弄坏。
+ */
+(function () {
+  'use strict';
+  var RX = /^[a-z][a-z0-9-]*-\d{4}$/;
+  var lastKey = '';
+
+  function wrongIds() {
+    var out = [];
+    var nodes = document.querySelectorAll('span.wb__itemtop');
+    for (var i = 0; i < nodes.length; i++) {
+      var tail = nodes[i].lastElementChild;
+      var text = tail ? (tail.textContent || '').trim() : '';
+      if (RX.test(text)) out.push(text);
+    }
+    return out;
+  }
+
+  function anchor() {
+    var nodes = document.querySelectorAll('span.wb__itemtop');
+    var first = nodes[0];
+    if (!first) return null;
+    var row = first.parentNode;              // 一条错题
+    return row && row.parentNode ? row.parentNode : null;   // 那个列表
+  }
+
+  function show(data) {
+    var list = anchor();
+    if (!list || list.querySelector('.wb__rootcause')) return;
+    var prereq = (data && data.prerequisites) || [];
+    var wrong = (data && data.wrongConcepts) || [];
+    var steps = (data && data.order) || [];
+    if (!prereq.length && !wrong.length) return;
+
+    var box = document.createElement('div');
+    box.className = 'wb__rootcause';
+    box.style.cssText = 'margin:10px 0;padding:10px 12px;border:1px solid var(--line);' +
+      'border-radius:10px;background:var(--bg2);color:var(--fg2);font-size:12.5px;line-height:1.7';
+
+    var head = document.createElement('div');
+    head.style.cssText = 'color:var(--pri);font-weight:600;margin-bottom:4px';
+    head.textContent = '根因诊断';
+    box.appendChild(head);
+
+    var text = document.createElement('div');
+    if (prereq.length) {
+      var names = [];
+      for (var i = 0; i < Math.min(3, prereq.length); i++) names.push('「' + prereq[i].name + '」');
+      text.textContent = '这些错题的根子在前置考点上：先补 ' + names.join('、') +
+        (prereq.length > 3 ? ' 等 ' + prereq.length + ' 个' : '') +
+        '，再回来做错题。整个复习顺序共 ' + steps.length + ' 步。';
+    } else {
+      text.textContent = '这些错题都落在同一个考点上（' + wrong[0].name + '），直接把这个考点再练几道即可。';
+    }
+    box.appendChild(text);
+    list.insertBefore(box, list.firstChild);
+  }
+
+  function poll() {
+    var ids = wrongIds();
+    var key = ids.join(',');
+    if (!ids.length || key === lastKey) return;
+    lastKey = key;
+    try {
+      fetch('/api/graph/diagnose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questionIds: ids })
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) { if (d) show(d); })
+        .catch(function () {});
+    } catch (e) { /* 离线：静默 */ }
+  }
+
+  setInterval(poll, 1500);
+})();

@@ -45,8 +45,23 @@ from question_parser import (  # noqa: E402
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-# 题库的权威在数据库；这里指向 `make bank-materialize` 生成的临时目录（默认 /tmp/qf-bank）。
+# 题库的权威在数据库；这里指向 Makefile 物化出来的**临时目录**（每次都是新的）。
 QUESTIONS_DIR = Path(os.environ.get("QF_QUESTIONS_DIR") or (ROOT / "questions"))
+
+
+def _rel(path: Path) -> str:
+    """稳定的相对路径（增量缓存的键，也用在报告里）。
+
+    物化目录在仓库外，`relative_to(ROOT)` 会抛 ValueError；而这个键必须**稳定** ——
+    用绝对路径当键的话，换一次临时目录缓存就全失效（增量也就不叫增量了）。
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        parts = path.parts
+        if "questions" in parts:
+            return "/".join(parts[parts.index("questions") + 1 :])
+        return path.name
 THEME_DIR = ROOT / "theme"
 RUNTIME_DIR = THEME_DIR / "runtime"
 PAGES_DIR = THEME_DIR / "pages"
@@ -78,6 +93,14 @@ PAGES = {
         "body": "wrongbook.body.html",
         "js": ["wrongbook.js"],
         "css": ["markdown.css", "app.css"],
+    },
+    # 知识图谱：跟刷题页同一套外壳与配色（它不是一个"外挂的演示页"，
+    # 而是这个站的一个视图 —— 顶栏、主题、状态栏都走 shell.html）。
+    "graph": {
+        "title": "quizforge · 知识图谱",
+        "body": "graph.body.html",
+        "js": ["graph.js"],
+        "css": ["app.css", "graph.css"],
     },
 }
 
@@ -150,7 +173,7 @@ def parse_all(
     hits = misses = 0
 
     for path in files:
-        rel = str(path.relative_to(ROOT))
+        rel = _rel(path)
         stamp = _file_stamp(path)
         cached = cache.get(rel)
         if cached and cached.get("stamp") == stamp and "data" in cached:
@@ -413,6 +436,18 @@ def main(argv: list[str]) -> int:
     (out_dir / "data.json").write_text(
         json.dumps(dataset, ensure_ascii=False, indent=1), encoding="utf-8"
     )
+
+    # 6.5) 知识图谱页的数据快照。
+    # 页面优先请求 `/api/graph`（在线时是实时的），拿不到才用这份 ——
+    # 于是"双击 graph.html 也能看"这条离线底线仍然成立。
+    graph_file = QUESTIONS_DIR.parent / "meta" / "graph.json"
+    if graph_file.is_file():
+        raw = graph_file.read_text(encoding="utf-8")
+        (out_dir / "graph.json").write_text(raw, encoding="utf-8")
+        stats = json.loads(raw)["stats"]
+        log.step(
+            f"知识图谱数据：{stats['nodes']} 节点 · {stats['links']} 边 · 语义关系 {stats['semantic']}"
+        )
 
     # 7) 可选：按主题拆分
     if args.split:

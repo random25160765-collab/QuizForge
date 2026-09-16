@@ -124,6 +124,22 @@ def import_bundle(path: Path) -> dict:
     return {"added": added, "updated": updated, "topics": len(bundle.get("topics") or [])}
 
 
+def strip_front_matter(markdown: str | None) -> str:
+    """剥掉正文开头的元信息头（`---` 包住的那一段）。
+
+    为什么要有它：库里存过带头的正文（导入时代留下的），而物化时又会在前面拼一个头，
+    结果就是**双头文件** —— 页面把第二个头当正文渲染出来（实测题目上多出一块
+    `id: ... type: ...` 的文字）。这里做防御：有头就剥，没头就原样返回。
+    """
+    text = (markdown or "").strip()
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    if end < 0:
+        return text
+    return text[end + 4 :].lstrip("\n")
+
+
 def _scalar(value) -> str:
     """front-matter 标量：数字裸写，其余加引号（解析器两种都收）。"""
     if isinstance(value, bool):
@@ -185,7 +201,7 @@ def materialize(out: Path, statuses: tuple[str, ...] = ("published",)) -> dict:
         directory = out / "questions" / subject
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f"{question['id']}-{slugify(question['topic'])}.md").write_text(
-            head + (question["raw_markdown"] or "").strip() + "\n", encoding="utf-8"
+            head + strip_front_matter(question["raw_markdown"]) + "\n", encoding="utf-8"
         )
         written += 1
 
@@ -194,6 +210,14 @@ def materialize(out: Path, statuses: tuple[str, ...] = ("published",)) -> dict:
 
     (out / "meta").mkdir(parents=True, exist_ok=True)
     (out / "meta" / "topics.yaml").write_text(render_yaml(), encoding="utf-8")
+
+    # 知识图谱快照：页面与导出都读它。拼图逻辑只有一份（`app.graph`），
+    # 所以"页面上的图"和"导出的图"不可能不一样。
+    from app.graph import payload as graph_payload  # noqa: PLC0415
+
+    (out / "meta" / "graph.json").write_text(
+        json.dumps(graph_payload(), ensure_ascii=False), encoding="utf-8"
+    )
     return {"questions": written, "topics": True}
 
 

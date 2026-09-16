@@ -23,6 +23,15 @@ from . import config
 
 sys.path.insert(0, str(config.ROOT / "api"))
 
+def _strip_front(markdown: str | None) -> str:
+    """只留正文：库里的 `raw_markdown` 不该带元信息头（前端会把它当正文渲染）。"""
+    text = (markdown or "").strip()
+    if not text.startswith("---"):
+        return text
+    end = text.find("\n---", 3)
+    return text[end + 4 :].lstrip("\n") if end >= 0 else text
+
+
 # 出题员给的前置字段里，哪些要落成真正的列（其余进 payload）
 COLUMNS = ("type", "topic", "difficulty", "layer", "wing", "chapter")
 
@@ -174,7 +183,7 @@ def insert_drafts(
                     "layer": str(_column(payload, "layer", "")),
                     "wing": str(_column(payload, "wing", "")),
                     "chapter": str(_column(payload, "chapter", "")),
-                    "raw": raw,
+                    "raw": _strip_front(raw),
                     # sources（依据）与 verify_ranges（校验窗口）都留在 payload 里：
                     # 补校验任务时要靠它们重建提示词，而库是唯一权威，没有第二个地方可问。
                     # `point` 也留在这里 —— 校验通过时要用它写"题↔点的边"。

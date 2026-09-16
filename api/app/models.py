@@ -367,11 +367,120 @@ class Material(Base):
     )
 
 
+class Concept(Base):
+    """知识图谱的**概念层**：跨材料唯一的那个"东西"。
+
+    为什么必须存在这一层：原先只有 `knowledge_points`（点），而点是
+    **material-scoped** 的 —— `tt-metal-circular-buffer` 在 10 份材料里就是 10 个
+    互不相识的点。于是：
+
+    * 主题树只能逐个点镜像出叶子（tt-metal 下 443 片），因为没有任何东西
+      能把"同一件事的十次出现"收成一个节点；
+    * 题目只能绑到"某份材料的某一段"，一千多道题看着就是一本材料目录；
+    * 覆盖率、掌握度分母虚高（同一概念被算了十次）。
+
+    所以：**点 = 某个概念在某份材料里的一次出现**，概念才是图谱的节点。
+    """
+
+    __tablename__ = "concepts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(160), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), default="noun", index=True, nullable=False)
+    definition: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 挂到考纲的哪个节点；自动推导可能为空（待归类），人可改
+    topic_key: Mapped[str] = mapped_column(String(160), default="", index=True, nullable=False)
+    #: 同一概念的其它写法（归并时记下来，用来解释"为什么并成一件事"）
+    aliases: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    point_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    material_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: auto（程序归并）/ confirmed（人确认过）/ retired（并错了或不要了）
+    status: Mapped[str] = mapped_column(String(16), default="auto", index=True, nullable=False)
+    #: 归并的把握度 0~1，越低越该人看一眼
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ConceptEdge(Base):
+    """概念之间的关系 —— 这才是"知识图谱"里那个**图**。
+
+    与 `point_edges` 的区别：那张表里的边（同切片 / 共享术语）本质是**相似度**，
+    是程序按字面算出来的聚类；这里存的是**语义关系**（前置、组成、对比、实现），
+    从邻近的一对对概念里由模型提出、可被人改。两者都留着：前者当证据，后者当知识。
+
+    受控词表（不要自由加，前端按它配色）：
+      requires      A 是 B 的前置（学 B 之前得先会 A）
+      part_of       A 是 B 的组成部分
+      contrast_with A 与 B 易混，需要辨析
+      implements    A 是 B 的一种实现 / API 对应
+      co_occurs     A 与 B 反复同时出现（程序派生，弱边，默认不显示）
+    """
+
+    __tablename__ = "concept_edges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    from_concept_id: Mapped[int] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    to_concept_id: Mapped[int] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    type: Mapped[str] = mapped_column(String(24), index=True, nullable=False)
+    #: 为什么这么连（模型给的一句话，或程序写的计数）—— 图上点开就能看到依据
+    why: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: code | llm | human
+    derived_by: Mapped[str] = mapped_column(String(16), default="code", nullable=False)
+    weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("from_concept_id", "to_concept_id", "type", name="uq_concept_edge"),
+    )
+
+
+class QuestionConcept(Base):
+    """题 ↔ **概念**：图谱与题库之间唯一该被算法使用的那条边。
+
+    为什么不能只用 `question_points`：点是"某份材料里的一次出现"，而同一个概念
+    在 10 份材料里就是 10 个点 —— 按点算覆盖率，一个概念被算十次，
+    分母虚高十倍（`tt-metal-circular-buffer` 那种 10 点/10 材料的概念最典型）。
+
+    所以：**点保留证据，概念上做统计**。覆盖率、选题、掌握度、复习计划
+    一律走这张表；`question_points` 退回去当"出处"，仍然被出题与校验使用。
+
+    旧题也补了这一列（`pipeline.graph_build merge` 会回填）——
+    不然图谱只是好看，算不了东西。
+    """
+
+    __tablename__ = "question_concepts"
+
+    question_id: Mapped[str] = mapped_column(
+        String(96), ForeignKey("questions.id", ondelete="CASCADE"), primary_key=True
+    )
+    concept_id: Mapped[int] = mapped_column(
+        ForeignKey("concepts.id", ondelete="CASCADE"), primary_key=True
+    )
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
 class KnowledgePoint(Base):
     """知识空间：一个可考知识点（claim 簇）。
 
     **出题的原料单位是它，不是切片**：一个点常常横跨好几段原文，
     所以出处是一对多（`point_sources`），而不是一个行区间字段。
+
+    它同时是**概念在某份材料里的一次出现**（`concept_id`）：图上的节点是概念，
+    点是"这个说法在这份材料里出现过"的证据。归并没做的老数据 `concept_id` 为空，
+    `pipeline.graph_build` 会补上。
     """
 
     __tablename__ = "knowledge_points"
@@ -379,6 +488,9 @@ class KnowledgePoint(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     material_id: Mapped[int] = mapped_column(
         ForeignKey("materials.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    concept_id: Mapped[int | None] = mapped_column(
+        ForeignKey("concepts.id", ondelete="SET NULL"), index=True, nullable=True
     )
     key: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
     name: Mapped[str] = mapped_column(Text, default="", nullable=False)
