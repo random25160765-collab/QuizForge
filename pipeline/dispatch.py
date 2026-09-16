@@ -416,7 +416,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.kind in ("verify", "all"):
         new, old = dispatch_verify(conn, map_dir, doc)
         print(f"verify ：新建 {new} 个任务（补未通过的题），已存在 {old} 个")
-    if args.kind == "author":
+    # 必须是 in ("author", "all")：写成 == "author" 的话，`--kind all` 永远不派出题包
+    # （实测：drive 每轮因此只消费旧队列，跑完第 2 轮就"收敛"了 ✗）
+    if args.kind in ("author", "all"):
         coverage = coverage_from_db(slug)
         if coverage is None:
             if not coverage_file.is_file():
