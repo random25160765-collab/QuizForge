@@ -11,11 +11,13 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
-TOPICS_FILE = ROOT / "meta" / "topics.yaml"
+# 考纲的权威在数据库（topics 表）；仓库里的 topics.yaml 只是导出物，或由环境变量指向别处。
+TOPICS_FILE = Path(os.environ.get("QF_TOPICS_FILE") or (ROOT / "meta" / "topics.yaml"))
 
 MAX_DEPTH = 3
 

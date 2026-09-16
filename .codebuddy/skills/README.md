@@ -9,6 +9,7 @@
 |---|---|
 | `quizforge-init` | **开局入口**：目录地图、铁律、任务→skill 路由、常用命令、开工/收工清单。新会话先读它，它会把你指向当前状态文件 `docs/STATUS.md` |
 | `quizforge-author` | 题目**格式契约**：字段、五种题型的正文小节、LaTeX 与代码块写法、校验命令 |
+| `quizforge-handmade` | **人工手写单题**的接入：agent 不写题面，只做格式合规、元数据补全、把关系边写成可解析的句式、校验与入库 |
 | `quizforge-l1-memorize` | 出**识记**层题：术语、定义、公式、数值、枚举的准确回忆 |
 | `quizforge-l2-understand` | 出**理解**层题：预测、判断对错、解释机制 |
 | `quizforge-l3-apply` | 出**应用**层题：按已知规程独立算出确定结果 |

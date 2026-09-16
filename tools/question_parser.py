@@ -500,10 +500,18 @@ def question_to_dict(question: Question) -> dict:
     else:
         answer = None
 
-    try:
-        rel = question.path.relative_to(ROOT)
-    except ValueError:
-        rel = question.path
+    # `file` 必须**稳定**：题库现在由数据库物化到临时目录，绝对路径每次都不同，
+    # 一旦写进数据集，「接口返回 == 离线产物」这条契约就会无端失败（实测就是这么挂的）。
+    # 规则：落在某个 questions/ 目录下就取它之后的相对路径，否则退回仓库内相对路径。
+    parts = question.path.parts
+    if "questions" in parts:
+        cut = len(parts) - 1 - parts[::-1].index("questions")
+        rel = "/".join(parts[cut + 1 :])
+    else:
+        try:
+            rel = question.path.relative_to(ROOT)
+        except ValueError:
+            rel = question.path
 
     return {
         "id": question.id,
