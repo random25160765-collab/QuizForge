@@ -423,7 +423,14 @@ def current_bank(session: OrmSession) -> dict:
     order_index = {node["key"]: i for i, node in enumerate(topics)}
     payloads = [
         row.payload
-        for row in session.scalars(select(Question).where(Question.retired_at.is_(None))).all()
+        # 只放行**过了校验**的题：草稿是流水线的中间态，绝不能进学生的界面
+        # （实测踩过：接口把 draft 也发了出去 —— 未校验的答案会直接被当成标准答案）
+        for row in session.scalars(
+            select(Question).where(
+                Question.retired_at.is_(None),
+                Question.status.in_(("verified", "published")),
+            )
+        ).all()
     ]
     questions = sorted(
         payloads,
