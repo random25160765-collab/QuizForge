@@ -486,14 +486,29 @@ def _depth_first(topics: list[dict]) -> list[dict]:
 def _decorate_group_names(groups: dict[str, dict]) -> None:
     """补上分组的中文名与排序权重。
 
-    这两项只存在于 `meta/topics.yaml`，数据库里只存了 group_key。
-    为了和 `dist/data.json` 完全一致，这里读一次 YAML；读不到就退化为
-    显示原始 key —— 界面难看一点，但不会坏。
+    权威在库（`topic_groups`）；库里还没有时，从 `meta/topics.yaml` 读一次
+    **并顺手写回库** —— 于是那个文件可以删掉，首次导入之后这件事与文件无关。
+    读不到就退化为显示原始 key：界面难看一点，但不会坏。
     """
+    from . import outline  # noqa: PLC0415
+
+    definitions: list[dict] = []
     try:
-        _nodes, _ordered, definitions, _problems = load_topic_tree()
-    except Exception:  # YAML 缺失或损坏都不该让题库接口失败
-        return
+        definitions = [
+            {"key": row["key"], "name": row["name"], "order": row["order_index"]}
+            for row in outline.groups()
+        ]
+    except Exception:  # noqa: BLE001 —— 库抖了一下不该让题库接口失败
+        definitions = []
+    if not definitions:
+        try:
+            _nodes, _ordered, definitions, _problems = load_topic_tree()
+        except Exception:  # YAML 缺失或损坏都不该让题库接口失败
+            return
+        try:
+            outline.upsert_groups(definitions)
+        except Exception:  # noqa: BLE001
+            pass
     for definition in definitions:
         group = groups.get(definition["key"])
         if group is not None:

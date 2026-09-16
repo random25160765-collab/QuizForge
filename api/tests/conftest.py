@@ -36,6 +36,42 @@ def _sync_url(url: str, db_name: str) -> str:
 TEST_URL = _sync_url(ADMIN_URL, TEST_DB_NAME)
 
 
+def _ensure_bank_source() -> None:
+    """题库的权威在数据库，测试也从库里取。
+
+    `app.bank_import` 是按**目录**写的（那条路径是给不接数据库的老部署留的），
+    所以这里先把库物化到临时目录，再把 `QF_QUESTIONS_DIR` 指过去 ——
+    仓库里不再需要留一份 `questions/`。必须在导入 `app` 之前跑完
+    （`get_settings` 带 lru_cache，导入后再改环境变量就晚了）。
+    """
+    if os.environ.get("QF_QUESTIONS_DIR"):
+        return
+    repo_questions = API_DIR.parent / "questions"
+    if repo_questions.is_dir() and any(repo_questions.rglob("*.md")):
+        os.environ["QF_QUESTIONS_DIR"] = str(repo_questions)
+        return
+
+    import subprocess
+    import tempfile
+
+    target = Path(tempfile.mkdtemp(prefix="qf-test-bank-"))
+    proc = subprocess.run(
+        [sys.executable, "-m", "pipeline.bankfile", "materialize", "--out", str(target)],
+        cwd=str(API_DIR.parent),
+        env={**os.environ, "QF_DATABASE_URL": ADMIN_URL},
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        print("[conftest] 物化题库失败：", proc.stdout[-400:], proc.stderr[-400:])
+        return
+    os.environ["QF_QUESTIONS_DIR"] = str(target / "questions")
+    os.environ["QF_TOPICS_FILE"] = str(target / "meta" / "topics.yaml")
+
+
+_ensure_bank_source()
+
+
 def _ensure_database() -> None:
     """库不存在就建一个。用 psycopg 直连 admin 库，避免 ORM 的额外抽象。"""
     import psycopg

@@ -35,3 +35,20 @@ api/web/
 .idea/
 .vscode/
 *.swp
+
+# 流水线的运行日志与缓存（2026-09-16）
+pipeline/*.log
+pipeline/*.out
+pipeline/state.sqlite3*
+__pycache__/
+*.pyc
+
+# 流水线中间产物：知识空间已在数据库里，这些随时可重跑（2026-09-16）
+maps/**/extract/
+maps/**/figures/
+maps/**/*.verify.json
+maps/**/pack-*.json
+maps/_attic/
+
+# 题库物化的临时目录（权威在数据库，用完即删）
+.bank-cache/

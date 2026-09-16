@@ -15,6 +15,41 @@ import sys
 
 from .config import get_settings
 
+
+def _ensure_topics_file() -> None:
+    """考纲的权威在数据库（`meta_documents` 里 key=`topics` 的那份正文）。
+
+    `tools/topics.py` 是按**文件**写的（它是构建期脚本，不该依赖数据库），
+    所以这里**自举**一次：环境变量没指、仓库里也没有时，就从库里导出一份到临时目录，
+    再把环境变量指过去。于是后端在任何机器上都能只靠数据库启动，
+    不再需要仓库里留着 `meta/topics.yaml` 这个小文件。
+    """
+    import os
+    import tempfile
+    from pathlib import Path
+
+    if os.environ.get("QF_TOPICS_FILE"):
+        return
+    settings = get_settings()
+    if settings.topics_file.is_file():
+        os.environ["QF_TOPICS_FILE"] = str(settings.topics_file)
+        return
+
+    try:
+        from .outline import render_yaml
+
+        content = render_yaml()
+    except Exception:  # noqa: BLE001 —— 库不可用时让上层自己去报错，不在这里吞掉
+        return
+    if not content:
+        return
+    path = Path(tempfile.mkdtemp(prefix="qf-topics-")) / "topics.yaml"
+    path.write_text(content, encoding="utf-8")
+    os.environ["QF_TOPICS_FILE"] = str(path)
+
+
+_ensure_topics_file()
+
 TOOLS_DIR = get_settings().tools_dir
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))

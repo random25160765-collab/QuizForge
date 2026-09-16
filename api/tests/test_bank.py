@@ -19,7 +19,7 @@ from app.config import get_settings
 from app.db import get_session_factory
 from app.models import BankVersion, Question, Topic
 
-ROOT = Path(get_settings().questions_dir).parent
+ROOT = Path(__file__).resolve().parents[2]  # 仓库根（不再从 questions_dir 反推：它会指向物化目录）
 OFFLINE_DATASET = ROOT / "dist" / "data.json"
 
 
