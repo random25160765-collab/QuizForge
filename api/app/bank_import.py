@@ -374,6 +374,40 @@ def _mark_current_version(session: OrmSession, result: ScanResult, *, topic_coun
     session.flush()
 
 
+def _live_stats(session: OrmSession, topics: list[dict]) -> dict:
+    """按实时数据算统计：**题数沿 path 累加到每级祖先**（学科 = 其下所有知识点之和）。
+
+    与前端 `data.js` 的本地算法同一口径；两边一致，界面才不会出现"子项加起来对不上"。
+    """
+    from sqlalchemy import func  # noqa: PLC0415
+
+    from .models import Question as _Question  # noqa: PLC0415
+
+    path_of = {node["key"]: (node.get("path") or [node["key"]]) for node in topics}
+    by_topic: dict[str, int] = {key: 0 for key in path_of}
+    by_type: dict[str, int] = {}
+    by_difficulty: dict[str, int] = {}
+    rows = session.execute(
+        select(_Question.topic, _Question.type, _Question.difficulty, func.count())
+        .where(
+            _Question.retired_at.is_(None),
+            _Question.status.in_(("verified", "published")),
+        )
+        .group_by(_Question.topic, _Question.type, _Question.difficulty)
+    ).all()
+    for topic_key, question_type, difficulty, count in rows:
+        for ancestor in path_of.get(topic_key) or [topic_key]:
+            by_topic[ancestor] = by_topic.get(ancestor, 0) + count
+        by_type[question_type] = by_type.get(question_type, 0) + count
+        by_difficulty[difficulty] = by_difficulty.get(difficulty, 0) + count
+    return {
+        "total": sum(row[3] for row in rows),
+        "byTopic": by_topic,
+        "byType": by_type,
+        "byDifficulty": by_difficulty,
+    }
+
+
 def _now():  # noqa: ANN202
     from datetime import UTC, datetime
 
@@ -441,7 +475,12 @@ def current_bank(session: OrmSession) -> dict:
         select(BankVersion).where(BankVersion.is_current.is_(True)).order_by(BankVersion.id.desc())
     ).first()
 
-    stats = (version.stats if version else {}) or {}
+    # 统计必须**按实时数据**算。
+    # `BankVersion.stats` 是"导入那一刻"的快照 —— 导完之后流水线又发布了几百道，
+    # 界面按它显示就会永远停在旧数字（实测：Tenstorrent 显示 92，而当时实际 1017 道，
+    # 且三个子主题加起来还凑不出学科数）。前端拿到接口给的 stats 就不会用自己那套
+    # 正确的累加算法（`data.js` 里 `provided.byTopic || local.byTopic`），所以这里必须算对。
+    stats = _live_stats(session, topics)
     return {
         "meta": {
             "generator": "quizforge",
