@@ -68,5 +68,32 @@ services:
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
+  # 图数据库：题目与知识点之间是有类型的边（前置 / 同节 / 共享术语 / 题↔点），
+  # 到几十万题、十万级知识点的量级时，「沿关系链取某一类题」用关系表会越写越长，
+  # 用 Cypher 是一条查询。选独立的 Neo4j 而不是给 Postgres 装图扩展：
+  #   * 零数据风险（不动现有库与迁移）
+  #   * 遍历查询与可视化（7474 控制台）都是现成的
+  # 代价是两份数据要同步 —— 所以同步做成**幂等的一条命令**（`make graph-sync`），
+  # 源仍然是 Postgres，图只是它的**查询视图**，不做双写。
+  graph:
+    image: neo4j:5-community
+    restart: unless-stopped
+    environment:
+      # 本机开发默认口令；部署时用 .env 覆盖
+      NEO4J_AUTH: "neo4j/${QF_NEO4J_PASSWORD:-quizforge}"
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+    ports:
+      - "127.0.0.1:7687:7687"   # bolt（程序连这个）
+      - "127.0.0.1:7474:7474"   # 浏览器控制台（看图谱用）
+    volumes:
+      - graphdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
 volumes:
   pgdata:
+  graphdata:

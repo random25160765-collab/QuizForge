@@ -63,15 +63,18 @@ help:
 vendor:
 	@$(PYTHON) tools/vendor.py
 
-check:
-	@$(PYTHON) tools/check.py
+check: bank-materialize-all
+	@$(BANK_ENV) $(PYTHON) tools/check.py; status=$$?; $(MAKE) -s bank-clean; exit $$status
 
-test: check
-	@$(PYTHON) tools/build.py -q
+test: bank-materialize-all
+	@$(BANK_ENV) $(PYTHON) tools/check.py
+	@$(BANK_ENV) $(PYTHON) tools/build.py -q
 	@node tools/selftest.mjs
+	@$(MAKE) -s bank-clean
 
-build:
-	@$(PYTHON) tools/build.py --incremental
+build: bank-materialize
+	@$(BANK_ENV) $(PYTHON) tools/build.py --incremental
+	@$(MAKE) -s bank-clean
 
 build-full:
 	@$(PYTHON) tools/build.py
@@ -185,3 +188,39 @@ skills-link:
 		echo "link  $$name  →  $$rel"; \
 	done
 	@echo "完成：实体仍在本仓库 .codebuddy/skills/，工作区里只是指针"
+
+# ------------------------------------------------- 题库交换（库 ↔ 单一文件）
+# 数据库是唯一权威；文件只在「对外部署」与「审阅/备份」时出现，且只有一个文件。
+bank-export:
+	@$(VENV)/bin/python -m pipeline.bankfile export --out $(CURDIR)/bank.json
+
+bank-import:
+	@$(VENV)/bin/python -m pipeline.bankfile import --path $(CURDIR)/bank.json
+
+# ---------------------------------------- 题库来自数据库（仓库里不留小文件）
+# 权威在 Postgres；下面两个目标把库物化成一个临时目录，构建/校验工具去读它。
+BANK_DIR ?= $(CURDIR)/.bank-cache
+BANK_ENV  = QF_QUESTIONS_DIR=$(BANK_DIR)/questions QF_TOPICS_FILE=$(BANK_DIR)/meta/topics.yaml
+
+# 校验连草稿一起看（草稿也必须符合契约，只是还不对外发布）
+bank-materialize-all:
+	@$(VENV)/bin/python -m pipeline.bankfile materialize --out $(BANK_DIR) --status all
+
+# 构建只要已发布的题
+bank-materialize:
+	@$(VENV)/bin/python -m pipeline.bankfile materialize --out $(BANK_DIR)
+
+# 用完即删：文件只在命令执行期间存在，仓库里不留题库小文件
+bank-clean:
+	@rm -rf $(BANK_DIR)
+
+# ---------------------------------------------- 数据库快照（必须进版本库）
+# 题库、考纲、知识空间的**唯一权威在数据库**；仓库里已经没有它们的小文件，
+# 所以数据库必须被推送 —— 否则这份数据只存在于一台机器上。
+DB_DUMP ?= db/quizforge.sql.gz
+db-dump:
+	@mkdir -p db && docker compose exec -T db pg_dump -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} --no-owner --no-privileges | gzip -9 > $(DB_DUMP)
+	@ls -lh $(DB_DUMP) | awk '{print "  已导出 " $$9 "（" $$5 "）"}'
+db-restore:
+	@gunzip -c $(DB_DUMP) | PGPASSWORD=$${QF_DB_PASSWORD:-quizforge} psql -h $${QF_DB_HOST:-127.0.0.1} -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} -q
+	@echo "  已从 $(DB_DUMP) 恢复"
