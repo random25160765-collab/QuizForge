@@ -1,0 +1,56 @@
+<div id="app-root" data-page="graph" class="graph-root">
+  <div class="graph-bar">
+    <div class="graph-group" id="graph-nodechips" aria-label="节点类型"></div>
+    <span class="graph-sep" aria-hidden="true"></span>
+    <div class="graph-group" id="graph-edgechips" aria-label="关系类型"></div>
+
+    <label class="graph-field">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="6.5"></circle>
+        <path d="m16 16 4.5 4.5"></path>
+      </svg>
+      <input id="graph-search" type="search" placeholder="搜概念名 / key…" autocomplete="off"
+             aria-label="搜索概念">
+    </label>
+
+    <button class="btn btn-ghost graph-relayout" id="graph-relayout" type="button" title="重新排布布局">重排</button>
+    <span class="graph-count" id="graph-count"></span>
+  </div>
+
+  <div class="graph-stage" id="graph-stage">
+    <canvas id="graph-canvas"></canvas>
+
+    <div class="graph-tip" id="graph-tip" hidden></div>
+
+    <div class="graph-legend" id="graph-legend"></div>
+
+    <aside class="graph-panel" id="graph-panel" hidden aria-label="概念详情">
+      <div class="graph-panel__head">
+        <h2 id="graph-panel-title"></h2>
+        <button class="icon-btn" id="graph-panel-close" type="button" title="关闭" aria-label="关闭">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 6l12 12M18 6 6 18"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="graph-panel__key" id="graph-panel-key"></div>
+      <div class="graph-panel__tags" id="graph-panel-tags"></div>
+      <p class="graph-panel__def" id="graph-panel-def"></p>
+      <dl class="graph-panel__facts" id="graph-panel-facts"></dl>
+      <div class="graph-panel__actions">
+        <button class="btn btn-ghost" id="graph-panel-focus" type="button">只看邻域</button>
+        <button class="btn btn-ghost" id="graph-panel-reset" type="button">看全图</button>
+      </div>
+      <h3 class="graph-panel__h3">关系</h3>
+      <div class="graph-panel__edges" id="graph-panel-edges"></div>
+    </aside>
+
+    <div class="bootstate graph-boot" id="graph-boot">
+      <div class="bootstate__icon"><span class="bootstate__spinner"></span></div>
+      <h1 class="bootstate__title">正在载入图谱…</h1>
+      <p class="bootstate__text">从服务端读取概念与关系</p>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,320 @@
+/* 知识图谱页。
+ *
+ * 全部用站点既有的设计令牌（--bg/--bg2/--fg/--line/--pri/--amber/--bad）与既有类
+ * （.btn/.icon-btn/.bootstate），不引入第二套配色 —— 它就是这个站的一个视图，
+ * 跟着主题切换走，浅色/深色都不该有自己的样子。
+ */
+
+.graph-root {
+  display: flex;
+  flex-direction: column;
+  /* 顶栏 + 状态栏的高度由 shell 定，这里撑满剩下的那一段 */
+  height: calc(100dvh - var(--topbar-h, 58px) - var(--statusbar-h, 30px));
+  min-height: 320px;
+}
+
+/* ------------------------------------------------------------------ 工具条 */
+.graph-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.graph-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.graph-sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+}
+
+.graph-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg3);
+}
+
+.graph-field:focus-within {
+  border-color: var(--pri);
+  color: var(--pri);
+}
+
+.graph-field input {
+  width: 190px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+}
+
+.graph-chip {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+
+.graph-chip:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.graph-chip.is-on {
+  color: var(--ink);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.graph-count {
+  color: var(--fg3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------------------ 画布 */
+.graph-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.graph-stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.graph-stage canvas.is-dragging {
+  cursor: grabbing;
+}
+
+.graph-boot {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+}
+
+.graph-boot[hidden] {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ 浮层 */
+.graph-tip {
+  position: absolute;
+  z-index: 3;
+  max-width: 280px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg2) 94%, transparent);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.graph-tip b {
+  display: block;
+  color: var(--fg);
+}
+
+.graph-tip span {
+  color: var(--fg3);
+}
+
+.graph-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 2;
+  max-width: 300px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg2) 88%, transparent);
+  color: var(--fg3);
+  font-size: 11px;
+  line-height: 1.7;
+  pointer-events: none;
+}
+
+.graph-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+/* ------------------------------------------------------------------ 详情面板 */
+.graph-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(340px, 92vw);
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg2) 96%, transparent);
+  box-shadow: var(--edge-hi), 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.graph-panel[hidden] {
+  display: none;
+}
+
+.graph-panel__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.graph-panel__head h2 {
+  flex: 1;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.graph-panel__key {
+  color: var(--fg3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.graph-panel__tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.graph-panel__tags span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg3);
+  color: var(--fg2);
+  font-size: 11px;
+}
+
+.graph-panel__def {
+  margin: 0;
+  color: var(--fg2);
+  font-size: 12.5px;
+}
+
+.graph-panel__facts {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  gap: 2px 8px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.graph-panel__facts dt {
+  color: var(--fg3);
+}
+
+.graph-panel__facts dd {
+  margin: 0;
+  color: var(--fg);
+}
+
+.graph-panel__facts dd.mono {
+  color: var(--fg3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.graph-panel__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.graph-panel__h3 {
+  margin: 4px 0 0;
+  color: var(--fg3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.graph-panel__edges {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.graph-edge {
+  padding: 6px 8px;
+  border-left: 3px solid var(--pri);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.graph-edge b {
+  color: var(--pri);
+}
+
+.graph-edge .why {
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.graph-empty {
+  color: var(--fg3);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .graph-field {
+    margin-left: 0;
+    order: 9;
+    width: 100%;
+  }
+
+  .graph-field input {
+    width: 100%;
+  }
+
+  .graph-panel {
+    top: auto;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    height: 55%;
+  }
+}
