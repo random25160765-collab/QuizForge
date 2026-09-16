@@ -14,985 +14,220 @@
   } catch (e) {}
 </script>
 <style>
-/* 跨文档导航（首页 ⇄ 刷题页、登录页 ⇄ 刷题页）交给 View Transitions：
-   旧页面留成快照垫在底下，新页面加载与首帧渲染期间不会直接切过去。
-   应用侧（theme/app.css）也声明了同一句 —— 两端都有才生效。 */
+/* 跨文档导航交给 View Transitions：旧页面留成快照垫在底下，
+   新页面加载与首帧渲染期间不会直接切过去。应用侧（theme/app.css）也声明了同一句。 */
 @view-transition { navigation: auto; }
+
+/* ---------------------------------------------------------------- 字体 */
+/* slogan 走等宽斜体加粗：Ubuntu Mono，一个字宽 0.56em —— 字重和斜体都不改变步进，
+   所以行宽可以直接算出来（26 字 = 14.56em）。等宽的好处是节奏均匀，
+   斜体让它带一点手写感，加粗保证在粒子上压得住。字标仍用无衬线，与图形标记是一套。
+
+   顺带记下这一版 Chrome 的脾气，省得下次再试一遍：
+     font-weight  ✔ 真能换到不同字重实例（400 → 700 笔画多 55%）
+     font-stretch ✔ 真能换到不同字宽实例，但只认具名实例（≤87.5% 全落到同一个压缩档）
+     font-variation-settings ✘ 写了没用，仍停在默认实例；@font-face + local() 也救不了 */
+
+/* ---------------------------------------------------------------- 调色 */
+/* 这页只有黑与白，深色档就是浅色档的黑白互换（反色）。
+   彩色全部交给背景粒子：紫与绿在画布里呼吸，页面本身不着色。 */
 :root {
-  --bg: #0B1016; --bg2: #131A22; --bg3: #1E2936;
-  --fg: #E6EDF3; --fg2: #9AA7B4; --fg3: #75838F;
-  --pri: #2DD4BF; --pri-2: #14B8A6; --pri-3: #5EEAD4;
-  --amber: #FBBF24;
-  --bad: #F87171;
-  --line: #2A3846; --line-strong: #3E5163;
-  --ink: #04211C;
-  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.07);
-  --card: color-mix(in srgb, var(--bg2) 78%, transparent);
-  --glow: color-mix(in srgb, var(--pri) 13%, transparent);
+  --bg: #FAFAFA; --fg: #0A0A0A;
+  --fg2: #565656; --fg3: #9A9A9A;
+  /* slogan 自己的墨色：比 --fg 柔一档，不做纯黑纯白，也不加渐变。
+     两档都往背景方向压 —— 浅色档抬一点、深色档降一点，对比同步变软。 */
+  --ink-slogan: #282828;
+  /* 彩蛋那行：坐在 --fg2 与 --fg3 之间 —— 比 --fg2 灰，又不至于糊进雾里 */
+  --ink-egg: #7C7C7C;
+  /* 唯一的彩色：字标尾部那枚光标，与背景粒子同源 */
+  --acc-1: #7C3AED; --acc-2: #0D9488;
+  --line: color-mix(in srgb, var(--fg) 16%, transparent);
   --font-sans: 'Source Han Sans SC', 'Noto Sans CJK SC', '思源黑体', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+  /* 字标与 slogan 共用：等宽 + 斜体 + 粗。行宽可算（见文件头），字号上限也是算出来的 */
+  --font-slogan: 'Ubuntu Mono', 'Ubuntu Sans Mono', 'DejaVu Sans Mono', ui-monospace, monospace;
   --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
-html[data-theme='light'] {
-  --bg: #FAFBFC; --bg2: #FFFFFF; --bg3: #EDF1F5;
-  --fg: #0F1A24; --fg2: #4A5A68; --fg3: #6F7F8E;
-  --pri: #14B8A6; --pri-2: #0D9488; --pri-3: #0E7C6B;
-  --amber: #B45309;
-  --bad: #DC2626;
-  --line: #E2E8EE; --line-strong: #C8D3DE;
-  --ink: #FFFFFF;
-  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --card: color-mix(in srgb, var(--bg2) 92%, transparent);
-  --glow: color-mix(in srgb, var(--pri) 9%, transparent);
+html[data-theme='dark'] {
+  --bg: #0A0A0A; --fg: #FAFAFA;
+  --fg2: #B0B0B0; --fg3: #6E6E6E;
+  --ink-slogan: #D6D6D6;
+  --ink-egg: #909090;
+  --acc-1: #A78BFA; --acc-2: #2DD4BF;
 }
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html, body { height: 100%; }
 body {
   margin: 0;
-  min-height: 100vh;
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 15px;
-  line-height: 1.7;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
 }
-::selection { background: color-mix(in srgb, var(--pri) 30%, transparent); }
-::focus-visible { outline: 2px solid var(--pri); outline-offset: 3px; border-radius: 10px; }
+::selection { background: color-mix(in srgb, var(--fg) 16%, transparent); }
+:focus-visible { outline: 2px solid var(--fg); outline-offset: 4px; border-radius: 12px; }
 a { color: inherit; }
 
 /* ---------------------------------------------------------------- 背景 */
-/* 两层：缓慢漂移的顶光 + 细网格。都极淡，只为让页面「有纵深」而不是花哨。 */
-.bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
-.bg::before {
-  content: ''; position: absolute; inset: -20% -10%;
-  background:
-    radial-gradient(760px 420px at 26% 4%, var(--glow), transparent 68%),
-    radial-gradient(620px 380px at 84% 16%, color-mix(in srgb, var(--pri) 8%, transparent), transparent 70%);
-  animation: drift 26s var(--ease) infinite alternate;
-}
-@keyframes drift {
-  from { transform: translate3d(-1.4%, -1%, 0) scale(1); }
-  to   { transform: translate3d(1.6%, 1.6%, 0) scale(1.06); }
-}
-.bg::after {
-  content: ''; position: absolute; inset: 0;
-  background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--line-strong) 55%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--line-strong) 55%, transparent) 1px, transparent 1px);
-  background-size: 64px 64px;
-  -webkit-mask-image: radial-gradient(ellipse 70% 46% at 50% 12%, #000, transparent 78%);
-  mask-image: radial-gradient(ellipse 70% 46% at 50% 12%, #000, transparent 78%);
-  opacity: .45;
-}
+/* 一块画布：单色尘埃 + 紫绿粒子 + 几团缓慢漂移的模糊光斑。
+   位置与相位每次进入都随机 —— 它不讨好谁，只是自己在那里呼吸。 */
+#bg { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
 
-.shell { position: relative; z-index: 1; }
-.wrap { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 clamp(20px, 4.5vw, 40px); }
-
-/* ---------------------------------------------------------------- 顶栏 */
-.nav {
-  position: sticky; top: 0; z-index: 20;
-  backdrop-filter: blur(14px) saturate(1.4);
-  background: color-mix(in srgb, var(--bg) 78%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
-}
-.nav__in { display: flex; align-items: center; gap: 18px; height: 62px; }
-.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; }
-.brand svg { display: block; height: 26px; width: auto; }
-.brand__word { font-size: 16.5px; font-weight: 600; letter-spacing: -0.015em; }
-/* 图标渐变的三个色标（与刷题应用里的品牌色一致） */
-.g1 { stop-color: var(--pri-3); }
-.g2 { stop-color: var(--pri); }
-.g3 { stop-color: var(--pri-2); }
-.nav__links { display: flex; gap: 4px; margin-left: 14px; }
-.nav__links a {
-  padding: 7px 12px; border-radius: 9px;
-  color: var(--fg2); font-size: 13.5px; text-decoration: none;
-  transition: color .16s var(--ease), background .16s var(--ease);
-}
-.nav__links a:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 7%, transparent); }
-.nav__right { margin-left: auto; display: flex; align-items: center; gap: 9px; }
-
-.themebtn {
-  display: grid; place-items: center;
-  width: 34px; height: 34px; border-radius: 10px;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg2) 70%, transparent);
-  color: var(--fg3); cursor: pointer;
-  box-shadow: var(--edge-hi);
-  transition: color .18s var(--ease), border-color .18s var(--ease), transform .18s var(--ease);
-}
-.themebtn:hover { color: var(--fg); border-color: var(--line-strong); transform: translateY(-1px); }
-
-/* --------------------------------------------------------------- 按钮 */
-.btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 9px;
-  height: 46px; padding: 0 20px;
-  border-radius: 12px; border: 1px solid transparent;
-  font-size: 14.5px; font-weight: 600; letter-spacing: .01em;
-  text-decoration: none; cursor: pointer; white-space: nowrap;
-  transition: transform .18s var(--ease), box-shadow .18s var(--ease),
-              filter .18s var(--ease), border-color .18s var(--ease), background .18s var(--ease);
-}
-.btn--pri {
-  border-color: color-mix(in srgb, var(--pri-3) 45%, transparent);
-  background: linear-gradient(180deg, var(--pri-3), var(--pri) 55%, var(--pri-2));
-  color: var(--ink);
-  box-shadow: var(--edge-hi), 0 14px 30px -16px color-mix(in srgb, var(--pri) 68%, transparent);
-}
-.btn--pri:hover, .btn--pri:focus-visible {
-  transform: translateY(-2px); filter: brightness(1.06);
-  box-shadow: var(--edge-hi), 0 22px 40px -18px color-mix(in srgb, var(--pri) 78%, transparent);
-}
-.btn--ghost {
-  border-color: var(--line);
-  background: color-mix(in srgb, var(--bg2) 60%, transparent);
-  color: var(--fg2);
-  box-shadow: var(--edge-hi);
-}
-.btn--ghost:hover, .btn--ghost:focus-visible {
-  color: var(--fg); border-color: var(--line-strong);
-  background: color-mix(in srgb, var(--bg3) 70%, transparent);
-  transform: translateY(-2px);
-}
-.btn svg { transition: transform .2s var(--ease); }
-.btn:hover svg { transform: translateX(3px); }
-.btn--sm { height: 36px; padding: 0 15px; border-radius: 10px; font-size: 13px; }
-
-/* ------------------------------------------------------------ 账号区 */
-/* 登录状态放在顶栏，而不是当作一行副标题写在主视觉下面 ——
-   「我是谁」是导航信息，不是标题文案。离线产物里这块整体不出现。 */
-.account { position: relative; }
-.account__btn {
-  display: inline-flex; align-items: center; gap: 8px;
-  height: 34px; padding: 0 9px 0 5px; max-width: 200px;
-  border: 1px solid var(--line); border-radius: 10px;
-  background: color-mix(in srgb, var(--bg2) 62%, transparent);
-  color: var(--fg2);
-  font: inherit; font-size: 12.5px; cursor: pointer;
-  box-shadow: var(--edge-hi);
-  transition: color .18s var(--ease), border-color .18s var(--ease);
-}
-.account__btn:hover, .account__btn[aria-expanded='true'] { color: var(--fg); border-color: var(--line-strong); }
-.account__avatar {
-  flex: none; display: grid; place-items: center;
-  width: 22px; height: 22px; border-radius: 7px;
-  background: linear-gradient(180deg, var(--pri-3), var(--pri-2));
-  color: var(--ink); font-size: 11px; font-weight: 700; text-transform: uppercase;
-}
-.account__mail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account__btn svg { flex: none; opacity: .7; }
-.account__menu {
-  position: absolute; right: 0; top: calc(100% + 8px); z-index: 30;
-  width: 250px; padding: 6px;
-  border: 1px solid var(--line); border-radius: 13px;
-  background: color-mix(in srgb, var(--bg2) 96%, transparent);
-  box-shadow: var(--edge-hi), 0 26px 50px -26px rgba(0, 0, 0, .72);
-  backdrop-filter: blur(14px);
-}
-html[data-theme='light'] .account__menu { box-shadow: var(--edge-hi), 0 22px 44px -26px rgba(15, 26, 36, .3); }
-.account__head {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 10px 12px; margin-bottom: 6px;
-  border-bottom: 1px solid var(--line);
-}
-/* 昵称与邮箱都可能很长（未填昵称时后端会拿邮箱前缀顶上，那就是一长串），
-   单行截断 —— 让菜单头部忽高忽低比截断更难看。完整值在 title 里。 */
-.account__head > div { min-width: 0; flex: 1 1 auto; }
-.account__head b,
-.account__head span {
-  display: block;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.account__head b { font-size: 13.5px; font-weight: 600; }
-.account__head span { font-size: 11.5px; color: var(--fg3); }
-.account__avatar--lg { width: 32px; height: 32px; border-radius: 10px; font-size: 13px; }
-.account__item {
-  display: flex; align-items: center; width: 100%;
-  padding: 9px 10px; border: 0; border-radius: 9px;
-  background: transparent; color: var(--fg2);
-  font: inherit; font-size: 13px; text-align: left;
-  text-decoration: none; cursor: pointer;
-  transition: background .15s var(--ease), color .15s var(--ease);
-}
-.account__item:hover { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
-.account__item--danger:hover { background: color-mix(in srgb, var(--bad) 15%, transparent); color: var(--bad); }
-
-/* --------------------------------------------------------------- 主视觉 */
+/* ---------------------------------------------------------------- 主视觉 */
+/* 整页只有三层：Logo（入口）→ slogan → 彩蛋。大号居中，不推销任何功能。 */
 .hero {
-  display: grid; grid-template-columns: minmax(0, 1.02fr) minmax(0, .98fr);
-  gap: clamp(28px, 4vw, 56px);
-  align-items: center;
-  padding: clamp(44px, 8vh, 92px) 0 clamp(38px, 6vh, 70px);
-}
-.eyebrow {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 5px 12px 5px 10px;
-  border: 1px solid color-mix(in srgb, var(--pri) 30%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--pri) 9%, transparent);
-  color: var(--pri-3);
-  font-size: 12.5px; font-weight: 500;
-}
-html[data-theme='light'] .eyebrow { color: var(--pri-2); }
-.eyebrow .dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--pri);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pri) 22%, transparent);
-  animation: pulse 2.6s var(--ease) infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: .5; transform: scale(.82); }
-}
-
-h1 {
-  margin: 20px 0 0;
-  font-size: clamp(34px, 5.1vw, 56px);
-  line-height: 1.14;
-  font-weight: 700;
-  letter-spacing: -0.032em;
-}
-h1 em {
-  font-style: normal;
-  background: linear-gradient(96deg, var(--pri-3), var(--pri) 52%, var(--pri-2));
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-}
-.lede {
-  margin: 20px 0 0;
-  max-width: 46ch;
-  color: var(--fg2);
-  font-size: clamp(14.5px, 1.15vw, 16px);
-  line-height: 1.78;
-}
-.lede code {
-  font-family: var(--font-mono); font-size: .88em;
-  padding: 2px 6px; border-radius: 6px;
-  background: var(--bg3); border: 1px solid var(--line); color: var(--fg);
-}
-.cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
-
-/* 规模数字：等宽 + 细竖线分隔，视觉上像仪表盘而不是文案 */
-.stats {
-  display: flex; flex-wrap: wrap; align-items: center;
-  gap: 4px 18px; margin-top: 30px;
-  padding-top: 22px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
-}
-.stat { display: inline-flex; align-items: baseline; gap: 6px; font-size: 12.5px; color: var(--fg3); }
-.stat b {
-  font-family: var(--font-mono); font-size: 19px; font-weight: 500;
-  color: var(--fg); letter-spacing: -0.02em;
-}
-.stat--amber, .stat--amber b { color: var(--amber); }
-.stat__sep { width: 1px; height: 22px; background: var(--line); }
-
-/* ------------------------------------------------------- 应用预览（纯 CSS） */
-/* 不用截图：离线产物要单文件自包含，外链图片在 file:// 下会裂；
-   手搭一个等比例的界面预览，两种形态都能用，还带得动动效。 */
-.preview { position: relative; perspective: 1400px; }
-.mock {
-  position: relative;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--card);
-  box-shadow: var(--edge-hi), 0 40px 80px -46px rgba(0, 0, 0, .7);
-  overflow: hidden;
-  animation: float 9s var(--ease) infinite alternate, rise .9s var(--ease-out) both;
-  transform-style: preserve-3d;
-}
-html[data-theme='light'] .mock { box-shadow: var(--edge-hi), 0 34px 70px -44px rgba(15, 26, 36, .3); }
-@keyframes float {
-  from { transform: translateY(0) rotateX(0deg); }
-  to   { transform: translateY(-9px) rotateX(1.1deg); }
-}
-.mock__bar {
-  display: flex; align-items: center; gap: 7px;
-  padding: 11px 14px;
-  border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg3) 55%, transparent);
-}
-.mock__dot { width: 9px; height: 9px; border-radius: 50%; background: color-mix(in srgb, var(--fg3) 34%, transparent); }
-.mock__title {
-  margin-left: 6px; font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3);
-}
-.mock__body { padding: 16px 16px 18px; }
-.mock__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
-.tag {
-  padding: 2px 8px; border-radius: 6px;
-  border: 1px solid var(--line);
-  background: var(--bg3);
-  font-size: 11px; color: var(--fg2); white-space: nowrap;
-}
-.tag--pri { border-color: color-mix(in srgb, var(--pri) 34%, transparent); color: var(--pri-3); background: color-mix(in srgb, var(--pri) 10%, transparent); }
-html[data-theme='light'] .tag--pri { color: var(--pri-2); }
-.mock__stars { margin-left: auto; font-size: 11px; letter-spacing: 2px; color: var(--amber); }
-.mock__stem { margin: 13px 0 0; font-size: 13.5px; line-height: 1.65; color: var(--fg); }
-.mock__stem code {
-  font-family: var(--font-mono); font-size: .88em;
-  padding: 1px 5px; border-radius: 5px; background: var(--bg3); border: 1px solid var(--line);
-}
-.mock__code {
-  margin-top: 12px; padding: 11px 13px;
-  border: 1px solid var(--line); border-radius: 10px;
-  background: color-mix(in srgb, var(--bg) 62%, transparent);
-  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.85;
-  color: var(--fg2); overflow: hidden;
-}
-.mock__code .k { color: var(--pri-3); }
-html[data-theme='light'] .mock__code .k { color: var(--pri-2); }
-.mock__code .n { color: var(--amber); }
-.mock__opts { list-style: none; margin: 13px 0 0; padding: 0; display: grid; gap: 7px; }
-.mock__opts li {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 12px;
-  border: 1px solid var(--line); border-radius: 10px;
-  background: color-mix(in srgb, var(--bg2) 55%, transparent);
-  font-size: 12.5px; color: var(--fg2);
-}
-.mock__opts b {
-  display: grid; place-items: center;
-  width: 20px; height: 20px; border-radius: 6px;
-  border: 1px solid var(--line-strong);
-  font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; color: var(--fg3);
-}
-.mock__opts .is-ok {
-  border-color: color-mix(in srgb, var(--pri) 46%, transparent);
-  background: color-mix(in srgb, var(--pri) 12%, transparent);
-  color: var(--fg);
-}
-.mock__opts .is-ok b { border-color: transparent; background: var(--pri); color: var(--ink); }
-.mock__opts .is-ok svg { margin-left: auto; color: var(--pri); }
-
-/* 悬浮的掌握度卡：给出「这个工具会量化你的水平」这一信息 */
-.float {
-  position: absolute; right: -14px; bottom: -22px;
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 15px;
-  border: 1px solid var(--line); border-radius: 14px;
-  background: color-mix(in srgb, var(--bg2) 92%, transparent);
-  box-shadow: var(--edge-hi), 0 26px 50px -30px rgba(0, 0, 0, .66);
-  backdrop-filter: blur(10px);
-  animation: rise 1s var(--ease-out) .3s both, float 7s var(--ease) 1s infinite alternate;
-}
-html[data-theme='light'] .float { box-shadow: var(--edge-hi), 0 22px 44px -30px rgba(15, 26, 36, .28); }
-.ring { width: 46px; height: 46px; transform: rotate(-90deg); }
-.ring circle { fill: none; stroke-width: 5; stroke-linecap: round; }
-.ring .track { stroke: color-mix(in srgb, var(--line-strong) 60%, transparent); }
-.ring .bar {
-  stroke: var(--pri);
-  stroke-dasharray: 113;
-  stroke-dashoffset: 113;
-  animation: ring 1.4s var(--ease-out) .55s forwards;
-}
-@keyframes ring { to { stroke-dashoffset: 30; } }
-.float__txt { line-height: 1.35; }
-.float__txt b { display: block; font-family: var(--font-mono); font-size: 17px; font-weight: 500; }
-.float__txt span { font-size: 11px; color: var(--fg3); }
-
-/* --------------------------------------------------------------- 区块 */
-.section { padding: clamp(56px, 9vh, 96px) 0 0; }
-.section__eyebrow {
-  font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .16em;
-  text-transform: uppercase; color: var(--pri);
-}
-h2 {
-  margin: 12px 0 0;
-  font-size: clamp(23px, 2.7vw, 31px); line-height: 1.3; font-weight: 650;
-  letter-spacing: -0.022em;
-}
-.section__lede { margin: 12px 0 0; max-width: 60ch; color: var(--fg2); font-size: 14.5px; }
-/* 标题里的数字：等宽 + 主色，让「几个」这件事本身有分量 */
-h2 .n { font-family: var(--font-mono); font-weight: 600; color: var(--pri); }
-
-.cards {
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px; margin-top: 34px;
-}
-.card {
-  position: relative;
-  display: flex; flex-direction: column;
-  padding: 20px 20px 22px;
-  border: 1px solid var(--line); border-radius: 15px;
-  background: var(--card);
-  box-shadow: var(--edge-hi);
-  overflow: hidden;
-  transition: transform .22s var(--ease), border-color .22s var(--ease), box-shadow .22s var(--ease);
-}
-/* 悬停时从顶部渗出一层色，比整块变色克制 */
-.card::before {
-  content: ''; position: absolute; inset: 0 0 auto; height: 1px;
-  background: linear-gradient(90deg, transparent, var(--pri), transparent);
-  opacity: 0; transition: opacity .3s var(--ease);
-}
-.card:hover {
-  transform: translateY(-4px);
-  border-color: color-mix(in srgb, var(--pri) 34%, var(--line));
-  box-shadow: var(--edge-hi), 0 26px 50px -34px color-mix(in srgb, var(--pri) 60%, transparent);
-}
-.card:hover::before { opacity: 1; }
-.card__head { display: flex; align-items: center; gap: 10px; }
-.card__icon {
-  flex: none;
-  display: grid; place-items: center;
-  width: 32px; height: 32px; border-radius: 9px;
-  border: 1px solid color-mix(in srgb, var(--pri) 28%, transparent);
-  background: color-mix(in srgb, var(--pri) 11%, transparent);
-  color: var(--pri);
-}
-.card h3 { margin: 0; font-size: 15px; font-weight: 620; letter-spacing: -0.012em; }
-.card p { margin: 12px 0 0; color: var(--fg2); font-size: 13.2px; line-height: 1.72; }
-.card p code {
-  font-family: var(--font-mono); font-size: .88em;
-  padding: 1px 5px; border-radius: 5px;
-  background: var(--bg3); border: 1px solid var(--line); color: var(--fg);
-}
-
-/* 卡片底部的迷你可视化。
-   三张卡如果只是三段等长的文字，整段看起来就是「一堵字」——
-   给每张卡一个能看的小图形，信息密度与视觉重量都上来了。
-   全部用 CSS 画，离线单文件同样成立。 */
-.viz { display: grid; gap: 7px; margin-top: auto; padding-top: 18px; }
-.viz__row { display: flex; align-items: center; gap: 9px; }
-.dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); }
-.dot--pri { background: var(--pri); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pri) 16%, transparent); }
-.dot--amber { background: var(--amber); }
-.bar {
-  flex: 1 1 auto; max-width: var(--w, 70%);
-  height: 6px; border-radius: 99px;
-  transform-origin: left center;
-  background: linear-gradient(90deg,
-    color-mix(in srgb, var(--pri) 36%, transparent),
-    color-mix(in srgb, var(--pri) 10%, transparent));
-  animation: grow .85s var(--ease-out) both;
-}
-@keyframes grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-.num { flex: none; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); }
-
-/* 答题卡示意 */
-.viz--sheet { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.cell {
-  width: 18px; height: 18px; border-radius: 5px;
-  border: 1px solid var(--line);
-  background: color-mix(in srgb, var(--bg3) 55%, transparent);
-}
-.cell.is-ok { border-color: color-mix(in srgb, var(--pri) 40%, transparent); background: color-mix(in srgb, var(--pri) 24%, transparent); }
-.cell.is-bad { border-color: color-mix(in srgb, var(--amber) 44%, transparent); background: color-mix(in srgb, var(--amber) 24%, transparent); }
-.cell.is-cur { border-color: var(--pri); box-shadow: 0 0 0 2px color-mix(in srgb, var(--pri) 22%, transparent); }
-.viz__clock { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--fg2); }
-
-/* 规格条：一行细分的小条目。
-   刻意不再用卡片 —— 上面刚出现过三张卡片，连着两片同构版式会显得单调。 */
-.specs {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1px; margin-top: 32px;
-  border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
-  background: var(--line);
-}
-.spec { display: flex; gap: 12px; padding: 18px 20px; background: var(--bg); }
-.spec__ico {
-  flex: none; display: grid; place-items: center;
-  width: 30px; height: 30px; border-radius: 9px;
-  border: 1px solid color-mix(in srgb, var(--pri) 26%, transparent);
-  background: color-mix(in srgb, var(--pri) 10%, transparent);
-  color: var(--pri);
-}
-.spec b { display: block; font-size: 13.6px; font-weight: 600; }
-.spec span { display: block; margin-top: 5px; color: var(--fg3); font-size: 12.4px; line-height: 1.7; }
-
-/* 覆盖范围：左文右图 */
-.split {
-  display: grid; grid-template-columns: minmax(0, 1.24fr) minmax(0, .76fr);
-  gap: clamp(24px, 4vw, 46px); align-items: start;
-}
-.tree {
-  padding: 16px 18px 18px;
-  border: 1px solid var(--line); border-radius: 14px;
-  background: var(--card);
-  box-shadow: var(--edge-hi);
-  font-size: 12.5px;
-}
-.tree__cap {
-  margin-bottom: 12px;
-  font-family: var(--font-mono); font-size: 10.5px;
-  letter-spacing: .14em; text-transform: uppercase; color: var(--fg3);
-}
-.tree__row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; color: var(--fg2); }
-.tree__row i { margin-left: auto; font-style: normal; font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3); }
-.tree__row--1 { color: var(--fg); font-weight: 560; }
-.tree__row--2 { margin-left: 14px; border-left: 1px solid var(--line); border-radius: 0 8px 8px 0; }
-.tree__row--3 { margin-left: 28px; border-left: 1px solid var(--line); border-radius: 0 8px 8px 0; }
-.tree__row.is-on { color: var(--fg); background: color-mix(in srgb, var(--pri) 12%, transparent); }
-
-/* 间隔逐渐拉开的示意 */
-.viz--spaced { display: flex; align-items: center; position: relative; padding-bottom: 20px; }
-.viz--spaced .tick { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--pri); opacity: .85; }
-.viz--spaced .tick:nth-child(1) { margin-right: 7px; }
-.viz--spaced .tick:nth-child(2) { margin-right: 12px; }
-.viz--spaced .tick:nth-child(3) { margin-right: 19px; }
-.viz--spaced .tick:nth-child(4) { margin-right: 28px; }
-.viz--spaced .tick:nth-child(5) { margin-right: 38px; }
-.viz__note {
-  position: absolute; left: 0; bottom: 0;
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--fg3);
-}
-.subjects {
-  display: flex; flex-wrap: wrap; gap: 9px;
-  margin: 28px 0 0; padding: 0; list-style: none;
-}
-.subj {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 7px 13px 7px 11px;
-  border: 1px solid var(--line); border-radius: 999px;
-  background: color-mix(in srgb, var(--bg2) 62%, transparent);
-  font-size: 13px; color: var(--fg2);
-  transition: transform .18s var(--ease), border-color .18s var(--ease), color .18s var(--ease);
-}
-.subj:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--subj, var(--pri)) 50%, var(--line));
-  color: var(--fg);
-}
-.subj__dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--subj, var(--pri));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--subj, var(--pri)) 18%, transparent);
-}
-.subj__n {
-  font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3);
-  padding-left: 2px;
-}
-
-/* 特性条已改为 .specs —— 见上方的「规格条」 */
-
-/* --------------------------------------------------------------- 收尾 */
-.closing {
-  margin-top: clamp(64px, 10vh, 110px);
-  padding: clamp(34px, 6vh, 58px) clamp(24px, 5vw, 56px);
-  border: 1px solid var(--line); border-radius: 20px;
-  background:
-    radial-gradient(560px 240px at 50% 0%, var(--glow), transparent 72%),
-    var(--card);
-  box-shadow: var(--edge-hi);
+  position: relative; z-index: 1;
+  min-height: 100vh; min-height: 100dvh;
+  display: grid; place-content: center; justify-items: center;
+  padding: 0 24px;
   text-align: center;
 }
-.closing h2 { margin: 0; }
-.closing p { margin: 12px auto 0; max-width: 52ch; color: var(--fg2); font-size: 14.5px; }
-.closing .cta { justify-content: center; }
-.hint { margin: 18px 0 0; color: var(--fg3); font-size: 11.5px; opacity: .8; }
-kbd {
-  font-family: var(--font-mono); font-size: 10.5px;
-  padding: 2px 6px; border-radius: 5px;
-  border: 1px solid var(--line); border-bottom-width: 2px;
-  background: var(--bg3); color: var(--fg2);
+
+/* Logo：图形标记 + 双色字标（Quiz 粗 / Forge 细）。
+   砖与字黑白反色：浅色档黑砖白字，深色档白砖黑字，不用第二套资源。 */
+.brand {
+  display: inline-flex; align-items: baseline; gap: .12em;
+  margin-bottom: 48px;
+  font-size: clamp(34px, 4.4vw, 60px);
+  text-decoration: none;
+  color: var(--ink-slogan);
+  transition: opacity .18s var(--ease), transform .18s var(--ease);
+}
+.brand:hover { opacity: .78; transform: translateY(-2px); }
+.brand__word {
+  font-family: var(--font-slogan);
+  font-style: italic; font-weight: 700;
+  font-size: 1em; letter-spacing: -0.02em; line-height: 1;
+}
+/* 尾部的方块光标：跟着斜体一起倾一点，高度取字高（.74em ≈ 等宽字的字高）。
+   它是整页唯一的彩色 —— 紫与绿直接取自背景粒子，等于这页给自己的签名。 */
+.brand__caret {
+  width: .46em; height: .74em;
+  transform: translateY(.06em) skewX(-12deg);
+  background: linear-gradient(180deg, var(--acc-1), var(--acc-2));
 }
 
-footer {
-  margin-top: 56px;
-  padding: 22px 0 34px;
-  border-top: 1px solid var(--line);
-  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
-  color: var(--fg3); font-size: 11.5px;
+/* slogan：巨大、纤细、笃定。
+   280 的字重 + 94% 的字宽（可变字体两个轴一起用）是这版的骨架：
+   大字号下不松散，也不飘。底部再压一层极淡的渐变，像金属的反光。 */
+.slogan-wrap { position: relative; }
+.slogan {
+  margin: 0;
+  font-family: var(--font-slogan);
+  font-style: italic;
+  font-weight: 700;
+  /* 25 字 × 0.56em = 14em：84px → 行宽 1176px，1440 视口下两侧各留 100px 以上。
+     下限按最窄的手机算：375px 视口剩 327px 可用，327 ÷ 14em ≈ 23px */
+  font-size: clamp(20px, 6vw, 84px);
+  letter-spacing: 0;
+  line-height: 1.14;
+  color: var(--ink-slogan);
+  /* 静止时也留一层很轻的模糊：笔画边缘不割手，像刻完又磨过一遍。
+     0.5px 在数值上已经基本等同锐边（实测过渡带只比 0px 多几个百分点），
+     所以「柔」这件事现在主要落在墨色上，不在半径上。 */
+  filter: blur(.5px);
+  transition: filter .95s var(--ease), opacity .95s var(--ease);
+  will-change: filter;
+  cursor: default;
 }
-footer .sp { flex: 1 1 auto; }
+/* 彩蛋浮现时，表层失焦让位给内核。
+   透明度压到 .3：小字要压在这层白雾上，雾太亮就读不清了。 */
+body.egg-on .slogan { filter: blur(10px); opacity: .3; }
+/* 移开指针要「立马」回到原样：这一档把过渡关掉 */
+body.egg-reset .slogan, body.egg-reset .egg { transition: none; }
+
+/* 彩蛋：同字体同字重，小一半，实色灰。
+   位置与 slogan 重合（inset 铺满 slogan 那行，内部居中），
+   所以表层失焦散开之后，它正好从原位浮出来 —— 不另起一行，不挤排版。 */
+.egg {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  margin: 0;
+  transform: translateY(10px);
+  font-family: var(--font-slogan);
+  font-style: italic;
+  font-weight: 700;
+  /* 40 字 × 0.56em：42px → 行宽 940px，稳稳落在 1223px 的 slogan 里 */
+  font-size: clamp(13px, 3.2vw, 42px);
+  letter-spacing: 0;
+  line-height: 1.2;
+  /* 专用墨色：比表层灰，但不落到 --fg3 那么淡（身下还垫着一层失焦的雾） */
+  color: var(--ink-egg);
+  text-align: center;
+  opacity: 0;
+  transition: opacity 1s var(--ease) .35s, transform 1s var(--ease) .35s;
+  pointer-events: none;
+}
+body.egg-on .egg { opacity: 1; transform: none; }
+
+/* ---------------------------------------------------------------- 角落 */
+/* 主题钮：唯一的控件，幽灵式 —— 这页的主角不是它。 */
+.themebtn {
+  position: fixed; top: 14px; right: 16px; z-index: 2;
+  display: grid; place-items: center;
+  width: 36px; height: 36px;
+  border: 0; border-radius: 10px;
+  background: transparent; color: var(--fg3); cursor: pointer;
+  transition: color .18s var(--ease), background .18s var(--ease);
+}
+.themebtn:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 7%, transparent); }
+
+.site-foot {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 2;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 24px;
+  color: var(--fg3); font-size: 11.5px; letter-spacing: .02em;
+}
 
 /* ----------------------------------------------------------- 进场动效 */
-@keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
-.rise { animation: rise .85s var(--ease-out) both; }
-.d1 { animation-delay: .06s; } .d2 { animation-delay: .14s; }
-.d3 { animation-delay: .22s; } .d4 { animation-delay: .3s; }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise .9s var(--ease-out) both; }
+.d1 { animation-delay: .1s; }
 
-/* 滚动进场：默认可见（无 JS 或禁用动效时也正常），
-   只有脚本成功加上 .reveal-ready 之后才隐藏等触发 —— 避免 JS 失败导致内容永久不可见 */
-.reveal-ready .reveal { opacity: 0; transform: translateY(18px); }
-.reveal-ready .reveal.is-in {
-  opacity: 1; transform: none;
-  transition: opacity .7s var(--ease-out), transform .7s var(--ease-out);
-}
-
-/* ------------------------------------------------------------------ 自适应 */
-@media (max-width: 940px) {
-  .hero { grid-template-columns: minmax(0, 1fr); gap: 40px; padding-bottom: 30px; }
-  .lede { max-width: none; }
-  .preview { max-width: 520px; }
-  .cards, .specs, .split { grid-template-columns: minmax(0, 1fr); }
-  /* 窄屏时主题树示意会显得多余（上面刚铺完一屏胶囊），收起来 */
-  .tree { display: none; }
-  .nav__links { display: none; }
-}
 @media (max-width: 560px) {
-  h1 { letter-spacing: -0.026em; }
-  .float { right: 6px; bottom: -18px; padding: 10px 12px; }
-  .ring { width: 38px; height: 38px; }
-  .float__txt b { font-size: 15px; }
-  .btn { width: 100%; }
-  .cta { gap: 10px; }
-  /* 窄屏顶栏只留头像。带着完整邮箱的账号块会把顶栏撑得比视口还宽，
-     而顶栏溢出会连累整页横向滚动 —— 比少显示一个邮箱严重得多。
-     完整信息在展开的菜单里。 */
-  .nav__in { gap: 10px; }
-  .account__btn { max-width: none; padding: 0 5px; }
-  .account__mail, .account__btn > svg { display: none; }
+  /* 字标字号与光标都跟着 em 走，这里只需要收紧上边距 */
+  .brand { margin-bottom: 40px; }
+  .site-foot { padding: 14px 18px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  html { scroll-behavior: auto; }
   *, *::before, *::after {
     animation-duration: .001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: .001ms !important;
   }
-  .ring .bar { stroke-dashoffset: 30; }
 }
 </style>
 </head>
 <body>
-<div class="bg" aria-hidden="true"></div>
+<canvas id="bg" aria-hidden="true"></canvas>
 
-<div class="shell">
+<button class="themebtn" id="theme" type="button" title="切换浅色 / 深色" aria-label="切换主题">
+  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+       stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
+  </svg>
+</button>
 
-  <nav class="nav">
-    <div class="wrap nav__in">
-      <a class="brand" href="./">
-        <svg viewBox="0 0 64 64" role="img" aria-label="quizforge">
-          <defs>
-            <linearGradient id="qf-tile-sm" x1="0" y1="0" x2="1" y2="1">
-              <stop class="g1" offset="0"></stop>
-              <stop class="g2" offset="0.45"></stop>
-              <stop class="g3" offset="1"></stop>
-            </linearGradient>
-          </defs>
-          <rect width="64" height="64" rx="19" fill="url(#qf-tile-sm)"></rect>
-          <g transform="scale(2)" fill="none" stroke="var(--ink)"
-             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M5 21 L12 8 L19 21"></path>
-            <path d="M8.2 16.4 h7.6"></path>
-            <path d="M22.5 10.5 v11"></path>
-            <path d="M22.5 21.5 c3.2 0 4.6-1.6 5-4.6"></path>
-          </g>
-        </svg>
-        <span class="brand__word">quizforge</span>
-      </a>
-      <div class="nav__links">
-        <a href="#modes">三种模式</a>
-        <a href="#coverage">覆盖范围</a>
-        <a href="#detail">判分规则</a>
-      </div>
-      <div class="nav__right">
-        <button class="themebtn" id="theme" type="button" title="切换浅色 / 深色" aria-label="切换主题">
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
-               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
-          </svg>
-        </button>
+<main class="hero">
+  <!-- Logo 即入口：不解释、不引导，点进去自然知道怎么用 -->
+  <a class="brand rise" id="entry" href="quiz.html" aria-label="进入 QuizForge">
+    <span class="brand__word">QuizForge</span><span class="brand__caret" aria-hidden="true"></span>
+  </a>
 
-        <!-- 账号区：只有在线且已登录时才出现（脚本填内容），离线产物里始终 hidden -->
-        <div class="account" id="account" hidden>
-          <button class="account__btn" type="button" id="account-btn"
-                  aria-haspopup="menu" aria-expanded="false">
-            <span class="account__avatar" id="account-initial">Q</span>
-            <span class="account__mail" id="account-mail"></span>
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor"
-                 stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="m6 9 6 6 6-6"></path>
-            </svg>
-          </button>
+  <div class="slogan-wrap rise d1">
+    <!-- 第一句不带句点：句子没结束，视线自然落到下面那句上 -->
+    <h1 class="slogan" id="slogan">All you need is curiosity</h1>
+    <!-- 彩蛋：把指针停在 slogan 上五秒，表层失焦，它才浮现。指针一移开就收回。 -->
+    <p class="egg" id="egg" aria-hidden="true">All you need is the courage of curiosity.</p>
+  </div>
+</main>
 
-          <div class="account__menu" id="account-menu" role="menu" hidden>
-            <div class="account__head">
-              <span class="account__avatar account__avatar--lg" id="account-initial-lg">Q</span>
-              <div>
-                <b id="account-name"></b>
-                <span id="account-email"></span>
-              </div>
-            </div>
-            <a class="account__item" href="quiz.html" role="menuitem">继续刷题</a>
-            <button class="account__item account__item--danger" type="button"
-                    id="account-logout" role="menuitem">退出登录</button>
-          </div>
-        </div>
-
-        <a class="btn btn--pri btn--sm" href="quiz.html" id="launch-nav">
-          <span id="launch-nav-label">进入</span>
-        </a>
-      </div>
-    </div>
-  </nav>
-
-  <main>
-    <!-- ------------------------------------------------------------ 主视觉 -->
-    <section class="wrap hero">
-      <div>
-        <span class="eyebrow rise d1"><span class="dot"></span>Markdown 写题 · 五种题型 · 即时判分</span>
-
-        <h1 class="rise d2">把知识点<br>练成<em>肌肉记忆</em></h1>
-
-        <p class="lede rise d3">
-          题目用 Markdown 写，公式与代码原生渲染。
-          答完立刻判分，错题自动汇总。
-        </p>
-
-        <div class="cta rise d4">
-          <a class="btn btn--pri" href="quiz.html" id="launch">
-            <span id="launch-label">开始刷题</span>
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
-                 stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M5 12h13M12.5 6l6 6-6 6"></path>
-            </svg>
-          </a>
-          <a class="btn btn--ghost" href="#modes">看看怎么用</a>
-        </div>
-
-        <div class="stats rise d4">
-          <span class="stat"><b id="fact-total">__LANDING_TOTAL__</b> 道题</span>
-          <span class="stat__sep" aria-hidden="true"></span>
-          <span class="stat"><b id="fact-types">__LANDING_TYPES_N__</b> 种题型</span>
-          <span class="stat__sep" aria-hidden="true"></span>
-          <span class="stat"><b id="fact-topics">__LANDING_TOPICS_N__</b> 个学科</span>
-          <span class="stat__sep" id="recall-sep" aria-hidden="true" hidden></span>
-          <span class="stat stat--amber" id="recall" hidden></span>
-        </div>
-
-        <p class="hint" id="hint">按 <kbd>Enter</kbd> 直接进入</p>
-      </div>
-
-      <!-- 界面预览：与真实界面同构，但不加载任何运行时 -->
-      <div class="preview">
-        <div class="mock">
-          <div class="mock__bar">
-            <span class="mock__dot"></span><span class="mock__dot"></span><span class="mock__dot"></span>
-            <span class="mock__title">练习 · 第 3 / 12 题</span>
-          </div>
-          <div class="mock__body">
-            <div class="mock__meta">
-              <span class="tag tag--pri">单选</span>
-              <span class="tag">C++</span>
-              <span class="tag">迭代器失效</span>
-              <span class="mock__stars">★★★★</span>
-            </div>
-
-            <p class="mock__stem">
-              下面这段代码里，<code>v</code> 扩容之后 <code>it</code> 会怎样？
-            </p>
-
-            <div class="mock__code">
-              <div><span class="k">auto</span> it = v.begin();</div>
-              <div>v.<span class="k">push_back</span>(<span class="n">1</span>);</div>
-              <div>*it;  <span class="k">// ?</span></div>
-            </div>
-
-            <ul class="mock__opts">
-              <li><b>A</b> 仍然有效</li>
-              <li class="is-ok">
-                <b>B</b> 已失效，行为未定义
-                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
-                     stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M4 12.5 9.5 18 20 6.5"></path>
-                </svg>
-              </li>
-              <li><b>C</b> 自动指向新位置</li>
-            </ul>
-          </div>
-        </div>
-
-        <div class="float">
-          <svg class="ring" viewBox="0 0 42 42" aria-hidden="true">
-            <circle class="track" cx="21" cy="21" r="18"></circle>
-            <circle class="bar" cx="21" cy="21" r="18"></circle>
-          </svg>
-          <div class="float__txt">
-            <b>73</b>
-            <span>掌握度 · 熟练</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ------------------------------------------------------------ 三种模式 -->
-    <section class="wrap section reveal" id="modes">
-      <span class="section__eyebrow">Modes</span>
-      <h2>从挑题到复习</h2>
-
-      <div class="cards">
-        <article class="card">
-          <div class="card__head">
-            <span class="card__icon">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M4 6h16M4 12h10M4 18h13"></path>
-              </svg>
-            </span>
-            <h3>练习</h3>
-          </div>
-          <p>
-            按主题树、题型、难度、掌握度筛题，一题一张卡，题面选项答案都能当场看完。
-            攒够一批再开始，中途退出进度还在。
-          </p>
-          <!-- 迷你示意：题库列表 + 选题篮计数 -->
-          <div class="viz" aria-hidden="true">
-            <span class="viz__row"><i class="dot dot--pri"></i><i class="bar" style="--w:86%"></i><i class="num">6</i></span>
-            <span class="viz__row"><i class="dot"></i><i class="bar" style="--w:64%"></i><i class="num">4</i></span>
-            <span class="viz__row"><i class="dot"></i><i class="bar" style="--w:74%"></i><i class="num">2</i></span>
-            <span class="viz__row"><i class="dot dot--amber"></i><i class="bar" style="--w:48%"></i><i class="num">1</i></span>
-          </div>
-        </article>
-
-        <article class="card">
-          <div class="card__head">
-            <span class="card__icon">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="8.5"></circle>
-                <path d="M12 7.5V12l3 2"></path>
-              </svg>
-            </span>
-            <h3>组卷</h3>
-          </div>
-          <p>
-            按主题抽题、设定题量与时限，交卷后给出总分、分主题正确率、用时，
-            以及一份需要复盘的清单。草稿实时落盘。
-          </p>
-          <!-- 迷你示意：答题卡 + 计时 -->
-          <div class="viz viz--sheet" aria-hidden="true">
-            <span class="cell is-ok"></span><span class="cell is-ok"></span><span class="cell is-bad"></span>
-            <span class="cell is-ok"></span><span class="cell is-cur"></span><span class="cell"></span>
-            <span class="cell is-ok"></span><span class="cell is-ok"></span><span class="cell is-bad"></span>
-            <span class="cell"></span><span class="cell is-ok"></span><span class="cell"></span>
-            <span class="viz__clock">24:18</span>
-          </div>
-        </article>
-
-        <article class="card">
-          <div class="card__head">
-            <span class="card__icon">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M20 11.5A8 8 0 1 1 12.5 4"></path>
-                <path d="M20 5.5 12.5 13l-3-3"></path>
-              </svg>
-            </span>
-            <h3>复习</h3>
-          </div>
-          <p>
-            按 SM2 安排下次复习：四档自评决定间隔，还给出未来两周的复习负载，
-            避免某一天堆成一堵墙。
-          </p>
-          <!-- 迷你示意：间隔逐渐拉开 -->
-          <div class="viz viz--spaced" aria-hidden="true">
-            <span class="tick"></span><span class="tick"></span><span class="tick"></span>
-            <span class="tick"></span><span class="tick"></span><span class="tick"></span>
-            <span class="viz__note">1 → 3 → 7 → 16 → 35 天</span>
-          </div>
-        </article>
-      </div>
-    </section>
-
-    <!-- ------------------------------------------------------------ 覆盖范围 -->
-    <!-- 这一段刻意换成「左文右图」，避免与上面的三栏卡片连成两片一样的版式 -->
-    <section class="wrap section reveal" id="coverage">
-      <div class="split">
-        <div>
-          <span class="section__eyebrow">Coverage</span>
-          <h2><span class="n" id="cover-dirs">__LANDING_GROUP_N__</span> 个方向，<span class="n" id="cover-subjects">__LANDING_TOPICS_N__</span> 个学科</h2>
-          <ul class="subjects" id="subjects">
-            __LANDING_SUBJECTS__
-          </ul>
-        </div>
-
-        <!-- 主题树示意：三级缩进 + 当前选中的一级 -->
-        <div class="tree" aria-hidden="true">
-          <div class="tree__cap">主题树</div>
-          <div class="tree__row tree__row--1">C++<i>3</i></div>
-          <div class="tree__row tree__row--2">STL 容器与迭代器<i>2</i></div>
-          <div class="tree__row tree__row--3 is-on">迭代器失效<i>2</i></div>
-          <div class="tree__row tree__row--2">值语义与移动<i>1</i></div>
-          <div class="tree__row tree__row--1">CUDA<i>3</i></div>
-          <div class="tree__row tree__row--2">矩阵乘法优化<i>2</i></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ---------------------------------------------------------------- 细节 -->
-    <!-- 版式与上面两块都不同：一行细分的规格条，而不是又一组卡片 -->
-    <section class="wrap section reveal" id="detail">
-      <span class="section__eyebrow">Details</span>
-      <h2>判分不留含糊</h2>
-
-      <div class="specs">
-        <div class="spec">
-          <span class="spec__ico">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M4 12.5 9.5 18 20 6.5"></path>
-            </svg>
-          </span>
-          <div>
-            <b>多选漏选给部分分</b>
-            <span>少选按比例给分，选错即判错。</span>
-          </div>
-        </div>
-        <div class="spec">
-          <span class="spec__ico">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M6 4h9l4 4v12H6z"></path><path d="M9 12h6M9 16h4"></path>
-            </svg>
-          </span>
-          <div>
-            <b>填空支持别名与正则</b>
-            <span>一个空可以接受多种写法，代码填空用多行输入。</span>
-          </div>
-        </div>
-        <div class="spec">
-          <span class="spec__ico">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 4v16M4 12h16"></path>
-            </svg>
-          </span>
-          <div>
-            <b>错题本自动汇总</b>
-            <span>答错、漏选、只对一部分都算「需要巩固」，可导出 Markdown。</span>
-          </div>
-        </div>
-        <div class="spec">
-          <span class="spec__ico">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                 stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M12 3v12"></path><path d="m7.5 10.5 4.5 4.5 4.5-4.5"></path><path d="M4 20h16"></path>
-            </svg>
-          </span>
-          <div>
-            <b>进度可以搬走</b>
-            <span>在线跟着账号走，多设备续着刷；也能导出成单个 HTML 文件断网刷。</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ---------------------------------------------------------------- 收尾 -->
-    <section class="wrap closing reveal">
-      <h2>现在就开始</h2>
-      <div class="cta">
-        <a class="btn btn--pri" href="quiz.html" id="launch-foot">
-          <span id="launch-label-foot">开始刷题</span>
-          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
-               stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M5 12h13M12.5 6l6 6-6 6"></path>
-          </svg>
-        </a>
-      </div>
-    </section>
-
-    <div class="wrap">
-      <footer>
-        <span>quizforge · 题库生成于 __LANDING_GENERATED__</span>
-      </footer>
-    </div>
-  </main>
-</div>
+<footer class="site-foot">
+  <span>QuizForge</span>
+  <span id="hint" hidden>按 Enter 直接进入</span>
+</footer>
 
 <script>
 (function () {
@@ -1008,241 +243,157 @@ footer .sp { flex: 1 1 auto; }
     try { var s = read(); s.theme = next; localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {}
   };
 
-  /* --------------------------------------------------- 待巩固数量提示 */
-  // 只统计题库里仍然存在的题目，作为一行提示（不是第二个入口）
-  try {
-    var valid = __LANDING_IDS__;
-    var known = {};
-    valid.forEach(function (id) { known[id] = true; });
-    var records = JSON.parse(localStorage.getItem('quizforge.v1.records') || '{}') || {};
-    var active = 0, mastered = 0;
-    Object.keys(records).forEach(function (id) {
-      if (!known[id]) return;
-      var r = records[id] || {};
-      if (!r.wrong && !r.partial) return;
-      if (r.mastered) mastered += 1; else active += 1;
-    });
-    if (active || mastered) {
-      var chip = document.getElementById('recall');
-      chip.appendChild(document.createTextNode('错题待巩固 '));
-      var num = document.createElement('b');
-      num.textContent = String(active);
-      chip.appendChild(num);
-      chip.appendChild(document.createTextNode(' 道' + (mastered ? '（已订正 ' + mastered + '）' : '')));
-      chip.hidden = false;
-      document.getElementById('recall-sep').hidden = false;
-    }
-  } catch (e) {}
+  /* ------------------------------------------------------------ 粒子 */
+  // 单色尘埃为底，紫与绿是仅有的彩色；几团大半径光斑负责「模糊点缀」。
+  // 深色档把明度压低 —— 要的是深海浮游生物，不是霓虹灯。
+  var canvas = document.getElementById('bg');
+  if (canvas && canvas.getContext) {
+    var ctx = canvas.getContext('2d');
+    var DPR = Math.min(window.devicePixelRatio || 1, 2);
+    var W = 0, H = 0, parts = [], glows = [], raf = 0;
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var t0 = performance.now();
+    var PAL = null;
 
-  /* ------------------------------------------------------- 键盘直接进入 */
+    function readPalette() {
+      PAL = document.documentElement.dataset.theme === 'light'
+        ? { dust: [10, 10, 10],      purple: [124, 58, 237],  green: [13, 148, 136],  dustA: .10, accA: .40, glowA: .07 }
+        : { dust: [250, 250, 250],   purple: [167, 139, 250], green: [45, 212, 191],  dustA: .11, accA: .48, glowA: .09 };
+    }
+    function spawn() {
+      var n = Math.max(36, Math.min(120, Math.round(W * H / 14000)));
+      var i, roll;
+      parts = [];
+      for (i = 0; i < n; i++) {
+        roll = Math.random();
+        var kind = roll < .3 ? (Math.random() < .5 ? 'purple' : 'green') : 'dust';
+        parts.push({
+          x: Math.random() * W, y: Math.random() * H,
+          r: kind === 'dust' ? .7 + Math.random() * 1.3 : 1 + Math.random() * 1.8,
+          vx: (Math.random() - .5) * .14, vy: (Math.random() - .5) * .11,
+          ph: Math.random() * 6.283, sp: .25 + Math.random() * .7, kind: kind
+        });
+      }
+      glows = [];
+      for (i = 0; i < 4; i++) {
+        glows.push({
+          cx: Math.random() * W, cy: Math.random() * H,
+          r: 130 + Math.random() * 160, kind: i % 2 ? 'purple' : 'green',
+          ox: 40 + Math.random() * 70, oy: 30 + Math.random() * 60,
+          ph: Math.random() * 6.283, sp: .05 + Math.random() * .06
+        });
+      }
+    }
+    function resize() {
+      W = window.innerWidth; H = window.innerHeight;
+      canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+      canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      spawn();
+    }
+    function rgba(c, a) { return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a + ')'; }
+    function frame(now) {
+      var t = (now - t0) / 1000, i, p, gl, c;
+      ctx.clearRect(0, 0, W, H);
+      for (i = 0; i < glows.length; i++) {
+        gl = glows[i];
+        var gx = gl.cx + Math.cos(t * gl.sp * 2 + gl.ph) * gl.ox;
+        var gy = gl.cy + Math.sin(t * gl.sp * 1.6 + gl.ph) * gl.oy;
+        c = PAL[gl.kind];
+        var grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, gl.r);
+        grad.addColorStop(0, rgba(c, PAL.glowA));
+        grad.addColorStop(1, rgba(c, 0));
+        ctx.fillStyle = grad;
+        ctx.fillRect(gx - gl.r, gy - gl.r, gl.r * 2, gl.r * 2);
+      }
+      for (i = 0; i < parts.length; i++) {
+        p = parts[i];
+        p.x += p.vx; p.y += p.vy;
+        if (p.x < -4) p.x = W + 4; else if (p.x > W + 4) p.x = -4;
+        if (p.y < -4) p.y = H + 4; else if (p.y > H + 4) p.y = -4;
+        var tw = .6 + .4 * Math.sin(t * p.sp + p.ph);
+        c = p.kind === 'dust' ? PAL.dust : PAL[p.kind];
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, 6.2832);
+        ctx.fillStyle = rgba(c, ((p.kind === 'dust' ? PAL.dustA : PAL.accA) * tw).toFixed(3));
+        ctx.fill();
+      }
+      if (!reduced) raf = requestAnimationFrame(frame);
+    }
+    readPalette(); resize();
+    frame(performance.now());
+    window.addEventListener('resize', resize);
+    document.addEventListener('visibilitychange', function () {
+      if (reduced) return;
+      if (document.hidden) cancelAnimationFrame(raf);
+      else raf = requestAnimationFrame(frame);
+    });
+    // 主题切换时只换色板，粒子位置不动 —— 反色不该是一场重新洗牌
+    new MutationObserver(readPalette).observe(document.documentElement,
+      { attributes: true, attributeFilter: ['data-theme'] });
+  }
+
+  /* ------------------------------------------------------------ 彩蛋 */
+  // 停满 5 秒才浮现；指针一移开立刻收回，想再看一次就得重新等。
+  // 触屏没有悬停 —— 按住不放是同一个动作。
+  var slogan = document.getElementById('slogan');
+  var egg = document.getElementById('egg');
+  var revealed = false, timer = null;
+
+  function arm() { if (revealed || timer) return; timer = setTimeout(reveal, 5000); }
+  function disarm() { if (timer) { clearTimeout(timer); timer = null; } }
+  function reveal() {
+    revealed = true; timer = null;
+    document.body.classList.add('egg-on');
+    egg.setAttribute('aria-hidden', 'false');
+  }
+  function hide() {
+    if (!revealed) return;
+    revealed = false;
+    // 先把过渡关掉再改状态，改完下一帧恢复 —— 回位是「啪」的一下，不是慢慢淡回去
+    document.body.classList.add('egg-reset');
+    document.body.classList.remove('egg-on');
+    egg.setAttribute('aria-hidden', 'true');
+    requestAnimationFrame(function () { document.body.classList.remove('egg-reset'); });
+  }
+
+  slogan.addEventListener('mouseenter', arm);
+  slogan.addEventListener('mouseleave', function () { disarm(); hide(); });
+  slogan.addEventListener('touchstart', arm, { passive: true });
+  slogan.addEventListener('touchend', function () { disarm(); hide(); });
+  slogan.addEventListener('touchcancel', function () { disarm(); hide(); });
+
+  /* ------------------------------------------------------------ 入口 */
+  // Logo 是唯一入口。离线直接去 quiz.html；在线先问一句登录态，
+  // 已登录进题库、未登录去登录页 —— 都不需要在页面上多写一个字。
+  var entry = document.getElementById('entry');
+  var hint = document.getElementById('hint');
+  var online = window.QF_CONFIG && window.QF_CONFIG.mode === 'online';
+
+  if (!online) {
+    hint.hidden = false;
+  } else {
+    var API = window.QF_CONFIG.apiBase || '/api';
+    fetch(API + '/auth/me', { credentials: 'same-origin' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (data && data.user) {
+          entry.setAttribute('href', 'quiz.html');
+          hint.hidden = false;
+        } else {
+          entry.setAttribute('href', 'login.html');
+        }
+      })
+      .catch(function () { entry.setAttribute('href', 'login.html'); });
+  }
+
   window.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
     var el = document.activeElement;
     if (el && (el.tagName === 'BUTTON' || el.tagName === 'A')) return;
     e.preventDefault();
-    var launch = document.getElementById('launch');
-    if (launch) launch.click();
+    entry.click();
   });
-
-  /* ---------------------------------------------------- 滚动进场（可选） */
-  // 先给 <html> 加 .reveal-ready 才会让 .reveal 元素初始隐藏。
-  // 这样在更老的浏览器里（或脚本报错时）内容默认可见，不会永远藏起来。
-  try {
-    if (!window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      document.documentElement.classList.add('reveal-ready');
-      var targets = [].slice.call(document.querySelectorAll('.reveal'));
-      if ('IntersectionObserver' in window) {
-        var io = new IntersectionObserver(function (entries) {
-          entries.forEach(function (entry) {
-            if (entry.isIntersecting) {
-              entry.target.classList.add('is-in');
-              io.unobserve(entry.target);
-            }
-          });
-        }, { rootMargin: '0px 0px -12% 0px', threshold: 0.08 });
-        targets.forEach(function (el) { io.observe(el); });
-      } else {
-        targets.forEach(function (el) { el.classList.add('is-in'); });
-      }
-    }
-  } catch (e) {}
-
-  /* ------------------------------------------------------ 在线模式增强 */
-  // 离线产物没有 QF_CONFIG，这段整体跳过；
-  // 在线部署下题库规模与登录状态都应该以服务端为准，而不是上次构建时的快照。
-  if (!(window.QF_CONFIG && window.QF_CONFIG.mode === 'online')) return;
-
-  var API = window.QF_CONFIG.apiBase || '/api';
-  var launch = document.getElementById('launch');
-  var labels = [
-    document.getElementById('launch-label'),
-    document.getElementById('launch-foot') && document.getElementById('launch-label-foot'),
-    document.getElementById('launch-nav') && document.getElementById('launch-nav-label')
-  ];
-  var links = [
-    launch,
-    document.getElementById('launch-foot'),
-    document.getElementById('launch-nav')
-  ];
-
-  function setEntry(href, text) {
-    links.forEach(function (a) { if (a) a.setAttribute('href', href); });
-    labels.forEach(function (el) { if (el) el.textContent = text; });
-  }
-
-  /* ------------------------------------------------------------ 提示语 */
-  // 两个请求（题库规模、登录态）都会影响这一行，谁先回来不一定，
-  // 所以不做「各自直接写 DOM」，而是各自更新状态后再统一渲染一次。
-  var bankState = 'unknown';   // unknown | ok | empty | error
-  var authState = 'unknown';   // unknown | in | out | error
-
-  function setHint(text) {
-    var el = document.getElementById('hint');
-    el.textContent = text || '';
-    el.hidden = !text;
-  }
-
-  function renderHint() {
-    if (bankState === 'error' || authState === 'error') return setHint('连不上服务器');
-    if (bankState === 'empty') return setHint('题库还没有导入题目');
-    // 未登录时不留这句：此时按钮是「登录 / 注册」，说「直接进入」是自相矛盾的
-    if (authState === 'in') return setHint('按 Enter 直接进入');
-    setHint('');
-  }
-
-  /* ------------------------------------------------------------ 账号区 */
-  var accountEl = document.getElementById('account');
-  var accountBtn = document.getElementById('account-btn');
-  var accountMenu = document.getElementById('account-menu');
-
-  function toggleMenu(open) {
-    accountMenu.hidden = !open;
-    accountBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  }
-
-  function showAccount(user) {
-    var name = user.display_name || String(user.email || '').split('@')[0] || 'Q';
-    var initial = String(name).trim().charAt(0).toUpperCase() || 'Q';
-    ['account-initial', 'account-initial-lg'].forEach(function (id) {
-      document.getElementById(id).textContent = initial;
-    });
-    document.getElementById('account-mail').textContent = user.email || name;
-    document.getElementById('account-name').textContent = name;
-    document.getElementById('account-email').textContent = user.email || '';
-    // 截断显示，完整值挂 title，鼠标停一下就能看到
-    accountBtn.title = name + (user.email ? ' · ' + user.email : '');
-    document.getElementById('account-name').title = name;
-    document.getElementById('account-email').title = user.email || '';
-    accountEl.hidden = false;
-  }
-
-  accountBtn.addEventListener('click', function (e) {
-    e.stopPropagation();
-    toggleMenu(accountMenu.hidden);
-  });
-  // 点击别处 / 按 Esc 收起。菜单里的点击不收起，否则「退出登录」的 hover 反馈会闪
-  document.addEventListener('click', function (e) {
-    if (!accountMenu.hidden && !accountMenu.contains(e.target)) toggleMenu(false);
-  });
-  document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && !accountMenu.hidden) {
-      toggleMenu(false);
-      accountBtn.focus();
-    }
-  });
-
-  document.getElementById('account-logout').addEventListener('click', function () {
-    // 登出是写操作，要走 CSRF 双提交；这个页面没加载 api.js，所以自己取 cookie
-    var token = (document.cookie.match(/(?:^|;\s*)qf_csrf=([^;]+)/) || [])[1] || '';
-    fetch(API + '/auth/logout', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'X-CSRF-Token': decodeURIComponent(token) },
-    })
-      .catch(function () { /* 网络失败也照样刷新：会话在服务端，刷新后会如实反映 */ })
-      .then(function () { location.reload(); });
-  });
-
-  // 题库规模与覆盖范围
-  fetch(API + '/health', { credentials: 'same-origin' })
-    .then(function (res) { return res.ok ? res.json() : null; })
-    .then(function (data) {
-      if (!data || !data.bank) {
-        bankState = 'error';
-        return renderHint();
-      }
-      var bank = data.bank;
-      if (!bank.loaded) {
-        document.getElementById('fact-total').textContent = '0';
-        bankState = 'empty';
-        return renderHint();
-      }
-      document.getElementById('fact-total').textContent = String(bank.questions);
-      // 题型数：只数题库里真正出现过的题型，与离线产物的口径一致
-      document.getElementById('fact-types').textContent = String(
-        typeof bank.typeCount === 'number' ? bank.typeCount : '—'
-      );
-
-      if (Array.isArray(bank.subjectList) && bank.subjectList.length) {
-        // 学科数取一级学科个数，**不是** bank.topics（那是含单元与知识点的总数）。
-        // 取错会让首页写着「125 个学科」，而实际只有 11 个。
-        document.getElementById('fact-topics').textContent = String(bank.subjectList.length);
-        document.getElementById('cover-subjects').textContent = String(bank.subjectList.length);
-
-        // 方向数从学科自带的 group 推出来：与服务端同一份数据，不会各自算各自的
-        var seenDirs = {};
-        bank.subjectList.forEach(function (item) {
-          if (item.group) seenDirs[item.group] = true;
-        });
-        var dirCount = Object.keys(seenDirs).length;
-        if (dirCount) document.getElementById('cover-dirs').textContent = String(dirCount);
-
-        var host = document.getElementById('subjects');
-        host.innerHTML = '';
-        bank.subjectList.forEach(function (item) {
-          var li = document.createElement('li');
-          li.className = 'subj';
-          if (item.color) li.style.setProperty('--subj', item.color);
-          var dot = document.createElement('span');
-          dot.className = 'subj__dot';
-          var name = document.createElement('span');
-          name.textContent = item.name;
-          var n = document.createElement('span');
-          n.className = 'subj__n';
-          n.textContent = String(item.count);
-          li.appendChild(dot); li.appendChild(name); li.appendChild(n);
-          host.appendChild(li);
-        });
-      }
-
-      bankState = 'ok';
-      renderHint();
-    })
-    .catch(function () {
-      // 后端没起来也不该让首页白屏，标题与胶囊保持构建期/静态内容即可
-      bankState = 'error';
-      renderHint();
-    });
-
-  // 登录状态：账号区 + 入口文案
-  fetch(API + '/auth/me', { credentials: 'same-origin' })
-    .then(function (res) { return res.ok ? res.json() : null; })
-    .then(function (data) {
-      if (data && data.user) {
-        showAccount(data.user);
-        setEntry('quiz.html', '继续刷题');
-        authState = 'in';
-      } else {
-        setEntry('login.html', '登录 / 注册');
-        authState = 'out';
-      }
-      renderHint();
-    })
-    .catch(function () {
-      setEntry('login.html', '登录 / 注册');
-      authState = 'error';
-      renderHint();
-    });
 })();
 </script>
 </body>
