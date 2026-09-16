@@ -184,6 +184,8 @@ def insert_drafts(
                             "sources": item.get("sources") or [],
                             "verify_ranges": item.get("window") or item.get("sources") or [],
                             "point": _resolve_point(item, list(pack_points or [])),
+                            # 轮次（0 = 首次出题）：打回重出靠它收敛
+                            "round": int(item.get("round") or 0),
                         },
                         ensure_ascii=False,
                     ),
@@ -445,7 +447,8 @@ def draft_ids(limit: int = 0) -> list[str]:
     """还没通过校验的题（补校验任务时用）。"""
     from sqlalchemy import text  # noqa: PLC0415
 
-    sql = "SELECT id FROM questions WHERE status = 'draft' ORDER BY id"
+    # 已退役的草稿不该再排校验（退役的语义就是"别再管它了"）
+    sql = "SELECT id FROM questions WHERE status = 'draft' AND retired_at IS NULL ORDER BY id"
     if limit:
         sql += f" LIMIT {int(limit)}"
     with _engine().connect() as conn:

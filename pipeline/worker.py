@@ -268,6 +268,8 @@ async def run_author(llm: LLM, payload: dict):
                 # 作者声明这道题考的是包内哪个点 —— 校验通过时据此写"题↔点的边"，
                 # 那是"哪些点已经出过题"的唯一精确依据（防重复出题）。
                 "point": question.get("point"),
+                # 轮次：重出的题要记着自己被重出过几次，否则"最多重出 N 轮"无从收敛
+                "round": int(payload.get("round") or 0),
                 "markdown": body,
                 "sources": ranges,
                 # 校验窗口 = 本题依据 ∪ 任务包里该点的全部出处。
