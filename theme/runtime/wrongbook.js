@@ -133,32 +133,9 @@
   }
 
   function renderNav() {
-    var nav = document.getElementById('mainnav');
-    if (!nav) return;
-    ui.clear(nav);
-    nav.appendChild(
-      h(
-        'a.nav-item',
-        { href: 'quiz.html' },
-        h('span', { html: ui.icon('play', 15) }),
-        h('span', { text: '刷题' })
-      )
-    );
-    nav.appendChild(
-      h('span.nav-item.is-active', null, h('span', { html: ui.icon('book', 15) }), h('span', { text: '错题本' }))
-    );
-    // 与图谱页保持一致：顶栏固定三项（刷题 / 错题本 / 知识图谱），当前页高亮。
-    // 各页面各写一份导航容易走偏 —— 之前图谱页有「知识图谱」而这里没有，
-    // 两个页面的顶栏看起来像两套东西。
-    nav.appendChild(
-      h(
-        'a.nav-item',
-        { href: 'graph.html' },
-        h('span', { html: ui.icon('share', 15) }),
-        h('span', { text: '知识图谱' })
-      )
-    );
-    // 「导航页」导航项已去掉：左上角 logo 就是回首页的入口
+    // 主导航由 shell.js 统一渲染（全站一份）：错题本页是「副页面」，
+    // 四项视图都渲染成链接，当前页不占导航 —— 它由右上角的图标表示。
+    QF.shell.mount({});
   }
 
   function buildHeader() {
@@ -711,7 +688,7 @@
       return;
     }
     var lines = [];
-    lines.push('# quizforge 错题本');
+    lines.push('# QuizForge 错题本');
     lines.push('');
     lines.push('导出时间：' + new Date().toLocaleString());
     lines.push('题目数：' + ids.length);
@@ -791,25 +768,13 @@
     document.documentElement.style.setProperty('--font-scale', String(conf.fontScale || 1));
     document.documentElement.style.setProperty('--content-max', (conf.maxWidth || 880) + 'px');
 
-    var themeBtn = document.getElementById('btn-theme');
-    if (themeBtn) {
-      themeBtn.addEventListener('click', function () {
-        ui.theme.toggle();
-        store.saveSettings({ theme: ui.theme.current() });
-      });
-    }
-    var settingsBtn = document.getElementById('btn-settings');
-    if (settingsBtn) {
-      settingsBtn.addEventListener('click', function () {
-        window.location.href = 'quiz.html#settings';
-      });
-    }
-    var wbBtn = document.getElementById('btn-wrongbook');
-    if (wbBtn) {
-      wbBtn.setAttribute('href', 'wrongbook.html');
-      // 已在错题本页：这个图标指向自己，点了没反应会显得像坏了 —— 当前页不显示
-      wbBtn.hidden = true;
-    }
+    // 主题按钮、设置按钮、当前页图标都由 shell.js 统一接线（全站一份）
+    QF.shell.mount({});
+
+    // 设置面板里导入/清空数据之后，这一页要把列表重画一遍
+    document.addEventListener('qf:data-changed', function () {
+      render();
+    });
 
     if (!store.available) {
       ui.toast('浏览器不允许 file:// 使用 localStorage，无法读取刷题进度。建议用 python3 -m http.server 打开。', 'warn', 9000);

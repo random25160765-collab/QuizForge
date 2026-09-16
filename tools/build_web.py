@@ -49,6 +49,7 @@ RUNTIME_ORDER = [
     "sync.js",
     "sm2.js",
     "ai.js",
+    "shell.js",
     "qview.js",
     "router.js",
 ]
@@ -185,7 +186,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
     # 「上次构建时的题数」已经是过期信息，静态写死会误导
     landing_html = (
         _read(THEME_DIR / "landing.html")
-        .replace("__LANDING_TITLE__", "quizforge")
+        .replace("__LANDING_TITLE__", "QuizForge")
         .replace("__LANDING_TOTAL__", "—")
         .replace("__LANDING_TOPICS_N__", "—")
         .replace("__LANDING_TYPES_N__", "—")

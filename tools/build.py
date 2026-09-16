@@ -78,6 +78,7 @@ RUNTIME_ORDER = [
     "store.js",
     "sm2.js",
     "ai.js",
+    "shell.js",
     "qview.js",
 ]
 
@@ -311,7 +312,7 @@ def render_landing(dataset: dict) -> str:
     subjects_html, subject_count, direction_count = _render_landing_subjects(meta, stats, esc)
 
     html = (
-        template.replace("__LANDING_TITLE__", "quizforge")
+        template.replace("__LANDING_TITLE__", "QuizForge")
         .replace("__LANDING_TOTAL__", str(stats.get("total", 0)))
         .replace("__LANDING_TOPICS_N__", str(subject_count))
         .replace("__LANDING_TYPES_N__", str(type_count))

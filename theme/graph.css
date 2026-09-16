@@ -5,36 +5,386 @@
  * 跟着主题切换走，浅色/深色都不该有自己的样子。
  */
 
+/* 图谱铺满浏览器：`.view` 的宽度上限与内边距是给文字内容定的，
+   图形不该被那个框住 —— 这一页把它们全部撤掉。 */
+body[data-page='graph'] .view {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+}
+
 .graph-root {
   display: flex;
   flex-direction: column;
-  /* 顶栏 + 状态栏的高度由 shell 定，这里撑满剩下的那一段 */
-  height: calc(100dvh - var(--topbar-h, 58px) - var(--statusbar-h, 30px));
+  /* 高度由 graph.js 实测后写进 --graph-h（顶栏底边 → 视口底，已扣状态栏）；
+     拿不到时退回按设计变量算。
+     这个 display/flex-direction 不能省：下面的 .graph-stage 靠 flex: 1 吃掉
+     剩余高度，改成块级之后画布会退化成「自己撑自己」（实测高度 720 而非 812）。 */
+  height: var(--graph-h, calc(100dvh - var(--topbar-h, 58px)));
   min-height: 320px;
 }
 
-/* ------------------------------------------------------------------ 工具条 */
-.graph-bar {
+/* ------------------------------------------------------------ 浮动面板 */
+/* 设置、筛选、搜索、重排合成一块浮在画布上的面板：可以拖到任意角落，
+   也能收成一个球。图谱是要看的，工具栏与参数不该永久占掉一条边 ——
+   那正是上一版（把设置钉在左边的竖栏里）的问题。 */
+.graph-hud {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  width: 232px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg2) 94%, transparent);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--edge-hi), 0 18px 38px -24px rgba(0, 0, 0, 0.5);
+  /* 允许溢出：展开后如果顶到画布下沿，就让它自然地探出去，
+     而不是把整块往上顶 —— 面板位置是用户拖出来的，不该被代它做主。 */
+  overflow: visible;
+}
+
+.graph-hud__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 收起按钮在最左，标题跟在它右边；留白也随之左右对调 */
+  padding: 6px 12px 6px 6px;
+  border-bottom: 1px solid var(--line);
+  cursor: grab;
+  touch-action: none;      /* 拖面板时不要顺带滚动画布 */
+}
+
+.graph-hud__head:active {
+  cursor: grabbing;
+}
+
+.graph-hud__title {
+  flex: 1;
+  color: var(--fg2);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.graph-hud__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  /* 初始给一小段高度，其余的靠拖着看：面板不该一上来就占掉半屏 */
+  height: 228px;
+  max-height: 80vh;
+  overflow: auto;
+}
+
+/* 底边把手：拖它改变正文高度，整块面板跟着长/缩 */
+.graph-hud__grip {
+  display: grid;
+  place-items: center;
+  flex: none;
+  height: 11px;
+  border-top: 1px solid var(--line);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.graph-hud__grip i {
+  width: 26px;
+  height: 3px;
+  border-radius: 99px;
+  background: var(--line-strong);
+  transition: background 0.15s var(--ease);
+}
+
+.graph-hud__grip:hover i {
+  background: var(--fg3);
+}
+
+.graph-hud.is-collapsed .graph-hud__grip {
+  display: none;
+}
+
+.graph-hud__row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.graph-hud__sep {
+  height: 1px;
+  background: var(--line);
+}
+
+.graph-hud__sub {
+  margin: 0 0 2px;
+  color: var(--fg3);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.graph-hud__foot {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg2);
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
 }
 
+/* 面板里的搜索框占满整行（它原来是工具条里右对齐的那个） */
+.graph-hud .graph-field {
+  margin-left: 0;
+  width: 100%;
+}
+
+.graph-hud .graph-field input {
+  width: 100%;
+}
+
+/* 学科：平时只占一行，悬停（或键盘聚焦到里面）才把列表放下来 */
+.graph-subject {
+  position: relative;
+}
+
+.graph-subject__btn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+
+.graph-subject__btn:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.graph-subject__label {
+  color: var(--fg3);
+}
+
+.graph-subject__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.graph-subject__btn svg {
+  flex: none;
+  opacity: 0.6;
+}
+
+.graph-subject__menu {
+  display: none;
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 6;
+  max-height: 244px;
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg2) 97%, transparent);
+  box-shadow: var(--edge-hi), 0 18px 34px -22px rgba(0, 0, 0, 0.45);
+}
+
+.graph-subject:hover .graph-subject__menu,
+.graph-subject:focus-within .graph-subject__menu {
+  display: block;
+}
+
+/* 选完立刻收回：指针还停在原地，但列表不该赖着不走。
+   下次移出去再进来才会重新展开（is-picked 在 mouseleave 时摘掉）。 */
+.graph-subject.is-picked .graph-subject__menu {
+  display: none;
+}
+
+.graph-subject__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.graph-subject__item:hover {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg);
+}
+
+.graph-subject__item.is-on {
+  color: var(--pri);
+  font-weight: 600;
+}
+
+.graph-subject__item i {
+  margin-left: auto;
+  color: var(--fg3);
+  font-style: normal;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+/* 收起：只剩一颗绿色的球。位置不动，照样能拖、能点开。
+   它是这一页唯一的「实体」：展开时是工具，收起时是画布上一枚安静的按钮。 */
+.graph-hud.is-collapsed {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border-color: transparent;
+  background: var(--pri);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pri) 40%, transparent),
+              0 10px 24px -12px color-mix(in srgb, var(--pri) 85%, transparent);
+  cursor: pointer;
+  overflow: visible;          /* 涟漪要散到球外面去 */
+  animation: hudBreath 4.5s var(--ease) infinite;
+}
+
+.graph-hud.is-collapsed:hover {
+  filter: brightness(1.06);
+}
+
+/* 呼吸：极缓的一起一伏，像在等你点它 */
+@keyframes hudBreath {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.045); }
+}
+
+/* 一圈极淡的涟漪，与呼吸同周期散开一次 */
+.graph-hud.is-collapsed::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--pri) 70%, transparent);
+  animation: hudRipple 4.5s var(--ease-out) infinite;
+  pointer-events: none;
+}
+
+@keyframes hudRipple {
+  from { transform: scale(0.9); opacity: 0.7; }
+  to   { transform: scale(1.8); opacity: 0; }
+}
+
+.graph-hud.is-collapsed .graph-hud__title,
+.graph-hud.is-collapsed .graph-hud__body,
+.graph-hud.is-collapsed .graph-hud__foot {
+  display: none;
+}
+
+.graph-hud.is-collapsed .graph-hud__head {
+  height: 100%;
+  padding: 0;
+  justify-content: center;
+  border-bottom: 0;
+}
+
+.graph-hud.is-collapsed .graph-hud__head,
+.graph-hud.is-collapsed #graph-hud-toggle,
+.graph-hud.is-collapsed #graph-hud-toggle:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink);
+}
+
+.graph-hud.is-collapsed #graph-hud-toggle {
+  width: 100%;
+  height: 100%;
+}
+
+/* 展开态给箭头（收起来），收起态给齿轮（点开它） */
+.hud-ico--gear {
+  display: none;
+}
+
+.graph-hud.is-collapsed .hud-ico--chevron {
+  display: none;
+}
+
+.graph-hud.is-collapsed .hud-ico--gear {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .graph-hud.is-collapsed {
+    animation: none;
+  }
+
+  .graph-hud.is-collapsed::after {
+    display: none;
+  }
+}
+
+/* 参数行：名字与数值同行（数值等宽、靠右），滑块独占下一行 */
+.graph-param + .graph-param {
+  margin-top: 12px;
+}
+
+.graph-param__top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.graph-param__name {
+  flex: 1;
+  color: var(--fg2);
+  font-size: 12px;
+}
+
+.graph-param__num {
+  color: var(--fg3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.graph-hud .slider {
+  width: 100%;
+  margin: 6px 0 0;
+}
+
+.graph-hud__reset {
+  width: 100%;
+  justify-content: center;
+  margin-top: 2px;
+}
+
+/* -------------------------------------------------------- 筛选与搜索 */
 .graph-group {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-}
-
-.graph-sep {
-  width: 1px;
-  align-self: stretch;
-  background: var(--line);
 }
 
 .graph-field {
@@ -64,6 +414,9 @@
 }
 
 .graph-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 3px 10px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -73,7 +426,8 @@
   font-size: 12px;
   line-height: 1.5;
   cursor: pointer;
-  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+  transition: color 0.15s var(--ease), border-color 0.15s var(--ease),
+              background 0.15s var(--ease);
 }
 
 .graph-chip:hover {
@@ -81,10 +435,21 @@
   border-color: var(--line-strong);
 }
 
+/* 选中态与站点其它开关同源（.icon-btn.is-on / .btn.is-active 用的是同一组配比）——
+   给这一页单独发明一套实心填充，正是它上一版最刺眼的地方 */
 .graph-chip.is-on {
-  color: var(--ink);
-  border-color: transparent;
+  color: var(--pri);
+  border-color: color-mix(in srgb, var(--pri) 40%, transparent);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
   font-weight: 600;
+}
+
+/* 语义颜色只由这个小圆点承担 */
+.graph-chip__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
 }
 
 .graph-count {
@@ -148,8 +513,9 @@
 
 .graph-legend {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
+  /* 离边留一点点：贴死会显得像被切过，飞出去又像浮标 —— 8px 刚好认得出来是「让开的」 */
+  left: 8px;
+  bottom: 8px;
   z-index: 2;
   max-width: 300px;
   padding: 8px 10px;
@@ -285,8 +651,10 @@
   font-size: 12px;
 }
 
+/* 关系类型名不再另上颜色：颜色由左侧那道 3px 竖条承担，
+   一行里两种颜色只会互相打架 */
 .graph-edge b {
-  color: var(--pri);
+  color: var(--fg);
 }
 
 .graph-edge .why {

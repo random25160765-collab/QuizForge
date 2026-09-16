@@ -1,25 +1,75 @@
 <div id="app-root" data-page="graph" class="graph-root">
-  <div class="graph-bar">
-    <div class="graph-group" id="graph-nodechips" aria-label="节点类型"></div>
-    <span class="graph-sep" aria-hidden="true"></span>
-    <div class="graph-group" id="graph-edgechips" aria-label="关系类型"></div>
-
-    <label class="graph-field">
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"
-           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="11" cy="11" r="6.5"></circle>
-        <path d="m16 16 4.5 4.5"></path>
-      </svg>
-      <input id="graph-search" type="search" placeholder="搜概念名 / key…" autocomplete="off"
-             aria-label="搜索概念">
-    </label>
-
-    <button class="btn btn-ghost graph-relayout" id="graph-relayout" type="button" title="重新排布布局">重排</button>
-    <span class="graph-count" id="graph-count"></span>
-  </div>
-
   <div class="graph-stage" id="graph-stage">
     <canvas id="graph-canvas"></canvas>
+
+    <!-- 浮动设置面板：能拖到画布任意角落，能收成一个球。
+         图谱是要看的，工具栏与参数不该永久占掉一条边。 -->
+    <section class="graph-hud" id="graph-hud" aria-label="图谱设置">
+      <!-- 收起按钮放在左边：它是「往回缩」的动作，与返回、折叠一类控件的位置一致 -->
+      <div class="graph-hud__head" id="graph-hud-head">
+        <button class="icon-btn" id="graph-hud-toggle" type="button"
+                title="收成一个球" aria-label="收起设置" aria-expanded="true">
+          <!-- 展开态是「收起」的箭头；收成球之后换成齿轮，那颗球看起来才像个设置入口 -->
+          <svg class="hud-ico hud-ico--chevron" viewBox="0 0 24 24" width="15" height="15" fill="none"
+               stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true">
+            <path d="M14 6l-6 6 6 6"></path>
+          </svg>
+          <svg class="hud-ico hud-ico--gear" viewBox="0 0 24 24" width="18" height="18" fill="none"
+               stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.3a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.7 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 7 2.6h.1A1.7 1.7 0 0 0 8.7 1V1a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15 2.7a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 7v.1a1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4H22a1.7 1.7 0 0 0-1.6 1Z"></path>
+          </svg>
+        </button>
+        <span class="graph-hud__title">图谱设置</span>
+      </div>
+
+      <div class="graph-hud__body" id="graph-hud-body" data-hud-body>
+        <label class="graph-field">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5"></circle>
+            <path d="m16 16 4.5 4.5"></path>
+          </svg>
+          <input id="graph-search" type="search" placeholder="搜概念名 / key…" autocomplete="off"
+                 aria-label="搜索概念">
+        </label>
+
+        <!-- 主题：单开一行，鼠标移上去才展开列表。
+             十来个顶级主题铺成一排圆角胶囊会占掉半块面板，而它平时只需要显示「当前是哪个」。 -->
+        <div class="graph-subject" id="graph-subject">
+          <button class="graph-subject__btn" id="graph-subject-btn" type="button"
+                  aria-haspopup="listbox" aria-expanded="false">
+            <span class="graph-subject__label">主题</span>
+            <b class="graph-subject__value" id="graph-subject-value">全部</b>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6"></path>
+            </svg>
+          </button>
+          <div class="graph-subject__menu" id="graph-subject-menu" role="listbox" aria-label="选择学科"></div>
+        </div>
+
+        <div class="graph-hud__row" id="graph-nodechips" aria-label="节点类型"></div>
+        <div class="graph-hud__row" id="graph-edgechips" aria-label="关系类型"></div>
+
+        <div class="graph-hud__sep" aria-hidden="true"></div>
+
+        <h2 class="graph-hud__sub">力导向参数</h2>
+        <div id="graph-params"></div>
+        <button class="btn btn-ghost graph-hud__reset" id="graph-params-reset" type="button">恢复默认</button>
+      </div>
+
+      <div class="graph-hud__foot">
+        <button class="btn btn-ghost" id="graph-relayout" type="button" title="重新排布布局">重排</button>
+        <span class="graph-count" id="graph-count"></span>
+      </div>
+
+      <!-- 高度调节：拖这条边改变面板正文的高度（整块跟着长/缩） -->
+      <div class="graph-hud__grip" id="graph-hud-grip" role="separator" aria-label="拖动调整高度"
+           title="拖动调整高度"><i></i></div>
+    </section>
 
     <div class="graph-tip" id="graph-tip" hidden></div>
 
