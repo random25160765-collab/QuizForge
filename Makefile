@@ -231,3 +231,7 @@ coverage:
 
 coverage-gaps:
 	@$(VENV)/bin/python -m pipeline.coverage --material $(MATERIAL) --gaps
+
+# 状态机自动跑：出题 → 校验 → 发布 → 打回重出，收敛即停
+drive:
+	@$(VENV)/bin/python -m pipeline.drive $(ARGS)
