@@ -606,8 +606,19 @@
       var settingsBtn = document.getElementById('btn-settings');
       if (settingsBtn) {
         settingsBtn.addEventListener('click', function () {
+          // 记下"从哪来的"：设置面板在刷题页里，关掉之后要能**回到这个页面**，
+          // 否则不管从哪进来都落在工作台（实测就是这么被发现的）。
+          try {
+            window.sessionStorage.setItem('quizforge.settings.from',
+              window.location.pathname.split('/').pop() || 'index.html');
+          } catch (err) { /* 隐私模式禁 sessionStorage：退化成旧行为 */ }
           window.location.href = 'quiz.html#settings';
         });
+      }
+      var selfBtn = document.getElementById('btn-graph');
+      if (selfBtn) {
+        // 已在图谱页：这个图标指向自己，点了没反应会显得像坏了 —— 当前页不显示
+        selfBtn.hidden = true;
       }
     } catch (err) {
       if (window.console) console.warn('顶栏动作接线失败', err);

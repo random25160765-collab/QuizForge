@@ -628,6 +628,10 @@
   function daySeries(n, subjectKey) {
     var count = n || 126;
     var table = days();
+    // 主题筛选支持"一个主题或一组主题"：上层主题必须连同**子孙**一起算 ——
+    // 题目标签挂在子主题上，只按精确匹配的话，点一级主题永远命中不了任何题
+    // （表现为"点了没反应"；主题题目数"加起来不对"也是同一个根）。
+    var keys = subjectKey ? (subjectKey.map ? subjectKey.slice() : [subjectKey]) : null;
     var out = [];
     var cursor = new Date();
     cursor.setHours(0, 0, 0, 0);
@@ -635,9 +639,14 @@
     for (var i = 0; i < count; i++) {
       var key = QF.ui.dayKey(cursor);
       var bucket = table[key] || { answers: 0, correct: 0 };
-      if (subjectKey) {
-        var n2 = (bucket.topics && bucket.topics[subjectKey]) || 0;
-        out.push({ date: key, answers: n2, correct: n2 });
+      if (keys && keys.length) {
+        // 传一个主题（或一组主题）时，把它们的答题数**加起来** ——
+        // 题目标签挂在子主题上，只做精确匹配的话，点一级主题永远命中不了任何题
+        var sum = 0;
+        for (var k = 0; k < keys.length; k++) {
+          sum += (bucket.topics && bucket.topics[keys[k]]) || 0;
+        }
+        out.push({ date: key, answers: sum, correct: sum });
       } else {
         out.push({ date: key, answers: bucket.answers, correct: bucket.correct });
       }
