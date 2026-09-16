@@ -97,7 +97,28 @@ def next_ids(cursor, subject: str, count: int) -> list[str]:
     return [f"{subject}-{n:04d}" for n in range(start, start + count)]
 
 
-def insert_drafts(subject: str, items: list[dict]) -> tuple[list[dict], list[str]]:
+def _resolve_point(item: dict, pack_points: list[str]) -> str:
+    """定这道题考的是哪个点：优先作者声明的 `point`，退而求其次按 topic 认，再退就只有一个点时认它。
+
+    这个值将来会写进"题↔点的边"，是**防重复出题**的依据 —— 认不出来宁可空着，
+    也不要瞎认（瞎认会让某个点从此不再出题，比重复出题更糟）。
+    """
+    if not pack_points:
+        return ""
+    declared = str(item.get("point") or "").strip()
+    if declared in pack_points:
+        return declared
+    topic = str((item.get("front") or {}).get("topic") or "").strip()
+    if topic in pack_points:
+        return topic
+    if len(pack_points) == 1:
+        return pack_points[0]
+    return ""
+
+
+def insert_drafts(
+    subject: str, items: list[dict], pack_points: list[str] | None = None
+) -> tuple[list[dict], list[str]]:
     """一个出题包的产出**一次性入库**（草稿态）。
 
     `items` 每项：`{"front": {...}, "markdown": "...", "sources": [[起,止], ...]}`。
@@ -156,11 +177,13 @@ def insert_drafts(subject: str, items: list[dict]) -> tuple[list[dict], list[str
                     "raw": raw,
                     # sources（依据）与 verify_ranges（校验窗口）都留在 payload 里：
                     # 补校验任务时要靠它们重建提示词，而库是唯一权威，没有第二个地方可问。
+                    # `point` 也留在这里 —— 校验通过时要用它写"题↔点的边"。
                     "payload": json.dumps(
                         {
                             **payload,
                             "sources": item.get("sources") or [],
                             "verify_ranges": item.get("window") or item.get("sources") or [],
+                            "point": _resolve_point(item, list(pack_points or [])),
                         },
                         ensure_ascii=False,
                     ),
@@ -395,6 +418,27 @@ def save_verdict(question_id: str, verdict: str, report: dict) -> None:
             ),
             {"status": status, "report": json.dumps(report, ensure_ascii=False), "id": question_id},
         )
+        if verdict == "pass":
+            # **精确的"题↔点的边"只在校验通过时写**。
+            # 草稿/被打回的题不该把点标成"已出题" —— 否则一道废题会让那个点
+            # 从此不再出题，这比重复出题更糟。
+            # 点的 key 在**题目的 payload** 里（出题入库时写下的），不在校验报告里。
+            point_key = (
+                conn.execute(
+                    text("SELECT payload -> 'point' FROM questions WHERE id = :id"),
+                    {"id": question_id},
+                ).scalar()
+                or ""
+            )
+            if point_key:
+                conn.execute(
+                    text(
+                        "INSERT INTO question_points (question_id, point_id, is_primary)"
+                        " SELECT :qid, kp.id, false FROM knowledge_points kp WHERE kp.key = :key"
+                        " ON CONFLICT DO NOTHING"
+                    ),
+                    {"qid": question_id, "key": str(point_key)},
+                )
 
 
 def draft_ids(limit: int = 0) -> list[str]:
