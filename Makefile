@@ -224,3 +224,10 @@ db-dump:
 db-restore:
 	@gunzip -c $(DB_DUMP) | PGPASSWORD=$${QF_DB_PASSWORD:-quizforge} psql -h $${QF_DB_HOST:-127.0.0.1} -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} -q
 	@echo "  已从 $(DB_DUMP) 恢复"
+
+# 覆盖率对账：哪些材料出过题、还剩多少点（与派工的"只补缺口"同一套判据）
+coverage:
+	@$(VENV)/bin/python -m pipeline.coverage $(ARGS)
+
+coverage-gaps:
+	@$(VENV)/bin/python -m pipeline.coverage --material $(MATERIAL) --gaps
