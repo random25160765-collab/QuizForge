@@ -367,7 +367,12 @@
 
     page.appendChild(h('div.section__title', null, h('span', { text: '刷题记录' }), h('span', { class: 'section__note', text: '最近 18 周' })));
     // 按主题筛选热力图（GitHub 的贡献图也能按仓库筛）
-    var heatSeries = state.heatTopic ? store.daySeries(126, state.heatTopic) : stats.heatmap;
+    // 按主题筛热力图时要把**子孙主题**一起算上（data.js 已经为每个节点备好了
+    // key + descendants 的清单）。此前只传了主题键本身，而题目标签挂在子主题上，
+    // 于是点一级主题（Tenstorrent 这类）热力图一动不动。
+    var heatSeries = state.heatTopic
+      ? store.daySeries(126, (D.subtree && D.subtree(state.heatTopic)) || [state.heatTopic])
+      : stats.heatmap;
     page.appendChild(
       h(
         'div.card.panel',
@@ -3408,6 +3413,40 @@
    * 正常同步保持完全静默 —— 每答一题都闪一下「已同步」只会变成噪音，
    * 而跨设备时用户真正需要知道的只有「出问题了、还没存上」。
    */
+  /* ------------------------------------------------------- 设置：来源页返回
+   *
+   * 设置面板只做在刷题页里，所以从错题本/图谱点「设置」是跳过来的。
+   * 关掉面板之后如果不做处理，人就留在刷题页的默认视图（工作台）——
+   * 用户看到的是"点设置然后退出，莫名其妙回到了工作台"。
+   * 这里在**跨页进入**时才生效（来源页写在 sessionStorage 里），
+   * 本页自己打开设置的行为不变。
+   */
+  function watchSettingsReturn() {
+    var from = null;
+    try {
+      from = window.sessionStorage.getItem('quizforge.settings.from');
+    } catch (err) {
+      return; // 隐私模式禁 sessionStorage：退化成旧行为，不做返回
+    }
+    if (!from) return;
+    var root = document.getElementById('modal-root');
+    if (!root || !window.MutationObserver) return;
+    if (root.hidden) {
+      // 面板还没打开，等一下再看
+      window.setTimeout(watchSettingsReturn, 200);
+      return;
+    }
+    var observer = new MutationObserver(function () {
+      if (!root.hidden) return;
+      observer.disconnect();
+      try {
+        window.sessionStorage.removeItem('quizforge.settings.from');
+      } catch (err) { /* 忽略 */ }
+      window.location.href = from;
+    });
+    observer.observe(root, { attributes: true, attributeFilter: ['hidden'] });
+  }
+
   function bindSyncNote() {
     var note = document.getElementById('sync-note');
     if (!note || !QF.sync) return;
@@ -3485,7 +3524,10 @@
 
     render();
 
-    if (window.location.hash === '#settings') openSettings();
+    if (window.location.hash === '#settings') {
+      openSettings();
+      watchSettingsReturn();
+    }
   }
 
   /**

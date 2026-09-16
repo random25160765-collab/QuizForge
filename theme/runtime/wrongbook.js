@@ -147,6 +147,17 @@
     nav.appendChild(
       h('span.nav-item.is-active', null, h('span', { html: ui.icon('book', 15) }), h('span', { text: '错题本' }))
     );
+    // 与图谱页保持一致：顶栏固定三项（刷题 / 错题本 / 知识图谱），当前页高亮。
+    // 各页面各写一份导航容易走偏 —— 之前图谱页有「知识图谱」而这里没有，
+    // 两个页面的顶栏看起来像两套东西。
+    nav.appendChild(
+      h(
+        'a.nav-item',
+        { href: 'graph.html' },
+        h('span', { html: ui.icon('share', 15) }),
+        h('span', { text: '知识图谱' })
+      )
+    );
     // 「导航页」导航项已去掉：左上角 logo 就是回首页的入口
   }
 
@@ -794,7 +805,11 @@
       });
     }
     var wbBtn = document.getElementById('btn-wrongbook');
-    if (wbBtn) wbBtn.setAttribute('href', 'wrongbook.html');
+    if (wbBtn) {
+      wbBtn.setAttribute('href', 'wrongbook.html');
+      // 已在错题本页：这个图标指向自己，点了没反应会显得像坏了 —— 当前页不显示
+      wbBtn.hidden = true;
+    }
 
     if (!store.available) {
       ui.toast('浏览器不允许 file:// 使用 localStorage，无法读取刷题进度。建议用 python3 -m http.server 打开。', 'warn', 9000);
