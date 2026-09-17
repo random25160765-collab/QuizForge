@@ -169,6 +169,32 @@ def test_stream_persists_the_reply(client, monkeypatch) -> None:  # noqa: ANN001
     assert body["conversation"]["title"].startswith("循环缓冲是什么")
 
 
+def test_a_leaked_tool_call_in_the_text_is_dropped(client, monkeypatch) -> None:  # noqa: ANN001
+    """模型把工具调用写成正文时：**不发给用户**，只留一条说明。
+
+    实测内测通道的 deepseek-chat 会这样：用户看到的是一屏
+    `<||DSML|| invoke name="push_question">` 的原文，而那一轮的工具并没有真的执行
+    （它写进了 content，协议里没有 tool_calls）。看着就是"模型在胡说"。
+    """
+
+    def fake(conf, messages, *, tools=None, params=None):
+        yield ("delta", "我先看看题库里有什么。")
+        yield ("delta", '<||DSML|| invoke name="push_question">')
+        yield ("delta", '<||DSML|| parameter name="payload">{}</||DSML|| parameter>')
+        yield ("finish", "stop")
+
+    _ready(client)
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+
+    resp = _send(client, cid, content="出一道题")
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    assert "DSML" not in body, "泄漏的原文不许发给用户"
+    assert "我先看看题库里有什么。" in body, "泄漏之前的正文照常发（不许被一起丢掉）"
+    assert "协议泄漏" in body, "要说明这一段被丢了 —— 否则他会以为模型没说话"
+
+
 def test_upstream_error_keeps_what_was_streamed(client, monkeypatch) -> None:  # noqa: ANN001
     """上游挂了也要把已经吐出来的字留下。"""
     _ready(client)

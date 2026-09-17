@@ -195,6 +195,19 @@ def run(  # noqa: ANN001
         hold = ""
         leaked = False
 
+        def _marker_tail(text: str) -> int:
+            """尾巴里"可能是标记开头"的那几个字符有多长。
+
+            正常情况下是 0 —— 正文一个字都不按，立刻可见（原来我按了 14 字，
+            结果「流到一半的内容已在库里」这类契约直接被我推迟了，测试就红了）。
+            只有尾巴正好长成了某个标记的前缀时才按住它，等下一块来判定。
+            """
+            for size in range(min(len(text), 14), 0, -1):
+                suffix = text[-size:]
+                if any(mark.startswith(suffix) for mark in leak_marks):
+                    return size
+            return 0
+
         while True:
             try:
                 # 最后一轮**不给工具**：预算用尽时，模型手里已经有检索来的东西了，
@@ -221,11 +234,11 @@ def run(  # noqa: ANN001
                                 "text": "模型把工具调用写进了正文（协议泄漏），这一段已丢弃、本轮不作数。",
                             }
                             continue
-                        # 只放已经能判定安全的那部分，尾巴留着等下一块
-                        keep = 14
-                        safe = hold[:-keep] if len(hold) > keep else ""
+                        # 正常情况一个字都不按；只有尾巴像标记开头时才留一截等下一块
+                        cut = _marker_tail(hold)
+                        safe = hold[: len(hold) - cut] if cut else hold
+                        hold = hold[len(safe):]
                         if safe:
-                            hold = hold[len(safe):]
                             chunks.append(safe)
                             yield {"kind": "text", "text": safe}
                     elif kind == "think":
@@ -250,6 +263,11 @@ def run(  # noqa: ANN001
                     allow_tools = False
                     yield {"kind": "note", "text": "这个模型不支持工具调用，已改为直接回答"}
                     continue
+                # 出错也不能把那截尾巴吞掉：流里已经说过的话，用户就该看得见
+                if hold and not leaked:
+                    chunks.append(hold)
+                    yield {"kind": "text", "text": hold}
+                    hold = ""
                 yield {
                     "kind": "error",
                     # 连不上时要说"下一步干什么"：自己填密钥的人去查密钥与网络，
