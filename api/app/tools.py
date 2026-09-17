@@ -613,29 +613,95 @@ CODE_MAX_CHARS = 20_000
 _PYODIDE_PAGE = """<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>__TITLE__</title>
 <style>
- :root { color-scheme: dark; }
- body { margin: 0; padding: 14px 16px; background: #0b0d10; color: #e6e8ea;
-        font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
- .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
-        color: #8b9299; font-size: 12px; }
- .ok { color: #3ddc97; } .bad { color: #ff6b6b; }
- #out { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+ / * 与 app.css 同一套令牌（沙箱里读不到父页面的 CSS，只能抄一份过来）。
+    抄的是**值**不是规则：面板是独立文档，样式必须自足。 */
+ @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400;
+              font-display: swap;
+              src: url('__ORIGIN__/assets/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2'); }
+ @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 700;
+              font-display: swap;
+              src: url('__ORIGIN__/assets/fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2'); }
+ :root {
+   color-scheme: dark;
+   --bg: #0e1116; --bg2: #161b22; --line: #38495a; --line-soft: #2a3240;
+   --fg: #e8eef5; --fg2: #c3ccd8; --fg3: #75838f;
+   --pri: #2dd4bf; --ok: #34d399; --bad: #f87171; --amber: #fbbf24;
+   --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+ }
+ * { box-sizing: border-box; }
+ html, body { height: 100%; }
+ body { margin: 0; background: var(--bg); color: var(--fg);
+        font: 13px/1.65 var(--mono);
+        display: flex; flex-direction: column; }
+
+ .pane__head { display: flex; align-items: center; gap: 9px; flex: none;
+               padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+               position: sticky; top: 0; background: var(--bg2); z-index: 2; }
+ .dot { flex: none; width: 8px; height: 8px; border-radius: 50%;
+        background: var(--amber); box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.5);
+        animation: pulse 1.6s ease-out infinite; }
+ .dot.is-ok { background: var(--ok); animation: none; }
+ .dot.is-bad { background: var(--bad); animation: none; }
+ @keyframes pulse {
+   0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.45); }
+   70% { box-shadow: 0 0 0 7px rgba(251, 191, 36, 0); }
+   100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+ }
+ .pane__title { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 600;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ .pane__badge { flex: none; font-size: 11px; color: var(--fg3);
+                border: 1px solid var(--line-soft); border-radius: 999px;
+                padding: 1px 9px; max-width: 55%; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+
+ .pane__out { flex: 1; margin: 0; padding: 13px 15px 18px;
+              white-space: pre-wrap; overflow-wrap: anywhere; }
+ .pane__out .ok { color: var(--ok); }
+ .pane__out .bad { color: var(--bad); }
+ .pane__out .meta { color: var(--fg3); }
+
+ .pane__foot { flex: none; padding: 7px 14px; border-top: 1px solid var(--line-soft);
+               background: var(--bg2); color: var(--fg3); font-size: 11.5px; }
 </style></head>
 <body>
-<div class="bar"><span id="state">正在加载 Python 运行时（本机 13MB，浏览器会缓存）…</span></div>
-<pre id="out"></pre>
+<header class="pane__head">
+  <span class="dot" id="dot"></span>
+  <h1 class="pane__title">__TITLE__</h1>
+  <span class="pane__badge" id="badge">正在启动…</span>
+</header>
+<pre class="pane__out" id="out"></pre>
+<footer class="pane__foot" id="foot">正在加载 Python 运行时（本机 13MB，浏览器会缓存）…</footer>
 <script src="__INDEX__pyodide.js"></script>
 <script>
 const out = document.getElementById('out');
-const stateEl = document.getElementById('state');
+const dot = document.getElementById('dot');
+const badge = document.getElementById('badge');
+const foot = document.getElementById('foot');
 const RUN = '__RUNID__';
 const chunks = [];
-function write(text, tone) {
+
+/* 「已就绪：/ 未就绪：」这类状态行自带颜色 —— 让 Python 那边不必关心 CSS。 */
+function toneOf(text) {
+  if (text.indexOf('已就绪：') === 0) return 'ok';
+  if (text.indexOf('未就绪：') === 0) return 'bad';
+  return '';
+}
+
+function write(text, cls) {
   chunks.push(text);
   const span = document.createElement('span');
+  const tone = cls || toneOf(text);
   if (tone) span.className = tone;
   span.textContent = text;
   out.appendChild(span);
+  // 跟着滚：跑长脚本时不用手动往下拉
+  const scroller = document.scrollingElement;
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+}
+
+/* 秒数一律带单位：别让人对着 1715 自己换算。 */
+function secs(ms) {
+  return (ms < 9500 ? (ms / 1000).toFixed(2) : (ms / 1000).toFixed(1)) + 's';
 }
 /* 把这次运行的输出**交回宿主**。
    模型看不见沙箱里发生了什么 —— 不回传，它就只能凭想象说"跑出来了"：
@@ -647,13 +713,22 @@ function report(ok) {
   } catch (err) { /* 不在 iframe 里（直接打开这个页面）就没什么可回传的 */ }
 }
 (async () => {
+  let bootMs = 0;
+  let packMs = 0;
   try {
+    // 三段分别计时：运行时 / 依赖 / 代码。
+    // 合并成"用时 1.7s"没有用 —— 那个数看不出慢在哪（实测用户就问过
+    // "一秒多有点慢"，而那一秒其实是 scipy 第一次 import 的固有成本）。
+    const t0 = performance.now();
     const py = await loadPyodide({ indexURL: '__INDEX__' });
+    bootMs = performance.now() - t0;
     py.setStdout({ batched: (s) => write(s + '\\n') });
     py.setStderr({ batched: (s) => write(s + '\\n', 'bad') });
+    foot.textContent = '运行时 ' + secs(bootMs) + ' · 正在准备依赖…';
+
     const want = __PACKAGES__;
+    const t1 = performance.now();
     if (want.length) {
-      stateEl.textContent = '正在加载依赖：' + want.join('、') + '（本机，首次约 70MB，之后走缓存）';
       try {
         await py.loadPackage(want);
       } catch (err) {
@@ -662,28 +737,41 @@ function report(ok) {
         write('依赖加载失败：' + want.join('、') + ' —— ' + String((err && err.message) || err) + '\\n', 'bad');
       }
     }
-    stateEl.textContent = 'Python 就绪';
-    stateEl.className = 'ok';
-    // 把沙箱的能力**报出来**（哪几个包在、版本多少）。
+    packMs = performance.now() - t1;
+
+    // 把沙箱的能力**报出来**（哪几个包在、版本多少），顺手填右上角那枚徽标。
     // 这段比代码本身还重要：输出会经「把输出发给它」回到模型手里，
     // 它因此不必猜"这个环境有什么"。
-    py.runPython(
-      'import importlib\\n' +
+    const info = py.runPython(
+      'import sys, importlib\\n' +
+      '_bits = ["Python " + sys.version.split()[0]]\\n' +
       'for _name in __CHECK__:\\n' +
       '    try:\\n' +
       '        _mod = importlib.import_module(_name)\\n' +
-      '        print("已就绪：" + _name + " " + getattr(_mod, "__version__", "?"))\\n' +
+      '        _ver = getattr(_mod, "__version__", "?")\\n' +
+      '        print("已就绪：" + _name + " " + _ver)\\n' +
+      '        _bits.append(_name + " " + _ver)\\n' +
       '    except Exception as _exc:\\n' +
-      '        print("未就绪：" + _name + " —— " + str(_exc))\\n'
+      '        print("未就绪：" + _name + " —— " + str(_exc))\\n' +
+      '        _bits.append(_name + " 未就绪")\\n' +
+      '" · ".join(_bits)'
     );
-    const started = performance.now();
+    badge.textContent = String(info);
+    dot.className = 'dot is-ok';
+
+    const t2 = performance.now();
     await py.runPythonAsync(__CODE__);
-    write('\\n— 用时 ' + Math.round(performance.now() - started) + 'ms\\n', 'ok');
+    const codeMs = performance.now() - t2;
+
+    const line = '运行时 ' + secs(bootMs) + ' · 依赖 ' + secs(packMs) + ' · 代码 ' + secs(codeMs);
+    write('\\n— ' + line + '\\n', 'meta');
+    foot.textContent = line;
     report(true);
   } catch (err) {
-    stateEl.textContent = '出错了';
-    stateEl.className = 'bad';
+    dot.className = 'dot is-bad';
+    badge.textContent = '出错了';
     write(String((err && err.message) || err) + '\\n', 'bad');
+    foot.textContent = '运行时 ' + secs(bootMs) + ' · 失败';
     report(false);
   }
 })();
@@ -737,17 +825,19 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         }
 
     asked = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]
-    # 只认名单里的。Pyodide 能不能装某个包是**写死的事实**，猜不出来，
+    # 装什么：numpy 总是装（12MB，几乎每段脚本都用）；scipy 是 47MB ——
+    # **代码里真的提到它**（或模型点名）时才装。常见的"纯计算 + numpy"因此
+    # 不必先等 63MB。代价是动态导入（`__import__("scipy")`）会被漏掉 ——
+    # 这条写在工具说明里了。
+    hint = " ".join([code] + asked).lower()
+    packages = [name for name in PYODIDE_PACKAGES if name == "numpy" or name in hint]
+
+    # 名单外的剔掉并告诉模型。Pyodide 能不能装某个包是**写死的事实**，猜不出来，
     # 而猜错的代价是"看起来装上了、跑起来 No module named"（实测发生过）。
-    # 名单外的直接剔掉并告诉模型，比让它自己发现要好。
-    packages: list[str] = []
     skipped: list[str] = []
-    for name in list(PYODIDE_PACKAGES) + asked:
+    for name in asked:
         key = name.lower().strip().split(".")[0]  # scipy.signal 这种也认成 scipy
-        if key in PYODIDE_PACKAGES:
-            if key not in packages:
-                packages.append(key)
-        elif key and key not in skipped:
+        if key and key not in PYODIDE_PACKAGES and key not in skipped:
             skipped.append(key)
 
     title = str(args.get("title") or "").strip()[:80] or "Python 运行结果"
@@ -758,7 +848,8 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         "正文里说清这段在验证什么就够了；他想让你看结果时，"
         "面板上有「把输出发给它」按钮。"
         "沙箱固定带这几个包：" + "、".join(PYODIDE_PACKAGES) + "（不必再点名，"
-        "面板开头会报出实际版本）。"
+        "面板开头会报出实际版本）。numpy 每次都装，scipy 只在代码里出现它时才装 —— "
+        "**用 `__import__(\"scipy\")` 这种动态写法时请在 packages 里点名**。"
     )
     if skipped:
         note += (
@@ -1356,6 +1447,9 @@ REGISTRY = {
         "标准库 + **固定一个子集：numpy 与 scipy**（本机现成，不必点名，"
         "面板开头会报出实际版本）；别的装不了 —— 没有 pandas、没有 matplotlib"
         "（要图就用 render_demo 写 JS）、没有文件系统与网络。\n"
+        "面板底部会把时间分成三段报出来（运行时 / 依赖 / 代码）。"
+        "**scipy 的子模块（signal、optimize 这些）第一次 import 要 1–2 秒** —— "
+        "那是它的固有成本，不是沙箱慢；跟他说清楚，别让他以为是环境有问题。\n"
         "**你看不到运行输出** —— 它落在面板上（沙箱在 iframe 里，输出不进你的上下文）。"
         "所以不要说「跑出来了，结果是 X」：那是编的，实测发生过（声称 numpy 可用，"
         "面板上却是 No module named 'numpy'）。"

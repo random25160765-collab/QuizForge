@@ -102,7 +102,10 @@ def create_app() -> FastAPI:
         而且**只**放开这一条路径，其他静态资源不受影响。
         """
         response = await call_next(request)
-        if request.url.path.startswith("/assets/pyodide/"):
+        path = request.url.path
+        # pyodide：模块脚本与 fetch 都要 CORS；fonts：**网页字体本身就被 CORS 限制**
+        # （沙箱里的 Python 面板是独立文档，它要用我们这份等宽字体）
+        if path.startswith("/assets/pyodide/") or path.startswith("/assets/fonts/"):
             response.headers["Access-Control-Allow-Origin"] = "*"
         return response
 
