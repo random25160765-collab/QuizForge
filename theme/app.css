@@ -1649,3 +1649,15 @@ body[data-page='wrongbook'] .part {
 @media (prefers-reduced-motion: reduce) {
   .bootstate__spinner { animation-duration: 2s; }
 }
+
+/* 退场中的弹层卡片：脱离流的居中 + 自己淡出。
+   两条都不是可选：留在流里会在 grid 里再占一行（把随后弹出的确认框顶到下面），
+   而 fade 放在遮罩上会连累同时存在的另一个弹层。 */
+.modal-root .modal__card.is-leaving {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s var(--ease);
+}
