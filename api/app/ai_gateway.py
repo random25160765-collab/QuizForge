@@ -42,10 +42,15 @@ _BETA_CACHE: dict = {"path": "", "mtime": 0.0, "data": {}}
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
 
-# 能读图的模型（按名字判断）。**保守**：认不出就当读不了 ——
-# 往一个不支持视觉的接口塞 image_url，上游会直接 400，那比"读不到图"更糟。
+# 能读图的模型（按名字判断）。认不出就当读不了 —— 往一个不支持视觉的接口塞
+# image_url，上游会直接 400，那比"读不到图"更糟。
 # 用户也可以在自己的设置里显式写 `"vision": true/false` 覆盖这个判断。
+#
+# `deepseek` 在表里是**实测加上的**：名字里带 "chat" 让人以为它是纯文本，
+# 但它已经支持图像输入（发一张成绩表过去，它把课程名与学分列都读出来了）。
+# 这条教训写在这儿：**模型名推不出能力**，所以既有保守的默认，也有显式开关。
 _VISION_HINTS = (
+    "deepseek",
     "gpt-4o",
     "gpt-4.1",
     "gpt-5",
@@ -61,6 +66,10 @@ _VISION_HINTS = (
     "-vl",
     "vl-",
 )
+
+# 上游真正接受的图像格式（实测：不在其中的会回 400 "unsupported image"）。
+# `attachments.IMAGE_SUFFIXES` 比这个宽（含 bmp/svg）——那些存得下、给不了模型。
+VISION_MIMES = ("image/png", "image/jpeg", "image/webp", "image/gif")
 
 
 def model_reads_images(model: str) -> bool:

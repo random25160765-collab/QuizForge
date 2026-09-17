@@ -622,17 +622,29 @@ _PYODIDE_PAGE = """<!doctype html>
  #out { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style></head>
 <body>
-<div class="bar"><span id="state">正在加载 Python 运行时（Pyodide，首次约 10MB 走 CDN）…</span></div>
+<div class="bar"><span id="state">正在加载 Python 运行时（本机 13MB，浏览器会缓存）…</span></div>
 <pre id="out"></pre>
 <script src="__INDEX__pyodide.js"></script>
 <script>
 const out = document.getElementById('out');
 const stateEl = document.getElementById('state');
+const RUN = '__RUNID__';
+const chunks = [];
 function write(text, tone) {
+  chunks.push(text);
   const span = document.createElement('span');
   if (tone) span.className = tone;
   span.textContent = text;
   out.appendChild(span);
+}
+/* 把这次运行的输出**交回宿主**。
+   模型看不见沙箱里发生了什么 —— 不回传，它就只能凭想象说"跑出来了"：
+   实测它声称 numpy/scipy 可用，而这块面板上写着 No module named 'numpy'。
+   回传之后宿主能把输出摆出来，也能一键把它发回给模型。 */
+function report(ok) {
+  try {
+    parent.postMessage({ qfRun: RUN, ok: ok, text: chunks.join('') }, '*');
+  } catch (err) { /* 不在 iframe 里（直接打开这个页面）就没什么可回传的 */ }
 }
 (async () => {
   try {
@@ -641,7 +653,7 @@ function write(text, tone) {
     py.setStderr({ batched: (s) => write(s + '\\n', 'bad') });
     const want = __PACKAGES__;
     if (want.length) {
-      stateEl.textContent = '正在安装依赖：' + want.join('、');
+      stateEl.textContent = '正在加载依赖：' + want.join('、') + '（首次较慢，之后走缓存）';
       await py.loadPackage(want);
     }
     stateEl.textContent = 'Python 就绪';
@@ -649,19 +661,22 @@ function write(text, tone) {
     const started = performance.now();
     await py.runPythonAsync(__CODE__);
     write('\\n— 用时 ' + Math.round(performance.now() - started) + 'ms\\n', 'ok');
+    report(true);
   } catch (err) {
     stateEl.textContent = '出错了';
     stateEl.className = 'bad';
     write(String((err && err.message) || err) + '\\n', 'bad');
+    report(false);
   }
 })();
 </script></body></html>"""
 
 
-def _python_page(title: str, code: str, packages: list[str]) -> str:
+def _python_page(title: str, code: str, packages: list[str], run_id: str) -> str:
     return (
         _PYODIDE_PAGE.replace("__TITLE__", html.escape(title)[:80])
         .replace("__INDEX__", pyodide_base())
+        .replace("__RUNID__", html.escape(run_id)[:40])
         .replace("__PACKAGES__", json.dumps(packages, ensure_ascii=False))
         .replace("__CODE__", json.dumps(code, ensure_ascii=False))
     )
@@ -678,11 +693,21 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     ## 能跑什么、跑不了什么
 
     * 标准库、纯计算、文本输出：没问题。
-    * `numpy` / `scipy` 这类纯 WASM 轮子的包：在 `packages` 里点名就能装（走 CDN，慢）。
+    * `numpy` / `scipy`：**本机已经装好**（连同 openblas），`packages` 里点名即可，
+      不用联网、不用等下载。
     * **跑不了**：要编译或依赖系统库的（`torch`、某些 `pandas` 依赖）、
       要读本机文件或连数据库的 —— 沙箱里没有文件系统，也没有用户的数据。
     * **没有 matplotlib**：要画图得先接 canvas，这里没接。要图就用 JS 画，
       或者把数据 print 出来。
+
+    ## 你看不到输出（这条最要紧）
+
+    输出落在面板上，**不会回到你的上下文里**。所以：
+
+    * 别说"跑出来了，结果是 X" —— 你没看到，那就是编的（实测发生过：
+      声称 numpy 可用，而面板上写着 No module named 'numpy'）。
+    * 说"我写了一段验证 XX 的代码，跑一下"就够，让他去面板看；
+      面板上那个「把输出发给它」按钮会把结果**原样**送给你，那时再下结论。
     """
     code = str(args.get("code") or "").strip()
     if not code:
@@ -694,10 +719,13 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 
     packages = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]
     title = str(args.get("title") or "").strip()[:80] or "Python 运行结果"
+    run_id = uuid.uuid4().hex[:12]
     return {
-        "demo": {"title": title, "html": _python_page(title, code, packages)},
-        "note": "代码已经能在面板里真跑。**不要**把源码或输出再贴进正文 —— "
-        "正文里说清这段在验证什么就够了。他没看到输出，说明还没点开面板。",
+        "demo": {"title": title, "html": _python_page(title, code, packages, run_id), "runId": run_id},
+        "note": "代码已经挂上，面板里真跑。**不要**把源码或输出贴进正文，"
+        "**也不要**声称你已经看到输出 —— 你看不到，它跑在沙箱里。"
+        "正文里说清这段在验证什么就够了；他想让你看结果时，面板上有"
+        "「把输出发给它」按钮。",
     }
 
 
@@ -1267,8 +1295,14 @@ REGISTRY = {
         "用户说「跑一段脚本」「算一下」「验证一下这个算法」「试试这段代码」时**直接用它**，"
         "不要推辞、也不要让他自己去写页面。只给核心逻辑，用 print 出结果 —— "
         "样板（加载运行时、接 stdout、显示报错）由工具负责。"
-        "标准库与 numpy / scipy 这类纯 WASM 包可用（在 packages 里点名）；"
-        "**没有**文件系统、没有网络访问、没有 matplotlib（要图就用 render_demo 写 JS）。",
+        "标准库与 numpy / scipy 可用（在 packages 里点名；**运行时和这两个包都在本机**，"
+        "不用联网、不用等下载）；没有文件系统、没有网络访问、"
+        "没有 matplotlib（要图就用 render_demo 写 JS）。\n"
+        "**你看不到运行输出** —— 它落在面板上（沙箱在 iframe 里，输出不进你的上下文）。"
+        "所以不要说「跑出来了，结果是 X」：那是编的，实测发生过（声称 numpy 可用，"
+        "面板上却是 No module named 'numpy'）。"
+        "你只需说清写这段在验证什么，让他去面板看；面板上有「把输出发给它」按钮，"
+        "他点一下输出才会回到你这里，那时再下结论。",
         "parameters": {
             "type": "object",
             "properties": {

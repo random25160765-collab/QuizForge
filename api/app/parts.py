@@ -131,9 +131,17 @@ def file_part(
     }
 
 
-def demo_part(*, title: str, html: str) -> dict:
-    """演示沙箱：一段**自包含** HTML，前端塞进 sandbox iframe 里跑（不带 same-origin）。"""
-    return {"type": "demo", "title": str(title)[:80], "html": html}
+def demo_part(*, title: str, html: str, run_id: str = "") -> dict:
+    """演示沙箱：一段 HTML，前端塞进 sandbox iframe 里跑（不带 same-origin）。
+
+    `run_id` 是**页面向宿主回传结果时的身份**：沙箱里跑完（Python 那种）会
+    `postMessage({qfRun: run_id, text})`，前端据此把输出认到这条消息上 ——
+    没有它，输出就只会飘在面板里，模型永远看不到自己那段代码到底干了什么。
+    """
+    part = {"type": "demo", "title": str(title)[:80], "html": html}
+    if run_id:
+        part["runId"] = str(run_id)
+    return part
 
 
 def text_of(parts) -> str:  # noqa: ANN001

@@ -289,13 +289,15 @@ def _attachment_images(db: DbSession, message: Message) -> list[dict]:  # noqa: 
             continue
         if len(blocks) >= VISION_MAX_IMAGES:
             break
+        mime = str(row.mime or "").strip()
+        if mime not in gateway.VISION_MIMES:
+            # bmp / svg 存得下，但上游只收 png/jpeg/webp/gif（多传会 400）。
+            # 不静默丢掉：说明里会讲清是哪张、为什么没给出去。
+            continue
         try:
             raw = attach.path_of(row).read_bytes()
         except OSError:
             continue
-        mime = str(row.mime or "").strip() or "image/png"
-        if not mime.startswith("image/"):
-            mime = "image/png"
         blocks.append(
             {
                 "type": "image_url",
@@ -325,8 +327,17 @@ def _attachment_block(db: DbSession, message: Message, *, model: str = "", visio
         if row.text:
             blocks.append(head + "\n" + row.text[: attach.CONTEXT_LIMIT])
         elif row.kind == "image":
-            if vision:
+            mime = str(row.mime or "").strip()
+            if vision and mime in gateway.VISION_MIMES:
                 blocks.append(head + "\n（这是一张图片，图像已随这条消息交给你，可以直接看图回答。）")
+            elif vision:
+                blocks.append(
+                    head
+                    + "\n（这是一张图片，格式是 "
+                    + (mime or "未知")
+                    + "：上游只接受 png / jpeg / webp / gif，所以这张没能交给你。"
+                    "跟他说一声，让他转成 png 或 jpg 再发。）"
+                )
             else:
                 blocks.append(
                     head
@@ -1094,7 +1105,11 @@ def _stream(  # noqa: ANN001
                 demo = (event.get("payload") or {}).get("demo")
                 if isinstance(demo, dict) and demo.get("html"):
                     parts.append(
-                        msgparts.demo_part(title=demo.get("title") or "演示", html=demo["html"])
+                        msgparts.demo_part(
+                            title=demo.get("title") or "演示",
+                            html=demo["html"],
+                            run_id=demo.get("runId") or "",
+                        )
                     )
                     yield _sse("demo", {"callId": event["callId"], "demo": demo})
 

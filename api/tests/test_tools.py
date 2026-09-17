@@ -388,6 +388,29 @@ def test_run_python_wraps_the_code_in_a_working_page(client, db_session) -> None
     assert "setStderr" in page, "报错也要显示出来"
 
 
+def test_run_python_page_reports_its_output_back(client, db_session) -> None:  # noqa: ANN001
+    """沙箱输出要能回到宿主 —— 模型看不见面板，不回传它就只能编。
+
+    实测的编法：它声称 numpy/scipy 可用，而面板上写着 `No module named 'numpy'`。
+    回传之后，前端能把输出摆在面板上，也能一键把它发回给模型。
+    """
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+
+    ok, payload = tools.call(
+        db_session, user, "run_python", {"code": "print(1 + 1)", "packages": ["numpy"]}
+    )
+    assert ok, payload
+    demo = payload["demo"]
+    assert demo["runId"], "要有身份，宿主才认得出这是哪一次运行回传的"
+
+    page = demo["html"]
+    assert "parent.postMessage" in page
+    assert "qfRun" in page and demo["runId"] in page
+    # 报了运行结果之后才回传（不报 = 宿主永远在等）
+    assert page.count("report(") >= 3
+
+
 def test_run_python_refuses_empty_and_giant_code(client, db_session) -> None:  # noqa: ANN001
     _register(client)
     user = db_session.get(User, uuid.UUID(_me_id(client)))
