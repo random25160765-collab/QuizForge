@@ -862,6 +862,74 @@ def test_an_attachment_rides_along_into_the_request(client, monkeypatch) -> None
     assert stored["parts"][0]["type"] == "file"
 
 
+def test_the_sandbox_output_comes_back_by_itself(client, monkeypatch) -> None:  # noqa: ANN001
+    """跑完的输出**自动回填**：消息里带着它，下一轮模型也读得到。
+
+    原先靠面板上一个「把输出发给它」按钮 —— 那是让用户当传话筒。
+    """
+    seen: list[list[dict]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        seen.append([dict(message) for message in messages])
+        if not any(message.get("role") == "tool" for message in messages):
+            yield (
+                "tool_calls",
+                [
+                    {
+                        "id": "c1",
+                        "name": "run_python",
+                        "arguments": json.dumps({"code": "print(1 + 1)"}),
+                    }
+                ],
+            )
+            yield ("finish", "tool_calls")
+            return
+        yield ("delta", "跑好了。")
+        yield ("finish", "stop")
+
+    _ready(client)
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+    events = dict(_events(_send(client, cid, content="算个 1+1").text))
+
+    done = events["done"]
+    demo = next(part for part in done["parts"] if part["type"] == "demo")
+    run_id = demo.get("runId")
+    assert run_id, "零件要带上 runId，宿主才认得出是哪次运行"
+
+    # 认错 runId 时不该悄悄写坏零件
+    bad = client.post(
+        f"/api/chat/conversations/{cid}/messages/{done['id']}/run",
+        json={"runId": "nope", "text": "x"},
+        headers=_headers(client),
+    )
+    assert bad.status_code == 404
+
+    # 前端回填（沙箱跑完 postMessage → POST 到这里）
+    ok = client.post(
+        f"/api/chat/conversations/{cid}/messages/{done['id']}/run",
+        json={"runId": run_id, "ok": True, "text": "已就绪：numpy 1.26.4\n结果是 2\n"},
+        headers=_headers(client),
+    )
+    assert ok.status_code == 200, ok.text
+
+    # 存下来了 —— 刷新之后界面上还看得到
+    stored = next(
+        m for m in client.get(f"/api/chat/conversations/{cid}").json()["messages"] if m["id"] == done["id"]
+    )
+    part = next(p for p in stored["parts"] if p["type"] == "demo")
+    assert part["run"]["text"].startswith("已就绪：numpy 1.26.4")
+    assert part["run"]["ok"] is True
+
+    # 下一轮：它进模型的历史（模型自己就能读到，不必谁转述）
+    _send(client, cid, content="那结果是多少")
+    assistant = "\n".join(
+        str(m.get("content") or "") for m in seen[-1] if m.get("role") == "assistant"
+    )
+    assert "〔沙箱输出〕" in assistant
+    assert "结果是 2" in assistant
+
+
 def test_vision_is_detected_conservatively() -> None:
     """认不出就当读不了 —— 猜"能读"会给上游塞 image_url，上游直接 400。"""
     from app import ai_gateway as gateway

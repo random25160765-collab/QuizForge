@@ -58,6 +58,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import func, select
+from sqlalchemy.orm.attributes import flag_modified
 
 from .. import agent_loop, tools
 from .. import ai_gateway as gateway
@@ -105,6 +106,11 @@ CITATION_MAX = 6
 # 换来的上下文占用，比它带来的信息值钱得多。
 VISION_MAX_BYTES = 4 * 1024 * 1024
 VISION_MAX_IMAGES = 3
+
+# 沙箱输出存下来时留多少字（回放给模型时另按 HISTORY_RUN_CHARS 夹一次）
+RUN_TEXT_LIMIT = 40_000
+# 回放沙箱输出给模型时留多少字。它会被每一轮重新带上，所以要比"存下来的"更狠
+HISTORY_RUN_CHARS = 1600
 
 # 回放历史时，单条工具输出最多带这么多字。
 # 工具输出会被**每一轮**重新带上，而它往往比对话本身长（一次知识点详情上千字）；
@@ -405,6 +411,20 @@ def _history(db: DbSession, messages: list[Message], *, vision: bool = False, mo
             if isinstance(part, dict) and part.get("type") == "tool_call" and part.get("name")
         ]
         text = message.content or ""
+
+        # 沙箱跑出来的输出也回放进来：模型于是能读到自己那段代码的结果。
+        # 原先它读不到 —— 只能靠用户在面板上按一下「把输出发给它」再转述，
+        # 那是把用户当传话筒。输出由前端回填（见 attach_run），这里只是把它带上。
+        runs = [
+            str((part.get("run") or {}).get("text") or "").strip()
+            for part in (message.parts or [])
+            if isinstance(part, dict)
+            and part.get("type") == "demo"
+            and isinstance(part.get("run"), dict)
+        ]
+        for output in runs:
+            if output:
+                text = (text + "\n\n〔沙箱输出〕\n" + msgparts.clip(output, HISTORY_RUN_CHARS)).strip()
 
         if not calls:
             if text:
@@ -915,6 +935,57 @@ def post_message(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/conversations/{cid}/messages/{mid}/run")
+def attach_run(
+    cid: uuid.UUID, mid: int, payload: dict, user: AuthenticatedWriter, db: DbSession
+) -> dict:
+    """把沙箱那次运行的结果**回填到消息上**。
+
+    ## 为什么要回填，而不是让用户点一下「把输出发给它」
+
+    输出本来就在宿主手里（沙箱跑完 `postMessage` 回来）。让用户按一下再复制过来，
+    等于把他当传话筒 —— 而这套系统里没人该做这件事。回填之后：
+
+    * 那条消息**直接显示输出**（不必点开面板）
+    * **下一轮对话时它进模型的历史**（见 `_history`）—— 模型自己就能读到自己
+      那段代码跑出了什么，不必等谁转述
+
+    按 `runId` 认领：一次运行对应一个零件；认不出来就当没这回事（不静默写坏零件）。
+    """
+    conv = _own_conversation(db, user.id, cid)
+    message = db.get(Message, mid)
+    if message is None or message.conversation_id != conv.id:
+        raise HTTPException(404, "没有这条消息")
+
+    body = payload or {}
+    run_id = str(body.get("runId") or "").strip()
+    if not run_id:
+        raise HTTPException(400, "缺少 runId")
+    text = str(body.get("text") or "")[:RUN_TEXT_LIMIT]
+
+    # 造**新的** dict 而不是原地改：JSON 列的脏检查比较的是值，
+    # 原地改完再赋值会被判成"没变"，于是什么都不写（实测就是这样静默丢的）。
+    # 再加上 flag_modified 兜一道。
+    parts = []
+    hit = False
+    for part in message.parts or []:
+        if (
+            isinstance(part, dict)
+            and part.get("type") == "demo"
+            and str(part.get("runId") or "") == run_id
+        ):
+            part = dict(part, run={"ok": body.get("ok") is not False, "text": text})
+            hit = True
+        parts.append(part)
+    if not hit:
+        raise HTTPException(404, "这条消息里没有这次运行")
+
+    message.parts = parts
+    flag_modified(message, "parts")
+    db.commit()
+    return {"ok": True, "chars": len(text)}
 
 
 @router.post("/conversations/{cid}/messages/{mid}/stop")

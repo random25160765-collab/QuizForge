@@ -1523,7 +1523,19 @@
         onClick: function () {
           openDemo(part);
         },
-      })
+      }),
+      // 跑出来的输出直接摆在这儿 —— 不必点开面板才知道它跑成什么样。
+      // 它同时也是回填给服务端的那一份（见 message 监听里的回填）。
+      part.run && part.run.text
+        ? h(
+            'div.chatdemo__inline' + (part.run.ok === false ? '.is-bad' : ''),
+            null,
+            h('div.chatdemo__inlinelabel', {
+              text: part.run.ok === false ? '沙箱报错（已回填给模型）' : '沙箱输出（已回填给模型）',
+            }),
+            h('pre.chatdemo__inlinepre', { text: part.run.text })
+          )
+        : null
     );
   }
 
@@ -1540,34 +1552,52 @@
     return runId ? demoRuns[runId] || null : null;
   }
 
+  /** 哪个消息里挂着这次运行的零件（回填要用它的 id）。 */
+  function findRunMessage(runId) {
+    for (var i = 0; i < state.messages.length; i++) {
+      var message = state.messages[i];
+      var parts = message.parts || [];
+      for (var j = 0; j < parts.length; j++) {
+        var part = parts[j];
+        if (part && part.type === 'demo' && part.runId === runId) {
+          return { part: part, mid: message.id, cid: state.current };
+        }
+      }
+    }
+    return null;
+  }
+
   // 沙箱页面（Python 那种）跑完会 postMessage 回来：{qfRun: runId, ok, text}
   window.addEventListener('message', function (event) {
     var data = event.data;
     if (!data || !data.qfRun) return;
-    demoRuns[data.qfRun] = { ok: data.ok !== false, text: String(data.text || '') };
+    var run = { ok: data.ok !== false, text: String(data.text || '') };
+    demoRuns[data.qfRun] = run;
+
     if (state.demo && state.demo.runId === data.qfRun) {
-      state.demo.run = demoRuns[data.qfRun];
+      state.demo.run = run;
       paintDemoRun();
     }
-  });
 
-  /**
-   * 把沙箱输出发回给模型 —— 这是输出能回到它手里的**唯一一条路**，而且由人按。
-   *
-   * 不自动追发：那等于替用户说话，还可能在他还没看结果时白烧一轮额度。
-   * 摆一个按钮在这儿，什么时候发、发哪一次，他说了算。
-   */
-  function sendDemoRun(run) {
-    if (state.busy) return;
-    var text = String((run && run.text) || '').trim();
-    if (!text) {
-      ui.toast('这次运行没有输出可发', 'warn');
-      return;
-    }
-    state.demo = null;
-    renderDemoPanel();
-    send({ content: '沙箱里跑出来的结果（原样贴给你）：\n```\n' + text + '\n```\n按这个结果说下去。' });
-  }
+    // 顺手**回填给服务端**：那条消息因此自己带着输出 —— 界面直接显示，
+    // 下一轮模型也能读到。不必让人按什么按钮转述（那是把他当传话筒）。
+    var host = findRunMessage(data.qfRun);
+    if (!host || host.part.run) return;
+    host.part.run = run;
+    // 线程里长出输出块。**流式过程中不能整块重画** —— 那会把正在写字的那个
+    // 节点踢掉（render 是往 state.live 的节点上追加的）。这种情况留给
+    // 这一轮结束时的重画，它自然会带上输出。
+    if (!state.busy) paintThread();
+    api
+      .post('/chat/conversations/' + host.cid + '/messages/' + host.mid + '/run', {
+        runId: data.qfRun,
+        ok: run.ok,
+        text: run.text,
+      })
+      .catch(function () {
+        // 回填失败只意味着"模型这一轮看不到它"，界面照常显示
+      });
+  });
 
   function paintDemoRun() {
     if (!demoRunEl) return;
@@ -1587,18 +1617,8 @@
         'div.chatdemo__runhead',
         null,
         h('span.chatdemo__runlabel' + (run.ok ? '' : '.is-bad'), {
-          text: run.ok ? '沙箱输出' : '沙箱报错',
+          text: (run.ok ? '沙箱输出' : '沙箱报错') + ' · 已回填给模型',
         }),
-        h(
-          'button.btn.btn--ghost.chatdemo__runsend',
-          {
-            type: 'button',
-            onClick: function () {
-              sendDemoRun(run);
-            },
-          },
-          '把输出发给它'
-        ),
         h(
           'button.chatdemo__runcopy',
           {
