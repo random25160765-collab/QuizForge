@@ -2168,3 +2168,22 @@ body[data-page='chat'] .chat {
   border-style: dashed;
   cursor: default;
 }
+
+/* 发送键的图标：底色是亮的青绿，深色细线会糊成一块绿 —— 加粗才立得住 */
+.chat__send .chat__icon svg {
+  stroke-width: 2.4;
+}
+
+.chat__send .chat__icon {
+  transition: transform 160ms var(--ease);
+}
+
+/* 两态各一点动效：悬停箭头轻轻上提（要发出去了），按下沉一点、
+   停止态（方块）不参与上提 —— 一个"往上送"、一个"按下去停"。 */
+.chat__send:not(.is-stop):hover .chat__icon {
+  transform: translateY(-1.5px);
+}
+
+.chat__send:active .chat__icon {
+  transform: translateY(1px) scale(0.9);
+}
