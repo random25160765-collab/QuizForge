@@ -59,9 +59,20 @@
   }
 
   function filteredIds() {
-    var ids = D.filter(state.filters).map(function (q) {
-      return q.id;
-    });
+    // 题源先分层：练"公共题库"还是"我的题单"。
+    // 判据是 **id 集合**（`QF.data.myIds`，由 boot 装载时记下），
+    // 不是题对象上的字段 —— `install()` 会规整题，自定义字段不一定留得住。
+    var scope = state.qsource || 'all';
+    var mineIds = D.myIds || {};
+    var ids = D.filter(state.filters)
+      .filter(function (q) {
+        if (scope === 'all') return true;
+        if (scope === 'mine') return !!mineIds[q.id];
+        return !mineIds[q.id];
+      })
+      .map(function (q) {
+        return q.id;
+      });
     var status = state.filters.status;
     if (status.length) {
       ids = ids.filter(function (id) {
@@ -1379,6 +1390,37 @@
             render();
           },
         }, h('span', { text: '清空' }))
+      )
+    );
+
+    // 题源：公共题库 / 我的题单 / 都要。
+    // 它不是"哪些题合适"，而是"从哪一批里挑" —— 所以比筛选条件更靠前。
+    panel.appendChild(
+      h(
+        'div.filterbar',
+        null,
+        h('span.filterbar__label', { text: '题源' }),
+        h(
+          'div.filterbar__group',
+          null,
+          [
+            ['all', '都要'],
+            ['public', '公共题库'],
+            ['mine', '我的题单'],
+          ].map(function (pair) {
+            return h(
+              'button.btn.btn--sm' + ((state.qsource || 'all') === pair[0] ? '.is-on' : ''),
+              {
+                type: 'button',
+                onClick: function () {
+                  state.qsource = pair[0];
+                  render();
+                },
+              },
+              h('span', { text: pair[1] })
+            );
+          })
+        )
       )
     );
 
