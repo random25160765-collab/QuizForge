@@ -155,8 +155,11 @@ graph-export:
 # 走 shell 会被"批量删除需要确认"拦下，而这是流水线自己的中间产物，不该打扰人。
 BANK_MATERIALIZE = $(VENV)/bin/python -m pipeline.bankfile materialize
 
-# 校验连草稿一起看（草稿也必须符合契约，只是还不对外发布）
+# 校验连草稿一起看（草稿也必须符合契约，只是还不对外发布）。
+# **先扫密钥再校题**：前者一秒就跑完，且一旦命中就该立刻停下 ——
+# 密钥只要推出去了，后面所有校验都变得没有意义（收不回来，只能换）。
 check:
+	@$(PYTHON) tools/secret_scan.py
 	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
 	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
 	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(PYTHON) tools/check.py; \
