@@ -192,6 +192,47 @@ class Question(Base):
     )
 
 
+class UserQuestion(Base):
+    """用户题单里的一道题 —— **自己出的**，与公共题库分开。
+
+    ## 为什么另开一张表，不塞进 `questions`
+
+    `questions` 是公共题库的权威表：图谱（`question_concepts`）、覆盖率对账、
+    出题流水线的状态机（draft → verified → published）全挂在它上面。
+    用户随手出的题混进去有三个问题：污染统计口径（"覆盖率"里混进刚生成的一题）、
+    让流水线去管它、以及**删不掉**（公共表的题只下架、不删除）。
+
+    ## 与公共题的关系
+
+    `payload` 与 `questions.payload` **同构**（stem / options / answer / explanation /
+    parts …），于是渲染、判分、练习、组卷这些代码不必分叉 ——
+    差别只在"题从哪来"那一处。`point_key` 记它冲着哪个知识点出的（可空），
+    `conversation_id` 记它是哪条对话里出的（可空，练习页也能手写一道）。
+    """
+
+    __tablename__ = "user_questions"
+
+    id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    payload: Mapped[dict] = mapped_column(JSONType, nullable=False)
+    # 由哪条对话出的。刻意**不加外键**：对话删了不该连带影响题单，
+    # 而这个字段只用来显示"来自哪次对话"。
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True))
+    point_key: Mapped[str] = mapped_column(
+        String(96), default="", server_default="", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_user_questions_user_created", "user_id", "created_at"),)
+
+
 class PointCandidate(Base):
     """抽取员的原始产出（每个切片一条一条候选点）。
 
