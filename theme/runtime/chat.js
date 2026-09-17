@@ -973,7 +973,9 @@
 
     api.stream(
       '/problem/solve',
-      { problemId: problemData.problem.id, answers: answers },
+      // conversationId 是给"批改结果回主对话"用的（见后端 `_append_grade_note`）：
+      // 没有它，子代理的结论只活在这个小窗口里，主 agent 下一轮对它一无所知。
+      { problemId: problemData.problem.id, answers: answers, conversationId: state.current || '' },
       {
         delta: function (data) {
           problemFeedback += (data && data.text) || '';
@@ -1062,6 +1064,10 @@
 
     var problem = problemData && problemData.problem;
     var list = problem ? problem.questions || [] : [];
+    // 已答几问：可以只做一部分（每问留空就是跳过），按钮上得说清这次会交几问
+    var answeredCount = list.filter(function (sub) {
+      return String(problemDrafts[sub.index] || '').trim();
+    }).length;
     problemFeedEl = h('div.chatproblem__feed');
 
     var body = h('div.chatproblem__body');
@@ -1124,6 +1130,14 @@
             null,
             h('span.chatproblem__barTitle', { text: '大题' }),
             h('span.chatproblem__barNote', { text: '批改由一个独立子代理做，它看不到聊天记录' }),
+            // 「不做这道题」：原先只有"换一道"和右上角的叉，而换一道是**换题**不是退出 ——
+            // 用户想表达的是"这道我不做、也别记我账上"（关掉不批，随时能再开）。
+            h('button.chatproblem__act', {
+              type: 'button',
+              text: '不做这道题',
+              title: '关掉，不批也不记成绩（工具栏那个按钮随时能再打开）',
+              onClick: closeProblem,
+            }),
             h(
               'button.chatproblem__act',
               {
@@ -3464,6 +3478,9 @@
   }
 
   function openConversation(id) {
+    // 大题面板是**某一道题**，不是页面级的常驻物：不关掉的话，换一条对话它还杵在那儿
+    // （用户反馈："换了一个对话还是出现"）。
+    if (problemOpen) closeProblem();
     return api
       .get('/chat/conversations/' + id)
       .then(function (res) {

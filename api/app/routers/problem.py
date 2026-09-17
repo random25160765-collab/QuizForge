@@ -26,7 +26,7 @@ from sqlalchemy import select
 
 from .. import agent_loop, ai_gateway as gateway, tools
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
-from ..models import KnowledgePoint, Question, QuestionPoint, Record
+from ..models import KnowledgePoint, Message, Question, QuestionPoint, Record
 
 router = APIRouter(prefix="/api/problem", tags=["problem"])
 
@@ -193,6 +193,67 @@ def next_problem(
     }
 
 
+GRADE_NOTE_MAX = 1600
+
+
+def _append_grade_note(db, user, conversation_id: str, question, record, feedback: str) -> None:  # noqa: ANN001
+    """把批改结果写一条消息进对话 —— 这是"串行"的那根线。
+
+    子代理的结论原先只活在界面那个小窗口里，主 agent 对它一无所知：
+    它下一轮照样问"要不要来道大题"，或者对刚发生的批改毫无反应。
+    写进对话之后，主 agent 读历史就看得见"他做过这道大题、批成什么样"。
+
+    角色是 assistant、零件是 `summary`：**它不是用户说的话**（库里那条规矩：
+    `content` 只存用户原话），而是一条"刚才发生了什么"的记事。
+    """
+    import uuid as _uuid
+
+    text = (feedback or "").strip()
+    if not text:
+        return
+    try:
+        cid = _uuid.UUID(conversation_id)
+    except (TypeError, ValueError):
+        return
+
+    last = db.scalars(
+        select(Message)
+        .where(Message.conversation_id == cid)
+        .order_by(Message.id.desc())
+        .limit(1)
+    ).first()
+
+    score = getattr(record, "last_score", None)
+    status = {"correct": "全对", "partial": "部分对", "wrong": "不对"}.get(
+        getattr(record, "last_status", "") or "", "已记录"
+    )
+    head = (
+        f"【大题批改】{question.id} · {status}"
+        + (f" · {score}" if score not in (None, "") else "")
+        + f" · 第 {getattr(record, 'attempts', 0) or 1} 次作答"
+    )
+    body = text[:GRADE_NOTE_MAX]
+
+    db.add(
+        Message(
+            conversation_id=cid,
+            user_id=user.id,
+            parent_id=last.id if last else None,
+            role="assistant",
+            content=head + "\n\n" + body,
+            status="done",
+            error="",
+            finish_reason="stop",
+            model="subagent:problem-grade",
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=0,
+            parts=[{"type": "summary", "text": head + "\n\n" + body}],
+        )
+    )
+    db.commit()
+
+
 @router.post("/solve")
 def solve(
     payload: dict, user: AuthenticatedWriter, db: DbSession
@@ -250,6 +311,7 @@ def solve(
     def stream():  # noqa: ANN202
         usage = {}
         failed = False
+        graded: list[str] = []  # 批语全文：批完要写回对话（见 `_append_grade_note`）
         try:
             for event in agent_loop.run(
                 db,
@@ -263,6 +325,7 @@ def solve(
             ):
                 kind = event.get("kind")
                 if kind == "text":
+                    graded.append(str(event.get("text") or ""))
                     yield _sse("delta", {"text": event["text"]})
                 elif kind == "think":
                     yield _sse("think", {"text": event["text"]})
@@ -313,6 +376,17 @@ def solve(
                     Record.user_id == user.id, Record.question_id == question.id
                 )
             )
+            # 先写回对话再报 `done`：界面收到 done 可能就去重读这条对话了，
+            # 那条记事先落库，它才看得见（见 `_append_grade_note`）。
+            if not failed:
+                _append_grade_note(
+                    db,
+                    user,
+                    str(body.get("conversationId") or ""),
+                    question,
+                    record,
+                    "".join(graded),
+                )
             yield _sse(
                 "record",
                 {
