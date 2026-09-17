@@ -16,7 +16,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from app import ai_gateway, parts
+from app import agent_loop, ai_gateway, parts
 from app.deps import CSRF_COOKIE
 from app.models import Material
 
@@ -756,6 +756,78 @@ def test_push_question_becomes_a_card_in_the_message(client, monkeypatch, import
     again = client.get(f"/api/chat/conversations/{cid}").json()
     last = again["messages"][-1]
     assert any(p["type"] == "card" for p in last["parts"])
+
+
+# ------------------------------------------------------------------ 消息序列
+
+
+def _assert_no_orphan_tool(messages: list[dict]) -> None:
+    """上游的硬要求：每条 `tool` 必须紧跟在它对应的 `tool_calls` 后面。"""
+    active: set = set()
+    for message in messages[1:]:  # 跳过 system
+        if message.get("role") == "tool":
+            assert message["tool_call_id"] in active, "孤立 tool 消息：" + str(message)[:100]
+        if message.get("tool_calls"):
+            active = {call["id"] for call in message["tool_calls"]}
+
+
+def test_truncation_never_splits_a_tool_call_from_its_result() -> None:
+    """按条截断会正好落在 assistant(tool_calls) 与它的 tool 回复中间 ——
+    于是请求的第一条成了 `role: tool`，上游直接 400：
+
+        Messages with role 'tool' must be a response to a preceding message with 'tool_calls'
+
+    实测撞过：一条真对话在冒出「更早的 3 条消息没有带进来」之后就一直失败。
+    截断的单位必须是**组**，不是条。
+    """
+    history = [
+        {"role": "user", "content": "第一问"},
+        {
+            "role": "assistant",
+            "content": "查" * 400,  # 故意比它的 tool 回复长：预算正好卡在两者之间
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "get_mastery", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "结果"},
+    ]
+
+    messages, dropped = agent_loop.build_messages("系统", history, budget=200)
+    assert dropped > 0, "这个预算下必须真的截断了，否则这条用例什么都没测到"
+    _assert_no_orphan_tool(messages)
+
+    messages, dropped = agent_loop.build_messages("系统", history, budget=100000)
+    assert dropped == 0
+    _assert_no_orphan_tool(messages)
+
+
+def test_a_broken_message_sequence_is_not_read_as_unsupported_tools() -> None:
+    """那句报错里含 `tool_calls`，但它说的是**消息序列不合法**，
+    不是「不认识 tools 这个参数」。判错方向的代价：摘掉工具重试
+    （拿同样坏的历史再撞一次），还把用户引去查模型。
+    """
+    broken = ai_gateway.UpstreamError(
+        "接口返回 400",
+        kind="http",
+        status=400,
+        detail=(
+            '{"error":{"message":"Messages with role \'tool\' must be a response '
+            "to a preceding message with 'tool_calls'\"}}"
+        ),
+    )
+    assert agent_loop._tools_unsupported(broken) is False
+
+    really = ai_gateway.UpstreamError(
+        "接口返回 400",
+        kind="http",
+        status=400,
+        detail='{"error":{"message":"unknown parameter: tools"}}',
+    )
+    assert agent_loop._tools_unsupported(really) is True
 
 
 # ------------------------------------------------------------------ 归属

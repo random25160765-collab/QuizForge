@@ -43,7 +43,21 @@ _MSG_OVERHEAD = 4
 # 上游报 400 且报文里提到这些词 → 八成是"这个模型不支持工具调用"。
 # 与设置面板里 `response_format` 的降级重试是同一条思路：供应商做不到，
 # 就退回能做到的那一档，而不是把一个 400 甩给用户。
-_NO_TOOLS_HINTS = ("tools", "tool_choice", "function", "tool_call")
+#
+# 判据必须**具体到"这个参数不认识"**，不能只看到 "tool" 就认。
+# 踩过的坑：`Messages with role 'tool' must be a response to a preceding message
+# with 'tool_calls'` 里也含 `tool_calls`，于是被判成"不支持工具调用" ——
+# 那其实是消息序列不合法（截断把 assistant 与 tool 拆开了），降级重试只会用
+# 同样坏的历史再撞一次，还把用户引去查模型（错误的方向）。
+_NO_TOOLS_HINTS = (
+    "unknown parameter: tools",
+    "unrecognized request argument",
+    "unexpected keyword argument",
+    "does not support tools",
+    "tools is not supported",
+    "tool_choice is not supported",
+    "不支持 tools",
+)
 
 
 def _tools_unsupported(exc) -> bool:  # noqa: ANN001
@@ -69,17 +83,54 @@ def estimate_tokens(text: str) -> int:
     return wide + (len(src) - wide + 2) // 3 + 1
 
 
+def _units(history: list[dict]) -> list[list[dict]]:
+    """把历史切成**不能再拆的组**：带 `tool_calls` 的 assistant 与紧跟它的那几条
+    `tool` 回复是一组。
+
+    为什么必须成组：上游只接受「`tool` 消息紧跟在它对应的 `tool_calls` 后面」。
+    按条截断会正好落在这一组中间，于是请求的第一条就成了 `role: tool` ——
+    实测就是这个症状（DeepSeek 直接 400：Messages with role 'tool' must be
+    a response to a preceding message with 'tool_calls'）。
+    """
+    units: list[list[dict]] = []
+    index = 0
+    while index < len(history):
+        message = history[index]
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            unit = [message]
+            index += 1
+            while index < len(history) and history[index].get("role") == "tool":
+                unit.append(history[index])
+                index += 1
+            units.append(unit)
+            continue
+        units.append([message])
+        index += 1
+    return units
+
+
 def build_messages(system: str, history: list[dict], budget: int) -> tuple[list[dict], int]:
-    """当前分支 → 上游要的 messages，并按预算截断。返回 (messages, 丢掉条数)。"""
-    kept: list[dict] = []
+    """当前分支 → 上游要的 messages，并按预算截断。返回 (messages, 丢掉条数)。
+
+    截断的单位是**组**而不是条（见 `_units`）：从最新往回塞，塞不下就整组不塞。
+    另外兜一道：万一历史本身的第一条就是孤立的 `tool`（理论上不该出现），
+    也把它丢掉 —— 这种请求上游一定拒，不如我们自己先修好。
+    """
+    kept_units: list[list[dict]] = []
     used = estimate_tokens(system)
-    for message in reversed(history):
-        cost = estimate_tokens(str(message.get("content") or "")) + _MSG_OVERHEAD
-        if kept and used + cost > budget:
+    for unit in reversed(_units(history)):
+        cost = sum(
+            estimate_tokens(str(message.get("content") or "")) + _MSG_OVERHEAD
+            for message in unit
+        )
+        if kept_units and used + cost > budget:
             break
         used += cost
-        kept.append(message)
-    kept.reverse()
+        kept_units.append(unit)
+
+    kept = [message for unit in reversed(kept_units) for message in unit]
+    while kept and kept[0].get("role") == "tool":
+        kept.pop(0)
 
     dropped = len(history) - len(kept)
     head = system
