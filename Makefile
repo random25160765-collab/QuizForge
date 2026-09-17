@@ -167,6 +167,9 @@ check:
 	exit $$status
 
 test:
+	@# 先过一遍语法：运行时脚本只要有一处解析失败，整页就白屏
+	@# （实测踩过 —— chat.js 被编辑截断，逻辑断言一条都抓不到）
+	@for f in theme/runtime/*.js; do node --check "$$f" || exit 1; done
 	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
 	PUB=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
 	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
