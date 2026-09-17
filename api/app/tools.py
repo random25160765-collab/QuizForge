@@ -569,6 +569,51 @@ def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+# ---------------------------------------------------------------- 演示沙箱
+
+
+# 演示 HTML 的上限：这份东西会**落进零件的库**、每次读会话都发给前端，
+# 所以它得小。80KB 足够画一个像样的数据流/切分/流水线可视化。
+DEMO_MAX_CHARS = 80_000
+
+
+def render_demo(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """产出一个**可运行的演示**（自包含 HTML），界面在沙箱 iframe 里跑它。
+
+    ## 什么时候值得用
+
+    机制里有**空间或时间上的结构**时：数据怎么流、怎么切、怎么重叠、
+    流水线怎么排、哪一步是瓶颈 —— 那种东西一张能动的图胜过三段文字。
+
+    ## 什么时候别用
+
+    结论、定义、名词解释、代码逐行讲解。那些用文字说清更好，
+    硬做个动画反而把重点冲淡，还占掉整个屏幕。
+
+    ## 写 HTML 的硬要求
+
+    * **自包含**：内联 `<style>` 与 `<script>`，不许外链脚本/样式/字体/图片
+      （沙箱里拿不到网络，外链就是空白）。
+    * **不联网**：不许 `fetch` / `XMLHttpRequest` / 外部资源 —— 沙箱会把它们
+      全部拦下，而这是**故意的**（演示不该有联网能力）。
+    * 尺寸自适应：容器宽度会变，别写死像素宽；配色用深色底（界面是深色的）。
+    """
+    html = str(args.get("html") or "").strip()
+    title = str(args.get("title") or "").strip() or "演示"
+    if not html:
+        return {"error": "html 不能为空。"}
+    if len(html) > DEMO_MAX_CHARS:
+        return {
+            "error": f"演示太大了（{len(html)} 字，上限 {DEMO_MAX_CHARS}）—— 精简一版再看。",
+            "note": "把动画逻辑压缩到最小可演示的程度，别把整份材料都塞进去。",
+        }
+    return {
+        "demo": {"title": title[:80], "html": html},
+        "note": "演示已挂在这条消息上（他那边是个沙箱 iframe）。"
+        "**不要**把同一份 HTML 再贴进正文 —— 正文里说清它在演示什么、看哪里就行。",
+    }
+
+
 # ---------------------------------------------------------------- 图检索
 
 
@@ -970,6 +1015,25 @@ REGISTRY = {
         "parameters": {
             "type": "object",
             "properties": {"limit": {"type": "integer", "description": "最多几条，默认 10"}},
+        },
+    },
+    "render_demo": {
+        "fn": render_demo,
+        "description": "产出一个**可运行的演示**（自包含 HTML），界面在沙箱 iframe 里跑。"
+        "机制里有空间/时间结构时用它：数据怎么流、怎么切、怎么重叠、流水线怎么排、瓶颈在哪 —— "
+        "一张能动的图胜过三段文字。**不要**用它讲定义、结论或代码逐行解释。"
+        "HTML 必须自包含（内联 style/script，不许外链、不许联网，沙箱会拦），"
+        "深色底、宽度自适应。上限 " + str(DEMO_MAX_CHARS) + " 字。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "演示的标题（一句话）"},
+                "html": {
+                    "type": "string",
+                    "description": "完整的自包含 HTML（内联 style/script，无外链）",
+                },
+            },
+            "required": ["html"],
         },
     },
     "explore_graph": {

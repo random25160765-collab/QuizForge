@@ -779,6 +779,130 @@ def test_push_question_becomes_a_card_in_the_message(client, monkeypatch, import
     assert any(p["type"] == "card" for p in last["parts"])
 
 
+# ------------------------------------------------------------------ 附件
+
+
+def test_an_attachment_rides_along_into_the_request(client, monkeypatch) -> None:  # noqa: ANN001
+    """附件：先上传、再引用。
+
+    两条边界都要守住：抽出来的正文**进发给模型的那一份**，而库里那条用户消息的
+    `content` 仍是**他的原话** —— 把附件正文写进去，等于伪造他说过的话。
+    """
+    seen: list[list[dict]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        seen.append([dict(message) for message in messages])
+        yield ("delta", "看到了")
+        yield ("finish", "stop")
+
+    _ready(client)
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+
+    up = client.post(
+        "/api/chat/attachments",
+        files={"file": ("note.md", "# 环形缓冲\n生产者写、消费者读。".encode(), "text/markdown")},
+        headers=_headers(client),
+    )
+    assert up.status_code == 200, up.text
+    info = up.json()
+    assert info["kind"] == "text" and info["textChars"] > 0
+    assert "生产者写" in info["preview"]
+
+    resp = _send(client, cid, content="这份笔记讲了什么", attachments=[info["id"]])
+    assert resp.status_code == 200, resp.text
+    events = dict(_events(resp.text))
+
+    # 附件零件挂在**用户消息**上（不是助手那条）
+    part = next(p for p in events["user"]["parts"] if p["type"] == "file")
+    assert part["name"] == "note.md" and part["attachmentId"] == info["id"]
+    assert part["size"] > 0
+
+    user_text = [m["content"] for m in seen[-1] if m["role"] == "user"][-1]
+    assert "生产者写、消费者读" in user_text, "抽出来的正文要进上下文"
+    assert "【附件：note.md" in user_text
+
+    stored = [m for m in client.get(f"/api/chat/conversations/{cid}").json()["messages"] if m["role"] == "user"][-1]
+    assert stored["content"] == "这份笔记讲了什么", "库里那条是用户原话"
+    assert stored["parts"][0]["type"] == "file"
+
+
+def test_an_attachment_belongs_to_its_owner(client, monkeypatch) -> None:  # noqa: ANN001
+    """别人的附件按 404 处理 —— 与「别人的会话」同一条规矩。"""
+    _ready(client)
+    up = client.post(
+        "/api/chat/attachments",
+        files={"file": ("mine.txt", b"hello", "text/plain")},
+        headers=_headers(client),
+    )
+    aid = up.json()["id"]
+    assert client.get(f"/api/chat/attachments/{aid}").status_code == 200
+
+    _register(client)  # 换一个账号
+    assert client.get(f"/api/chat/attachments/{aid}").status_code == 404
+
+
+# ------------------------------------------------------------------ 导出
+
+
+def test_export_gives_markdown_for_reading_and_json_for_the_tree(client, monkeypatch) -> None:  # noqa: ANN001
+    """md 只画当前分支（拿去读、归档）；json 带走整棵树（拿去备份）。"""
+    _ready(client)
+    _stub(monkeypatch, _recording_stream([]))
+    cid = _new_conversation(client)
+    _send(client, cid, content="第一问")
+
+    md = client.get(f"/api/chat/conversations/{cid}/export?format=md")
+    assert md.status_code == 200
+    assert "## 我" in md.text and "第一问" in md.text
+    assert "attachment" in md.headers.get("content-disposition", "")
+
+    payload = client.get(f"/api/chat/conversations/{cid}/export?format=json").json()
+    assert payload["format"] == "quizforge-chat/1"
+    assert payload["messages"] and payload["messages"][0]["parentId"] is None
+
+    every = client.get("/api/chat/export").json()
+    assert any(c["id"] == cid for c in every["conversations"])
+
+
+# ------------------------------------------------------------------ 演示沙箱
+
+
+def test_render_demo_becomes_a_sandbox_part(client, monkeypatch) -> None:  # noqa: ANN001
+    """演示沙箱：模型给一段自包含 HTML，消息里长出一个 demo 零件（前端塞进 sandbox iframe）。"""
+    html = "<html><body><canvas id='c'></canvas><script>1</script></body></html>"
+
+    def fake(conf, messages, *, tools=None, params=None):
+        if not any(message.get("role") == "tool" for message in messages):
+            yield (
+                "tool_calls",
+                [
+                    {
+                        "id": "c1",
+                        "name": "render_demo",
+                        "arguments": json.dumps({"title": "数据流", "html": html}),
+                    }
+                ],
+            )
+            yield ("finish", "tool_calls")
+            return
+        yield ("delta", "看这个演示。")
+        yield ("finish", "stop")
+
+    _ready(client)
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+
+    events = _events(_send(client, cid, content="画个图讲数据怎么流").text)
+    assert "demo" in [name for name, _ in events], events
+
+    demo = next(data for name, data in events if name == "demo")["demo"]
+    assert demo["html"] == html and demo["title"] == "数据流"
+
+    part = next(p for p in dict(events)["done"]["parts"] if p["type"] == "demo")
+    assert part["title"] == "数据流" and "<canvas" in part["html"]
+
+
 # ------------------------------------------------------------------ 消息序列
 
 

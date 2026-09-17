@@ -781,3 +781,42 @@ class Message(Base):
         Index("ix_messages_conversation_created", "conversation_id", "created_at"),
         Index("ix_messages_user_created", "user_id", "created_at"),
     )
+
+
+class Attachment(Base):
+    """对话里的一个附件（用户传进来的文件）。
+
+    ## 为什么单独一张表，而不是塞进消息的零件里
+
+    正文得**分开放**：图片是二进制（进不了 JSON 零件），PDF 抽出来的文本可能
+    几百 KB（塞进零件等于让每次翻会话都拖着它走）。所以零件里只放元数据
+    （哪个附件、叫什么、多大、抽出多少字），内容按需取。
+
+    `text` 是抽出来给**模型**看的（纯文本直接读、PDF 走 `pdftotext`）；
+    抽不出来（图片就是这样）就留空 —— 那不代表附件没用，只是模型读不到内容。
+
+    `path` 存**相对 `api/` 的路径**，绝对路径不进库：材料那一课已经教过一次
+    （换台机器路径就不通），附件更不能犯。
+    """
+
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    # 落在那条消息上。可空：先上传、再发送，中间那段时间它还没归属
+    message_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("messages.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    mime: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    path: Mapped[str] = mapped_column(String(400), default="", nullable=False)
+    #: text（读得出正文）/ pdf / image / other
+    kind: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    text: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

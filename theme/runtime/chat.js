@@ -38,6 +38,8 @@
   var hintEl = null;
   var barEl = null;
   var treeEl = null;
+  var clipInput = null;
+  var pendingEl = null;
 
   /** `/api/ai/usage` 的结果：走哪条通道、能不能用（决定提示怎么写） */
   var aiState = null;
@@ -54,6 +56,7 @@
     results: [], // 搜索结果
     editing: 0, // 正在就地编辑的那条用户消息（0 = 没有）
     treeOpen: false, // 对话树面板开着没有
+    pending: [], // 已上传、还没随消息发出去的附件
   };
 
   var searchTimer = null;
@@ -205,6 +208,17 @@
               text: state.messages.length + ' 个节点 · 亮的是当前分支 · 点任意一条切过去',
             }),
             h(
+              'button.chattree__export',
+              {
+                type: 'button',
+                title: '把这棵树导出成 JSON（含分支与工具调用）',
+                onClick: function () {
+                  download('/api/chat/conversations/' + state.current + '/export?format=json');
+                },
+              },
+              '导出'
+            ),
+            h(
               'button.chattree__close',
               {
                 type: 'button',
@@ -300,6 +314,12 @@
       onKeydown: onKeydown,
     });
     sendBtn = h('button.btn.btn--primary.chat__send', { type: 'button', onClick: onSendClick }, '发送');
+    clipInput = h('input.chat__file', {
+      type: 'file',
+      multiple: true,
+      onChange: onPickFiles,
+    });
+    pendingEl = h('div.chat__pending');
     hintEl = h('div.chat__hint');
     noticeEl = h('div.chat__notice');
     barEl = h('div.chat__bar');
@@ -315,7 +335,30 @@
           barEl,
           threadEl,
           noticeEl,
-          h('div.chat__composer', null, h('div.chat__box', null, inputEl, sendBtn), hintEl)
+          h(
+            'div.chat__composer',
+            null,
+            pendingEl,
+            h(
+              'div.chat__box',
+              null,
+              h(
+                'button.chat__clip',
+                {
+                  type: 'button',
+                  title: '加附件（文档、代码、PDF、截图）',
+                  onClick: function () {
+                    if (clipInput) clipInput.click();
+                  },
+                },
+                '附件'
+              ),
+              clipInput,
+              inputEl,
+              sendBtn
+            ),
+            hintEl
+          )
         ),
         treeEl
       )
@@ -597,6 +640,10 @@
         body.appendChild(userEditor(m));
       } else {
         body.appendChild(h('div.chatmsg__text', { text: m.content }));
+        // 用户消息也有零件 —— 附件就挂在这一侧（助手那一侧的零件走 partsNode）
+        (m.parts || []).forEach(function (part) {
+          if (part && part.type === 'file') body.appendChild(fileNode(part));
+        });
         body.appendChild(
           h(
             'div.chatmsg__useractions',
@@ -683,6 +730,105 @@
       area.focus();
       area.setSelectionRange(area.value.length, area.value.length);
     }
+  }
+
+  /* ------------------------------------------------------------ 附件与演示 */
+
+  /**
+   * 附件：图片直接显示，别的给一个链接 + 元数据。
+   *
+   * 抽不出正文的图片要**明说**"AI 看不到图像内容" —— 用户传张截图然后纳闷
+   * 为什么它答非所问，是最容易消耗信任的一种情况。
+   */
+  function fileNode(part) {
+    var url = '/api/chat/attachments/' + encodeURIComponent(String(part.attachmentId || ''));
+    var box = h('div.chatfile');
+
+    if (part.kind === 'image') {
+      box.appendChild(
+        h('img.chatfile__img', { src: url, alt: part.name || '附件', loading: 'lazy' })
+      );
+    }
+    box.appendChild(
+      h(
+        'div.chatfile__row',
+        null,
+        h(
+          'a.chatfile__link',
+          { href: url, target: '_blank', rel: 'noreferrer' },
+          h('span.chatfile__name', { text: part.name || '附件' })
+        ),
+        h('span.chatfile__meta', { text: attachmentMeta(part) })
+      )
+    );
+    if (part.kind === 'image' && !part.textChars) {
+      box.appendChild(
+        h('div.chatfile__hint', {
+          text: 'AI 看不到图像内容 —— 想让它讲图里的事，把关键文字抄进消息里。',
+        })
+      );
+    }
+    return box;
+  }
+
+  var DEMO_CSP =
+    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:";
+
+  /** 把 CSP 塞进演示文档：沙箱挡的是"碰我们的东西"，CSP 挡的是"往外发东西"。 */
+  function withCsp(html) {
+    var meta = '<meta http-equiv="Content-Security-Policy" content="' + DEMO_CSP + '">';
+    if (/<head[^>]*>/i.test(html)) {
+      return html.replace(/<head[^>]*>/i, function (found) {
+        return found + meta;
+      });
+    }
+    if (/<html[^>]*>/i.test(html)) {
+      return html.replace(/<html[^>]*>/i, function (found) {
+        return found + '<head>' + meta + '</head>';
+      });
+    }
+    return '<!doctype html><html><head>' + meta + '</head><body>' + html + '</body></html>';
+  }
+
+  /**
+   * 演示沙箱：模型给一段自包含 HTML，这里塞进沙箱 iframe 里跑。
+   *
+   * 安全只靠两道，而且**都不靠"相信模型"**：
+   *
+   * * `sandbox="allow-scripts"` —— **不带 `allow-same-origin`**，所以里面的脚本
+   *   拿不到我们的 cookie / localStorage，也碰不到我们的 DOM。
+   * * 内联 CSP 断掉网络 —— 演示本来就该是自包含的，联网不是它的能力。
+   */
+  function demoNode(part) {
+    var box = h('div.chatdemo');
+    var frame = h('iframe.chatdemo__frame', {
+      sandbox: 'allow-scripts',
+      title: part.title || '演示',
+      srcdoc: withCsp(String(part.html || '')),
+      loading: 'lazy',
+    });
+
+    box.appendChild(
+      h(
+        'div.chatdemo__head',
+        null,
+        h('span.chatdemo__title', { text: part.title || '演示' }),
+        h('span.chatdemo__note', { text: '沙箱里跑：不联网、碰不到你的数据' }),
+        h(
+          'button.chatdemo__size',
+          {
+            type: 'button',
+            text: '放大',
+            onClick: function (event) {
+              box.classList.toggle('is-tall');
+              event.target.textContent = box.classList.contains('is-tall') ? '收起' : '放大';
+            },
+          }
+        )
+      )
+    );
+    box.appendChild(frame);
+    return box;
   }
 
   /* ------------------------------------------------------------ 题卡 */
@@ -1142,6 +1288,8 @@
     if (type === 'tool_call') return toolNode(part);
     if (type === 'card') return questionCard(part);
     if (type === 'action') return actionNode(part);
+    if (type === 'file') return fileNode(part);
+    if (type === 'demo') return demoNode(part);
     if (type === 'citation') return citationNode(part);
     if (type === 'summary') return h('div.chatmsg__note', { text: part.text || '' });
     if (type === 'error') return h('div.chatmsg__why', { text: part.message || '出错了' });
@@ -1480,6 +1628,68 @@
     return threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight < 120;
   }
 
+  /* ------------------------------------------------------------ 附件 */
+
+  /**
+   * 选文件 → 立刻上传 → 变成一枚待发标签。
+   *
+   * 为什么"先传后发"而不是跟着消息一起传：发送那条路是 SSE 流，
+   * 在流里同时收文件、校验、落盘，会把"流"和"非流"搅在一起
+   * （见后端 `upload_attachment` 的说明）。所以这里传完只留一个 id。
+   */
+  function onPickFiles() {
+    var files = Array.prototype.slice.call((clipInput && clipInput.files) || []);
+    if (!files.length) return;
+    clipInput.value = '';
+    files.slice(0, 8).forEach(function (file) {
+      api
+        .upload('/chat/attachments', file)
+        .then(function (info) {
+          state.pending.push(info);
+          renderPending();
+          ui.toast(
+            '已附上 ' + info.name + (info.textChars ? '（抽出 ' + info.textChars + ' 字给 AI）' : ''),
+            'ok',
+            1800
+          );
+        })
+        .catch(function (err) {
+          ui.toast(file.name + '：' + (err.message || '上传失败'), 'error', 6000);
+        });
+    });
+  }
+
+  function attachmentMeta(info) {
+    var kind = info.kind === 'image' ? '图片' : info.kind === 'pdf' ? 'PDF' : info.kind === 'text' ? '文本' : '文件';
+    var kb = Math.max(1, Math.round((info.size || 0) / 1024));
+    return kind + ' · ' + kb + 'KB' + (info.textChars ? ' · 抽出 ' + info.textChars + ' 字' : '');
+  }
+
+  function renderPending() {
+    if (!pendingEl) return;
+    ui.clear(pendingEl);
+    if (!state.pending.length) return;
+    state.pending.forEach(function (info, index) {
+      pendingEl.appendChild(
+        h(
+          'div.chat__chip',
+          null,
+          h('span.chat__chipname', { text: info.name }),
+          h('span.chat__chipmeta', { text: attachmentMeta(info) }),
+          h('button.chat__chipdrop', {
+            type: 'button',
+            title: '去掉',
+            text: '×',
+            onClick: function () {
+              state.pending.splice(index, 1);
+              renderPending();
+            },
+          })
+        )
+      );
+    });
+  }
+
   function send(options) {
     var opts = options || {};
     var text = String(opts.content || '').trim();
@@ -1522,9 +1732,16 @@
 
       var settled = false;
 
+      var attachedIds = state.pending.map(function (info) {
+        return info.id;
+      });
+      if (attachedIds.length) {
+        state.pending = [];
+        renderPending();
+      }
       var body = opts.replyTo
         ? { replyTo: opts.replyTo }
-        : { content: text, parentId: attachTo };
+        : { content: text, parentId: attachTo, attachments: attachedIds };
       return api
         .stream(
           '/chat/conversations/' + state.current + '/messages',
@@ -1538,6 +1755,13 @@
               // 新落的这条现在是它父节点下的选择 —— 编辑并重发之后，
               // 当前分支必须跟着走到新那条，而不是留着旧的那条
               state.picks[keyOf(attachTo)] = m.id;
+              // 附件零件是服务端落库时挂上去的，本地的乐观节点还没有它 ——
+              // 不带过来的话，消息要等下次刷新才看得到附件
+              if (m.parts && m.parts.length) {
+                local.parts = m.parts;
+                var old = threadEl.querySelector('[data-id="' + localId + '"]');
+                if (old && old.parentNode) old.parentNode.replaceChild(messageRow(local), old);
+              }
               local.createdAtMs = m.createdAtMs;
               var node = threadEl.querySelector('[data-id="' + localId + '"]');
               if (node) node.dataset.id = String(m.id);
@@ -1572,6 +1796,10 @@
             },
             citation: function (d) {
               if (state.live && d && d.citation) state.live.pushPart(d.citation);
+            },
+            demo: function (d) {
+              if (!state.live || !d || !d.demo) return;
+              state.live.pushPart({ type: 'demo', title: d.demo.title, html: d.demo.html });
             },
             done: function (m) {
               settled = true;
@@ -1814,12 +2042,64 @@
     inputEl.focus();
   }
 
+  /** 触发一次下载。走 `<a download>`：同源带 cookie，服务端给的是 attachment 头。 */
+  function download(path) {
+    var link = h('a', { href: path, download: '' });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
   function openMenu(conv) {
     var field = h('input.input', { type: 'text', value: conv.title || '' });
+    var exportRow = h(
+      'div.field',
+      null,
+      h('div.field__label', { text: '导出' }),
+      h(
+        'div.chat__exports',
+        null,
+        h(
+          'button.btn.btn--ghost',
+          {
+            type: 'button',
+            onClick: function () {
+              download('/api/chat/conversations/' + conv.id + '/export?format=md');
+            },
+          },
+          'Markdown（当前分支，给人读）'
+        ),
+        h(
+          'button.btn.btn--ghost',
+          {
+            type: 'button',
+            onClick: function () {
+              download('/api/chat/conversations/' + conv.id + '/export?format=json');
+            },
+          },
+          'JSON（整棵树，给机器读）'
+        ),
+        h(
+          'button.btn.btn--ghost',
+          {
+            type: 'button',
+            onClick: function () {
+              download('/api/chat/export');
+            },
+          },
+          '全部对话（完整轨迹）'
+        )
+      )
+    );
     var modal = ui.modal({
       title: '对话设置',
       size: 'sm',
-      body: h('div.form', null, h('div.field', null, h('div.field__label', { text: '标题' }), field)),
+      body: h(
+        'div.form',
+        null,
+        h('div.field', null, h('div.field__label', { text: '标题' }), field),
+        exportRow
+      ),
       actions: [
         {
           label: '删除',
