@@ -572,6 +572,13 @@
       '<path d="M4.5 5.5h9"/><path d="M4.5 10h6.5"/><path d="M4.5 14.5h5"/>' +
       '<path d="M13 20l6.2-6.2a1.9 1.9 0 0 0-2.7-2.7L10.3 17.3V20z"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
+    // 实心：34px 的按钮上细线会糊成一小块深色（实测如此，用户也说"没有图标"）
+    send: '<path d="M12 4 19.6 12.3h-4.8v7.2H9.2v-7.2H4.4z" fill="currentColor" stroke="none"/>',
+    stop: '<rect x="7" y="7" width="10" height="10" rx="2.4" fill="currentColor" stroke="none"/>',
+    tree:
+      '<path d="M6 4v16"/><path d="M6 11.5h4.5a3 3 0 0 0 3-3V6"/>' +
+      '<path d="M6 12.5h4.5a3 3 0 0 1 3 3V18"/>' +
+      '<circle cx="17.5" cy="5" r="2.2"/><circle cx="17.5" cy="19" r="2.2"/>',
   };
 
   /**
@@ -660,11 +667,12 @@
   function paintSend(busy) {
     if (!sendBtn) return;
     ui.clear(sendBtn);
-    sendBtn.appendChild(iconNode(busy ? 'stop' : 'send', 17));
+    sendBtn.appendChild(iconNode(busy ? 'stop' : 'send', 19));
     sendBtn.title = busy ? '停止' : '发送（Enter）';
     sendBtn.setAttribute('aria-label', busy ? '停止' : '发送');
     if (busy) sendBtn.classList.remove('btn--primary');
     else sendBtn.classList.add('btn--primary');
+    sendBtn.classList.toggle('is-stop', !!busy); // 停止态不参与"上提"那点动效
   }
 
   function iconButton(name, title, onClick, extra) {
@@ -1022,7 +1030,7 @@
       {
         delta: function (data) {
           problemFeedback += (data && data.text) || '';
-          paintProblemFeedback();
+          scheduleProblemPaint();
         },
         // 子代理的过程收进可展开的"批改过程"，不丢（原先直接丢掉：
         // 用户看不到它查了什么、怎么得出结论的），也不占批语的位置。
@@ -1074,8 +1082,31 @@
     });
   }
 
+  /**
+   * 合并重画。
+   *
+   * 过程是逐段流出来的，原先每来一段就整块重画一次（清空 + 重渲染 Markdown +
+   * 重建 details），于是布局反复重排、看起来一跳一跳。现在每帧最多画一次 ——
+   * 文字仍然"活"地往外长，但不再抖。
+   */
+  var problemPaintQueued = false;
+
+  function scheduleProblemPaint() {
+    if (problemPaintQueued) return;
+    problemPaintQueued = true;
+    window.requestAnimationFrame(function () {
+      problemPaintQueued = false;
+      paintProblemFeedback();
+    });
+  }
+
   function paintProblemFeedback() {
     if (!problemFeedEl) return;
+    // 重画要保持滚动位置：贴底时继续跟（新内容往下长），
+    // 用户往上翻看时就别把他拽回去。
+    var box = problemFeedEl.parentNode;
+    var stick = box ? box.scrollHeight - box.scrollTop - box.clientHeight < 40 : false;
+    var keepTop = box ? box.scrollTop : 0;
     ui.clear(problemFeedEl);
     if (!problemFeedback && !problemRecord && !problemBusy && !problemThought) return;
     problemFeedEl.appendChild(
@@ -1097,6 +1128,10 @@
     if (problemFeedback) problemFeedEl.appendChild(QF.md.render(problemFeedback));
     if (problemRecord) {
       problemFeedEl.appendChild(h('div.chatproblem__record', { text: problemRecord }));
+    }
+    if (box) {
+      if (stick) box.scrollTop = box.scrollHeight;
+      else box.scrollTop = keepTop;
     }
   }
 
@@ -1242,7 +1277,7 @@
     sendBtn = h(
       'button.btn.btn--primary.chat__send',
       { type: 'button', title: '发送（Enter）', 'aria-label': '发送', onClick: onSendClick },
-      iconNode('send', 17)
+      iconNode('send', 19)
     );
     clipInput = h('input.chat__file', {
       type: 'file',
