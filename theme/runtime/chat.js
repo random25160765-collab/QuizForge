@@ -357,21 +357,6 @@
       },
       TREE.dir === 'h' ? '时间：横向' : '时间：纵向'
     );
-    var denseButton = h(
-      'button.chattree__btn',
-      {
-        type: 'button',
-        onClick: function () {
-          TREE.dense = !TREE.dense;
-          TREE.gapY = TREE.dense ? 8 : 20;
-          TREE.w = TREE.dense ? 168 : 212;
-          denseButton.textContent = TREE.dense ? '疏密：紧凑' : '疏密：宽松';
-          renderTree();
-        },
-      },
-      TREE.dense ? '疏密：紧凑' : '疏密：宽松'
-    );
-
     return h(
       'div.chattree__bar',
       null,
@@ -716,16 +701,6 @@
    * 于是"地面"在图上滑走（用户的说法是"滚轮缩放，背景没跟着缩放"）。
    * 背景尺寸按 k 放、位置按 view 平移，两者才是一套。
    */
-  function syncTreeGrid() {
-    var host = document.querySelector('.chattree__canvas');
-    if (!host) return;
-    var step = 22 * TREE.view.k;
-    host.style.backgroundSize = step + 'px ' + step + 'px';
-    host.style.backgroundPosition =
-      Math.round(host.clientWidth / 2 + TREE.view.x) + 'px ' +
-      Math.round(host.clientHeight / 2 + TREE.view.y) + 'px';
-  }
-
   /** 内联 SVG 节点（图标表里的一个名字）。 */
   function iconNode(name, size) {
     var box = h('span.chat__icon');
@@ -1152,6 +1127,10 @@
           problemBusy = false;
           renderProblem();
           paintProblemFeedback();
+          // 批完自动开口：批改记事已由后端写进这条对话（`problem._append_grade_note`），
+          // 这里让主 agent 就着它讲两句。走的是"接一轮"（不新增用户消息），
+          // 否则库里会多出一条不是用户说的"继续"。
+          send({ continueTurn: true });
         },
       }
     ).catch(function (err) {
@@ -3305,7 +3284,8 @@
   function send(options) {
     var opts = options || {};
     var text = String(opts.content || '').trim();
-    if (!text && !opts.replyTo) return Promise.resolve();
+    // `continueTurn` 是"接一轮"：没有正文也不算空发（它只是让 agent 就着已有历史说话）
+    if (!text && !opts.replyTo && !opts.continueTurn) return Promise.resolve();
     if (state.busy) return Promise.resolve();
 
     return ensureConversation().then(function () {
@@ -3353,7 +3333,9 @@
       }
       var body = opts.replyTo
         ? { replyTo: opts.replyTo }
-        : { content: text, parentId: attachTo, attachments: attachedIds };
+        : opts.continueTurn
+          ? { continue: true } // 不新增用户消息，只接一轮（见后端 post_message 的说明）
+          : { content: text, parentId: attachTo, attachments: attachedIds };
       return api
         .stream(
           '/chat/conversations/' + state.current + '/messages',
