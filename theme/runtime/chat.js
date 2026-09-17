@@ -451,6 +451,10 @@
     });
 
     svg.addEventListener('pointerdown', function (event) {
+      // 落在节点上就**不要**接管：`setPointerCapture` 会把后续指针事件全部
+      // 抢到 svg 自己身上，于是节点那个 `click` 永远不触发（"点节点没反应"
+      // 就是这么来的 —— 切换逻辑本身是好的，是它根本没被调到）。
+      if (event.target && event.target.closest && event.target.closest('.ctnode')) return;
       TREE.drag = { x: event.clientX, y: event.clientY, vx: TREE.view.x, vy: TREE.view.y };
       svg.setPointerCapture(event.pointerId);
       svg.classList.add('is-panning');
