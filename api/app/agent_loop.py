@@ -191,7 +191,17 @@ def run(  # noqa: ANN001
         # 用户看到的就是一屏 `<||DSML|| invoke name="push_question">` 这种原文）。
         # 半角/全角的竖线都要认 —— 它两种都吐过。判定前要按住一小截尾巴：
         # 标记可能被切成两块分别到达，逐块替换会漏。
-        leak_marks = ("<|DSML|", "<｜｜DSML", "｜｜DSML｜｜", "<|tool", "</|tool", "<|function")
+        # 竖线有**单有双、有半角有全角**：实测它吐的是 `<||DSML|| invoke …` 与
+        # 全角的 `｜｜DSML｜｜` 两种。只写单竖线会全都漏过去（我自己就漏了一次）。
+        leak_marks = (
+            "<||DSML||",
+            "｜｜DSML｜｜",
+            "<|DSML|",
+            "|<DSML|",
+            "<|tool",
+            "</|tool",
+            "<|function",
+        )
         hold = ""
         leaked = False
 
