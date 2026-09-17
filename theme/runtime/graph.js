@@ -456,7 +456,11 @@
   }
 
   function loop() {
-    step();
+    // 收敛（alpha 归零）之后就不再跑物理：节点不再动，画面自然稳。
+    // 仍然逐帧重画 —— 悬停、拖动、翻参数都靠它即时反映，而且一次重画
+    // 本来就不贵（这里刻意不引入"脏标记"：漏标一处就会留下残影，
+    // 而那种 bug 很难被看出来）。
+    if (sim.alpha > 0) step();
     draw();
     window.requestAnimationFrame(loop);
   }
@@ -632,8 +636,18 @@
       el.panelEdges.appendChild(box);
     });
 
-    el.panelFocus.onclick = function () { state.focus = n.id; rebuild(true); };
-    el.panelReset.onclick = function () { state.focus = null; rebuild(true); hidePanel(); };
+    // 聚焦/取消聚焦只是**换过滤器**，不该重新布局：`rebuild(true)` 会让全图重新
+    // 排一次，那些与选中节点无关的点也跟着动、跟着闪（用户看到的就是这个）。
+    // 位置留着，只有该出现的出现、该隐的隐。
+    el.panelFocus.onclick = function () {
+      state.focus = n.id;
+      rebuild(false);
+    };
+    el.panelReset.onclick = function () {
+      state.focus = null;
+      rebuild(false);
+      hidePanel();
+    };
   }
 
   function hidePanel() { el.panel.hidden = true; }

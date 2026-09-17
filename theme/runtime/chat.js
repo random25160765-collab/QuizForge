@@ -66,24 +66,197 @@
   /* ------------------------------------------------------------ 对话树 */
 
   /**
-   * 对话树的可视化。
+   * 对话树：全屏的**圆角矩形连接图**。
    *
-   * 库里一直是棵树（`parent_id`）——「重新回答」与「编辑并重发」都会**新增分支**
-   * 而不是覆盖。但树在界面上只露出一条线（当前分支），所以没有这张图，
-   * 用户永远不知道自己错过哪些枝，也找不到「我当时问的是别的」那一条。
+   * 早先是一列缩进文字（`├─` 那种）。那玩意儿的毛病不是不好看，是**读不出形状**：
+   * 分叉在哪、哪条枝更长、当前站在哪一支上，都得一行行对；节点一多就彻底糊了。
+   * 现在换成图：每个节点一个圆角矩形，父子之间画连线，当前分支高亮。
    *
-   * 画法用的是文件树那套连接线，而不是力导向图：这里的节点是**文字**，
-   * 缩进加连接线最好读（力导向图在 20 个节点上就已经看不出谁接谁了）。
+   * 三件刻意的事：
+   *
+   * * **布局是算出来的，不是抻出来的**（层 = 深度，行 = 同层顺序，tidy tree）。
+   *   没有力导向、没有物理，所以它**不会抖**，也不会因为点一下就把整张图重排。
+   * * **形态可调**：横排/竖排、疏密、适应窗口。会话树的形状因人而异
+   *   （有人爱看时间往右流，有人爱看自上而下），让用户自己定。
+   * * 点任意一个节点 = 切到那条分支上（`revealMessage`），与原来一致。
    */
 
-  /** 工具栏：一个开合按钮 + 这棵树的基本情况。 */
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+
+  var TREE = {
+    dir: 'h', // h：时间往右；v：自上而下
+    gapX: 130, // 层间距
+    gapY: 20, // 同层节点间距
+    w: 212, // 节点宽
+    view: { x: 0, y: 0, k: 1 },
+    drag: null,
+    bounds: null,
+  };
+
+  function sv(tag, attrs, kids) {
+    var node = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(function (key) {
+      if (attrs[key] !== null && attrs[key] !== undefined) node.setAttribute(key, attrs[key]);
+    });
+    (kids || []).forEach(function (kid) {
+      if (kid) node.appendChild(kid);
+    });
+    return node;
+  }
+
+  /** 节点上那几行字：先按字数硬折，超了就把最后一行打省略号。 */
+  function treeLines(message) {
+    var text = String(message.content || '').replace(/\s+/g, ' ').trim();
+    if (!text) {
+      var kinds = (message.parts || []).map(function (part) {
+        return part.type === 'card' ? '题卡' : part.type === 'file' ? '附件' : part.type === 'demo' ? '演示' : part.type === 'tool_call' ? '工具' : part.type === 'action' ? '凭条' : null;
+      }).filter(Boolean);
+      text = kinds.length ? '（' + kinds.join(' · ') + '）' : message.status === 'error' ? '（失败）' : '（空）';
+    }
+    var per = 17;
+    var lines = [];
+    for (var i = 0; i < text.length && lines.length < 3; i += per) lines.push(text.slice(i, i + per));
+    if (text.length > per * 3) lines[2] = lines[2].slice(0, per - 1) + '…';
+    return lines.length ? lines : ['（空）'];
+  }
+
+  function treeNodeHeight(message) {
+    return 30 + treeLines(message).length * 15;
+  }
+
+  /** 把整棵树算成 { nodes, edges }（纯几何，不含 DOM）。 */
+  function treeGeometry() {
+    var byParent = {};
+    state.messages.forEach(function (message) {
+      var key = keyOf(message.parentId);
+      (byParent[key] = byParent[key] || []).push(message);
+    });
+    Object.keys(byParent).forEach(function (key) {
+      byParent[key].sort(function (a, b) {
+        return a.id - b.id;
+      });
+    });
+    var kidsOf = function (id) {
+      return byParent[keyOf(id)] || [];
+    };
+
+    // 同层里每个节点"占多宽"：横向排时节点是横躺的，占位由**高度**决定；
+    // 纵向排时节点并排站着，占位由**宽度**决定。用错了就会出现"纵向时两个
+    // 根节点挨在一起、文字被邻居压掉"（实测就是这么露出来的）。
+    var acrossSize = function (message) {
+      return TREE.dir === 'h' ? treeNodeHeight(message) : TREE.w;
+    };
+
+    // 第一趟（自底向上）：每个节点"独占"多宽 —— 叶子的大小，或它所有子树的合计
+    var band = {};
+    function measure(message) {
+      var kids = kidsOf(message.id);
+      var own = acrossSize(message);
+      if (!kids.length) {
+        band[message.id] = own;
+        return own;
+      }
+      var span = kids.reduce(function (sum, kid) {
+        return sum + measure(kid);
+      }, 0);
+      span += TREE.gapY * (kids.length - 1);
+      band[message.id] = Math.max(own, span);
+      return band[message.id];
+    }
+
+    var onPath = {};
+    activePath().forEach(function (message) {
+      onPath[message.id] = true;
+    });
+
+    // 第二趟（自顶向下）：在自己那块高度里居中，再把子节点铺在下面
+    var nodes = [];
+    var edges = [];
+    function place(message, depth, top) {
+      var height = treeNodeHeight(message);
+      var center = top + band[message.id] / 2;
+      nodes.push({
+        message: message,
+        depth: depth,
+        lines: treeLines(message),
+        h: height,
+        across: center, // 同层里的位置（横排时是 y，竖排时是 x）
+        onPath: !!onPath[message.id],
+        forks: kidsOf(message.id).length,
+      });
+      var kids = kidsOf(message.id);
+      if (!kids.length) return;
+      var span = kids.reduce(function (sum, kid) {
+        return sum + band[kid.id];
+      }, 0);
+      span += TREE.gapY * (kids.length - 1);
+      var cursor = top + (band[message.id] - span) / 2;
+      kids.forEach(function (kid) {
+        place(kid, depth + 1, cursor);
+        edges.push({ from: message.id, to: kid.id, onPath: onPath[message.id] && onPath[kid.id] });
+        cursor += band[kid.id] + TREE.gapY;
+      });
+    }
+
+    var roots = byParent.root || [];
+    var cursor = 0;
+    roots.forEach(function (root, index) {
+      measure(root); // 必须先量出自己的高度，place 才知道该往下排多深
+      place(root, 0, cursor);
+      cursor += band[root.id] + TREE.gapY * 2;
+      if (index === roots.length - 1) cursor -= TREE.gapY * 2;
+    });
+
+    // 坐标：横排时 x = 层 × 步长、y = 同层位置；竖排时两者对调。
+    // 纵向时"层间距"要按节点**高度**留（节点是躺着的），所以步长另算一套。
+    var step = TREE.dir === 'h' ? TREE.w + TREE.gapX : 96 + TREE.gapX;
+    nodes.forEach(function (node) {
+      var along = node.depth * step;
+      node.x = TREE.dir === 'h' ? along : node.across;
+      node.y = TREE.dir === 'h' ? node.across : along;
+    });
+    var at = {};
+    nodes.forEach(function (node) {
+      at[node.message.id] = node;
+    });
+    edges.forEach(function (edge) {
+      edge.a = at[edge.from];
+      edge.b = at[edge.to];
+    });
+
+    return { nodes: nodes, edges: edges.filter(function (edge) {
+      return edge.a && edge.b;
+    }) };
+  }
+
+  function treePath(edge) {
+    var a = edge.a;
+    var b = edge.b;
+    var ah = a.h; // 纵向时从节点底边出发
+    if (TREE.dir === 'h') {
+      var x1 = a.x + TREE.w;
+      var y1 = a.y;
+      var x2 = b.x;
+      var y2 = b.y;
+      var mid = (x2 - x1) / 2;
+      return 'M' + x1 + ' ' + y1 + 'C' + (x1 + mid) + ' ' + y1 + ',' + (x2 - mid) + ' ' + y2 + ',' + x2 + ' ' + y2;
+    }
+    var vy1 = a.y + ah;
+    var vx1 = a.x + TREE.w / 2;
+    var vy2 = b.y;
+    var vx2 = b.x + TREE.w / 2;
+    var vmid = (vy2 - vy1) / 2;
+    return 'M' + vx1 + ' ' + vy1 + 'C' + vx1 + ' ' + (vy1 + vmid) + ',' + vx2 + ' ' + (vy2 - vmid) + ',' + vx2 + ' ' + vy2;
+  }
+
+  /** 主区顶上那个入口：显示这棵树有多大、几处分叉。 */
   function renderBar() {
     if (!barEl) return;
     ui.clear(barEl);
 
     var counts = {};
-    state.messages.forEach(function (m) {
-      var key = keyOf(m.parentId);
+    state.messages.forEach(function (message) {
+      var key = keyOf(message.parentId);
       counts[key] = (counts[key] || 0) + 1;
     });
     var forks = Object.keys(counts).filter(function (key) {
@@ -97,6 +270,7 @@
           type: 'button',
           onClick: function () {
             state.treeOpen = !state.treeOpen;
+            if (state.treeOpen) TREE.view = { x: 0, y: 0, k: 1 };
             renderBar();
             renderTree();
           },
@@ -106,142 +280,199 @@
     );
   }
 
-  /** 整棵树拍平成带连接线的行（深度优先，兄弟按 id —— 也就是发生顺序）。 */
-  function treeRows() {
-    var byParent = {};
-    state.messages.forEach(function (m) {
-      var key = keyOf(m.parentId);
-      (byParent[key] = byParent[key] || []).push(m);
-    });
-
-    var onPath = {};
-    activePath().forEach(function (m) {
-      onPath[m.id] = true;
-    });
-
-    var rows = [];
-    (function walk(parentId, prefix, withConnector) {
-      var kids = byParent[keyOf(parentId)] || [];
-      kids.forEach(function (m, index) {
-        var last = index === kids.length - 1;
-        var head = withConnector ? (last ? '└─ ' : '├─ ') : '';
-        rows.push({ message: m, prefix: prefix + head, onPath: !!onPath[m.id], forks: kids.length });
-        walk(m.id, prefix + (withConnector ? (last ? '   ' : '│  ') : ''), true);
-      });
-    })(null, '', false);
-    return rows;
-  }
-
-  /** 一条消息写成一行字：有正文用正文，没有就报零件（比如只推了张题卡）。 */
-  function treePreview(m) {
-    var text = String(m.content || '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!text) {
-      var parts = m.parts || [];
-      var tally = {};
-      parts.forEach(function (part) {
-        var kind = part.type === 'card' ? '题卡' : part.type === 'tool_call' ? '工具' : part.type;
-        tally[kind] = (tally[kind] || 0) + 1;
-      });
-      text = Object.keys(tally)
-        .map(function (kind) {
-          return kind + '×' + tally[kind];
-        })
-        .join(' · ');
-    }
-    if (!text) text = m.status === 'error' ? '（失败）' : '（空）';
-    return text.length > 42 ? text.slice(0, 42) + '…' : text;
-  }
-
-  function treeRowNode(row) {
-    var m = row.message;
-    var tags = [];
-    if (row.forks > 1) tags.push('⑂' + row.forks);
-    if (m.status === 'error') tags.push('失败');
-    else if (m.status === 'partial') tags.push('中断');
-
-    return h(
-      'button.chattree__row' +
-        (row.onPath ? '.is-onpath' : '') +
-        (m.id === state.editing ? '.is-editing' : '') +
-        (m.role === 'user' ? '.is-user' : ''),
-      {
-        type: 'button',
-        title: '跳到这一条（会切到它的分支）',
-        onClick: function () {
-          state.treeOpen = false;
-          revealMessage(m.id);
-        },
-      },
-      h('span.chattree__prefix', { text: row.prefix }),
-      h('span.chattree__who', { text: m.role === 'user' ? '我' : 'AI' }),
-      h('span.chattree__label', { text: treePreview(m) }),
-      tags.length ? h('span.chattree__tags', { text: tags.join(' ') }) : null
-    );
-  }
-
   function renderTree() {
     if (!treeEl) return;
     ui.clear(treeEl);
     if (!state.treeOpen) return;
 
-    var rows = treeRows();
-    treeEl.appendChild(
+    var close = function () {
+      state.treeOpen = false;
+      renderBar();
+      renderTree();
+    };
+
+    var screen = h('div.chattree__screen', null, treeBar(close), h('div.chattree__canvas'));
+    treeEl.appendChild(screen);
+    drawTree(screen.querySelector('.chattree__canvas'));
+  }
+
+  function treeBar(close) {
+    var dirButton = h(
+      'button.chattree__btn',
+      {
+        type: 'button',
+        onClick: function () {
+          TREE.dir = TREE.dir === 'h' ? 'v' : 'h';
+          TREE.dir === 'h' ? (TREE.gapX = 130) : (TREE.gapX = 60);
+          dirButton.textContent = TREE.dir === 'h' ? '时间：横向' : '时间：纵向';
+          renderTree();
+        },
+      },
+      TREE.dir === 'h' ? '时间：横向' : '时间：纵向'
+    );
+    var denseButton = h(
+      'button.chattree__btn',
+      {
+        type: 'button',
+        onClick: function () {
+          TREE.dense = !TREE.dense;
+          TREE.gapY = TREE.dense ? 8 : 20;
+          TREE.w = TREE.dense ? 168 : 212;
+          denseButton.textContent = TREE.dense ? '疏密：紧凑' : '疏密：宽松';
+          renderTree();
+        },
+      },
+      TREE.dense ? '疏密：紧凑' : '疏密：宽松'
+    );
+
+    return h(
+      'div.chattree__bar',
+      null,
+      h('span.chattree__title', { text: '对话树' }),
+      h('span.chattree__sub', {
+        text: state.messages.length + ' 个节点 · 亮的是当前分支 · 点节点切过去',
+      }),
+      dirButton,
+      denseButton,
       h(
-        'div.chattree__backdrop',
+        'button.chattree__btn',
         {
-          onClick: function (event) {
-            if (event.target === event.currentTarget) {
-              state.treeOpen = false;
-              renderBar();
-              renderTree();
-            }
+          type: 'button',
+          onClick: function () {
+            TREE.view = { x: 0, y: 0, k: 1 };
+            renderTree();
           },
         },
-        h(
-          'div.chattree__panel',
-          null,
-          h(
-            'div.chattree__head',
-            null,
-            h('span.chattree__title', { text: '对话树' }),
-            h('span.chattree__sub', {
-              text: state.messages.length + ' 个节点 · 亮的是当前分支 · 点任意一条切过去',
-            }),
-            h(
-              'button.chattree__export',
-              {
-                type: 'button',
-                title: '把这棵树导出成 JSON（含分支与工具调用）',
-                onClick: function () {
-                  download('/api/chat/conversations/' + state.current + '/export?format=json');
-                },
-              },
-              '导出'
-            ),
-            h(
-              'button.chattree__close',
-              {
-                type: 'button',
-                onClick: function () {
-                  state.treeOpen = false;
-                  renderBar();
-                  renderTree();
-                },
-              },
-              '×'
-            )
-          ),
-          h(
-            'div.chattree__list',
-            null,
-            rows.length
-              ? rows.map(treeRowNode)
-              : h('div.chattree__empty', { text: '这个对话还没有消息。' })
-          )
-        )
-      )
+        '适应窗口'
+      ),
+      iconButton('close', '关闭（Esc）', close)
+    );
+  }
+
+  function drawTree(host) {
+    if (!host) return;
+    var model = treeGeometry();
+    var rect = host.getBoundingClientRect();
+    var width = Math.max(320, rect.width);
+    var height = Math.max(240, rect.height);
+
+    var svg = sv('svg', { class: 'chattree__svg', width: '100%', height: '100%' });
+    var layer = sv('g', { class: 'chattree__layer' });
+
+    // 先画连线，再画节点（节点压在线上）
+    model.edges.forEach(function (edge) {
+      layer.appendChild(
+        sv('path', {
+          class: 'ctedge' + (edge.onPath ? ' is-onpath' : ''),
+          d: treePath(edge),
+        })
+      );
+    });
+
+    model.nodes.forEach(function (node) {
+      var message = node.message;
+      var group = sv('g', {
+        class:
+          'ctnode' +
+          (node.onPath ? ' is-onpath' : '') +
+          (message.role === 'user' ? ' is-user' : '') +
+          (message.status === 'error' ? ' is-error' : '') +
+          (message.id === state.editing ? ' is-editing' : ''),
+        transform: 'translate(' + node.x + ',' + (node.y - node.h / 2) + ')',
+      });
+      group.appendChild(
+        sv('rect', { class: 'ctnode__box', x: 0, y: 0, width: TREE.w, height: node.h, rx: 12, ry: 12 })
+      );
+      group.appendChild(
+        sv('text', { class: 'ctnode__who', x: 12, y: 18 }, [
+          document.createTextNode(message.role === 'user' ? '我' : 'AI'),
+        ])
+      );
+      if (node.forks > 1) {
+        group.appendChild(
+          sv('text', { class: 'ctnode__fork', x: TREE.w - 12, y: 18, 'text-anchor': 'end' }, [
+            document.createTextNode('⑂' + node.forks),
+          ])
+        );
+      }
+      node.lines.forEach(function (line, index) {
+        group.appendChild(
+          sv('text', { class: 'ctnode__line', x: 12, y: 36 + index * 15 }, [
+            document.createTextNode(line),
+          ])
+        );
+      });
+
+      // 点节点 = 切到那条分支（与原实现一致）
+      group.addEventListener('click', function (event) {
+        event.stopPropagation();
+        state.treeOpen = false;
+        revealMessage(message.id);
+      });
+      layer.appendChild(group);
+    });
+
+    svg.appendChild(layer);
+    host.appendChild(svg);
+    host.appendChild(
+      h('div.chattree__hint', { text: '滚轮缩放 · 拖动平移' })
+    );
+
+    // 适应窗口：算完 bbox 再定缩放与偏移
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    model.nodes.forEach(function (node) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y - node.h / 2);
+      maxX = Math.max(maxX, node.x + TREE.w);
+      maxY = Math.max(maxY, node.y + node.h / 2);
+    });
+    if (!isFinite(minX)) return;
+    var pad = 40;
+    var scale = Math.min((width - pad * 2) / Math.max(1, maxX - minX), (height - pad * 2) / Math.max(1, maxY - minY), 1.1);
+    TREE.bounds = { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
+    TREE.view.k = scale;
+    TREE.view.x = (width - (maxX - minX) * scale) / 2 - minX * scale;
+    TREE.view.y = (height - (maxY - minY) * scale) / 2 - minY * scale;
+    applyTreeView(svg);
+
+    svg.addEventListener('wheel', function (event) {
+      event.preventDefault();
+      var factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+      var k = Math.max(0.2, Math.min(2.4, TREE.view.k * factor));
+      var rect2 = svg.getBoundingClientRect();
+      var px = event.clientX - rect2.left;
+      var py = event.clientY - rect2.top;
+      TREE.view.x = px - (px - TREE.view.x) * (k / TREE.view.k);
+      TREE.view.y = py - (py - TREE.view.y) * (k / TREE.view.k);
+      TREE.view.k = k;
+      applyTreeView(svg);
+    });
+
+    svg.addEventListener('pointerdown', function (event) {
+      TREE.drag = { x: event.clientX, y: event.clientY, vx: TREE.view.x, vy: TREE.view.y };
+      svg.setPointerCapture(event.pointerId);
+      svg.classList.add('is-panning');
+    });
+    svg.addEventListener('pointermove', function (event) {
+      if (!TREE.drag) return;
+      TREE.view.x = TREE.drag.vx + (event.clientX - TREE.drag.x);
+      TREE.view.y = TREE.drag.vy + (event.clientY - TREE.drag.y);
+      applyTreeView(svg);
+    });
+    var endDrag = function () {
+      TREE.drag = null;
+      svg.classList.remove('is-panning');
+    };
+    svg.addEventListener('pointerup', endDrag);
+    svg.addEventListener('pointercancel', endDrag);
+  }
+
+  function applyTreeView(svg) {
+    var layer = svg.querySelector('.chattree__layer');
+    if (!layer) return;
+    layer.setAttribute(
+      'transform',
+      'translate(' + TREE.view.x + ',' + TREE.view.y + ') scale(' + TREE.view.k + ')'
     );
   }
 
@@ -310,8 +541,76 @@
       '<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.4 6.6 17.4 10.6"/>',
     pin: '<path d="M9.5 4h5l-1 5.5 3.5 3.5H7l3.5-3.5L9.5 4z"/><path d="M12 13v7"/>',
     expand: '<path d="M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6"/>',
+    copy:
+      '<rect x="9" y="9" width="11.5" height="11.5" rx="2.4"/>' +
+      '<path d="M15 6.2A2.7 2.7 0 0 0 12.3 3.5H6.5A3 3 0 0 0 3.5 6.5v5.8A2.7 2.7 0 0 0 6.2 15"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
   };
+
+  /**
+   * 复制到剪贴板。
+   *
+   * 用 Clipboard API，失败时退回"看不见的 textarea + execCommand"那条老路：
+   * 非安全上下文（http 的局域网地址之类）里 `navigator.clipboard` 可能不存在，
+   * 而"点了没反应"比报错更让人困惑。
+   */
+  function copyText(text, okText) {
+    var value = String(text || '');
+    if (!value) return;
+    var done = function () {
+      ui.toast(okText || '已复制', 'info', 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).then(done, function () {
+        if (fallbackCopy(value)) done();
+        else ui.toast('这个浏览器不让复制，手动选一下吧', 'warn', 2500);
+      });
+      return;
+    }
+    if (fallbackCopy(value)) done();
+    else ui.toast('这个浏览器不让复制，手动选一下吧', 'warn', 2500);
+  }
+
+  function fallbackCopy(value) {
+    try {
+      var area = h('textarea', {
+        style: { position: 'fixed', top: '-1000px', left: '-1000px', opacity: '0' },
+      });
+      area.value = value;
+      document.body.appendChild(area);
+      area.select();
+      var ok = document.execCommand && document.execCommand('copy');
+      area.remove();
+      return !!ok;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  /**
+   * 这条消息的**正文**：只要文本零件。
+   *
+   * 复制按钮复制的是它，而不是 `content` —— 助手消息的 `content` 是投影，
+   * 真正给人看的是文本零件；工具调用、引用、题卡那些复制出去也没有意义。
+   */
+  function proseOf(message) {
+    var parts =
+      message.parts && message.parts.length
+        ? message.parts
+        : [{ type: 'text', text: message.content || '' }];
+    return parts
+      .filter(function (part) {
+        return part && part.type === 'text' && part.text;
+      })
+      .map(function (part) {
+        return String(part.text).trim();
+      })
+      .filter(function (text) {
+        return text;
+      })
+      .join('\n\n')
+      .trim();
+  }
 
   function iconButton(name, title, onClick, extra) {
     return h('button.chaticon' + (extra || ''), {
@@ -685,6 +984,9 @@
           h(
             'div.chatmsg__useractions',
             null,
+            iconButton('copy', '复制我这条', function () {
+              copyText(m.content, '已复制我这条');
+            }),
             iconButton('pencil', '编辑并重发（旧的那条会留在对话树里）', function () {
               editMessage(m);
             })
@@ -808,20 +1110,55 @@
   // 都得能用）。仍然关着的是 frame/object —— 演示不该再套娃。
   // 真正挡住"碰到我们"的那一道是 iframe 的 `sandbox`（**不带** allow-same-origin），
   // 不是 CSP：CSP 管的是它能往外拿什么，sandbox 管的是它能不能碰我们。
-  var DEMO_CSP =
-    "default-src 'none'; " +
-    "script-src 'unsafe-inline' 'unsafe-eval' blob: https:; " +
-    "style-src 'unsafe-inline' https:; " +
-    "img-src data: blob: https:; " +
-    "font-src data: https:; " +
-    "media-src data: blob: https:; " +
-    "connect-src https:; " +
-    "worker-src blob:; " +
-    "frame-src 'none'; object-src 'none';";
+  /**
+   * 沙箱页面的 CSP。
+   *
+   * **必须显式写出我们自己的源**：沙箱 iframe 没有 `allow-same-origin`，它的
+   * `'self'` 是一个"不透明源"、匹配不到我们的服务器 —— 于是
+   * `/assets/pyodide/pyodide.js`（本地那份 Python 运行时就放在那儿）会被自己的 CSP
+   * 拦掉。写成 `https:` 也不行：开发环境是 `http://127.0.0.1`。
+   *
+   * 另外仍然允许 https：模型写的演示可以用 CDN 上的库（能联网时），
+   * 而那**不再**是跑 Python 的前提 —— 运行时是本机那一份。
+   */
+  function demoCsp() {
+    var origin = location.origin;
+    return (
+      "default-src 'none'; " +
+      "script-src 'unsafe-inline' 'unsafe-eval' blob: " +
+      origin +
+      " https:; " +
+      "style-src 'unsafe-inline' " +
+      origin +
+      " https:; " +
+      "img-src data: blob: " +
+      origin +
+      " https:; " +
+      "font-src data: " +
+      origin +
+      " https:; " +
+      "media-src data: blob: " +
+      origin +
+      " https:; " +
+      "connect-src " +
+      origin +
+      " https:; " +
+      "worker-src blob:; " +
+      "frame-src 'none'; object-src 'none';"
+    );
+  }
 
-  /** 把 CSP 塞进演示文档：沙箱挡的是"碰我们的东西"，CSP 挡的是"往外发东西"。 */
+  /**
+   * 把 CSP 塞进演示文档，并把服务端留的 `__ORIGIN__` 换成绝对地址。
+   *
+   * 为什么非要宿主来填：沙箱页面里**相对路径解析不了**（srcdoc 文档的 base 是
+   * `about:srcdoc`，`new URL('/assets/…')` 会直接抛 "Invalid URL"），
+   * 而沙箱自己的 `location.origin` 是不透明的、它也拼不出我们的地址。
+   * 本地 Python 运行时就落在 `/assets/pyodide/`，所以这一步是它能不能加载的前提。
+   */
   function withCsp(html) {
-    var meta = '<meta http-equiv="Content-Security-Policy" content="' + DEMO_CSP + '">';
+    html = String(html || '').split('__ORIGIN__').join(location.origin);
+    var meta = '<meta http-equiv="Content-Security-Policy" content="' + demoCsp() + '">';
     if (/<head[^>]*>/i.test(html)) {
       return html.replace(/<head[^>]*>/i, function (found) {
         return found + meta;
@@ -899,7 +1236,6 @@
             'div.chatdemo__head',
             null,
             h('span.chatdemo__title', { text: state.demo.title }),
-            h('span.chatdemo__note', { text: '沙箱 iframe：碰不到你的登录态与数据' }),
             iconButton('close', '关闭（Esc）', close)
           ),
           h('iframe.chatdemo__frame', {
@@ -1564,6 +1900,17 @@
             if (state.busy) return;
             regenerate(m);
           },
+        })
+      );
+    }
+
+    // 复制**正文**：工具调用与引用不复制（它们复制出去没用）。
+    // 放在状态分支之外 —— 中断的回答、失败的半截，同样值得能复制走。
+    var prose = proseOf(m);
+    if (prose) {
+      foot.appendChild(
+        iconButton('copy', '复制这条回答', function () {
+          copyText(prose, '回答已复制');
         })
       );
     }
