@@ -266,11 +266,15 @@
       return counts[key] > 1;
     }).length;
 
+    var label =
+      '对话树 · ' + state.messages.length + ' 个节点' + (forks ? ' · ' + forks + ' 处分叉' : '');
     barEl.appendChild(
       h(
         'button.chat__treebtn' + (state.treeOpen ? '.is-on' : ''),
         {
           type: 'button',
+          title: label + '（点开看分叉，Esc 关闭）',
+          'aria-label': label,
           onClick: function () {
             state.treeOpen = !state.treeOpen;
             if (state.treeOpen) TREE.view = { x: 0, y: 0, k: 1 };
@@ -278,7 +282,13 @@
             renderTree();
           },
         },
-        '对话树 · ' + state.messages.length + ' 个节点' + (forks ? ' · ' + forks + ' 处分叉' : '')
+        // 形状认得出是"树"，信息（几个节点、几处分叉）做成角标 ——
+        // 原先那一长串文字把工具栏挤得只剩它一个。
+        iconNode('tree', 15),
+        state.messages.length
+          ? h('span.chat__treebadge', { text: String(state.messages.length) })
+          : null,
+        forks ? h('span.chat__treefork', { text: '⑂' + forks }) : null
       )
     );
   }
@@ -626,6 +636,34 @@
       })
       .join('\n\n')
       .trim();
+  }
+
+  /** 内联 SVG 节点（图标表里的一个名字）。 */
+  function iconNode(name, size) {
+    var box = h('span.chat__icon');
+    var px = size || 16;
+    box.innerHTML =
+      '<svg viewBox="0 0 24 24" width="' + px + '" height="' + px + '" fill="none" ' +
+      'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+      (ICONS[name] || '') +
+      '</svg>';
+    return box;
+  }
+
+  /**
+   * 发送键的两态。
+   *
+   * 图标按钮照样要能表达状态：跑着一轮时是方块（点了就停），平时是箭头。
+   * 文案放 title/aria-label —— 图标省的是宽度，不是意思。
+   */
+  function paintSend(busy) {
+    if (!sendBtn) return;
+    ui.clear(sendBtn);
+    sendBtn.appendChild(iconNode(busy ? 'stop' : 'send', 17));
+    sendBtn.title = busy ? '停止' : '发送（Enter）';
+    sendBtn.setAttribute('aria-label', busy ? '停止' : '发送');
+    if (busy) sendBtn.classList.remove('btn--primary');
+    else sendBtn.classList.add('btn--primary');
   }
 
   function iconButton(name, title, onClick, extra) {
@@ -1194,7 +1232,13 @@
       onInput: growInput,
       onKeydown: onKeydown,
     });
-    sendBtn = h('button.btn.btn--primary.chat__send', { type: 'button', onClick: onSendClick }, '发送');
+    // 图标按钮：正文只放一个箭头，"发送/停止"两态换图标（见 `paintSend`）。
+    // 文案进 title 与 aria-label —— 看得出、也读得出。
+    sendBtn = h(
+      'button.btn.btn--primary.chat__send',
+      { type: 'button', title: '发送（Enter）', 'aria-label': '发送', onClick: onSendClick },
+      iconNode('send', 17)
+    );
     clipInput = h('input.chat__file', {
       type: 'file',
       multiple: true,
@@ -3352,14 +3396,12 @@
   function updateComposer() {
     if (!sendBtn) return;
     if (state.busy) {
-      sendBtn.textContent = '停止';
-      sendBtn.classList.remove('btn--primary');
+      paintSend(true);
       hintEl.textContent = '正在生成…（点「停止」会留下已经生成的部分）';
       return;
     }
 
-    sendBtn.textContent = '发送';
-    sendBtn.classList.add('btn--primary');
+    paintSend(false);
 
     var bits = [];
     if (!state.current) bits.push('第一句话会开一条新对话');
