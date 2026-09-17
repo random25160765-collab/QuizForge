@@ -348,6 +348,55 @@ def test_proposal_for_an_unknown_question_says_so(client, db_session, imported_b
     assert ok and "error" in payload
 
 
+# ------------------------------------------------------------------ 跑 Python
+
+
+def test_run_python_wraps_the_code_in_a_working_page(client, db_session) -> None:  # noqa: ANN001
+    """模型只交 Python，样板（加载 Pyodide、接 stdout、显示报错）由服务端负责。
+
+    那部分让模型每次手写一遍，迟早有一次写错，而写错的表现是**一片空白** ——
+    用户看不出哪里坏了。所以这里要钉住：页面里有 Pyodide、有代码、有输出容器。
+    """
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+
+    ok, payload = tools.call(
+        db_session,
+        user,
+        "run_python",
+        {"title": "斐波那契", "code": "print([1, 1, 2, 3])", "packages": ["numpy"]},
+    )
+    assert ok, payload
+    page = payload["demo"]["html"]
+    assert payload["demo"]["title"] == "斐波那契"
+    # 运行时优先用本机那一份（`make vendor` 取回、构建拷进 /assets）——
+    # 沙箱不该为了跑一段脚本去联网；没同步过时才退回 CDN。
+    # 本机那份的路径带 `__ORIGIN__` 占位符：沙箱页面里相对路径解析不了，
+    # 绝对地址只能由宿主填（见 `tools.pyodide_base`）。
+    base = tools.pyodide_base()
+    if base.startswith("__ORIGIN__") or base.startswith("/assets/"):
+        assert "/assets/pyodide/pyodide.js" in page
+        assert "__ORIGIN__/assets/pyodide/pyodide.js" in page, "占位符要留着给前端填"
+    else:
+        assert "cdn.jsdelivr.net/pyodide" in page
+    assert "loadPyodide" in page and "runPythonAsync" in page
+    assert '"print([1, 1, 2, 3])"' in page, "代码要原样嵌进去（JSON 转义过）"
+    assert '["numpy"]' in page
+    assert 'id="out"' in page, "要有输出容器，否则跑了也看不见"
+    assert "setStderr" in page, "报错也要显示出来"
+
+
+def test_run_python_refuses_empty_and_giant_code(client, db_session) -> None:  # noqa: ANN001
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+
+    ok, payload = tools.call(db_session, user, "run_python", {"code": "   "})
+    assert ok and "error" in payload and "demo" not in payload
+
+    ok, payload = tools.call(db_session, user, "run_python", {"code": "x = 1\n" * tools.CODE_MAX_CHARS})
+    assert ok and "error" in payload and "demo" not in payload
+
+
 # ------------------------------------------------------------------ 演示沙箱
 
 

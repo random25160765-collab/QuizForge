@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """把第三方前端库同步到 vendor/。
 
-本机实测无法访问外网（HTTPS 出网超时、无本地代理），因此这里**不做任何
-网络请求**，只从本机已有的 KaTeX 副本同步 —— 构建因此不依赖网络。
+两份东西：
 
-来源自动探测顺序：
+* **KaTeX**（必需，公式渲染）：建构建**不依赖网络** —— 从本机已有的副本同步
+  （HTTPS 出网在本机时好时坏，构建不该被这件事卡住）。
+* **Pyodide**（可选，对话里跑 Python 的执行环境）：来源顺序是
+  `QUIZFORGE_PYODIDE_SRC` → 已有副本 → 钉死版本的 CDN。它是 13MB 的运行时，
+  取一次就够；取不到也只影响「跑 Python」这一项能力，不影响构建。
+
+来源自动探测顺序（KaTeX）：
   1. 环境变量 QUIZFORGE_KATEX_SRC 指向的目录
   2. 本项目 vendor/katex/（已同步过则直接跳过）
   3. 本机常见位置（用户自己的博客仓库 node_modules 等）
@@ -14,6 +19,7 @@
   - katex.min.css           -> 裁剪后写为 vendor/katex/katex.css
                                （去掉 woff / ttf 回退，只保留 woff2）
   - fonts/*.woff2           -> vendor/katex/fonts/*.woff2
+  - pyodide/*（5 个文件）    -> vendor/pyodide/
   - SOURCE.md               -> 记录来源、版本、时间（便于日后追溯）
 
 用法：
@@ -34,6 +40,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 VENDOR_KATEX = ROOT / "vendor" / "katex"
+
+# ---------------------------------------------------------------- Pyodide
+#
+# 它是「对话里跑 Python」（`run_python` 工具）的执行环境。走 CDN 的话，
+# 沙箱要现下 13MB 运行时 —— 实测在演示面板里挂了 60 秒仍不见成功，
+# 用户看到的就是「正在加载运行时」停在那儿。本机一份之后，面板一开就能跑，
+# 而且**不再依赖网络**（沙箱为了跑一段脚本去联网，本来就是件别扭的事）。
+#
+# 版本钉死：CDN 上的东西会变，而这份副本要能重放。
+VENDOR_PYODIDE = ROOT / "vendor" / "pyodide"
+PYODIDE_VERSION = "0.26.4"
+PYODIDE_CDN = f"https://cdn.jsdelivr.net/pyodide/v{PYODIDE_VERSION}/full/"
+# 只有这 5 个文件是「跑一段脚本」必需的（整份发行版还带一堆可选包，不要）
+PYODIDE_FILES = (
+    "pyodide.js",
+    "pyodide.asm.js",
+    "pyodide.asm.wasm",
+    "python_stdlib.zip",
+    "pyodide-lock.json",
+)
 
 # 本机已知的 KaTeX 分布位置（按优先级）。这些路径只读，绝不修改。
 CANDIDATE_SOURCES = [
@@ -101,7 +127,78 @@ def _katex_version(src: Path) -> str:
     return m.group(1) if m else "unknown"
 
 
+def _download(url: str, dest: Path) -> None:
+    """下载一个文件。用标准库，不引依赖（这是唯一需要联网的一步）。"""
+    import urllib.request
+
+    request = urllib.request.Request(url, headers={"User-Agent": "quizforge-vendor"})
+    with urllib.request.urlopen(request, timeout=180) as response:
+        with dest.open("wb") as out:
+            shutil.copyfileobj(response, out)
+
+
+def sync_pyodide(force: bool = False) -> int:
+    """把 Pyodide 运行时同步到 vendor/pyodide/。
+
+    来源顺序：`QUIZFORGE_PYODIDE_SRC` → 已有的 vendor/pyodide/ → 钉死版本的 CDN。
+    **同步失败不当成致命错误**：Python 跑不了是少一项能力，不该让整个构建停下 ——
+    但要大声说出来，否则会变成"演示面板一直转圈"那种没人知道为什么的故障。
+    """
+    ready = all((VENDOR_PYODIDE / name).is_file() for name in PYODIDE_FILES)
+    if ready and not force:
+        print(f"[INFO] Pyodide 已就绪，跳过：{_rel(VENDOR_PYODIDE)}")
+        return 0
+
+    src_env = os.environ.get("QUIZFORGE_PYODIDE_SRC")
+    source_dir = Path(src_env).expanduser() if src_env else None
+    VENDOR_PYODIDE.mkdir(parents=True, exist_ok=True)
+
+    if source_dir and source_dir.is_dir():
+        for name in PYODIDE_FILES:
+            origin = source_dir / name
+            if not origin.is_file():
+                print(f"[ERROR] 来源目录缺 {name}：{source_dir}", file=sys.stderr)
+                return 2
+            shutil.copyfile(origin, VENDOR_PYODIDE / name)
+        origin_text = str(source_dir)
+    else:
+        print(f"[INFO] 从 CDN 取 Pyodide {PYODIDE_VERSION}（约 13MB，只此一次）：{PYODIDE_CDN}")
+        for name in PYODIDE_FILES:
+            try:
+                _download(PYODIDE_CDN + name, VENDOR_PYODIDE / name)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
+                print(
+                    "       Python 沙箱将退回 CDN（能联网时可用）。"
+                    "要离线可用，请用 QUIZFORGE_PYODIDE_SRC 指向一份本地副本。",
+                    file=sys.stderr,
+                )
+                return 1
+        origin_text = PYODIDE_CDN
+
+    total = sum((VENDOR_PYODIDE / name).stat().st_size for name in PYODIDE_FILES)
+    (VENDOR_PYODIDE / "SOURCE.md").write_text(
+        "# vendored Pyodide\n\n"
+        f"- version: {PYODIDE_VERSION}\n"
+        f"- source: {origin_text}\n"
+        f"- files: {len(PYODIDE_FILES)}（{total // 1024 // 1024}MB）\n"
+        f"- synced_at: {_dt.datetime.now().isoformat(timespec='seconds')}\n"
+        "\n由 `tools/vendor.py` 生成，请勿手工修改。\n"
+        "用途：对话里的 run_python 工具在沙箱 iframe 里真跑 Python。\n",
+        encoding="utf-8",
+    )
+    print(f"[INFO] 已同步 Pyodide {PYODIDE_VERSION}：{len(PYODIDE_FILES)} 个文件 -> {_rel(VENDOR_PYODIDE)}")
+    return 0
+
+
 def sync(force: bool = False) -> int:
+    """同步 vendor 下的第三方资源。KaTeX 必需，Pyodide 可选（缺了不影响构建）。"""
+    code = sync_katex(force=force)
+    sync_pyodide(force=force)
+    return code
+
+
+def sync_katex(force: bool = False) -> int:
     if VENDOR_KATEX.is_dir() and (VENDOR_KATEX / "katex.min.js").is_file() and not force:
         print(f"[INFO] vendor 已就绪，跳过：{_rel(VENDOR_KATEX)}")
         print("       （如需重新同步请加 --force）")
@@ -184,8 +281,15 @@ def check() -> int:
         ok = False
     if ok:
         print(f"[INFO] vendor 就绪：{_rel(VENDOR_KATEX)}（{len(fonts)} 个 woff2 字体）")
-        return 0
-    return 1
+
+    # Pyodide 只报告，不算失败：它是"对话里跑 Python"的能力，不是构建前提
+    missing = [name for name in PYODIDE_FILES if not (VENDOR_PYODIDE / name).is_file()]
+    if missing:
+        print(f"[INFO] Pyodide 未就绪（缺 {len(missing)} 个文件）—— 跑 `make vendor` 取一份")
+    else:
+        print(f"[INFO] Pyodide 就绪：{_rel(VENDOR_PYODIDE)}")
+
+    return 0 if ok else 1
 
 
 def _sha256(path: Path) -> str:
