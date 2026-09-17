@@ -1911,3 +1911,90 @@ body[data-page='chat'] .chat {
     max-height: 58vh;
   }
 }
+
+/* ------------------------------------------------- 临时题卡（模型现编的题） */
+
+/* 虚线边：一眼看出它还没进任何题单 —— 存进题单后那条虚线会换成实线 */
+.chatcard--draft {
+  border-style: dashed;
+}
+
+.chatcard__tag.is-draft {
+  color: var(--amber);
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--line));
+}
+
+.chatcard__answer {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-left: 2px solid var(--pri);
+  background: color-mix(in srgb, var(--pri) 6%, transparent);
+  border-radius: 0 8px 8px 0;
+  font-size: 12.5px;
+}
+
+.chatcard__answerlabel {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.chatcard__explain {
+  color: var(--fg2);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.chatcard__subtitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg2);
+  margin-bottom: 4px;
+}
+
+.chatcard__substem {
+  font-size: 13px;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+
+.chatcard__again.is-done {
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 40%, var(--line));
+  cursor: default;
+}
+
+/* ------------------------------------------------- 子窗口：可展开的批改过程 */
+
+.chatproblem__think {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.chatproblem__think > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.chatproblem__think > summary::-webkit-details-marker {
+  display: none;
+}
+
+.chatproblem__think > summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 1em;
+  transition: transform var(--dur) var(--ease);
+}
+
+.chatproblem__think[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.chatproblem__think > .md {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  color: var(--fg2);
+}
