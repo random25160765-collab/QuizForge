@@ -653,11 +653,29 @@ function report(ok) {
     py.setStderr({ batched: (s) => write(s + '\\n', 'bad') });
     const want = __PACKAGES__;
     if (want.length) {
-      stateEl.textContent = '正在加载依赖：' + want.join('、') + '（首次较慢，之后走缓存）';
-      await py.loadPackage(want);
+      stateEl.textContent = '正在加载依赖：' + want.join('、') + '（本机，首次约 70MB，之后走缓存）';
+      try {
+        await py.loadPackage(want);
+      } catch (err) {
+        // 加载失败要**说出来**：悄悄降级的后果是代码里 import 失败，
+        // 而模型以为装好了（实测发生过）
+        write('依赖加载失败：' + want.join('、') + ' —— ' + String((err && err.message) || err) + '\\n', 'bad');
+      }
     }
     stateEl.textContent = 'Python 就绪';
     stateEl.className = 'ok';
+    // 把沙箱的能力**报出来**（哪几个包在、版本多少）。
+    // 这段比代码本身还重要：输出会经「把输出发给它」回到模型手里，
+    // 它因此不必猜"这个环境有什么"。
+    py.runPython(
+      'import importlib\\n' +
+      'for _name in __CHECK__:\\n' +
+      '    try:\\n' +
+      '        _mod = importlib.import_module(_name)\\n' +
+      '        print("已就绪：" + _name + " " + getattr(_mod, "__version__", "?"))\\n' +
+      '    except Exception as _exc:\\n' +
+      '        print("未就绪：" + _name + " —— " + str(_exc))\\n'
+    );
     const started = performance.now();
     await py.runPythonAsync(__CODE__);
     write('\\n— 用时 ' + Math.round(performance.now() - started) + 'ms\\n', 'ok');
@@ -678,6 +696,7 @@ def _python_page(title: str, code: str, packages: list[str], run_id: str) -> str
         .replace("__INDEX__", pyodide_base())
         .replace("__RUNID__", html.escape(run_id)[:40])
         .replace("__PACKAGES__", json.dumps(packages, ensure_ascii=False))
+        .replace("__CHECK__", json.dumps(list(packages), ensure_ascii=False))
         .replace("__CODE__", json.dumps(code, ensure_ascii=False))
     )
 
@@ -717,15 +736,42 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
             "error": f"代码太长（{len(code)} 字，上限 {CODE_MAX_CHARS}）—— 精简到能说明问题就行。"
         }
 
-    packages = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]
+    asked = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]
+    # 只认名单里的。Pyodide 能不能装某个包是**写死的事实**，猜不出来，
+    # 而猜错的代价是"看起来装上了、跑起来 No module named"（实测发生过）。
+    # 名单外的直接剔掉并告诉模型，比让它自己发现要好。
+    packages: list[str] = []
+    skipped: list[str] = []
+    for name in list(PYODIDE_PACKAGES) + asked:
+        key = name.lower().strip().split(".")[0]  # scipy.signal 这种也认成 scipy
+        if key in PYODIDE_PACKAGES:
+            if key not in packages:
+                packages.append(key)
+        elif key and key not in skipped:
+            skipped.append(key)
+
     title = str(args.get("title") or "").strip()[:80] or "Python 运行结果"
     run_id = uuid.uuid4().hex[:12]
-    return {
-        "demo": {"title": title, "html": _python_page(title, code, packages, run_id), "runId": run_id},
-        "note": "代码已经挂上，面板里真跑。**不要**把源码或输出贴进正文，"
+    note = (
+        "代码已经挂上，面板里真跑。**不要**把源码或输出贴进正文，"
         "**也不要**声称你已经看到输出 —— 你看不到，它跑在沙箱里。"
-        "正文里说清这段在验证什么就够了；他想让你看结果时，面板上有"
-        "「把输出发给它」按钮。",
+        "正文里说清这段在验证什么就够了；他想让你看结果时，"
+        "面板上有「把输出发给它」按钮。"
+        "沙箱固定带这几个包：" + "、".join(PYODIDE_PACKAGES) + "（不必再点名，"
+        "面板开头会报出实际版本）。"
+    )
+    if skipped:
+        note += (
+            " 你要的 " + "、".join(skipped) + " 不在这个子集里，**没有装** —— "
+            "换名单里的包，或者用标准库自己实现；也可以如实告诉他这个沙箱装不了。"
+        )
+    return {
+        "demo": {
+            "title": title,
+            "html": _python_page(title, code, packages, run_id),
+            "runId": run_id,
+        },
+        "note": note,
     }
 
 
@@ -751,6 +797,18 @@ DEMO_KIT_FILES = (
 )
 DEMO_VENDOR_KIT = Path(__file__).resolve().parents[2] / "vendor" / "demo-kit"
 DEMO_SERVED_KIT = Path(__file__).resolve().parents[1] / "web" / "assets" / "demo-kit"
+
+# ---------------------------------------------------------------- 沙箱的 Python 子集
+#
+# **刻意只支持一个子集**：Pyodide 的包要么是纯 WASM 轮子、要么根本装不上
+# （要编译或有 C 扩展的都不行），而且每多一个就是几十 MB 跟着构建走
+# （scipy 一份 47MB）。所以这里写死一个短名单，有需求再酌情加 ——
+# 宁可是"明确说不行"，也不要"看起来能装、跑起来 No module named"。
+#
+# 与 `tools/vendor.py` 的 `PYODIDE_PACKAGES` 对应：那边负责取回（含依赖，
+# 如 scipy → numpy + openblas），这边负责加载。
+PYODIDE_PACKAGES = ("numpy", "scipy")
+PYODIDE_PACKAGE_URL = {"numpy": "https://pyodide.org/en/stable/usage/packages-in-pyodide.html"}
 
 
 def _demo_kit_ready() -> bool:
@@ -1295,9 +1353,9 @@ REGISTRY = {
         "用户说「跑一段脚本」「算一下」「验证一下这个算法」「试试这段代码」时**直接用它**，"
         "不要推辞、也不要让他自己去写页面。只给核心逻辑，用 print 出结果 —— "
         "样板（加载运行时、接 stdout、显示报错）由工具负责。"
-        "标准库与 numpy / scipy 可用（在 packages 里点名；**运行时和这两个包都在本机**，"
-        "不用联网、不用等下载）；没有文件系统、没有网络访问、"
-        "没有 matplotlib（要图就用 render_demo 写 JS）。\n"
+        "标准库 + **固定一个子集：numpy 与 scipy**（本机现成，不必点名，"
+        "面板开头会报出实际版本）；别的装不了 —— 没有 pandas、没有 matplotlib"
+        "（要图就用 render_demo 写 JS）、没有文件系统与网络。\n"
         "**你看不到运行输出** —— 它落在面板上（沙箱在 iframe 里，输出不进你的上下文）。"
         "所以不要说「跑出来了，结果是 X」：那是编的，实测发生过（声称 numpy 可用，"
         "面板上却是 No module named 'numpy'）。"
@@ -1311,7 +1369,8 @@ REGISTRY = {
                 "packages": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "要预装的包（numpy / scipy 等，最多 4 个）",
+                    "description": "一般不用填（numpy / scipy 默认就装好了）。"
+                    "只有确实需要额外包时才列，且必须在名单内 —— 名单外的会被剔除并告知。",
                 },
             },
             "required": ["code"],

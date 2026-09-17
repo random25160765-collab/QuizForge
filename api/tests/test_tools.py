@@ -383,7 +383,8 @@ def test_run_python_wraps_the_code_in_a_working_page(client, db_session) -> None
         assert "cdn.jsdelivr.net/pyodide" in page
     assert "loadPyodide" in page and "runPythonAsync" in page
     assert '"print([1, 1, 2, 3])"' in page, "代码要原样嵌进去（JSON 转义过）"
-    assert '["numpy"]' in page
+    # 子集是固定的：点名不点名都带上 numpy 与 scipy（见另一条用例）
+    assert 'const want = ["numpy", "scipy"]' in page
     assert 'id="out"' in page, "要有输出容器，否则跑了也看不见"
     assert "setStderr" in page, "报错也要显示出来"
 
@@ -409,6 +410,39 @@ def test_run_python_page_reports_its_output_back(client, db_session) -> None:  #
     assert "qfRun" in page and demo["runId"] in page
     # 报了运行结果之后才回传（不报 = 宿主永远在等）
     assert page.count("report(") >= 3
+
+
+def test_run_python_loads_the_fixed_subset_and_refuses_others(client, db_session) -> None:  # noqa: ANN001
+    """沙箱只支持一个写在代码里的子集（numpy / scipy），而且**默认就装好**。
+
+    原先要模型自己在 `packages` 里点名 —— 它一旦忘了（或点了名字单外的），
+    表现就是代码里 `import scipy` 失败，而它以为装好了（实测有过
+    「numpy 导入成功、scipy 导入失败」）。所以：名单固定、默认加载、
+    名单外的明确剔掉并回话。
+    """
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+
+    # 不点名：默认带上整个子集
+    ok, payload = tools.call(db_session, user, "run_python", {"code": "import scipy"})
+    assert ok, payload
+    html = payload["demo"]["html"]
+    assert 'const want = ["numpy", "scipy"]' in html, html[:400]
+    # 面板开头要把实际版本报出来（这样"装没装上"不用猜）
+    assert "已就绪：" in html and "__CHECK__" not in html
+
+    # 点名名单外的：剔掉，并说清没装
+    ok, payload = tools.call(
+        db_session,
+        user,
+        "run_python",
+        {"code": "import pandas", "packages": ["pandas", "numpy", "scipy.signal"]},
+    )
+    assert ok, payload
+    html = payload["demo"]["html"]
+    assert 'const want = ["numpy", "scipy"]' in html
+    assert "pandas" in payload["note"] and "没有装" in payload["note"]
+    assert "scipy.signal" not in payload["note"], "带子模块的写法要归到 scipy，不算越界"
 
 
 def test_run_python_refuses_empty_and_giant_code(client, db_session) -> None:  # noqa: ANN001
