@@ -18,8 +18,10 @@ body[data-page='chat'] .chat {
   grid-template-columns: 268px minmax(0, 1fr);
   gap: 16px;
   align-items: stretch;
-  /* 撑满一屏：消息流内部滚动，输入框永远在视口里 */
-  height: calc(100vh - var(--topbar-h) - var(--statusbar-h) - 44px);
+  /* 撑满一屏：消息流内部滚动，输入框永远在视口里。
+     不减状态栏那 46px：聊天页的状态栏是**空的**（只有练习/组卷才往里塞统计），
+     留着它等于在底部摆一条死区 —— 实测聊天区因此比视口矮 53px。 */
+  height: calc(100vh - var(--topbar-h) - 44px);
   min-height: 460px;
 }
 
@@ -154,7 +156,7 @@ body[data-page='chat'] .chat {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 2px 6px 2px 2px;
+  padding: 9px 6px 2px 2px;
   scroll-behavior: smooth;
 }
 
@@ -180,6 +182,13 @@ body[data-page='chat'] .chat {
   font-size: 11px;
   color: var(--fg2);
   user-select: none;
+}
+
+/* 动作行里的图标与第一行正文左对齐。
+   按钮是 28px 的点击区、图标 16px 居中，所以**按钮的**左边框与文字齐了，
+   **图标本身**还差 6px（半边留白）—— 抵消掉才是视觉上的一条线。 */
+.chatmsg__useractions {
+  margin-left: -6px;
 }
 
 .chatmsg--assistant .chatmsg__who {
@@ -1108,7 +1117,9 @@ body[data-page='chat'] .chat {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 16px;
+  /* 下面留出呼吸：那条分隔线与第一条消息原先只隔 2px，顶栏像糊在正文上。
+     左边距与消息区对齐（16px 显得比正文往里缩了一格）。 */
+  padding: 8px 0 11px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -1244,6 +1255,19 @@ body[data-page='chat'] .chat {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  background-color: var(--bg);
+}
+
+/* 网格：画在 SVG 里，跟着缩放与平移（见 chat.js 里建 defs 那段） */
+.ctgrid {
+  pointer-events: none;
+}
+
+.ctgrid__line {
+  fill: none;
+  stroke: var(--fg);
+  stroke-opacity: 0.06;
+  stroke-width: 1;
 }
 
 .chattree__svg {
@@ -1863,9 +1887,11 @@ body[data-page='chat'] .chat {
 
 .chat__box {
   display: flex;
-  align-items: flex-end;
+  /* 居中：图标、输入区、发送键在圆角矩形里各居其位 ——
+     原先 flex-end 让左边那几个图标贴在底边，看着"浮在上面" */
+  align-items: center;
   gap: 10px;
-  padding: 9px;
+  padding: 7px 9px 8px;
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   background: var(--bg2);
@@ -2171,7 +2197,7 @@ body[data-page='chat'] .chat {
 
 /* 发送键的图标：底色是亮的青绿，深色细线会糊成一块绿 —— 加粗才立得住 */
 .chat__send .chat__icon svg {
-  stroke-width: 2.4;
+  stroke-width: 1.9;
 }
 
 .chat__send .chat__icon {
@@ -2186,4 +2212,11 @@ body[data-page='chat'] .chat {
 
 .chat__send:active .chat__icon {
   transform: translateY(1px) scale(0.9);
+}
+
+/* 用 logo 当 AI 的署名：给它品牌色，图形本身来自 shell.html */
+.chatmsg__logo {
+  display: inline-flex;
+  align-items: center;
+  color: var(--pri);
 }

@@ -91,7 +91,7 @@
     dir: 'h', // h：时间往右；v：自上而下
     gapX: 130, // 层间距
     gapY: 20, // 同层节点间距
-    w: 212, // 节点宽
+    w: 268, // 节点宽（每行按实测宽度切，见 treeLines）
     view: { x: 0, y: 0, k: 1 },
     drag: null,
     bounds: null,
@@ -117,10 +117,39 @@
       }).filter(Boolean);
       text = kinds.length ? '（' + kinds.join(' · ') + '）' : message.status === 'error' ? '（失败）' : '（空）';
     }
-    var per = 17;
+    // 按**整行的实测宽度**切，不按字数 —— 字数治不了：中英混排、标点、
+    // 系统字体各占多少宽都不一样，前两版都栽在这儿（用户两次都看到越界）。
+    // 量不了（极老的浏览器）就退回按 11px 估一个保守值。
+    var font = '11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+    var limit = TREE.w - 40; // 左右各留 12px 内边距 + 右边一点余量
+    var widthOf = (function () {
+      var probe = null;
+      try {
+        probe = document.createElement('canvas').getContext('2d');
+        probe.font = font;
+      } catch (err) {
+        probe = null;
+      }
+      return function (line) {
+        if (!probe) return line.length * 11;
+        return probe.measureText(line).width;
+      };
+    })();
+
     var lines = [];
-    for (var i = 0; i < text.length && lines.length < 3; i += per) lines.push(text.slice(i, i + per));
-    if (text.length > per * 3) lines[2] = lines[2].slice(0, per - 1) + '…';
+    var rest = text;
+    while (rest && lines.length < 3) {
+      var take = 1;
+      while (take < rest.length && widthOf(rest.slice(0, take + 1)) <= limit) take++;
+      lines.push(rest.slice(0, take));
+      rest = rest.slice(take);
+    }
+    if (rest && lines.length) {
+      // 还有剩的：最后一行收成省略号（省略号本身也要放得下）
+      var last = lines[lines.length - 1];
+      while (last.length > 1 && widthOf(last + '…') > limit) last = last.slice(0, -1);
+      lines[lines.length - 1] = last + '…';
+    }
     return lines.length ? lines : ['（空）'];
   }
 
@@ -236,7 +265,9 @@
   function treePath(edge) {
     var a = edge.a;
     var b = edge.b;
-    var ah = a.h; // 纵向时从节点底边出发
+    // 纵向时从节点**底边**出发。高度取不到就现算一次 ——
+    // 拿不到就会算出 NaN 的起点 y，线画不出来（用户说的"纵向连线是断的"）。
+    var ah = a.h || (a.message ? treeNodeHeight(a.message) : 0);
     if (TREE.dir === 'h') {
       var x1 = a.x + TREE.w;
       var y1 = a.y;
@@ -245,9 +276,11 @@
       var mid = (x2 - x1) / 2;
       return 'M' + x1 + ' ' + y1 + 'C' + (x1 + mid) + ' ' + y1 + ',' + (x2 - mid) + ' ' + y2 + ',' + x2 + ' ' + y2;
     }
-    var vy1 = a.y + ah;
+    // 子节点也要高度（`bh`）——上面那句只补了父节点，纵向时这里会 ReferenceError
+    var bh = b.h || (b.message ? treeNodeHeight(b.message) : 0);
+    var vy1 = a.y + ah / 2;
     var vx1 = a.x + TREE.w / 2;
-    var vy2 = b.y;
+    var vy2 = b.y - bh / 2;
     var vx2 = b.x + TREE.w / 2;
     var vmid = (vy2 - vy1) / 2;
     return 'M' + vx1 + ' ' + vy1 + 'C' + vx1 + ' ' + (vy1 + vmid) + ',' + vx2 + ' ' + (vy2 - vmid) + ',' + vx2 + ' ' + vy2;
@@ -347,7 +380,6 @@
         text: state.messages.length + ' 个节点 · 亮的是当前分支 · 点节点切过去',
       }),
       dirButton,
-      denseButton,
       h(
         'button.chattree__btn',
         {
@@ -372,6 +404,19 @@
 
     var svg = sv('svg', { class: 'chattree__svg', width: '100%', height: '100%' });
     var layer = sv('g', { class: 'chattree__layer' });
+    // 网格**画在 SVG 里**（挂在 layer 上）：它跟着 transform 一起缩放与平移，
+    // 于是滚轮、拖动、适应窗口全都自动对齐 —— 用 CSS 背景的话得手工去追 view，
+    // 一漏一处就跟不上（用户报的"滚轮缩放，背景没跟着缩放"）。
+    svg.appendChild(
+      sv('defs', null, [
+        sv('pattern', { id: 'qfTreeGrid', width: 22, height: 22, patternUnits: 'userSpaceOnUse' }, [
+          sv('path', { class: 'ctgrid__line', d: 'M22 0H0V22' }),
+        ]),
+      ])
+    );
+    layer.appendChild(
+      sv('rect', { class: 'ctgrid', x: -20000, y: -20000, width: 40000, height: 40000, fill: 'url(#qfTreeGrid)' })
+    );
 
     // 先画连线，再画节点（节点压在线上）
     model.edges.forEach(function (edge) {
@@ -572,8 +617,10 @@
       '<path d="M4.5 5.5h9"/><path d="M4.5 10h6.5"/><path d="M4.5 14.5h5"/>' +
       '<path d="M13 20l6.2-6.2a1.9 1.9 0 0 0-2.7-2.7L10.3 17.3V20z"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
-    // 实心：34px 的按钮上细线会糊成一小块深色（实测如此，用户也说"没有图标"）
-    send: '<path d="M12 4 19.6 12.3h-4.8v7.2H9.2v-7.2H4.4z" fill="currentColor" stroke="none"/>',
+    // 描边纸飞机：与旁边几个图标同一路风格（实心那块在 17px 上太笨重）
+    send:
+      '<path d="M21.2 3.3 2.9 10.4a.7.7 0 0 0 .05 1.3l6.6 2.4 2.4 6.6a.7.7 0 0 0 1.3.05z"/>' +
+      '<path d="M21.2 3.3 9.6 14.1"/>',
     stop: '<rect x="7" y="7" width="10" height="10" rx="2.4" fill="currentColor" stroke="none"/>',
     tree:
       '<path d="M6 4v16"/><path d="M6 11.5h4.5a3 3 0 0 0 3-3V6"/>' +
@@ -646,6 +693,39 @@
       .trim();
   }
 
+  /**
+   * 品牌那枚 logo（图形与 `shell.html` 里回首页的那个**同一个** —— 改一处要一起改）。
+   *
+   * 用它替掉"AI"两个字：署名用图形更省地方，也让"这谁说的"与品牌对得上。
+   * 只取图形、不带那个渐变方块 —— 每条消息旁边都挂一块彩色方块太重了。
+   */
+  function logoMark() {
+    var box = h('span.chatmsg__logo', { 'aria-label': 'AI', title: 'AI' });
+    box.innerHTML =
+      '<svg viewBox="0 0 32 32" width="15" height="15" fill="none" stroke="currentColor" ' +
+      'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M5 21 L12 8 L19 21"/><path d="M8.2 16.4 h7.6"/>' +
+      '<path d="M22.5 10.5 v11"/><path d="M22.5 21.5 c3.2 0 4.6-1.6 5-4.6"/></svg>';
+    return box;
+  }
+
+  /**
+   * 网格背景跟着缩放与平移走。
+   *
+   * 网格是画布上的 CSS 背景，而缩放/平移只改了 SVG 的 transform ——
+   * 于是"地面"在图上滑走（用户的说法是"滚轮缩放，背景没跟着缩放"）。
+   * 背景尺寸按 k 放、位置按 view 平移，两者才是一套。
+   */
+  function syncTreeGrid() {
+    var host = document.querySelector('.chattree__canvas');
+    if (!host) return;
+    var step = 22 * TREE.view.k;
+    host.style.backgroundSize = step + 'px ' + step + 'px';
+    host.style.backgroundPosition =
+      Math.round(host.clientWidth / 2 + TREE.view.x) + 'px ' +
+      Math.round(host.clientHeight / 2 + TREE.view.y) + 'px';
+  }
+
   /** 内联 SVG 节点（图标表里的一个名字）。 */
   function iconNode(name, size) {
     var box = h('span.chat__icon');
@@ -667,8 +747,8 @@
   function paintSend(busy) {
     if (!sendBtn) return;
     ui.clear(sendBtn);
-    sendBtn.appendChild(iconNode(busy ? 'stop' : 'send', 19));
-    sendBtn.title = busy ? '停止' : '发送（Enter）';
+    sendBtn.appendChild(iconNode(busy ? 'stop' : 'send', 17));
+    sendBtn.title = busy ? '停止' : '发送';
     sendBtn.setAttribute('aria-label', busy ? '停止' : '发送');
     if (busy) sendBtn.classList.remove('btn--primary');
     else sendBtn.classList.add('btn--primary');
@@ -1276,7 +1356,7 @@
     // 文案进 title 与 aria-label —— 看得出、也读得出。
     sendBtn = h(
       'button.btn.btn--primary.chat__send',
-      { type: 'button', title: '发送（Enter）', 'aria-label': '发送', onClick: onSendClick },
+      { type: 'button', title: '发送', 'aria-label': '发送', onClick: onSendClick },
       iconNode('send', 19)
     );
     clipInput = h('input.chat__file', {
@@ -1313,14 +1393,14 @@
             h(
               'div.chat__box',
               null,
-              iconButton('clip', '加附件（文档、代码、PDF、截图）', function () {
+              iconButton('clip', '加附件', function () {
                 if (clipInput) clipInput.click();
               }),
               iconButton('note', '便签（边聊边记）', function () {
                 if (notesOpen) closeNotes();
                 else openNotes();
               }),
-              (problemBtn = iconButton('problem', '大题（多问、要写推导，由子代理批改）', function () {
+              (problemBtn = iconButton('problem', '大题', function () {
                 if (problemOpen) closeProblem();
                 else openProblem();
               })),
@@ -1392,18 +1472,11 @@
           conv.messageCount ? h('span', { text: '· ' + conv.messageCount + ' 条' }) : null
         ),
         conv.preview ? h('div.chatlist__preview', { text: conv.preview }) : null,
-        iconButton(
-          'pin',
-          conv.pinned ? '取消置顶' : '置顶',
-          function (event) {
-            event.stopPropagation(); // 别顺带把会话也切了
-            togglePin(conv);
-          },
-          '.chatlist__pin' + (conv.pinned ? '.is-on' : '')
-        ),
+        // 置顶并进 `⋯` 菜单：一行里挂两个图标按钮（一个还只在悬停时出现）太挤，
+        // 而它们本来就是同一类操作 —— 对这条会话做什么。
         h('button.chatlist__more', {
           type: 'button',
-          title: '重命名 / 删除 / 导出',
+          title: '重命名 / 置顶 / 删除 / 导出',
           'aria-label': '更多',
           onClick: function (event) {
             event.stopPropagation(); // 别顺带把会话也切了
@@ -1651,7 +1724,8 @@
     var row = h(
       'div.chatmsg' + (isUser ? '.chatmsg--user' : '.chatmsg--assistant') + (m.status === 'error' ? '.is-error' : ''),
       { dataset: { id: String(m.id || '') } },
-      h('div.chatmsg__who', { text: isUser ? '我' : 'AI' }),
+      // 署名：用户是"我"，AI 那侧用品牌那枚 logo（与左上角回首页的是同一个图形）
+      h('div.chatmsg__who', null, isUser ? '我' : logoMark()),
       body
     );
     decorateAssistant(row, body, m);
@@ -3454,7 +3528,7 @@
     var mode = aiState && aiState.mode;
     if (mode === 'beta') {
       // 说清"现在是谁在回答"：内测通道答得不理想时，用户要知道换模型的办法
-      bits.push((aiState.label || '内测通道') + '（想换：设置 → AI 填自己的密钥）');
+      bits.push(aiState.label || '内测通道');
     } else if (mode === 'user' && aiState.model) {
       bits.push('模型：' + aiState.model);
     }
@@ -3680,6 +3754,12 @@
       ),
       actions: [
         {
+          label: conv.pinned ? '取消置顶' : '置顶',
+          onClick: function () {
+            togglePin(conv);
+          },
+        },
+        {
           label: '删除',
           kind: 'danger',
           onClick: function () {
@@ -3795,7 +3875,7 @@
         })[0];
       }
       if (!target && !ask && state.list.length) target = state.list[0];
-      if (target) return openConversation(target.id);
+            if (target) return openConversation(target.id);
       return undefined;
     }).then(function () {
       if (ask) inputEl.focus();
