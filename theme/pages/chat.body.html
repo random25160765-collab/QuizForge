@@ -1,0 +1,12 @@
+<!--
+  对话页的正文容器。
+  约定：一个 #app-root，并且 data-page 必须写（页面级 CSS 与顶栏图标隐藏都靠它）。
+  首屏骨架先用 bootstate：boot.js 走完鉴权与题库装载之前，页面脚本不启动。
+-->
+<div id="app-root" data-page="chat">
+  <div class="bootstate">
+    <div class="bootstate__icon"><span class="bootstate__spinner"></span></div>
+    <h1 class="bootstate__title">正在载入对话…</h1>
+    <p class="bootstate__text">校验登录状态，然后读出你的会话</p>
+  </div>
+</div>

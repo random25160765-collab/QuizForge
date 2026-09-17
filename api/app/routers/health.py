@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import __version__
+from .. import ai_gateway as gateway
 from ..config import get_settings
 from ..db import get_db
 from ..models import BankVersion, Question, Topic
@@ -69,8 +70,16 @@ def health(db: Session = Depends(get_db)) -> dict:
         # 这个接口不需要登录，更不该暴露别人的配置。
         "ai": {
             "enabled": settings.ai_enabled,
+            # 「凭据模式」没变：仍然是谁的密钥谁负责。内测通道只是让没有密钥的人
+            # 也能用上本机那个模型，不改变凭据归属，所以这个字段维持 per-user。
             "mode": "per-user",
             "dailyQuota": settings.ai_daily_quota,
+            # 内测通道开没开、配置里有没有密钥（**不给地址、不给密钥**：
+            # 这个接口不需要登录，它只该回答"这个实例能不能免密钥用"）
+            "betaEnabled": settings.ai_beta_enabled,
+            "betaConfigured": bool(
+                str((gateway.beta_config() or {}).get("apiKey") or "").strip()
+            ),
         },
     }
 

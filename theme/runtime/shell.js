@@ -88,7 +88,7 @@
      页面名取自 body[data-page]（shell.html 注入），两套构建下都有值。 */
   function hideSelfIcons() {
     var page = document.body.dataset.page || '';
-    var self = { graph: 'btn-graph', wrongbook: 'btn-wrongbook' }[page];
+    var self = { graph: 'btn-graph', wrongbook: 'btn-wrongbook', chat: 'btn-chat' }[page];
     if (!self) return;
     var btn = document.getElementById(self);
     if (btn) btn.hidden = true;
@@ -101,7 +101,7 @@
    * 面板里的改动都即时写进 store，关掉即生效。
    *
    * 图谱页不用它：那一页的设置是画布上的浮动面板（见 graph.js），
-   * 只管力导向参数，与这里的三段（AI 批改 / 外观 / 数据）不是一回事。
+   * 只管力导向参数，与这里的三段（AI / 外观 / 数据）不是一回事。
    */
   function openSettings() {
     var conf = store.settings();
@@ -158,21 +158,38 @@
         store.saveSettings({ ai: { model: event.target.value.trim() } });
       },
     });
+    // 对话的上下文预算：小窗口模型调低它，长材料才塞得下而不是被服务端截断
+    var contextInput = h('input.input.input--mono', {
+      type: 'number',
+      min: '1000',
+      step: '1000',
+      placeholder: '默认 8000',
+      value: aiConf.maxContextTokens || '',
+      onInput: function (event) {
+        var value = parseInt(event.target.value, 10);
+        store.saveSettings({ ai: { maxContextTokens: isNaN(value) ? 0 : value } });
+      },
+    });
 
     // **每个用户用自己的密钥**：填好之后存在自己的账号里，换设备不用重填。
     // 服务端只做转发（不少模型供应商不允许浏览器直连），不持有任何共享密钥。
     var connectionBlock = h('div', null,
       h('div.form__grid', { style: { marginTop: '12px' } },
         field('接口地址（OpenAI 兼容）', '例如 https://api.deepseek.com/v1', baseUrlInput),
-        field('模型名', '例如 deepseek-chat / gpt-4o-mini', modelInput)),
+        field('模型名', '例如 deepseek-chat / gpt-4o-mini', modelInput),
+        field('上下文预算（token）', '越大能带进的对话越多；小窗口模型可调低，服务端另设上限', contextInput)),
       h('div', { style: { marginTop: '12px' } },
         field('API 密钥',
-          '你自己的密钥，保存在你的账号里 —— 换设备不用重填。本站不提供共享密钥，AI 批改的用量记在你的账上。',
+          '你自己的密钥，保存在你的账号里 —— 换设备不用重填。本站不提供共享密钥，用量记在你的账上。',
           apiKeyInput)));
 
     var aiForm = h('div.form__section', null,
-      h('div.form__sectiontitle', { text: 'AI 批改（简答题）' }),
-      switchRow('启用 AI 批改', '关闭时简答题提交后直接显示参考答案，由你自己判断对错。', aiConf.enabled, function (value) {
+      h('div.form__sectiontitle', { text: 'AI（批改与对话）' }),
+      h('p', {
+        text: '优先级：你自己填的密钥 > 本站的内测通道。不填密钥就用内测通道（站长的那份额度）。',
+        style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      switchRow('启用 AI', '关闭时简答题提交后直接显示参考答案，由你自己判断对错；对话页也不再可用。', aiConf.enabled, function (value) {
         store.saveSettings({ ai: { enabled: value } });
       }),
       connectionBlock,

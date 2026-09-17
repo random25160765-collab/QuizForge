@@ -679,3 +679,105 @@ class AiUsage(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+# ---------------------------------------------------------------- 对话（学习前台）
+
+
+class Conversation(Base):
+    """一次对话 —— 学习前台的容器（原先只存在于浏览器内存里）。
+
+    为什么它得是一等公民：
+
+    * **它是用户最贵的产物**。一年的学习轨迹就是一串对话，而它只在两种时候被读：
+      接着聊、以及被扫（从轨迹里提取薄弱点）。两者都要求一个稳定的地址。
+    * **它要能被引用**。题目卡片、材料引用、掌握度变动都长在消息上，
+      前端内存里的一个数组地址不了任何东西。
+
+    归属从出生就带上（`user_id`）：这是多租户那条缝的落点 ——
+    以后加团队 / 题库归属时，旧数据不需要回填。
+    """
+
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    title: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)
+
+
+class Message(Base):
+    """对话里的一条消息。
+
+    ## 为什么是树而不是列表
+
+    `parent_id` 让「再生成 / 换个说法重问」是**新增一个分支**，而不是覆盖原文 ——
+    覆盖会毁掉轨迹，而轨迹恰恰是这里最值钱的东西（"我当时是怎么被讲明白的"）。
+    线性界面只是这棵树的一条路径：第一版可以只画一条线，但结构不锁死。
+
+    ## 为什么流式中间态要落库
+
+    一次生成可能十几秒。中途关页面、断网、点停止，如果只在结束时才写库，
+    这十几秒的产出就没了 —— 用户看到的是白屏，而且会怀疑是自己点错了。
+    所以先建一条 `status='streaming'` 的行，边收边写，结束时改成
+    `ok` / `partial`（被中断，有部分产出）/ `error`。
+
+    ## 正文为什么是零件而不是一段字
+
+    一条回答里会长出不止一种东西：正文、模型的推理、它调用了哪个工具、
+    引用材料的哪几行、就地推给你的那道题。全塞进一段字符串的话，
+    前端只能靠正则猜（且永远猜不全），而"引用可点回原文"这类要求就无从谈起。
+    所以 `parts` 是真相、`content` 是投影（见 `app/parts.py`）。
+    """
+
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    # 冗余一份 user_id：每个查询强制带它（与 records / attempts 同一条规矩），
+    # 免得"查消息"这条最热的路径每次都要先 join 会话
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    parent_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # user / assistant
+    content: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # ok=完整 / streaming=正在生成 / partial=被打断但有产出 / error=失败
+    status: Mapped[str] = mapped_column(String(16), default="ok", nullable=False)
+    error: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    finish_reason: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    model: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 消息的**真相**：零件数组（正文 / 推理 / 工具调用 / 出处 / 题卡），见 app/parts.py。
+    # `content` 是它的正文投影（供列表预览与搜索），方向不能反过来 ——
+    # 与「题目是事实、索引是投影」同一条规矩。
+    parts: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_messages_conversation_created", "conversation_id", "created_at"),
+        Index("ix_messages_user_created", "user_id", "created_at"),
+    )

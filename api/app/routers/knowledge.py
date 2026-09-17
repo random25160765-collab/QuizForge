@@ -15,12 +15,46 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select, text
 
+from .. import materials as material_text
 from ..deps import CurrentUser, DbSession
 from ..models import KnowledgePoint, Material, PointEdge, PointSource, Question, QuestionPoint, Record
 
 router = APIRouter(prefix="/api", tags=["knowledge"])
 
 LAYERS = ("识记", "理解", "应用", "迁移")
+
+
+@router.get("/knowledge/material")
+def material_lines(
+    user: CurrentUser,
+    db: DbSession,
+    slug: str = Query(..., description="材料 slug"),
+    start: int = Query(1, ge=1, description="起始行（1 起）"),
+    end: int = Query(0, ge=0, description="结束行（含）；0 = 从 start 往下 60 行"),
+) -> dict:
+    """按行区间读材料原文 —— 对话里点开引用时用它。
+
+    与模型读的是**同一个函数**（`app.materials.read_lines`）：它看到的与你看到的
+    逐字一致，这是"引用"能当证据的前提。库只存坐标，正文在文件里，
+    所以文件不在机器上时这里会明确说清（而不是返回一段空文本）。
+    """
+    material = db.scalar(select(Material).where(Material.slug == slug))
+    if material is None:
+        raise HTTPException(404, "没有这份材料：" + slug)
+    try:
+        lines = material_text.read_lines(material, start, end)
+    except material_text.MaterialError as exc:
+        raise HTTPException(503, str(exc)) from None
+
+    return {
+        "material": material.slug,
+        "title": material.title,
+        "sourcePath": material.source_path,
+        "totalLines": material.lines,
+        "startLine": lines[0]["line"],
+        "endLine": lines[-1]["line"],
+        "lines": lines,
+    }
 
 
 @router.get("/knowledge/overview")

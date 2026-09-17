@@ -68,6 +68,28 @@ class Settings(BaseSettings):
     ai_enabled: bool = True  # 实例级总开关，关掉后所有人都不能用
     ai_timeout_ms: int = 90000  # 超时上限，用户不能把自己设得比这更长
     ai_daily_quota: int = 0  # 每人每天的批改次数上限（0 = 不限）
+    # 对话的上下文预算上限（用户可设得更小，不能更大）——
+    # 与超时同一条规矩：模型窗口是用户自己的事，但站长得有个兜底
+    ai_max_context_tokens: int = 8000
+
+    # ------------------------------------------------------- 内测通道
+    # 内测期间让「没有自带密钥的人也能聊」：一个**实例级**的 OpenAI 兼容配置，
+    # 写给内测用。它长什么样与用户自己那份（`user_settings.data.ai`）完全一致，
+    # 密钥放在一个被 gitignore 的文件里：
+    #
+    #     config/ai.local.json  →  {"enabled":true,"baseUrl":"…","model":"…","apiKey":"…"}
+    #
+    # **这里只存路径，不存密钥**：Settings 会被 repr、会被日志打印，
+    # 而密钥不该出现在任何一处输出里。文件由网关按 mtime 懒读，改完立刻生效。
+    #
+    # 它与上面那条「不替别人保管计费凭据」的关系要说清：内测通道是**故意**的例外，
+    # 就是站长拿自己的额度请大家试用。所以：
+    #   * 用户自己填了密钥 → 用他的（谁的额度谁负责，这条没变）
+    #   * 没填 → 走内测通道，并且**建议把 QF_AI_DAILY_QUOTA 设成非 0**，
+    #     否则一个人就能把这份共享额度刷光
+    #   * 两条路都没有 → 明确报错，不静默降级
+    ai_beta_enabled: bool = True
+    ai_beta_config_file: Path = ROOT / "config" / "ai.local.json"
 
     # ------------------------------------------------------------ 导入器
     # 容器里用 QF_QUESTIONS_DIR / QF_TOPICS_FILE / QF_TOOLS_DIR 指到挂载点。

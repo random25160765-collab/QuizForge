@@ -1,0 +1,1127 @@
+"""给对话用的工具表 —— 模型能"伸手"去拿的那几样东西。
+
+## 为什么先只做只读的
+
+写操作（改掌握度、推题入队）会**改变用户的状态**，它需要"先确认再执行"那一层
+（LibreChat 的 approval 就是干这个的），而那一层还没做。所以这一版只放**只读**工具：
+它们最多花一点 token，不会把谁的进度改坏。写操作与题卡一起放下一刀。
+
+## 工具描述就是契约
+
+描述不是给人看的说明，是**模型判断"什么时候该用它"的唯一依据**。
+所以每条都写清：什么时候用、参数是什么、返回什么形状。
+中文描述是刻意的 —— 这个项目面向的是中文语料与国内模型。
+
+## 异常边界
+
+工具内部抛的任何异常都被 `call()` 收成 `{"error": ...}` 交回模型，
+**不让它中断这一轮**：模型看到"这次查询失败了"，可以换个问法再来；
+而如果直接抛到路由，用户得到的是一次白屏，且额度已经花了。
+
+## 一处刻意的取舍
+
+`get_existing_questions` 默认**不给答案**（要 `includeAnswer` 才给）。
+因为它的下一个用途是"推一道题给学生做"，把答案放进上下文等于剧透；
+要让模型讲题时，它自己会传 includeAnswer。
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+
+from sqlalchemy import String, cast, or_, select
+
+from . import mastery, materials
+from .models import (
+    Concept,
+    ConceptEdge,
+    KnowledgePoint,
+    Material,
+    Message,
+    PointSource,
+    Question,
+    QuestionPoint,
+    Record,
+)
+
+
+def _clamp(value, low: int, high: int, default: int) -> int:  # noqa: ANN001
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(n, high))
+
+
+def _stem(question: Question, limit: int = 120) -> str:
+    payload = question.payload or {}
+    text = str(payload.get("stem") or payload.get("question") or "")
+    text = " ".join(text.split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+# ---------------------------------------------------------------- 检索
+
+
+def search_knowledge(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    query = str(args.get("query") or "").strip()
+    limit = _clamp(args.get("limit"), 1, 20, 8)
+    if not query:
+        return {"error": "query 不能为空"}
+
+    like = "%" + query + "%"
+    concepts = db.execute(
+        select(
+            Concept.key,
+            Concept.name,
+            Concept.kind,
+            Concept.definition,
+            Concept.material_count,
+            Concept.question_count,
+            Concept.topic_key,
+        )
+        .where(Concept.status != "retired")
+        .where(
+            or_(
+                Concept.key.ilike(like),
+                Concept.name.ilike(like),
+                Concept.definition.ilike(like),
+                cast(Concept.aliases, String).ilike(like),
+            )
+        )
+        .order_by(Concept.material_count.desc(), Concept.question_count.desc(), Concept.key)
+        .limit(limit)
+    ).all()
+
+    points = db.execute(
+        select(
+            KnowledgePoint.key,
+            KnowledgePoint.name,
+            KnowledgePoint.kind,
+            KnowledgePoint.layers,
+            KnowledgePoint.thickness,
+            Material.slug,
+            Material.title,
+        )
+        .join(Material, Material.id == KnowledgePoint.material_id)
+        .where(or_(KnowledgePoint.key.ilike(like), KnowledgePoint.name.ilike(like)))
+        .order_by(KnowledgePoint.key)
+        .limit(limit)
+    ).all()
+
+    return {
+        "concepts": [
+            {
+                "key": key,
+                "name": name,
+                "kind": kind,
+                "definition": " ".join((definition or "").split())[:200],
+                "materials": material_count,
+                "questions": question_count,
+                "topic": topic_key,
+            }
+            for key, name, kind, definition, material_count, question_count, topic_key in concepts
+        ],
+        "points": [
+            {
+                "key": key,
+                "name": name,
+                "kind": kind,
+                "layers": layers or [],
+                "thickness": thickness,
+                "material": slug,
+                "title": title,
+            }
+            for key, name, kind, layers, thickness, slug, title in points
+        ],
+        "note": "concepts 是跨材料的那个「东西」，points 是它在某份材料里的一次出现；"
+        "要看原文片段与挂着的题，用 get_point_detail(key)。",
+    }
+
+
+def get_point_detail(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    key = str(args.get("key") or "").strip()
+    if not key:
+        return {"error": "key 不能为空"}
+
+    point = db.scalar(
+        select(KnowledgePoint).where(KnowledgePoint.key == key).order_by(KnowledgePoint.id).limit(1)
+    )
+    if point is not None:
+        return _point_detail(db, point)
+
+    concept = db.scalar(select(Concept).where(Concept.key == key))
+    if concept is not None:
+        return _concept_detail(db, concept)
+
+    # 退一步：既不是点也不是概念 key 时，用模糊搜给个线索，而不是干巴巴一句"没有"
+    preview = search_knowledge(db, user, {"query": key, "limit": 5})
+    return {"error": f"没有 key 为 {key} 的点或概念", "similar": preview}
+
+
+def _sources(db, point: KnowledgePoint) -> list[dict]:  # noqa: ANN001
+    rows = db.execute(
+        select(Material.slug, Material.title, PointSource.start_line, PointSource.end_line)
+        .select_from(PointSource)
+        .join(KnowledgePoint, KnowledgePoint.id == PointSource.point_id)
+        .join(Material, Material.id == KnowledgePoint.material_id)
+        .where(PointSource.point_id == point.id)
+        .order_by(PointSource.start_line)
+        .limit(12)
+    ).all()
+    return [
+        {"material": slug, "title": title, "startLine": start, "endLine": end}
+        for slug, title, start, end in rows
+    ]
+
+
+def _questions_of(db, point_keys: list[str], limit: int, include_answer: bool) -> list[dict]:  # noqa: ANN001
+    if not point_keys:
+        return []
+    rows = db.execute(
+        select(Question, KnowledgePoint.key)
+        .join(QuestionPoint, QuestionPoint.question_id == Question.id)
+        .join(KnowledgePoint, KnowledgePoint.id == QuestionPoint.point_id)
+        .where(KnowledgePoint.key.in_(point_keys))
+        .where(Question.retired_at.is_(None))
+        .order_by(Question.id)
+        .limit(limit)
+    ).all()
+    out = []
+    for question, point_key in rows:
+        item = {
+            "id": question.id,
+            "point": point_key,
+            "type": question.type,
+            "layer": question.layer,
+            "wing": question.wing,
+            "difficulty": question.difficulty,
+            "stem": _stem(question),
+        }
+        if include_answer:
+            payload = question.payload or {}
+            item["answer"] = str(payload.get("answer") or payload.get("answers") or "")[:300]
+        out.append(item)
+    return out
+
+
+def _point_detail(db, point: KnowledgePoint) -> dict:  # noqa: ANN001
+    material = db.get(Material, point.material_id)
+    return {
+        "kind_of_node": "point",
+        "key": point.key,
+        "name": point.name,
+        "type": point.kind,
+        "layers": point.layers or [],
+        "thickness": point.thickness,
+        "producible": point.producible,
+        "material": {
+            "slug": material.slug if material else "",
+            "title": material.title if material else "",
+            "subject": material.subject if material else "",
+        },
+        "sources": _sources(db, point),
+        "concept": _concept_ref(db, point.concept_id),
+        "questions": _questions_of(db, [point.key], 8, False),
+        "note": point.note or "",
+    }
+
+
+def _concept_ref(db, concept_id) -> dict | None:  # noqa: ANN001
+    if not concept_id:
+        return None
+    concept = db.get(Concept, concept_id)
+    if concept is None:
+        return None
+    return {"key": concept.key, "name": concept.name, "materials": concept.material_count}
+
+
+def _concept_detail(db, concept: Concept) -> dict:  # noqa: ANN001
+    points = db.execute(
+        select(KnowledgePoint, Material.slug)
+        .join(Material, Material.id == KnowledgePoint.material_id)
+        .where(KnowledgePoint.concept_id == concept.id)
+        .order_by(Material.slug)
+        .limit(20)
+    ).all()
+
+    edges = db.execute(
+        select(ConceptEdge.type, ConceptEdge.derived_by, Concept.name)
+        .join(Concept, Concept.id == ConceptEdge.to_concept_id)
+        .where(ConceptEdge.from_concept_id == concept.id)
+        .order_by(ConceptEdge.type)
+        .limit(20)
+    ).all()
+
+    return {
+        "kind_of_node": "concept",
+        "key": concept.key,
+        "name": concept.name,
+        "type": concept.kind,
+        "definition": concept.definition,
+        "aliases": concept.aliases or [],
+        "topic": concept.topic_key,
+        "counts": {
+            "materials": concept.material_count,
+            "points": concept.point_count,
+            "questions": concept.question_count,
+        },
+        "appearances": [
+            {
+                "key": point.key,
+                "name": point.name,
+                "layers": point.layers or [],
+                "material": slug,
+                "sources": _sources(db, point),
+            }
+            for point, slug in points
+        ],
+        "edges": [
+            {"type": type_, "to": name, "derivedBy": derived_by}
+            for type_, derived_by, name in edges
+        ],
+        "questions": _questions_of(db, [point.key for point, _ in points], 8, False),
+    }
+
+
+# ---------------------------------------------------------------- 状态
+
+
+def get_existing_questions(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    point_key = str(args.get("pointKey") or "").strip()
+    layer = str(args.get("layer") or "").strip()
+    include_answer = bool(args.get("includeAnswer"))
+    limit = _clamp(args.get("limit"), 1, 20, 5)
+
+    keys = [point_key] if point_key else []
+    if not keys:
+        rows = db.execute(
+            select(KnowledgePoint.key)
+            .join(QuestionPoint, QuestionPoint.point_id == KnowledgePoint.id)
+            .join(Question, Question.id == QuestionPoint.question_id)
+            .where(Question.retired_at.is_(None))
+            .group_by(KnowledgePoint.key)
+            .order_by(KnowledgePoint.key)
+            .limit(60)
+        ).all()
+        keys = [row[0] for row in rows]
+
+    items = _questions_of(db, keys, limit, include_answer)
+    if layer:
+        items = [item for item in items if item["layer"] == layer][:limit]
+    return {
+        "items": items,
+        "note": "answer 默认不给（推题时剧透）；要讲解就把 includeAnswer 设为 true。",
+    }
+
+
+def _record_dict(record: Record | None) -> dict:  # noqa: ANN001
+    """库里的记录 → `mastery.from_record` 认的形状（camelCase）。
+
+    注意 `streak` 在 `patch` 里而不是独立列 —— 它是前端算的，随同步一起上来。
+    """
+    if record is None:
+        return {}
+    patch = record.patch or {}
+    return {
+        "attempts": record.attempts,
+        "correct": record.correct,
+        "streak": patch.get("streak") or 0,
+        "lastAt": record.last_at,
+    }
+
+
+def _bands_by_point(db, user, keys=None):  # noqa: ANN001
+    """按知识点算掌握档位 —— `get_mastery` 与图检索**共用**这一份口径。
+
+    为什么必须共用：图检索里"这个前置还没打牢"的判据，与 `get_mastery`
+    报出来的那个数字，必须是同一个 —— 否则同一件事在两个工具里给出两种说法，
+    而用户只能信一个（他会信那个对他有利的）。
+
+    没答过的点照样返回（`band: new`），因为"这片是空的"本身就是要说的事。
+    """
+    now = int(time.time() * 1000)
+    records = {
+        record.question_id: record
+        for record in db.scalars(select(Record).where(Record.user_id == user.id)).all()
+    }
+    rows = db.execute(
+        select(QuestionPoint.question_id, KnowledgePoint.key)
+        .join(KnowledgePoint, KnowledgePoint.id == QuestionPoint.point_id)
+    ).all()
+
+    buckets: dict[str, list[tuple[int, str, int]]] = {}
+    for question_id, key in rows:
+        if keys and key not in keys:
+            continue
+        record = records.get(question_id)
+        score, band = mastery.from_record(_record_dict(record), now)
+        attempts = int(record.attempts) if record is not None else 0
+        buckets.setdefault(key, []).append((score, band, attempts))
+
+    out: dict[str, dict] = {}
+    for key, bucket in buckets.items():
+        scored = [item for item in bucket if item[2] > 0]
+        if not scored:
+            out[key] = {"key": key, "band": "new", "score": 0, "answered": 0, "attempts": 0}
+            continue
+        total_attempts = sum(item[2] for item in scored)
+        avg = int(round(sum(item[0] for item in scored) / len(scored)))
+        out[key] = {
+            "key": key,
+            "band": mastery.mastery_band(avg, total_attempts),
+            "score": avg,
+            "answered": len(scored),
+            "attempts": total_attempts,
+        }
+    return out
+
+
+def get_mastery(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    keys = [str(k) for k in (args.get("pointKeys") or []) if str(k).strip()]
+    bands = _bands_by_point(db, user, keys or None)
+    items = sorted(bands.values(), key=lambda item: (item["score"], item["key"]))
+    return {
+        "items": items[:40],
+        "note": "score 是该点下各题掌握度的平均（0–100）；band 是 new/learning/familiar/mastered 档位。",
+    }
+
+
+def get_due_reviews(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    limit = _clamp(args.get("limit"), 1, 30, 10)
+    now = int(time.time() * 1000)
+
+    rows = db.execute(
+        select(Record.question_id, Record.patch, Question.layer, Question.type)
+        .join(Question, Question.id == Record.question_id)
+        .where(Record.user_id == user.id)
+        .where(Question.retired_at.is_(None))
+    ).all()
+
+    due = []
+    for question_id, patch, layer, type_ in rows:
+        sm2 = (patch or {}).get("sm2") or {}
+        at = sm2.get("due")
+        if isinstance(at, (int, float)) and at <= now:
+            due.append((int(at), question_id, layer, type_))
+    due.sort()
+
+    keys = dict(
+        db.execute(
+            select(QuestionPoint.question_id, KnowledgePoint.key)
+            .join(KnowledgePoint, KnowledgePoint.id == QuestionPoint.point_id)
+        ).all()
+    )
+    return {
+        "items": [
+            {
+                "questionId": question_id,
+                "layer": layer,
+                "type": type_,
+                "pointKeys": [keys[question_id]] if question_id in keys else [],
+                "overdueDays": round((now - at) / 86400000, 1),
+            }
+            for at, question_id, layer, type_ in due[:limit]
+        ],
+        "dueTotal": len(due),
+        "note": "只算还在题库里的题；due 来自记录里的 SM2 状态。",
+    }
+
+
+# ---------------------------------------------------------------- 题卡
+
+
+# 能推成卡片的题型。**大题（problem）不在其中**：它有小问结构与小问级判分，
+# 那是另一套界面（刷题页有），塞进一张卡里会变成一个半成品。
+CARD_TYPES = ("single", "multi", "blank", "short")
+
+
+def _card_payload(question: Question) -> dict:
+    """把一道题削成一张**不含答案**的卡。
+
+    前端判分不靠这张卡 —— 它用本地题库（`QF.data.get(id)`）里的完整题面判，
+    所以这里一个答案字段都不带。理由是硬的：卡片会进模型上下文、也会被渲染出来，
+    答案摆在眼前就等于没题可做了（`answer` / `explanation` / `rubric` 全部剥掉）。
+    """
+    payload = question.payload or {}
+    card = {
+        "questionId": question.id,
+        "type": question.type,
+        "layer": question.layer,
+        "wing": question.wing,
+        "difficulty": question.difficulty,
+        "topic": question.topic,
+        "chapter": question.chapter,
+        "stem": str(payload.get("stem") or ""),
+    }
+
+    options = payload.get("options")
+    if isinstance(options, list):
+        card["options"] = [
+            {"key": str(item.get("key") or ""), "text": str(item.get("text") or "")}
+            for item in options
+            if isinstance(item, dict)
+        ]
+
+    hint = str(payload.get("hint") or "").strip()
+    if hint:
+        card["hint"] = hint  # 提示是给人看的，不是答案
+
+    if question.type == "blank":
+        # 填空只给"几个空"与作答方式，每个空的接受答案不给
+        card["blankMode"] = str(payload.get("blankMode") or "")
+        card["blankCount"] = len(payload.get("answer") or [])
+
+    return card
+
+
+def _pushed_ids(db, ctx) -> set[str]:  # noqa: ANN001
+    """这次对话里已经推过的题。
+
+    模型自己看不见（卡片是零件，按设计不回放进上下文），所以"再来一道"很容易
+    变成同一道 —— 这个排除由服务端做，因为服务端看得见消息里的卡片。
+    """
+    conv_id = (ctx or {}).get("conversationId")
+    if not conv_id:
+        return set()
+    rows = db.scalars(
+        select(Message.parts).where(Message.conversation_id == uuid.UUID(str(conv_id)))
+    ).all()
+    out: set[str] = set()
+    for parts in rows:
+        for part in parts or []:
+            if isinstance(part, dict) and part.get("type") == "card":
+                question_id = (part.get("payload") or {}).get("questionId")
+                if question_id:
+                    out.add(str(question_id))
+    return out
+
+
+def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """推一道题给学生做：返回一张题卡（不含答案）。
+
+    ## 选题规则刻意写得笨
+
+    它必须**可解释、可复现**（与 `/api/picks` 同一条规矩）：同样的输入给同样的结果，
+    否则"为什么给我这道题"永远说不清。所以是：筛选（知识点 / 层 / 翼 / 难度上限）
+    → 排掉已经答对的（推一道他会了的题没有意义）→ 排掉这次已经推过的
+    → 优先没做过的 → 同分按题目 id。
+
+    ## 为什么答案不在这里给
+
+    见 `_card_payload`。要讲评时模型自己会调 `get_existing_questions(includeAnswer)`，
+    那是它主动要来看的，不是被塞进上下文的。
+    """
+    point_key = str(args.get("pointKey") or "").strip()
+    layer = str(args.get("layer") or "").strip()
+    wing = str(args.get("wing") or "").strip()
+
+    stmt = select(Question).where(Question.retired_at.is_(None), Question.type.in_(CARD_TYPES))
+    if layer:
+        stmt = stmt.where(Question.layer == layer)
+    if wing:
+        stmt = stmt.where(Question.wing == wing)
+    if args.get("maxDifficulty"):
+        stmt = stmt.where(Question.difficulty <= _clamp(args.get("maxDifficulty"), 1, 5, 5))
+    if point_key:
+        stmt = (
+            stmt.join(QuestionPoint, QuestionPoint.question_id == Question.id)
+            .join(KnowledgePoint, KnowledgePoint.id == QuestionPoint.point_id)
+            .where(KnowledgePoint.key == point_key)
+        )
+
+    rows = db.scalars(stmt.order_by(Question.id).limit(400)).all()
+    if not rows:
+        return {"card": None, "note": "这个范围内没有可推的题，放宽 layer / wing / 知识点再试。"}
+
+    records = {
+        record.question_id: record
+        for record in db.scalars(select(Record).where(Record.user_id == user.id)).all()
+    }
+    pushed = _pushed_ids(db, ctx)
+
+    fresh: list[Question] = []
+    missed: list[Question] = []
+    repeated: list[Question] = []
+    for question in rows:
+        record = records.get(question.id)
+        if record is not None and record.attempts and record.last_status == "correct":
+            continue  # 答对了就是会了 —— 这一条**永远**不推，兜底也不能把它捞回来
+        if str(question.id) in pushed:
+            repeated.append(question)  # 这次对话里推过了，只在没得选时才复用
+            continue
+        (fresh if record is None or not record.attempts else missed).append(question)
+
+    pool = fresh or missed or repeated
+    if not pool:
+        return {
+            "card": None,
+            "note": "这个范围内的题他都答对了 —— 换个知识点，或者把 layer / wing 放宽。",
+        }
+
+    card = _card_payload(pool[0])
+    return {
+        "card": card,
+        "note": "卡片由界面渲染给他作答，答完结果会自动写进答题记录（与刷题页同一条路径）。"
+        "你**不要**报答案、也不要替他念选项；等他答完再讲。",
+    }
+
+
+# ---------------------------------------------------------------- 图检索
+
+
+# 走图默认只看**语义关系**。`co_occurs` 是程序按字面算出来的弱边（两千多条），
+# 默认上桌只会把邻域冲淡 —— 要看它得显式要。
+GRAPH_KINDS = ("requires", "part_of", "contrast_with", "implements")
+
+# 方向约定：`from` 是主动的那一头 —— `A →(requires) B` 读作"A 是 B 的前置"
+# （库里抽读下来 6 条里 5 条这么读才通，剩一条是判边的噪声）。
+# 值 = (**逆着**边走看到的, 顺着边走看到的)：
+# 站在 B 上逆着走到 A，看到的 A 是「前置」；站在 A 上顺着走到 B，看到的 B 是「后继」。
+_EDGE_WORDS = {
+    "requires": ("前置", "后继"),
+    "part_of": ("组成部分", "包含"),
+    "contrast_with": ("易混", "易混"),
+    "implements": ("实现", "被实现"),
+    "co_occurs": ("常共现", "常共现"),
+}
+# 排序权重：先把前置摆上桌 —— "该先学什么"的答案在那一条上
+_EDGE_ORDER = {"requires": 0, "part_of": 1, "contrast_with": 2, "implements": 3, "co_occurs": 9}
+
+
+def _graph_seed(db, key: str, query: str):  # noqa: ANN001
+    """线索 → 概念。key 直接命中；query 按名字片段找（取最"重"的那个）。"""
+    if key:
+        concept = db.scalar(select(Concept).where(Concept.key == key))
+        if concept is not None:
+            return concept
+        point = db.scalar(
+            select(KnowledgePoint)
+            .where(KnowledgePoint.key == key)
+            .order_by(KnowledgePoint.id)
+            .limit(1)
+        )
+        return db.get(Concept, point.concept_id) if point is not None and point.concept_id else None
+
+    if not query:
+        return None
+    like = "%" + query + "%"
+    return db.scalar(
+        select(Concept)
+        .where(Concept.status != "retired")
+        .where(
+            or_(
+                Concept.key.ilike(like),
+                Concept.name.ilike(like),
+                cast(Concept.aliases, String).ilike(like),
+            )
+        )
+        .order_by(Concept.material_count.desc(), Concept.question_count.desc(), Concept.key)
+        .limit(1)
+    )
+
+
+def explore_graph(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """从一个概念出发，走**语义关系**看邻域。
+
+    ## 与 `search_knowledge` 的分工
+
+    那个是"按词找节点"，这个是"从一个节点往外走"。两类问题只有它能答：
+
+    * **我该先学什么** —— 看 `requires` 的**上游**（谁是它的前置）。
+    * **这块和那块什么关系 / 为什么我学不懂它** —— 看邻域全貌与易混项。
+
+    ## 为什么每个邻居都带掌握档位
+
+    光说"它的前置是 A、B、C"没用 —— 有用的信息是**哪一个还没打牢**。
+    档位取该概念下**最弱那个点**，并且与 `get_mastery` 共用同一份口径
+    （同一件事不能有两个说法）。
+
+    ## 已知的稀
+
+    前置链现在很稀（686 条有序边 / 912 个概念），所以走一层常常只有一两个邻居，
+    甚至没有 —— 那种时候返回里会直说，而不是假装图谱很全。
+    """
+    key = str(args.get("key") or "").strip()
+    query = str(args.get("query") or "").strip()
+    depth = _clamp(args.get("depth"), 1, 2, 1)
+    limit = _clamp(args.get("limit"), 1, 30, 12)
+    kinds = [str(k).strip() for k in (args.get("kinds") or []) if str(k).strip()]
+    kinds = [k for k in (kinds or list(GRAPH_KINDS)) if k in _EDGE_WORDS]
+
+    seed = _graph_seed(db, key, query)
+    if seed is None:
+        return {"error": "没找到这个概念：给 key（概念/知识点的）或 query（名字片段）。"}
+
+    seen: dict[int, int] = {seed.id: 0}
+    frontier = [seed.id]
+    reached: list[dict] = []
+    for step in range(1, depth + 1):
+        rows = db.execute(
+            select(ConceptEdge.type, ConceptEdge.from_concept_id, ConceptEdge.to_concept_id)
+            .where(ConceptEdge.type.in_(kinds))
+            .where(
+                or_(
+                    ConceptEdge.from_concept_id.in_(frontier),
+                    ConceptEdge.to_concept_id.in_(frontier),
+                )
+            )
+        ).all()
+
+        found = []
+        for edge_type, from_id, to_id in rows:
+            if from_id in frontier and to_id not in seen:
+                found.append((to_id, edge_type, "out"))
+            elif to_id in frontier and from_id not in seen:
+                found.append((from_id, edge_type, "in"))
+
+        if not found:
+            break
+        for concept_id, edge_type, direction in found:
+            seen[concept_id] = step
+            reached.append(
+                {"id": concept_id, "type": edge_type, "direction": direction, "distance": step}
+            )
+        frontier = [concept_id for concept_id, _, _ in found]
+
+    if not reached:
+        return {
+            "seed": {"key": seed.key, "name": seed.name},
+            "neighbors": [],
+            "note": "这个概念还没有语义关系边（图谱还稀：686 条有序边 / 912 个概念）。"
+            "可以先用 search_material 看材料原文。",
+        }
+
+    ids = [item["id"] for item in reached]
+    concepts = {
+        concept.id: concept
+        for concept in db.scalars(select(Concept).where(Concept.id.in_(ids))).all()
+    }
+    keys_by_concept: dict[int, list[str]] = {}
+    for concept_id, point_key in db.execute(
+        select(KnowledgePoint.concept_id, KnowledgePoint.key).where(
+            KnowledgePoint.concept_id.in_(ids)
+        )
+    ).all():
+        keys_by_concept.setdefault(concept_id, []).append(point_key)
+    bands = _bands_by_point(
+        db, user, [key for keys in keys_by_concept.values() for key in keys] or None
+    )
+
+    def band_of(concept_id: int) -> str:
+        """该概念下**最弱**那个点的档位：说"这块还没打牢"时得用最弱的说。"""
+        scored = [bands[key] for key in keys_by_concept.get(concept_id, []) if key in bands]
+        if not scored:
+            return "new"
+        return min(scored, key=lambda item: (item["score"], item["key"]))["band"]
+
+    items = []
+    for item in reached:
+        concept = concepts.get(item["id"])
+        if concept is None:
+            continue
+        back, forward = _EDGE_WORDS.get(item["type"], ("相关", "相关"))
+        items.append(
+            {
+                "key": concept.key,
+                "name": concept.name,
+                # 逆着边走（邻居是边的那一头 from）→ 用第一个词
+                "relation": back if item["direction"] == "in" else forward,
+                "edge": item["type"],
+                "distance": item["distance"],
+                "band": band_of(concept.id),
+                "questions": concept.question_count,
+                "definition": (concept.definition or "")[:120],
+            }
+        )
+    items.sort(key=lambda item: (_EDGE_ORDER.get(item["edge"], 9), item["distance"], item["key"]))
+
+    return {
+        "seed": {"key": seed.key, "name": seed.name, "band": band_of(seed.id)},
+        "neighbors": items[:limit],
+        "note": "relation 是从 seed 出发读的（前置 = 学它之前得先会；后继 = 以它为前提）；"
+        "band 是该概念下最弱那个点的掌握档位（与 get_mastery 同一口径）。",
+    }
+
+
+# ---------------------------------------------------------------- 材料正文
+
+
+def search_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """在材料**原文**里做字面检索 —— 不是概念库，是正文本身。
+
+    ## 三条使用规则（也是给模型的）
+
+    * 词给**特别的**：`exp_approx_mode`、`circular buffer` 这种原词最灵；
+      给"地址""性能"这种到处都有的词，等于没筛。
+    * 所有词要在**同一行**同时出现才算命中（词之间是"与"）。放宽就少给一个词。
+    * 返回里带 `scanned` / `total`：没扫完就是没扫完，别当成"全库没有"。
+
+    ## 与 `search_knowledge` 的分工
+
+    `search_knowledge` 查的是**知识空间**（概念、点、题）；这个查的是**文本**。
+    想知道"材料里原话怎么说的"，用这个；想知道"这个点在图谱里的位置"，用那个。
+    """
+    result = materials.search(
+        db,
+        str(args.get("query") or ""),
+        slug=str(args.get("slug") or "").strip(),
+        limit=_clamp(args.get("limit"), 1, 8, 5),
+    )
+
+    # `sources` 是给宿主看的约定：router 会把它变成**引用零件**，
+    # 于是对话里每一处结论都能点回原文那几行（不只是"我看过材料"）。其他
+    # 工具（search_knowledge / get_point_detail）也照这个字段名返回。
+    hits = result.get("hits") or []
+    if hits:
+        result["sources"] = [
+            {
+                "material": hit["material"],
+                "title": hit["title"],
+                "startLine": hit["firstMatch"],
+                "endLine": hit["endLine"],
+                "quote": hit.get("quote") or "",
+            }
+            for hit in hits
+        ]
+    return result
+
+
+def read_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """按 (slug, 行区间) 读材料原文。
+
+    这是"引用能点回原文"的服务端一半：前端点开引用时读的是同一个函数，
+    所以模型看到的那几行与用户看到的那几行**逐字一致**。
+    默认读 60 行；想接着往下看就把 startLine 往后挪。
+    """
+    slug = str(args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "要给我材料的 slug（`search_material` / `search_knowledge` 的结果里都有）。"}
+
+    material = db.scalar(select(Material).where(Material.slug == slug))
+    if material is None:
+        return {"error": "没有这份材料：" + slug}
+
+    try:
+        lines = materials.read_lines(material, args.get("startLine") or 1, args.get("endLine") or 0)
+    except materials.MaterialError as exc:
+        return {"error": str(exc)}
+
+    first, last = lines[0]["line"], lines[-1]["line"]
+    return {
+        "material": material.slug,
+        "title": material.title,
+        "startLine": first,
+        "endLine": last,
+        "lines": len(lines),
+        "text": "\n".join(f"{item['line']}: {item['text']}" for item in lines),
+        "sources": [
+            {
+                "material": material.slug,
+                "title": material.title,
+                "startLine": first,
+                "endLine": last,
+            }
+        ],
+    }
+
+
+# ---------------------------------------------------------------- 动作提案
+
+
+# AI 能提的写操作，只有这两件 —— 而且都是**界面里本来就有的动作**
+# （刷题页的收藏夹、错题本里的「已掌握」）。它自己不改状态：这里只产出一张
+# 凭条，人点了才生效。所以不需要另搞一套审批机制 ——
+# 需要确认的那一步，就是用户自己那一次点击。
+#
+# 刻意**没有**的东西：改掌握度（掌握度只能从作答长出来）、
+# 改 SM2 排期（那是"答得怎么样"的产物）、改题库（那要走有出处的流水线）。
+_ACTION_FIELDS = {"flag": "flagged", "mastered": "mastered"}
+
+
+def _question_proposal(db, user, question_id, kind: str, on) -> dict:  # noqa: ANN001
+    """组装一张凭条。**只读不写** —— 这是它存在的全部意义。"""
+    question_id = str(question_id or "").strip()
+    if not question_id:
+        return {"error": "要告诉我哪道题（questionId）。"}
+    question = db.get(Question, question_id)
+    if question is None or question.retired_at is not None:
+        return {"error": "题库里没有这道题：" + question_id}
+
+    field = _ACTION_FIELDS[kind]
+    record = db.scalar(
+        select(Record).where(Record.user_id == user.id, Record.question_id == question_id)
+    )
+    current = bool(getattr(record, field, False)) if record is not None else False
+
+    return {
+        "proposal": {
+            "kind": kind,
+            "questionId": question_id,
+            "on": bool(on),
+            "current": current,
+            "layer": question.layer,
+            "wing": question.wing,
+            "topic": question.topic,
+        },
+        "note": "界面上已经放了一张**待确认**的凭条，他点了才生效。"
+        "所以别说「我已经帮你收藏了」，要说「要不要把它收起来」。",
+    }
+
+
+def flag_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """提案：把某道题加入收藏夹 / 移出收藏夹。**不改任何东西**。
+
+    ## 为什么是提案而不是直接写
+
+    它写的是**用户的学习记录**，那是他的东西。AI 可以建议"这题值得留着"，
+    但按下去的那一下得是他自己 —— 界面上会出现一张凭条，
+    他点确认才落到记录里（走的是收藏夹那条老路）。
+    """
+    return _question_proposal(db, user, args.get("questionId"), "flag", args.get("on", True))
+
+
+def mark_mastered(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """提案：把某道题标成「已掌握」（错题本不再催它）/ 取消这个标记。**不改任何东西**。
+
+    这道题的作答记录**不会**因此变化 —— 标记掌握是"别再催我了"，
+    不是"我答对了"。掌握度仍然只从作答长出来。
+    """
+    return _question_proposal(db, user, args.get("questionId"), "mastered", args.get("on", True))
+
+
+# ---------------------------------------------------------------- 登记
+
+
+REGISTRY = {
+    "search_knowledge": {
+        "fn": search_knowledge,
+        "description": "在知识空间里按关键词找概念与知识点。用户问到一个术语、"
+        "一个机制名、或你不确定它在这套材料里怎么表述时，先用它。"
+        "返回跨材料的概念（concepts）与它在各份材料里的出现（points）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "关键词，如 circular buffer、noc"},
+                "limit": {"type": "integer", "description": "最多几条，默认 8"},
+            },
+            "required": ["query"],
+        },
+    },
+    "get_point_detail": {
+        "fn": get_point_detail,
+        "description": "取一个知识点或概念的详情：它是什么、在哪份材料的哪几行出现、"
+        "挂了几道题、与哪些概念有前置/包含/易混关系。要讲清一处机制时用它拿出处。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "点或概念的 key（来自 search_knowledge）"}
+            },
+            "required": ["key"],
+        },
+    },
+    "get_existing_questions": {
+        "fn": get_existing_questions,
+        "description": "题库里已有的题（默认不含答案，避免推题时剧透）。"
+        "用户想练某个知识点、或你想看看已有题长什么样时用它。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pointKey": {"type": "string", "description": "限定某个知识点的 key，可省略"},
+                "layer": {"type": "string", "description": "识记 / 理解 / 应用 / 迁移，可省略"},
+                "limit": {"type": "integer", "description": "最多几道，默认 5"},
+                "includeAnswer": {"type": "boolean", "description": "讲解时设为 true"},
+            },
+        },
+    },
+    "get_mastery": {
+        "fn": get_mastery,
+        "description": "用户在各知识点上的掌握度与档位（new/learning/familiar/mastered）。"
+        "想判断该给他讲多深、该先补哪儿时用它。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pointKeys": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "限定几个知识点，为空则返回最弱的若干",
+                }
+            },
+        },
+    },
+    "get_due_reviews": {
+        "fn": get_due_reviews,
+        "description": "按间隔重复算法到期该复习的题。用户问「今天该复习什么」时用它。",
+        "parameters": {
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "description": "最多几条，默认 10"}},
+        },
+    },
+    "explore_graph": {
+        "fn": explore_graph,
+        "description": "从一个概念/知识点出发，走**语义关系**看邻域：前置、后继、组成部分、易混、实现。"
+        "「我该先学什么」「这两块什么关系」「为什么我学不懂 X」用它；按词找节点用 search_knowledge。"
+        "每个邻居都带 relation 与 band（你的掌握档位，取该概念下最弱的点），"
+        "所以「哪个前置还没打牢」可以直接看出来。"
+        "默认不看 co_occurs（程序按字面算的弱边），要看得显式列进 kinds。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "概念或知识点的 key"},
+                "query": {
+                    "type": "string",
+                    "description": "不记得 key 时给名字片段（key 与 query 给一个即可）",
+                },
+                "depth": {"type": "integer", "description": "走几层，默认 1、最多 2"},
+                "kinds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "边类型子集，默认 requires/part_of/contrast_with/implements",
+                },
+                "limit": {"type": "integer", "description": "最多几个邻居，默认 12"},
+            },
+        },
+    },
+    "search_material": {
+        "fn": search_material,
+        "description": "在**材料原文**里做字面检索，返回命中的行区间与原文片段。"
+        "想知道「材料里原话是怎么说的」时用它；想知道概念/点在知识空间里的位置，用 search_knowledge。"
+        "词要给得特别（exp_approx_mode、circular buffer 这种原词最灵）—— "
+        "所有词要在**同一行**同时出现才算命中，放宽就少给一个词。"
+        "返回里的 scanned/total 说明这次扫了多少份材料：没扫完就别说「材料里没有」。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "关键词或短语（按字面命中）"},
+                "slug": {"type": "string", "description": "只在这份材料里找（可省略）"},
+                "limit": {"type": "integer", "description": "最多几段，默认 5"},
+            },
+            "required": ["query"],
+        },
+    },
+    "read_material": {
+        "fn": read_material,
+        "description": "读材料原文的某几行（默认从 startLine 起 60 行）。"
+        "要用原文支撑结论时：先 search_material 拿到行号，再用它把上下文读全；"
+        "也可以顺着刚读到的区间继续往下读。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "材料 slug"},
+                "startLine": {"type": "integer", "description": "起始行（从 1 起）"},
+                "endLine": {
+                    "type": "integer",
+                    "description": "结束行（含；可省略，默认往下读 60 行）",
+                },
+            },
+            "required": ["slug"],
+        },
+    },
+    "flag_question": {
+        "fn": flag_question,
+        "description": "提议把某道题加入/移出**收藏夹**（=「这题值得再看」的标记，刷题页里叫收藏夹）。"
+        "注意这是**提议**：界面上会出现一张待确认的凭条，他点了才真的生效。"
+        "所以要说「要不要把这题收起来」，不要说「我已经帮你收藏了」。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "questionId": {"type": "string", "description": "题号，例如 tt-arch-0012"},
+                "on": {"type": "boolean", "description": "true=加入收藏，false=移出。默认 true"},
+            },
+            "required": ["questionId"],
+        },
+    },
+    "mark_mastered": {
+        "fn": mark_mastered,
+        "description": "提议把某道题标成**已掌握**（错题本里不再催它）或取消这个标记。"
+        "他说「这题我会了，别老考我」时用它。"
+        "**这只是提议**，他点了才生效；而且它不改作答记录、不改掌握度 —— "
+        "那两样只从作答长出来，不要把它说成「你已掌握这个知识点」。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "questionId": {"type": "string", "description": "题号，例如 tt-arch-0012"},
+                "on": {"type": "boolean", "description": "true=标为已掌握，false=取消。默认 true"},
+            },
+            "required": ["questionId"],
+        },
+    },
+    "push_question": {
+        "fn": push_question,
+        "description": "推一道题给他做（返回一张**可作答的题卡**，不含答案）。"
+        "他说「考考我」「来道题」「练一道」时用它；你刚讲完一段机制、想确认他确实懂了时也可以主动推。"
+        "题卡由界面渲染、他答完结果会自动进答题记录 —— 所以**不要**报答案，也不要替他念选项。"
+        "大题（problem）不在这张卡里，要练大题就让他去刷题页。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pointKey": {
+                    "type": "string",
+                    "description": "限定知识点（可省略；省略时在你刚讲的范围里找）",
+                },
+                "layer": {"type": "string", "description": "识记 / 理解 / 应用 / 迁移"},
+                "wing": {"type": "string", "description": "基础 / 应用 / 综合 / 创新"},
+                "maxDifficulty": {"type": "integer", "description": "难度上限 1–5"},
+            },
+        },
+    },
+}
+
+
+def specs() -> list[dict]:
+    """OpenAI 兼容的工具声明。"""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": spec["description"],
+                "parameters": spec["parameters"],
+            },
+        }
+        for name, spec in REGISTRY.items()
+    ]
+
+
+def call(db, user, name: str, args: dict, ctx: dict | None = None) -> tuple[bool, dict]:  # noqa: ANN001
+    """执行一次工具调用。**永远不抛**：失败也是给模型的一条结果。
+
+    理由见模块 docstring：抛出去的结果是白屏 + 已花的额度，
+    而交回一个 {"error": ...} 让模型自己换个问法，往往还能救回来。
+
+    `ctx` 是"这次调用发生在什么场合"（至少含 `conversationId`）：
+    有的工具需要它 —— 比如 `push_question` 要知道这次已经推过哪几道。
+    """
+    spec = REGISTRY.get(name)
+    if spec is None:
+        return False, {"error": "没有这个工具：" + str(name)}
+    try:
+        return True, spec["fn"](db, user, args or {}, ctx or {})
+    except Exception as exc:  # noqa: BLE001
+        return False, {"error": type(exc).__name__ + ": " + str(exc)[:200]}
+
+
+def output_text(payload: dict) -> str:
+    """工具结果 → 交给模型看的文本（紧凑 JSON，别浪费 token 在缩进上）。
+
+    ## 题卡不原样交出去
+
+    `card` 是给**界面**渲染的：整份塞进上下文等于把题面与四个选项又誊一遍
+    （实测一次推题塞进去近千字），而且它还会随历史一次次重放 —— 第二轮请求
+    因此涨到 90 秒撞上超时。给模型留一张"身份证"就够了：
+    它知道推了哪道题、什么层什么翼，要讲题时自己会去取。
+    """
+    trimmed = {key: value for key, value in payload.items() if key != "card"}
+    card = payload.get("card")
+    if isinstance(card, dict) and card.get("questionId"):
+        trimmed["card"] = {
+            "questionId": card.get("questionId"),
+            "type": card.get("type"),
+            "layer": card.get("layer"),
+            "wing": card.get("wing"),
+            "difficulty": card.get("difficulty"),
+            "note": "题卡已推给他作答（题面与选项在卡片里，不在你这里）",
+        }
+    return json.dumps(trimmed, ensure_ascii=False, separators=(",", ":"))
