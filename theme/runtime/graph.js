@@ -267,11 +267,12 @@
         }).filter(function (e) { return e.s !== undefined && e.t !== undefined; }),
       };
     } else {
-      // 只换了过滤器：位置留着（点一下开关就"跳一下"是不舒服的）
+      // 只换了过滤器：位置留着（点一下开关就"跳一下"是不舒服的）。
+      // **不要**在这里重新加热：热起来整张图又开始跑，鼠标底下那个节点每帧都在换，
+      // 悬停高亮跟着不停翻转 —— 看起来就是"点某个元素、无关节点不停闪"（用户报的）。
       sim.edges = links.map(function (l) {
         return { s: sim.index.get(l.source), t: sim.index.get(l.target), type: l.type, weight: l.weight || 1 };
       }).filter(function (e) { return e.s !== undefined && e.t !== undefined; });
-      sim.alpha = Math.max(sim.alpha, 0.5);
     }
     nodes.forEach(function (n) {
       n.__tone = TYPE_TONE[n.type] || 'fg2';
