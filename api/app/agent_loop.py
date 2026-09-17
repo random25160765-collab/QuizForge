@@ -187,6 +187,13 @@ def run(  # noqa: ANN001
         chunks: list[str] = []
         calls: list[dict] = []
         finish = ""
+        # 协议泄漏：模型把工具调用**写成了正文**（实测内测通道的 deepseek-chat 会这样，
+        # 用户看到的就是一屏 `<||DSML|| invoke name="push_question">` 这种原文）。
+        # 半角/全角的竖线都要认 —— 它两种都吐过。判定前要按住一小截尾巴：
+        # 标记可能被切成两块分别到达，逐块替换会漏。
+        leak_marks = ("<|DSML|", "<｜｜DSML", "｜｜DSML｜｜", "<|tool", "</|tool", "<|function")
+        hold = ""
+        leaked = False
 
         while True:
             try:
@@ -203,8 +210,24 @@ def run(  # noqa: ANN001
                     tools=tools.specs() if (allow_tools and _turn < max_turns - 1) else None,
                 ):
                     if kind == "delta":
-                        chunks.append(value)
-                        yield {"kind": "text", "text": value}
+                        if leaked:
+                            continue  # 这一轮已判定是泄漏：剩下的正文全丢
+                        hold += value
+                        if any(mark in hold for mark in leak_marks):
+                            leaked = True
+                            hold = ""
+                            yield {
+                                "kind": "note",
+                                "text": "模型把工具调用写进了正文（协议泄漏），这一段已丢弃、本轮不作数。",
+                            }
+                            continue
+                        # 只放已经能判定安全的那部分，尾巴留着等下一块
+                        keep = 14
+                        safe = hold[:-keep] if len(hold) > keep else ""
+                        if safe:
+                            hold = hold[len(safe):]
+                            chunks.append(safe)
+                            yield {"kind": "text", "text": safe}
                     elif kind == "think":
                         yield {"kind": "think", "text": value}
                     elif kind == "tool_calls":
@@ -214,6 +237,11 @@ def run(  # noqa: ANN001
                         usage["completionTokens"] += int(value.get("completionTokens") or 0)
                     elif kind == "finish":
                         finish = value
+                # 流结束：把按住的那截尾巴放出来（泄漏的话上面已经清空了）
+                if hold and not leaked:
+                    chunks.append(hold)
+                    yield {"kind": "text", "text": hold}
+                    hold = ""
                 break
             except gateway.UpstreamError as exc:
                 # 不支持工具调用的模型：摘掉工具重来一次（必须还没吐出任何字，
