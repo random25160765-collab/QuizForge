@@ -779,6 +779,41 @@ def test_push_question_becomes_a_card_in_the_message(client, monkeypatch, import
     assert any(p["type"] == "card" for p in last["parts"])
 
 
+# ------------------------------------------------------------------ 置顶
+
+
+def test_pinned_conversations_come_first(client, monkeypatch) -> None:  # noqa: ANN001
+    """置顶压过"谁最近动过" —— 它是用户自己钉的。
+
+    顺带守住 `pinned: false`：那个值**不能**被当成"没给"
+    （写成 `body.get("pinned") or conv.pinned` 就会，取消置顶永远无效）。
+    """
+    _ready(client)
+    _stub(monkeypatch, _recording_stream([]))
+    first = _new_conversation(client)
+    _send(client, first, content="第一条")
+    second = _new_conversation(client)
+    _send(client, second, content="第二条")
+
+    listed = client.get("/api/chat/conversations").json()["conversations"]
+    assert listed[0]["id"] == second, "默认按最近活动"
+
+    resp = client.patch(
+        f"/api/chat/conversations/{first}", json={"pinned": True}, headers=_headers(client)
+    )
+    assert resp.status_code == 200 and resp.json()["pinned"] is True
+
+    listed = client.get("/api/chat/conversations").json()["conversations"]
+    assert listed[0]["id"] == first and listed[0]["pinned"] is True
+
+    client.patch(
+        f"/api/chat/conversations/{first}", json={"pinned": False}, headers=_headers(client)
+    )
+    listed = client.get("/api/chat/conversations").json()["conversations"]
+    assert listed[0]["id"] == second
+    assert all(c["pinned"] is False for c in listed), "取消置顶要真的生效"
+
+
 # ------------------------------------------------------------------ 附件
 
 
