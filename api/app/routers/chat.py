@@ -509,7 +509,12 @@ def post_message(
         # 新消息挂在谁下面：默认挂最新那条；但前端可以指定 ——
         # 用户翻到旧分支上接着问时，就该挂在那条分支上，而不是挂到最新那条去
         parent_id = _leaf_id(db, conv)
-        if body.get("parentId") not in (None, "", 0):
+        if "parentId" in body and body["parentId"] is None:
+            # **显式**说"没有父节点"。编辑第一条消息时会用到：那一条本来就在根上，
+            # 「挂到最新那条下面」是完全不同的意思 —— 不把它与"没给"分开，
+            # 编辑第一条消息就会把它挪到会话末尾去。
+            parent_id = None
+        elif body.get("parentId") not in (None, "", 0):
             try:
                 wanted = int(body["parentId"])
             except (TypeError, ValueError):

@@ -36,6 +36,8 @@
   var inputEl = null;
   var sendBtn = null;
   var hintEl = null;
+  var barEl = null;
+  var treeEl = null;
 
   /** `/api/ai/usage` 的结果：走哪条通道、能不能用（决定提示怎么写） */
   var aiState = null;
@@ -50,9 +52,182 @@
     live: null, // 正在长的那条
     query: '', // 搜索框里的字（≥2 字就把左栏换成搜索结果）
     results: [], // 搜索结果
+    editing: 0, // 正在就地编辑的那条用户消息（0 = 没有）
+    treeOpen: false, // 对话树面板开着没有
   };
 
   var searchTimer = null;
+
+  /* ------------------------------------------------------------ 对话树 */
+
+  /**
+   * 对话树的可视化。
+   *
+   * 库里一直是棵树（`parent_id`）——「重新回答」与「编辑并重发」都会**新增分支**
+   * 而不是覆盖。但树在界面上只露出一条线（当前分支），所以没有这张图，
+   * 用户永远不知道自己错过哪些枝，也找不到「我当时问的是别的」那一条。
+   *
+   * 画法用的是文件树那套连接线，而不是力导向图：这里的节点是**文字**，
+   * 缩进加连接线最好读（力导向图在 20 个节点上就已经看不出谁接谁了）。
+   */
+
+  /** 工具栏：一个开合按钮 + 这棵树的基本情况。 */
+  function renderBar() {
+    if (!barEl) return;
+    ui.clear(barEl);
+
+    var counts = {};
+    state.messages.forEach(function (m) {
+      var key = keyOf(m.parentId);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    var forks = Object.keys(counts).filter(function (key) {
+      return counts[key] > 1;
+    }).length;
+
+    barEl.appendChild(
+      h(
+        'button.chat__treebtn' + (state.treeOpen ? '.is-on' : ''),
+        {
+          type: 'button',
+          onClick: function () {
+            state.treeOpen = !state.treeOpen;
+            renderBar();
+            renderTree();
+          },
+        },
+        '对话树 · ' + state.messages.length + ' 个节点' + (forks ? ' · ' + forks + ' 处分叉' : '')
+      )
+    );
+  }
+
+  /** 整棵树拍平成带连接线的行（深度优先，兄弟按 id —— 也就是发生顺序）。 */
+  function treeRows() {
+    var byParent = {};
+    state.messages.forEach(function (m) {
+      var key = keyOf(m.parentId);
+      (byParent[key] = byParent[key] || []).push(m);
+    });
+
+    var onPath = {};
+    activePath().forEach(function (m) {
+      onPath[m.id] = true;
+    });
+
+    var rows = [];
+    (function walk(parentId, prefix, withConnector) {
+      var kids = byParent[keyOf(parentId)] || [];
+      kids.forEach(function (m, index) {
+        var last = index === kids.length - 1;
+        var head = withConnector ? (last ? '└─ ' : '├─ ') : '';
+        rows.push({ message: m, prefix: prefix + head, onPath: !!onPath[m.id], forks: kids.length });
+        walk(m.id, prefix + (withConnector ? (last ? '   ' : '│  ') : ''), true);
+      });
+    })(null, '', false);
+    return rows;
+  }
+
+  /** 一条消息写成一行字：有正文用正文，没有就报零件（比如只推了张题卡）。 */
+  function treePreview(m) {
+    var text = String(m.content || '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text) {
+      var parts = m.parts || [];
+      var tally = {};
+      parts.forEach(function (part) {
+        var kind = part.type === 'card' ? '题卡' : part.type === 'tool_call' ? '工具' : part.type;
+        tally[kind] = (tally[kind] || 0) + 1;
+      });
+      text = Object.keys(tally)
+        .map(function (kind) {
+          return kind + '×' + tally[kind];
+        })
+        .join(' · ');
+    }
+    if (!text) text = m.status === 'error' ? '（失败）' : '（空）';
+    return text.length > 42 ? text.slice(0, 42) + '…' : text;
+  }
+
+  function treeRowNode(row) {
+    var m = row.message;
+    var tags = [];
+    if (row.forks > 1) tags.push('⑂' + row.forks);
+    if (m.status === 'error') tags.push('失败');
+    else if (m.status === 'partial') tags.push('中断');
+
+    return h(
+      'button.chattree__row' +
+        (row.onPath ? '.is-onpath' : '') +
+        (m.id === state.editing ? '.is-editing' : '') +
+        (m.role === 'user' ? '.is-user' : ''),
+      {
+        type: 'button',
+        title: '跳到这一条（会切到它的分支）',
+        onClick: function () {
+          state.treeOpen = false;
+          revealMessage(m.id);
+        },
+      },
+      h('span.chattree__prefix', { text: row.prefix }),
+      h('span.chattree__who', { text: m.role === 'user' ? '我' : 'AI' }),
+      h('span.chattree__label', { text: treePreview(m) }),
+      tags.length ? h('span.chattree__tags', { text: tags.join(' ') }) : null
+    );
+  }
+
+  function renderTree() {
+    if (!treeEl) return;
+    ui.clear(treeEl);
+    if (!state.treeOpen) return;
+
+    var rows = treeRows();
+    treeEl.appendChild(
+      h(
+        'div.chattree__backdrop',
+        {
+          onClick: function (event) {
+            if (event.target === event.currentTarget) {
+              state.treeOpen = false;
+              renderBar();
+              renderTree();
+            }
+          },
+        },
+        h(
+          'div.chattree__panel',
+          null,
+          h(
+            'div.chattree__head',
+            null,
+            h('span.chattree__title', { text: '对话树' }),
+            h('span.chattree__sub', {
+              text: state.messages.length + ' 个节点 · 亮的是当前分支 · 点任意一条切过去',
+            }),
+            h(
+              'button.chattree__close',
+              {
+                type: 'button',
+                onClick: function () {
+                  state.treeOpen = false;
+                  renderBar();
+                  renderTree();
+                },
+              },
+              '×'
+            )
+          ),
+          h(
+            'div.chattree__list',
+            null,
+            rows.length
+              ? rows.map(treeRowNode)
+              : h('div.chattree__empty', { text: '这个对话还没有消息。' })
+          )
+        )
+      )
+    );
+  }
 
   /* ------------------------------------------------------------ 分支 */
 
@@ -127,6 +302,8 @@
     sendBtn = h('button.btn.btn--primary.chat__send', { type: 'button', onClick: onSendClick }, '发送');
     hintEl = h('div.chat__hint');
     noticeEl = h('div.chat__notice');
+    barEl = h('div.chat__bar');
+    treeEl = h('div.chattree', { role: 'dialog', 'aria-label': '对话树' });
     rootEl.appendChild(
       h(
         'div.chat',
@@ -135,10 +312,12 @@
         h(
           'section.chat__main',
           null,
+          barEl,
           threadEl,
           noticeEl,
           h('div.chat__composer', null, h('div.chat__box', null, inputEl, sendBtn), hintEl)
-        )
+        ),
+        treeEl
       )
     );
   }
@@ -293,10 +472,13 @@
       node = node.parentId ? byId[node.parentId] : null;
     }
 
+    // 每一层都设成"要走这条链"：**包括根那一条** —— 目标是根上的消息时
+    // （比如在对话树里点一条第一问），按"往下走"的写法会一次都不执行，
+    // 于是点了没反应。写成"给每个节点设它父节点那一层的选择"就没有这个洞。
     state.picks = {};
-    for (var i = 0; i < chain.length - 1; i++) {
-      state.picks[keyOf(chain[i].id)] = chain[i + 1].id;
-    }
+    chain.forEach(function (node) {
+      state.picks[keyOf(node.parentId)] = node.id;
+    });
     paintThread();
 
     var row = threadEl ? threadEl.querySelector('[data-id="' + messageId + '"]') : null;
@@ -323,6 +505,9 @@
   /* ------------------------------------------------------------ 主区 */
 
   function renderEmptyThread() {
+    // 工具栏也在这儿刷新一次：空对话不走 paintThread（它直接画引导页），
+    // 只在 paintThread 里刷的话，刚进页面时"对话树"这个入口根本不出现
+    renderBar();
     ui.clear(threadEl);
     var examples = [
       '用一句话说清 circular buffer 在 tt-metal 里解决什么问题',
@@ -353,6 +538,8 @@
   }
 
   function paintThread() {
+    renderBar();
+    renderTree();
     if (!state.messages.length) {
       renderEmptyThread();
       return;
@@ -406,7 +593,24 @@
     if (siblings.length > 1) body.appendChild(siblingSwitch(m, siblings));
 
     if (isUser) {
-      body.appendChild(h('div.chatmsg__text', { text: m.content }));
+      if (state.editing === m.id) {
+        body.appendChild(userEditor(m));
+      } else {
+        body.appendChild(h('div.chatmsg__text', { text: m.content }));
+        body.appendChild(
+          h(
+            'div.chatmsg__useractions',
+            null,
+            h('button.chatmsg__action', {
+              type: 'button',
+              text: '编辑并重发',
+              onClick: function () {
+                editMessage(m);
+              },
+            })
+          )
+        );
+      }
     } else {
       // 正文是投影，零件才是真相：旧消息没有 parts 时按正文兜一个
       body.appendChild(
@@ -421,6 +625,64 @@
     );
     decorateAssistant(row, body, m);
     return row;
+  }
+
+  /**
+   * 就地编辑一条用户消息。
+   *
+   * **改的不是原来那一条**：服务端会新落一条用户消息（同一父节点下的兄弟），
+   * 于是旧那条连同它的回答都留在树上。这不是洁癖 —— 轨迹是这里最值钱的东西，
+   * 「我当时问的到底是什么」以后要靠它回答；而且旧分支随时还能翻回去。
+   */
+  function userEditor(m) {
+    var box = h('div.chatmsg__edit');
+    var area = h('textarea.chatmsg__editarea', { rows: '3' });
+    area.value = m.content || '';
+
+    function close() {
+      state.editing = 0;
+      paintThread();
+    }
+
+    box.appendChild(area);
+    box.appendChild(
+      h(
+        'div.chatmsg__editfoot',
+        null,
+        h(
+          'button.btn.btn--primary.chatmsg__editsave',
+          {
+            type: 'button',
+            onClick: function () {
+              var text = String(area.value || '').trim();
+              if (!text || state.busy || text === String(m.content || '').trim()) {
+                close();
+                return;
+              }
+              close();
+              // parentId 显式给出来（可能是 null）：第一条消息就在根上，
+              // 不显式说的话服务端会把它挂到会话末尾去
+              send({ content: text, parentId: m.parentId === undefined ? null : m.parentId });
+            },
+          },
+          '保存并重发'
+        ),
+        h('button.chatmsg__editcancel', { type: 'button', onClick: close }, '取消'),
+        h('span.chatmsg__edithint', { text: '旧的那条会留在对话树里' })
+      )
+    );
+    return box;
+  }
+
+  function editMessage(m) {
+    if (state.busy || !m || m.role !== 'user') return;
+    state.editing = m.id;
+    paintThread();
+    var area = threadEl.querySelector('.chatmsg__editarea');
+    if (area) {
+      area.focus();
+      area.setSelectionRange(area.value.length, area.value.length);
+    }
   }
 
   /* ------------------------------------------------------------ 题卡 */
@@ -1225,10 +1487,14 @@
     if (state.busy) return Promise.resolve();
 
     return ensureConversation().then(function () {
-      // 新消息挂在**当前这一支的末尾**（用户翻到旧分支上接着问，就该挂在那儿）
+      // 新消息挂在**当前这一支的末尾**（用户翻到旧分支上接着问，就该挂在那儿）；
+      // 「编辑并重发」则显式指定父节点 —— 判据是「parentId 键在不在」，不是值真不真，
+      // 因为编辑第一条消息时它的父节点**就是** null
       var path = activePath();
       var leaf = path.length ? path[path.length - 1].id : null;
-      if (!opts.replyTo) delete state.picks[keyOf(leaf)];
+      var hasParent = Object.prototype.hasOwnProperty.call(opts, 'parentId');
+      var attachTo = hasParent ? opts.parentId : leaf;
+      if (!opts.replyTo && !hasParent) delete state.picks[keyOf(leaf)];
 
       var local = null;
       var localId = '';
@@ -1238,7 +1504,7 @@
           role: 'user',
           content: text,
           status: 'ok',
-          parentId: leaf,
+          parentId: attachTo,
         };
         localId = local.id;
         state.messages.push(local);
@@ -1258,7 +1524,7 @@
 
       var body = opts.replyTo
         ? { replyTo: opts.replyTo }
-        : { content: text, parentId: leaf };
+        : { content: text, parentId: attachTo };
       return api
         .stream(
           '/chat/conversations/' + state.current + '/messages',
@@ -1269,6 +1535,9 @@
               if (!local) return;
               local.id = m.id;
               local.parentId = m.parentId;
+              // 新落的这条现在是它父节点下的选择 —— 编辑并重发之后，
+              // 当前分支必须跟着走到新那条，而不是留着旧的那条
+              state.picks[keyOf(attachTo)] = m.id;
               local.createdAtMs = m.createdAtMs;
               var node = threadEl.querySelector('[data-id="' + localId + '"]');
               if (node) node.dataset.id = String(m.id);
@@ -1373,9 +1642,9 @@
             }
           }
           updateComposer();
-          // 重生成之后要重画一遍：新分支成了当前这一支，旧那条退到切换器后面去。
+          // 重生成 / 编辑并重发之后都要重画：新分支成了当前这一支，旧那条退到切换器后面去。
           // 不重画的话，界面会同时留着两条（它们现在是兄弟，不是一条线上的两条）
-          if (opts.replyTo) paintThread();
+          if (opts.replyTo || hasParent) paintThread();
           return loadList();
         });
     });

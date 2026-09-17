@@ -265,6 +265,27 @@ def test_regenerate_does_not_feed_the_old_answer(client, monkeypatch) -> None:  
     assert seen[-1][-1]["content"] == "循环缓冲是什么"
 
 
+def test_editing_the_first_message_keeps_it_at_the_root(client, monkeypatch) -> None:  # noqa: ANN001
+    """编辑第一条消息：新那条也得在**根上**，不能因为"没给 parentId"被挪到会话末尾去。
+
+    区分靠的是「parentId 键在不在」而不是「值真不真」—— 这就是这条用例守的东西。
+    """
+    _ready(client)
+    _stub(monkeypatch, _recording_stream([]))
+    cid = _new_conversation(client)
+
+    first = dict(_events(_send(client, cid, content="原来的第一问").text))["user"]
+    assert first["parentId"] is None
+
+    # 编辑并重发：新的那条挂在 first 的父节点上（也就是根），而不是挂到末尾
+    resp = _send(client, cid, content="改过的第一问", parentId=None)
+    assert resp.status_code == 200, resp.text
+    again = client.get(f"/api/chat/conversations/{cid}").json()
+    roots = [m for m in again["messages"] if m["role"] == "user" and not m["parentId"]]
+    assert len(roots) == 2, "两条第一问都该在根上（旧那条留着，是树上的一个分支）"
+    assert {m["content"] for m in roots} == {"原来的第一问", "改过的第一问"}
+
+
 def test_regenerate_rejects_a_reply_target(client, monkeypatch) -> None:  # noqa: ANN001
     """只能对**提问**重新生成，不能对回答再回答。"""
     _ready(client)
