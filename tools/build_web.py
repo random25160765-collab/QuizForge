@@ -58,6 +58,8 @@ THEME_DIR = ROOT / "theme"
 RUNTIME_DIR = THEME_DIR / "runtime"
 PAGES_DIR = THEME_DIR / "pages"
 VENDOR_KATEX = ROOT / "vendor" / "katex"
+# Pyodide：对话里「跑 Python」的运行时（可选，`make vendor` 取回）
+VENDOR_PYODIDE = ROOT / "vendor" / "pyodide"
 
 # 运行时脚本按依赖顺序加载；**新增脚本要登记在这里**，顺序错会引用到未定义的模块
 RUNTIME_ORDER = [
@@ -149,6 +151,19 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         shutil.copy2(src, fonts_out / src.name)
         font_count += 1
 
+    # ---------------------------------------------------------- Pyodide
+    # 对话里「跑 Python」用的运行时。**可选**：没同步过就跳过（那种情况下
+    # run_python 生成的页面会回退到 CDN）。放到 /assets/pyodide/ 下，
+    # 沙箱 iframe 从我们自己这个源加载 —— 不必为了跑一段脚本去联网。
+    pyodide_count = 0
+    if VENDOR_PYODIDE.is_dir():
+        pyodide_out = assets / "pyodide"
+        pyodide_out.mkdir(parents=True, exist_ok=True)
+        for src in sorted(VENDOR_PYODIDE.iterdir()):
+            if src.is_file() and src.name != "SOURCE.md":
+                shutil.copy2(src, pyodide_out / src.name)
+                pyodide_count += 1
+
     # ------------------------------------------------------ 应用样式
     (assets / "app.css").write_text(
         _assemble.concat_css([THEME_DIR / name for name in APP_CSS]), encoding="utf-8"
@@ -238,11 +253,14 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         "pages": pages_written,
         "runtime": len(RUNTIME_ORDER),
         "fonts": font_count,
+        "pyodide": pyodide_count,
         "out": out_dir,
     }
     log.step(
         f"在线前端：{len(pages_written)} 个页面 · {len(RUNTIME_ORDER)} 个运行时脚本 · "
-        f"{font_count} 个字体 -> {out_dir}"
+        f"{font_count} 个字体"
+        + (f" · Pyodide {pyodide_count} 个文件" if pyodide_count else " · 无 Pyodide（跑 Python 会退回 CDN）")
+        + f" -> {out_dir}"
     )
     return info
 

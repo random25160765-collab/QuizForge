@@ -84,6 +84,28 @@ def create_app() -> FastAPI:
             response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
+    @app.middleware("http")
+    async def pyodide_cors(request: Request, call_next):  # noqa: ANN001, ANN202
+        """只给 `/assets/pyodide/` 开 CORS。
+
+        ## 为什么非开不可
+
+        Python 运行时是在**演示沙箱 iframe** 里加载的，而那个 iframe 刻意不带
+        `allow-same-origin`（里面的脚本因此拿不到 cookie 与 DOM）。代价是它的源
+        是"不透明"的，请求带上 `Origin: null`；而 Pyodide 会用 `import()` 动态加载
+        `pyodide.asm.js`、再用 fetch 取 wasm 与 stdlib —— **模块脚本一律走 CORS**，
+        没有这个头就是 `Failed to fetch dynamically imported module`（实测就挂在这）。
+
+        ## 为什么可以开
+
+        那几个文件是公开的运行时文件，不含用户数据、也不需要 cookie，所以 `*` 足够；
+        而且**只**放开这一条路径，其他静态资源不受影响。
+        """
+        response = await call_next(request)
+        if request.url.path.startswith("/assets/pyodide/"):
+            response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
     # ------------------------------------------------------------ 静态前端
     # 由 `python3 tools/build.py --web` 输出（容器里由 Dockerfile 的多阶段构建生成）。
     # 挂载在最后：FastAPI 按注册顺序匹配，/api/* 必须排在 "/" 之前。

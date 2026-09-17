@@ -27,9 +27,11 @@
 
 from __future__ import annotations
 
+import html
 import json
 import time
 import uuid
+from pathlib import Path
 
 from sqlalchemy import String, cast, or_, select
 
@@ -569,6 +571,135 @@ def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+# ---------------------------------------------------------------- 跑 Python
+
+
+# Pyodide：CPython 编译成 WASM，在浏览器里**真跑** Python（不是模拟、不是转译）。
+# 版本钉死：CDN 上的东西会变，而这份运行时会被拷进 /assets 由我们自己托管。
+PYODIDE_VERSION = "0.26.4"
+PYODIDE_CDN_BASE = "https://cdn.jsdelivr.net/pyodide/v" + PYODIDE_VERSION + "/full/"
+# 本机副本（`make vendor` 取回，`make web` 拷进 api/web/assets/pyodide/）
+VENDOR_PYODIDE = Path(__file__).resolve().parents[2] / "vendor" / "pyodide"
+SERVED_PYODIDE = Path(__file__).resolve().parents[1] / "web" / "assets" / "pyodide"
+
+
+def pyodide_base() -> str:
+    """运行时从哪取 —— 有本机副本就用本机，没有才退回 CDN。
+
+    为什么优先本机：13MB 的运行时现下，实测在沙箱 iframe 里挂了 60 秒仍不成功
+    （用户看到的就是「正在加载运行时」停在那儿）。而且"为了跑一段脚本去联网"
+    本身就是件别扭的事 —— 沙箱不该依赖外网。
+
+    `__ORIGIN__` 是给前端填的占位符：沙箱页面里**相对路径解析不了**
+    （srcdoc 文档的 base 是 about:srcdoc，`new URL('/assets/…')` 直接抛
+    "Invalid URL"），而沙箱里 `location.origin` 是不透明的、页面自己也拼不出来。
+    只有宿主知道自己的 origin，所以由它替换。
+    """
+    for directory in (SERVED_PYODIDE, VENDOR_PYODIDE):
+        if (directory / "pyodide.js").is_file():
+            return "__ORIGIN__/assets/pyodide/"
+    return PYODIDE_CDN_BASE
+
+
+PYODIDE_BASE = pyodide_base()
+
+# 代码上限：它会被嵌进零件的库、每次读会话都要发给前端（同 render_demo 的道理）
+CODE_MAX_CHARS = 20_000
+
+# Pyodide 页面的样板。**由服务端写死**，模型只交 Python ——
+# 让模型每次手写一遍加载与 stdout 接管，迟早会有一次写错，
+# 而写错的表现是"一片空白"，用户根本看不出哪里坏了。
+_PYODIDE_PAGE = """<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>__TITLE__</title>
+<style>
+ :root { color-scheme: dark; }
+ body { margin: 0; padding: 14px 16px; background: #0b0d10; color: #e6e8ea;
+        font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+ .bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+        color: #8b9299; font-size: 12px; }
+ .ok { color: #3ddc97; } .bad { color: #ff6b6b; }
+ #out { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+</style></head>
+<body>
+<div class="bar"><span id="state">正在加载 Python 运行时（Pyodide，首次约 10MB 走 CDN）…</span></div>
+<pre id="out"></pre>
+<script src="__INDEX__pyodide.js"></script>
+<script>
+const out = document.getElementById('out');
+const stateEl = document.getElementById('state');
+function write(text, tone) {
+  const span = document.createElement('span');
+  if (tone) span.className = tone;
+  span.textContent = text;
+  out.appendChild(span);
+}
+(async () => {
+  try {
+    const py = await loadPyodide({ indexURL: '__INDEX__' });
+    py.setStdout({ batched: (s) => write(s + '\\n') });
+    py.setStderr({ batched: (s) => write(s + '\\n', 'bad') });
+    const want = __PACKAGES__;
+    if (want.length) {
+      stateEl.textContent = '正在安装依赖：' + want.join('、');
+      await py.loadPackage(want);
+    }
+    stateEl.textContent = 'Python 就绪';
+    stateEl.className = 'ok';
+    const started = performance.now();
+    await py.runPythonAsync(__CODE__);
+    write('\\n— 用时 ' + Math.round(performance.now() - started) + 'ms\\n', 'ok');
+  } catch (err) {
+    stateEl.textContent = '出错了';
+    stateEl.className = 'bad';
+    write(String((err && err.message) || err) + '\\n', 'bad');
+  }
+})();
+</script></body></html>"""
+
+
+def _python_page(title: str, code: str, packages: list[str]) -> str:
+    return (
+        _PYODIDE_PAGE.replace("__TITLE__", html.escape(title)[:80])
+        .replace("__INDEX__", pyodide_base())
+        .replace("__PACKAGES__", json.dumps(packages, ensure_ascii=False))
+        .replace("__CODE__", json.dumps(code, ensure_ascii=False))
+    )
+
+
+def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """在沙箱里**真跑**一段 Python（Pyodide），结果落在演示面板里。
+
+    ## 为什么要有它
+
+    用户说"跑一段脚本"时，模型不该推辞、也不该让他自己去写 HTML ——
+    它只要把 Python 交出来，Pyodide 的样板由这里负责。
+
+    ## 能跑什么、跑不了什么
+
+    * 标准库、纯计算、文本输出：没问题。
+    * `numpy` / `scipy` 这类纯 WASM 轮子的包：在 `packages` 里点名就能装（走 CDN，慢）。
+    * **跑不了**：要编译或依赖系统库的（`torch`、某些 `pandas` 依赖）、
+      要读本机文件或连数据库的 —— 沙箱里没有文件系统，也没有用户的数据。
+    * **没有 matplotlib**：要画图得先接 canvas，这里没接。要图就用 JS 画，
+      或者把数据 print 出来。
+    """
+    code = str(args.get("code") or "").strip()
+    if not code:
+        return {"error": "code 不能为空（给我要跑的 Python 源码）。"}
+    if len(code) > CODE_MAX_CHARS:
+        return {
+            "error": f"代码太长（{len(code)} 字，上限 {CODE_MAX_CHARS}）—— 精简到能说明问题就行。"
+        }
+
+    packages = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]
+    title = str(args.get("title") or "").strip()[:80] or "Python 运行结果"
+    return {
+        "demo": {"title": title, "html": _python_page(title, code, packages)},
+        "note": "代码已经能在面板里真跑。**不要**把源码或输出再贴进正文 —— "
+        "正文里说清这段在验证什么就够了。他没看到输出，说明还没点开面板。",
+    }
+
+
 # ---------------------------------------------------------------- 演示沙箱
 
 
@@ -1019,12 +1150,36 @@ REGISTRY = {
             "properties": {"limit": {"type": "integer", "description": "最多几条，默认 10"}},
         },
     },
+    "run_python": {
+        "fn": run_python,
+        "description": "在沙箱里**真跑**一段 Python（Pyodide：浏览器里跑 CPython）。"
+        "用户说「跑一段脚本」「算一下」「验证一下这个算法」「试试这段代码」时**直接用它**，"
+        "不要推辞、也不要让他自己去写页面。只给核心逻辑，用 print 出结果 —— "
+        "样板（加载运行时、接 stdout、显示报错）由工具负责。"
+        "标准库与 numpy / scipy 这类纯 WASM 包可用（在 packages 里点名）；"
+        "**没有**文件系统、没有网络访问、没有 matplotlib（要图就用 render_demo 写 JS）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "要跑的 Python 源码（用 print 输出）"},
+                "title": {"type": "string", "description": "一句话说明这段在算什么"},
+                "packages": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要预装的包（numpy / scipy 等，最多 4 个）",
+                },
+            },
+            "required": ["code"],
+        },
+    },
     "render_demo": {
         "fn": render_demo,
-        "description": "产出一个**可运行的演示**（自包含 HTML），界面在沙箱 iframe 里跑。"
+        "description": "产出一个**可运行的演示**（一个 HTML 页面），界面在沙箱 iframe 里跑。"
         "机制里有空间/时间结构时用它：数据怎么流、怎么切、怎么重叠、流水线怎么排、瓶颈在哪 —— "
-        "一张能动的图胜过三段文字。**不要**用它讲定义、结论或代码逐行解释。"
-        "HTML 必须自包含（内联 style/script，不许外链、不许联网，沙箱会拦），"
+        "一张能动的图胜过三段文字。**不要**用它讲定义、结论或代码逐行解释；"
+        "要跑 Python 用 run_python。"
+        "**沙箱是允许联网的**（https 的 CDN 库、fetch 接口都能用），"
+        "但也请尽量自包含：外链加载失败时，页面得还能看出个大概。"
         "深色底、宽度自适应。上限 " + str(DEMO_MAX_CHARS) + " 字。",
         "parameters": {
             "type": "object",
