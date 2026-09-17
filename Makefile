@@ -1,79 +1,47 @@
 # ============================================================================
 # quizforge
 #
-# 两套运行形态：
-#   离线单文件（dist/）    全部内联，双击即用，进度在本机 localStorage
-#   在线 SaaS（api/web/）  FastAPI + PostgreSQL，账号与进度在服务端
+# 前端走在线一条路径：FastAPI + PostgreSQL 提供数据，前端是普通静态资源。
+# （离线单文件形态已淘汰 —— 题库权威在数据库，内联单文件没有意义。）
 #
-#   make all            vendor + check + build（离线产物）
-#   make web            构建在线前端到 api/web/
+#   make web            构建前端到 api/web/
 #   make db-up          起 PostgreSQL 容器
+#   make db-restore     从 db/quizforge.sql.gz 恢复题库与知识空间
 #   make api-migrate    执行数据库迁移
 #   make api-dev        启动后端（热重载，默认 8100）
 #   make api-test       后端测试（pytest）
-#   make test           离线侧的题库校验 + 前端逻辑自测
+#   make check          题库校验（从库物化后校验，0 error 是硬线）
+#   make test           上面的校验 + 前端逻辑自测
 # ============================================================================
 
 PYTHON ?= python3
 TOPIC  ?= cpp-stl-iterator
 TYPE   ?= single
-PORT   ?= 8080
 # 宿主 8000 常被别的静态服务器占用，后端默认用 8100
 API_PORT ?= 8100
-# OUT 是「可对外发布」的目录（不含任何密钥）；
-# LOCAL_OUT 是本机自用目录，内含 config/ai.local.json 注入的密钥。
-OUT       ?= dist
-LOCAL_OUT ?= dist-local
 VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
-.PHONY: all vendor check test build build-full build-local split new serve serve-local clean help \
-        web api-venv api-dev api-test api-migrate api-migration db-up db-down docker-up docker-down \
-        env-init db-backup skills-link
-
-all: vendor check build
+.PHONY: vendor check test new web api-venv api-dev api-test api-migrate api-migration \
+        db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
+        bank-export bank-import graph graph-relate graph-export skills-link \
+        coverage coverage-gaps drive help
 
 vendor:
 	@$(PYTHON) tools/vendor.py
 
-# check / test / build 三个目标在文件末尾附近定义 —— 它们都要先"从库物化到临时目录"，
+# check / test 在文件末尾附近定义 —— 它们都要先"从库物化到临时目录"，
 # 定义在一起才看得清那一串前置条件（见「题库来自数据库」一节）。
-
-build-full:
-	@$(PYTHON) tools/build.py
-
-# 本机自用版本：把 config/ai.local.json 里的接口地址/模型/密钥注入产物，
-# 省去每次手填。产物含密钥，切勿分发或部署到公网。
-# 刻意输出到 dist-local/：dist/ 是「可以对外发布」的目录，两者不能混。
-build-local:
-	@test -f config/ai.local.json || { echo "缺少 config/ai.local.json，请先创建"; exit 1; }
-	@$(PYTHON) tools/build.py --incremental --ai-config config/ai.local.json --out $(LOCAL_OUT)
-
-split:
-	@$(PYTHON) tools/build.py --incremental --split
 
 new:
 	@$(PYTHON) tools/new_question.py --topic $(TOPIC) --type $(TYPE)
 
-# 本地迭代用这个：带内置 AI 配置，且不会碰到可发布的 dist/
-serve-local: build-local
-	@echo "→ http://localhost:$(PORT)/index.html"
-	@cd $(CURDIR) && $(PYTHON) -m http.server $(PORT) --directory $(LOCAL_OUT)
-
-serve: build
-	@echo "→ http://localhost:$(PORT)/index.html"
-	@cd $(CURDIR) && $(PYTHON) -m http.server $(PORT) --directory $(OUT)
-
-clean:
-	@rm -rf $(OUT) $(LOCAL_OUT)
-	@echo "已清理 $(OUT)/ 与 $(LOCAL_OUT)/"
-
 # ============================================================================
-# 在线 SaaS（FastAPI + PostgreSQL）
+# 前端（FastAPI + PostgreSQL，唯一形态）
 # ============================================================================
 
 web:
-	@$(PYTHON) tools/build.py --web --out $(WEB_OUT)
+	@$(PYTHON) tools/build_web.py --out $(WEB_OUT)
 
 # 首次准备：创建虚拟环境并装依赖（Python 3.12+）
 api-venv:
@@ -180,7 +148,7 @@ graph-export:
 # 为什么是"全新临时目录"而不是一个固定的缓存目录：物化是"只写不清"的，
 # 固定目录会**跨轮次累积** —— 同一道题在改过 topic 之后会以两个文件名共存，
 # 于是 `check` 报"id 重复"，产物里混进早已不该存在的题（实测踩过：
-# dist/data.json 停在两千多道旧题的版本上，后端对账测试因此莫名失败）。
+# 导出的题库停在两千多道旧题的版本上，后端对账测试因此莫名失败）。
 # 每次换目录，就不存在"上一轮的残渣"这个问题。
 #
 # 清理交给 Python（shutil.rmtree），不走 shell 的 rm：临时目录里有两千多个文件，
@@ -203,20 +171,12 @@ test:
 	status=$$?; \
 	if [ $$status -eq 0 ]; then \
 	  $(BANK_MATERIALIZE) --out $$PUB >/dev/null; \
-	  QF_QUESTIONS_DIR=$$PUB/questions QF_TOPICS_FILE=$$PUB/meta/topics.yaml $(PYTHON) tools/build.py -q; \
+	  (cd api && QF_QUESTIONS_DIR=$$PUB/questions QF_TOPICS_FILE=$$PUB/meta/topics.yaml \
+	     .venv/bin/python -m app.cli.import_bank --dataset-out $$PUB/bank.json >/dev/null); \
 	  status=$$?; \
 	fi; \
-	if [ $$status -eq 0 ]; then node tools/selftest.mjs; status=$$?; fi; \
+	if [ $$status -eq 0 ]; then QF_BANK_JSON=$$PUB/bank.json node tools/selftest.mjs; status=$$?; fi; \
 	$(PYTHON) -c "import shutil,sys; [shutil.rmtree(p, ignore_errors=True) for p in sys.argv[1:]]" $$BANK $$PUB; \
-	exit $$status
-
-# 构建只要已发布的题。**不用 --incremental**：增量缓存只看物化目录里的文件，
-# 而题库的权威在数据库 —— 库里改了，物化出来同名同路径，缓存就会把旧产物认成新的。
-build:
-	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
-	$(BANK_MATERIALIZE) --out $$BANK >/dev/null; \
-	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(PYTHON) tools/build.py; \
-	status=$$?; $(PYTHON) -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" $$BANK; \
 	exit $$status
 
 # ---------------------------------------------- 数据库快照（必须进版本库）
@@ -250,5 +210,5 @@ help:
 	@echo "  流水线      make coverage · make coverage-gaps MATERIAL=x · make drive [ARGS=...]"
 	@echo "              四步：dispatch → worker → promote --apply → rework --apply（drive 已含）"
 	@echo "  数据库      make db-dump / db-restore（快照进版本库）· make bank-export / bank-import"
-	@echo "  校验构建    make check · make test · make build · make web"
+	@echo "  校验构建    make check · make test · make web（构建前端到 api/web/）"
 	@echo "  服务        make api-dev（http://127.0.0.1:8100）· docker-up / docker-down · make skills-link"

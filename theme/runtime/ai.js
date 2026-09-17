@@ -1,10 +1,11 @@
 /* ===========================================================================
- * ai.js —— 简答题 AI 批改（浏览器直连 OpenAI 兼容接口）
+ * ai.js —— 简答题 AI 批改（经服务端转发）
  *
  * 设计取舍：
- *   * 纯离线页面无法调用模型，AI 批改必然需要联网，因此这块是"可选增强"，
- *     失败时一律降级为「显示参考答案 + 自评打分」，不影响刷题主流程。
- *   * 密钥只存在本机 localStorage，绝不写进构建产物 HTML。
+ *   * 这块是"可选增强"：关掉或用不了时一律降级为「显示参考答案 + 自评打分」，
+ *     不影响刷题主流程。
+ *   * 密钥是**每个用户自己的**，存在账号里；浏览器侧既拿不到也不需要它 ——
+ *     请求一律经服务端转发（不少供应商不允许浏览器直连）。
  *   * 要求模型返回结构化 JSON；解析做了三层容错（直接 parse → 提取花括号块
  *     → 退化成正则抽取分数与文本）。
  *   * 部分供应商不支持 response_format=json_object，遇到 400 会自动去掉该
@@ -33,14 +34,6 @@
   }
 
   /* ------------------------------------------------------------ 地址 */
-
-  function endpoint(url) {
-    var base = String(url || '').trim().replace(/\/+$/, '');
-    if (!base) throw new Error('未配置接口地址');
-    if (/\/chat\/completions$/.test(base)) return base;
-    if (/\/v\d+(\.\d+)?$/.test(base)) return base + '/chat/completions';
-    return base + '/v1/chat/completions';
-  }
 
   /* ------------------------------------------------------------ 提示词 */
 
@@ -206,8 +199,7 @@
   /**
    * 把供应商的响应规范化成 `{content, model, usage}`。
    *
-   * 离线（浏览器直连）与在线（服务端代理）两条路径共用这一份 ——
-   * 服务端刻意原样返回供应商响应，就是为了让这里不必分叉。
+   * 服务端刻意原样返回供应商响应，所以这里不必分叉。
    */
   function normalizeResponse(raw, conf) {
     var payload = raw;
@@ -236,9 +228,9 @@
   }
 
   /**
-   * 服务端代理路径（在线模式）。
+   * 服务端代理 —— **唯一**的请求路径。
    *
-   * 密钥只存在于服务端环境变量，浏览器侧既拿不到也不需要它；
+   * 密钥存在用户自己的账号里，浏览器侧既拿不到也不需要它；
    * 顺带绕开了「供应商不允许跨域」这个在浏览器里根本无解的问题。
    */
   function requestViaServer(body, conf) {
@@ -270,65 +262,14 @@
       });
   }
 
+  /**
+   * 发一次批改请求。只有一条路径：服务端代理（见 requestViaServer）。
+   *
+   * 浏览器直连供应商的那条路已随离线形态一起淘汰 —— 它要求把密钥下发到
+   * 浏览器，且会被 CORS 挡掉一半供应商。
+   */
   function request(body, options) {
-    var opts = options || {};
-    var conf = cfg(opts);
-
-    // 在线模式一律走服务端：密钥不下发到浏览器
-    if (QF.online && QF.api) return requestViaServer(body, conf);
-
-    var url = endpoint(conf.baseUrl || opts.baseUrl);
-
-    var headers = { 'Content-Type': 'application/json' };
-    var key = (opts.apiKey != null ? opts.apiKey : conf.apiKey || '').trim();
-    if (key) headers.Authorization = 'Bearer ' + key;
-
-    var controller = typeof AbortController === 'function' ? new AbortController() : null;
-    var timer = controller
-      ? setTimeout(function () {
-          controller.abort();
-        }, conf.timeoutMs || 60000)
-      : 0;
-
-    var init = {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify(body),
-    };
-    if (controller) init.signal = controller.signal;
-
-    return fetch(url, init)
-      .then(function (response) {
-        return response.text().then(function (text) {
-          if (!response.ok) {
-            var detail = '';
-            try {
-              var errJson = JSON.parse(text);
-              detail = (errJson.error && (errJson.error.message || errJson.error.type)) || text.slice(0, 300);
-            } catch (err) {
-              detail = text.slice(0, 300);
-            }
-            var error = new Error('HTTP ' + response.status + '：' + detail);
-            error.status = response.status;
-            throw error;
-          }
-          return normalizeResponse(text, conf);
-        });
-      })
-      .catch(function (err) {
-        if (err && err.name === 'AbortError') {
-          throw new Error('请求超时（' + Math.round((conf.timeoutMs || 60000) / 1000) + ' 秒），可在设置里调大超时时间');
-        }
-        if (err instanceof TypeError || /Failed to fetch|NetworkError|load failed/i.test(String(err && err.message))) {
-          throw new Error(
-            '无法连接到接口。常见原因：接口地址写错、本机网络不通、或该服务不允许浏览器跨域调用（CORS）。'
-          );
-        }
-        throw err;
-      })
-      .finally(function () {
-        if (timer) clearTimeout(timer);
-      });
+    return requestViaServer(body, cfg(options));
   }
 
   /* ------------------------------------------------------------ 对外 */
@@ -368,30 +309,11 @@
     });
   }
 
-  /** 连通性测试：发一条极短的请求，返回耗时与模型回显 */
-  function ping(options) {
-    var conf = cfg(options);
-
-    // 在线模式：服务端的 /api/ai/ping 直接返回同一组字段
-    // （ok / latencyMs / model / sample / message / url），设置面板不必分叉
-    if (QF.online && QF.api) {
-      return QF.api.get('/ai/ping').catch(function (err) {
-        return { ok: false, latencyMs: 0, message: (err && err.message) || '连通性测试失败', serverSide: true };
-      });
-    }
-
-    var messages = [{ role: 'user', content: '只回复两个字：可用' }];
-    var started = Date.now();
-    return request(
-      { model: conf.model, messages: messages, temperature: 0, max_tokens: 16, stream: false },
-      options
-    )
-      .then(function (response) {
-        return { ok: true, latencyMs: Date.now() - started, model: response.model, sample: response.content.trim(), url: endpoint(conf.baseUrl) };
-      })
-      .catch(function (err) {
-        return { ok: false, latencyMs: Date.now() - started, message: err.message, url: endpoint(conf.baseUrl) };
-      });
+  /** 连通性测试：交服务端发一条极短请求，返回耗时与模型回显 */
+  function ping() {
+    return QF.api.get('/ai/ping').catch(function (err) {
+      return { ok: false, latencyMs: 0, message: (err && err.message) || '连通性测试失败', serverSide: true };
+    });
   }
 
   /** 把 AI 结果映射成判定状态，便于 store 统一落盘 */
@@ -420,7 +342,6 @@
   QF.ai = {
     defaults: DEFAULT_AI,
     config: cfg,
-    endpoint: endpoint,
     buildMessages: buildMessages,
     grade: grade,
     ping: ping,

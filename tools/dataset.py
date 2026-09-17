@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """题库数据集的装配。
 
-**离线构建与在线接口共用这一份**，这是刻意的：
+**导入与出口共用这一份**，这是刻意的：
 
-  * 离线：`tools/build.py` 把它写成 `dist/data.json`，再内联进 HTML
-  * 在线：`api/` 的导入器把它写库，`GET /api/bank` 再原样吐回来
+  * 导入：`api/` 的导入器把它写进库
+  * 出口：`GET /api/bank` 与 `pipeline.bankfile export` 把它原样吐出来
 
-两边的 JSON 结构必须一模一样，否则前端会出现「离线版能跑、在线版某处空掉」
-这种极难定位的差异。所以顺序、聚合方式、字段名都只能在这里定义一次。
+同一份 JSON 既写库又读出来，结构必须一致；顺序、聚合方式、字段名
+只能在这里定义一次 —— 否则会出现「库里是一套、前端拿到的是另一套」，
+表现成某块界面静默空掉，极难定位。
 """
 
 from __future__ import annotations
@@ -56,6 +57,10 @@ def build_dataset(
     groups = sorted(groups_raw, key=lambda g: g["order"])
     for group in groups:
         group["topics"] = [t["key"] for t in topic_list if t["depth"] == 1 and t["group"] == group["key"]]
+    # 空分组不发出去。接口侧（current_bank）是按"真有节点"组出来的，
+    # 两条产出路径的分组必须一致 —— 否则前端会多画一个空分区。
+    # 实测撞过：删掉凑数学科之后，只有文件侧还在发那三个空分组。
+    groups = [g for g in groups if g["topics"]]
 
     questions = sorted(
         questions,

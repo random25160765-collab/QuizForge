@@ -364,28 +364,23 @@ body.egg-on .egg { opacity: 1; transform: none; }
   slogan.addEventListener('touchcancel', function () { disarm(); hide(); });
 
   /* ------------------------------------------------------------ 入口 */
-  // Logo 是唯一入口。离线直接去 quiz.html；在线先问一句登录态，
-  // 已登录进题库、未登录去登录页 —— 都不需要在页面上多写一个字。
+  // Logo 是唯一入口：先问一句登录态，已登录进题库、未登录去登录页 ——
+  // 都不需要在页面上多写一个字。
   var entry = document.getElementById('entry');
   var hint = document.getElementById('hint');
-  var online = window.QF_CONFIG && window.QF_CONFIG.mode === 'online';
+  var API = (window.QF_CONFIG && window.QF_CONFIG.apiBase) || '/api';
 
-  if (!online) {
-    hint.hidden = false;
-  } else {
-    var API = window.QF_CONFIG.apiBase || '/api';
-    fetch(API + '/auth/me', { credentials: 'same-origin' })
-      .then(function (res) { return res.ok ? res.json() : null; })
-      .then(function (data) {
-        if (data && data.user) {
-          entry.setAttribute('href', 'quiz.html');
-          hint.hidden = false;
-        } else {
-          entry.setAttribute('href', 'login.html');
-        }
-      })
-      .catch(function () { entry.setAttribute('href', 'login.html'); });
-  }
+  fetch(API + '/auth/me', { credentials: 'same-origin' })
+    .then(function (res) { return res.ok ? res.json() : null; })
+    .then(function (data) {
+      if (data && data.user) {
+        entry.setAttribute('href', 'quiz.html');
+        hint.hidden = false;
+      } else {
+        entry.setAttribute('href', 'login.html');
+      }
+    })
+    .catch(function () { entry.setAttribute('href', 'login.html'); });
 
   window.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;

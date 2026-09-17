@@ -786,14 +786,7 @@
 
   QF.wrongbook = { render: render, exportMarkdown: exportMarkdown, boot: boot, booted: false };
 
-  // 离线单文件自己起；在线模式等 boot.js 走完鉴权与题库装载
-  if (!QF.online) {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot);
-    } else {
-      boot();
-    }
-  }
+  // 启动交给 boot.js（鉴权 → 题库 → 进度）：它走完才会调用 QF.wrongbook.boot()
 })();
 
 /* 根因诊断 —— 错题本顶部补一块"根因"。

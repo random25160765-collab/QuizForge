@@ -102,7 +102,7 @@ source: "<材料文件>: <小节标题>"   # 人类可读线索，不做机器�
 cd /home/rd/Desktop/quizforge
 python3 tools/check.py questions/<学科>/<file>.md   # 单题：必须 0 error
 make check                                          # 全库基线不能变红
-make build                                          # 前端能解析即表示渲染与判分没问题
+make test                                           # 前端逻辑自测：渲染与判分都过一遍
 
 # 入库（在线版，先看影响面、不写库）
 cd api && .venv/bin/python -m app.cli.import_bank --dry-run

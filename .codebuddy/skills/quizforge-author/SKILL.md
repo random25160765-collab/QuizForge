@@ -50,7 +50,7 @@ quizforge/
 ├── meta/topics.yaml          # 考纲主题树（topic 的唯一事实来源）
 ├── questions/<topic>/        # 题库：一个 .md 一道题
 ├── tools/                    # vendor.py / check.py / build.py / new_question.py / question_parser.py
-├── dist/                     # 构建产物（自包含 HTML，不要手改）
+├── api/web/                  # 前端构建产物（不要手改：改 theme/ 后 make web）
 └── .codebuddy/skills/        # 本批 skill 的实体（仓库自包含）
 ```
 
@@ -126,4 +126,4 @@ python3 tools/new_question.py --topic cpp --type single --title 迭代器失效 
 - ❌ 填空题用 `|` 分隔多个可接受答案时，把正则也塞进同一段并用 `|` 连接 →
   正则必须整段放在 `~` 之后直到行尾（正则内部可自由用 `|`）。
 - ❌ 单选/多选的答案字母不在 `## 选项` 里 → `check.py` 直接报 ERROR。
-- ❌ 手改 `dist/` 下的 HTML → 那是构建产物，改题目源文件后重新构建。
+- ❌ 手改 `api/web/` 下的产物 → 那是构建产物，改 `theme/` 后重新 `make web`。

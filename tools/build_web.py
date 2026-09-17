@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""在线模式的前端构建。
+"""前端构建（在线是唯一形态）。
 
-与 `build.py` 的离线产物是同一份源码、同一份 shell，区别只在「资源怎么给」：
-
-  离线（dist/）      把 CSS/JS/KaTeX/题库全部内联进单个 HTML，双击即用
-  在线（api/web/）   页面 + /assets 静态资源，数据来自 /api
+产物是「页面 + `/assets` 静态资源」，数据来自 `/api`：CSS / JS / KaTeX 都是普通文件，
+浏览器按需下载并按内容指纹（`?v=`）缓存，不再有任何内联。
 
 刻意复用 `theme/shell.html`，不另起一份模板：顶栏、状态栏这些结构
 一旦有两份拷贝，两边迟早会长得不一样。
@@ -24,12 +22,36 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import shutil
+import sys
+import time
 from pathlib import Path
 
-import inline as _inline
+import assemble as _assemble
+
+
+class Log:
+    """极简日志：`step` 带箭头前缀、用于阶段，其余三种直说。"""
+
+    def __init__(self, quiet: bool = False) -> None:
+        self.quiet = quiet
+
+    def step(self, message: str) -> None:
+        if not self.quiet:
+            print(f"[INFO] → {message}")
+
+    def info(self, message: str) -> None:
+        if not self.quiet:
+            print(f"[INFO] {message}")
+
+    def warn(self, message: str) -> None:
+        print(f"[WARN] {message}")
+
+    def error(self, message: str) -> None:
+        print(f"[ERROR] {message}", file=sys.stderr)
 
 ROOT = Path(__file__).resolve().parent.parent
 THEME_DIR = ROOT / "theme"
@@ -37,7 +59,7 @@ RUNTIME_DIR = THEME_DIR / "runtime"
 PAGES_DIR = THEME_DIR / "pages"
 VENDOR_KATEX = ROOT / "vendor" / "katex"
 
-# 与 build.py 保持一致：运行时脚本按依赖顺序加载
+# 运行时脚本按依赖顺序加载；**新增脚本要登记在这里**，顺序错会引用到未定义的模块
 RUNTIME_ORDER = [
     "ui.js",
     "api.js",
@@ -55,22 +77,29 @@ RUNTIME_ORDER = [
 ]
 
 # 每个页面额外加载的脚本；boot.js 统一放在最后（它要调用页面的 boot）
+# 图谱页不需要 boot.js：它的数据来自公开的 /api/graph，自己启动
 PAGE_JS = {
     "quiz": ["app.js", "boot.js"],
     "wrongbook": ["wrongbook.js", "boot.js"],
+    "graph": ["graph.js"],
 }
 
 PAGE_TITLE = {
     "quiz": "quizforge · 刷题",
     "wrongbook": "quizforge · 错题本",
+    "graph": "quizforge · 知识图谱",
 }
 
 PAGE_BODY = {
     "quiz": "quiz.body.html",
     "wrongbook": "wrongbook.body.html",
+    "graph": "graph.body.html",
 }
 
-# 应用样式（离线构建按页面拼，这里合并成一份，避免每页重复下载）
+# 页面专属样式：默认共用合并后的 app.css，只有图谱页要再加一份
+PAGE_CSS = {"graph": ["graph.css"]}
+
+# 应用样式合并成一份，避免每页重复下载
 APP_CSS = ["markdown.css", "app.css"]
 
 
@@ -110,8 +139,8 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
     (assets / "katex.css").write_text(katex_css_raw, encoding="utf-8")
     shutil.copy2(VENDOR_KATEX / "katex.min.js", assets / "katex.min.js")
 
-    # 字体单独落地：katex.css 里写的是 url(fonts/xxx.woff2)，相对路径依旧成立。
-    # 离线构建把 20 个 woff2 转 base64 内联（约 400KB），在线模式只下载用到的字形子集。
+    # 字体单独落地：katex.css 里写的是 url(fonts/xxx.woff2)，相对路径依旧成立，
+    # 浏览器只下载真正用到的字形子集。
     font_count = 0
     for src in sorted((VENDOR_KATEX / "fonts").glob("*.woff2")):
         shutil.copy2(src, fonts_out / src.name)
@@ -119,8 +148,14 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
 
     # ------------------------------------------------------ 应用样式
     (assets / "app.css").write_text(
-        _inline.concat_css([THEME_DIR / name for name in APP_CSS]), encoding="utf-8"
+        _assemble.concat_css([THEME_DIR / name for name in APP_CSS]), encoding="utf-8"
     )
+
+    # 页面专属样式单独落地：图谱那 400 多行不该让每个页面都下载
+    for page, names in PAGE_CSS.items():
+        (assets / f"{page}.css").write_text(
+            _assemble.concat_css([THEME_DIR / name for name in names]), encoding="utf-8"
+        )
 
     # ---------------------------------------------------- 运行时脚本
     # 页面级脚本也要一起落地：它们和运行时脚本一样以 <script src> 引入，
@@ -143,16 +178,20 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
 
     katex_css_url = _asset("katex.css", _digest(assets / "katex.css"))
     app_css_url = _asset("app.css", _digest(assets / "app.css"))
+    page_css_url = {
+        page: _asset(f"{page}.css", _digest(assets / f"{page}.css")) for page in PAGE_CSS
+    }
     katex_js_url = _asset("katex.min.js", _digest(assets / "katex.min.js"))
     runtime_url = {name: _asset(f"runtime/{name}", _digest(runtime_out / name)) for name in scripts_to_copy}
 
     for page, page_js in PAGE_JS.items():
-        head_assets = "\n".join(
-            [
-                f'<link rel="stylesheet" href="{katex_css_url}">',
-                f'<link rel="stylesheet" href="{app_css_url}">',
-            ]
-        )
+        links = [
+            f'<link rel="stylesheet" href="{katex_css_url}">',
+            f'<link rel="stylesheet" href="{app_css_url}">',
+        ]
+        if page in page_css_url:
+            links.append(f'<link rel="stylesheet" href="{page_css_url[page]}">')
+        head_assets = "\n".join(links)
         scripts = [
             _config_script(api_base, page),
             f'<script src="{katex_js_url}"></script>',
@@ -161,7 +200,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         scripts += [f'<script src="{runtime_url[name]}"></script>' for name in RUNTIME_ORDER]
         scripts += [f'<script src="{runtime_url[name]}"></script>' for name in page_js]
 
-        html = _inline.render_shell(
+        html = _assemble.render_shell(
             shell,
             {
                 "title": PAGE_TITLE[page],
@@ -182,22 +221,11 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
     (out_dir / "login.html").write_text(login_html, encoding="utf-8")
     pages_written.append("login")
 
-    # 首页的规模数字改由页面自己去 /api/health 取 —— 在线部署下
-    # 「上次构建时的题数」已经是过期信息，静态写死会误导
+    # 首页除标题外不再有构建期注入的占位符：规模数字与覆盖范围都由页面自己去
+    # /api/health 取 —— 「上次构建时的题数」是过期信息，静态写死会误导
     landing_html = (
         _read(THEME_DIR / "landing.html")
         .replace("__LANDING_TITLE__", "QuizForge")
-        .replace("__LANDING_TOTAL__", "—")
-        .replace("__LANDING_TOPICS_N__", "—")
-        .replace("__LANDING_TYPES_N__", "—")
-        .replace("__LANDING_GROUP_N__", "—")
-        .replace("__LANDING_GENERATED__", "按需加载")
-        # 离线首页用内联的题库 id 列表统计错题；在线模式不需要这段
-        .replace("__LANDING_IDS__", "[]")
-        # 覆盖范围同样由页面自己去 /api/health 取（服务端有真实主题树，
-        # 构建期把一份快照写死只会在改题后显示过期信息）。
-        # 这里先留空占位，脚本拿到数据后填充；取不到就是空列表，不影响其余内容。
-        .replace("__LANDING_SUBJECTS__", "")
         .replace("</head>", f"{_config_script(api_base, 'landing')}\n</head>", 1)
     )
     (out_dir / "index.html").write_text(landing_html, encoding="utf-8")
@@ -214,3 +242,33 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         f"{font_count} 个字体 -> {out_dir}"
     )
     return info
+
+
+def main(argv: list[str] | None = None) -> int:
+    """命令行入口（`make web` 走这里）。
+
+    构建入口原先在 `tools/build.py` —— 那是离线构建器，顺带代理在线构建。
+    离线形态淘汰后只剩这一条路径，CLI 就跟着落在本模块。
+    """
+    parser = argparse.ArgumentParser(description="构建 quizforge 前端（在线形态）")
+    parser.add_argument("--out", default=str(ROOT / "api" / "web"), help="输出目录，默认 api/web/")
+    parser.add_argument("--api-base", default="/api", help="前端请求的接口前缀")
+    parser.add_argument("--quiet", "-q", action="store_true", help="安静模式")
+    args = parser.parse_args(argv)
+
+    started = time.time()
+    log = Log(quiet=args.quiet)
+    out_dir = Path(args.out).resolve()
+
+    # KaTeX 是页面渲染公式的硬依赖，缺了会静默退化成纯文本
+    if not (VENDOR_KATEX / "katex.min.js").is_file():
+        log.error("vendor/katex 未就绪，请先运行：make vendor")
+        return 2
+
+    info = build(out_dir, log, api_base=args.api_base)
+    log.info(f"构建完成：{len(info['pages'])} 个页面 -> {out_dir}（{time.time() - started:.2f}s）")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

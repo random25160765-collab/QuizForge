@@ -22,13 +22,12 @@
  * 重发是幂等的，代价只是多一次请求。
  * 数据类（attempts / resets）**必须等成功回执才删** —— 丢了就真的丢了。
  *
- * 离线单文件模式不会加载这个文件，所以 store.js 里的 `if (QF.sync)` 恒为假。
+ * store.js 通过 `QF.sync` 找到这个队列（加载顺序保证它先就绪）。
  * ========================================================================= */
 (function () {
   'use strict';
 
   var QF = (window.QF = window.QF || {});
-  if (!QF.online) return;
 
   var DEBOUNCE_MS = 600;      // 合并连续操作（连着答几题只发一次）
   var RETRY_BASE_MS = 4000;   // 失败退避基数

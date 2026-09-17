@@ -1,9 +1,9 @@
 """题库导入与读取。
 
-这里最重要的是 `test_bank_payload_matches_offline_dataset`：
-它锁定「接口返回的题库」与「离线构建产物」逐字节一致。
-前端 `data.install()` 两边吃的是同一份结构，一旦漂移，
-会出现「离线版正常、在线版某块界面静静空掉」这类极难定位的问题。
+这里最重要的是 `test_bank_payload_round_trips_through_db`：
+它锁定「导入时那份数据集」与「从库读回来的接口响应」逐字节一致。
+前端 `data.install()` 吃的就是读回来的这一份，一旦漂移，
+会出现「某块界面静静空掉」这类极难定位的问题。
 """
 
 from __future__ import annotations
@@ -11,16 +11,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 from sqlalchemy import func, select
 
 from app.bank_import import apply, current_bank, scan
 from app.config import get_settings
 from app.db import get_session_factory
 from app.models import BankVersion, Question, Topic
-
-ROOT = Path(__file__).resolve().parents[2]  # 仓库根（不再从 questions_dir 反推：它会指向物化目录）
-OFFLINE_DATASET = ROOT / "dist" / "data.json"
 
 
 # `imported_bank` 夹具在 conftest.py —— 不要在这里再定义一份：
@@ -127,23 +123,46 @@ def test_import_rejects_invalid_source(imported_bank, db_session) -> None:  # no
 # ------------------------------------------------------------------ 接口
 
 
-def test_bank_payload_matches_offline_dataset(imported_bank, db_session) -> None:  # noqa: ANN001
-    """接口返回 = 离线产物（除 generatedAt）。
+def _as_web(value: object) -> object:
+    """归一到「浏览器看到的样子」再比。
 
-    这是整个改造里最容易悄悄坏掉的一条契约。
+    两处已知且无害的差异（都只在 Python 层看得见）：
+
+    * `stats.byDifficulty` 的键：文件侧数据集用的是字符串（`'4'`），库侧回的是整数。
+      JSON 里键一律是字符串，前端看到的完全一样。
+    * `stats.subjectCount`：只出现在文件侧数据集里，接口不回它，前端也不用它
+      （首页的覆盖范围走 `/api/health` 的 `subjectList`）。
     """
-    if not OFFLINE_DATASET.is_file():
-        pytest.skip("尚未构建离线产物，先跑 python3 tools/build.py")
+    out = json.loads(json.dumps(value, sort_keys=True))
 
-    offline = json.loads(OFFLINE_DATASET.read_text(encoding="utf-8"))
+    def norm_stats(stats: dict) -> None:
+        stats.pop("subjectCount", None)
+        stats["byDifficulty"] = {str(k): v for k, v in (stats.get("byDifficulty") or {}).items()}
+
+    if isinstance(out, dict):
+        # 两种调用方式都要顾到：传整个 meta，或直接传 meta.stats
+        if isinstance(out.get("stats"), dict):
+            norm_stats(out["stats"])
+        if "byDifficulty" in out:
+            norm_stats(out)
+    return out
+
+
+def test_bank_payload_round_trips_through_db(imported_bank, db_session) -> None:  # noqa: ANN001
+    """入库再读出来 = 导入时的那份数据集（除 generatedAt）。
+
+    以前这条是与「离线构建产物 `dist/data.json`」比 —— 那份产物已随离线形态淘汰，
+    而且它要么缺失（测试静默跳过）、要么是旧的（等于在与历史比对）。
+    真正要守的契约没变：同一套解析器产出的 dataset，写进库再由 `current_bank`
+    组装回来必须逐字段相同。前端 `data.install()` 吃的正是读回来的这一份。
+    """
+    scanned = imported_bank.dataset
     api = current_bank(db_session)
 
-    assert [q["id"] for q in api["questions"]] == [q["id"] for q in offline["questions"]]
-    assert api["questions"] == offline["questions"]
-    assert api["meta"]["topics"] == offline["meta"]["topics"]
-    assert api["meta"]["groups"] == offline["meta"]["groups"]
-    assert api["meta"]["stats"] == offline["meta"]["stats"]
-    assert api["meta"]["typeLabels"] == offline["meta"]["typeLabels"]
+    assert [q["id"] for q in api["questions"]] == [q["id"] for q in scanned["questions"]]
+    assert _as_web({"q": api["questions"]}) == _as_web({"q": scanned["questions"]})
+    for key in ("topics", "groups", "stats", "typeLabels"):
+        assert _as_web(api["meta"][key]) == _as_web(scanned["meta"][key]), key
 
 
 def test_bank_requires_login(client) -> None:  # noqa: ANN001

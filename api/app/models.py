@@ -3,7 +3,7 @@
 ## 题目为什么用「提升列 + payload JSONB」
 
 题的权威表示就是 `tools/question_parser.py` 产出的那个 dict，
-前端（以及离线构建产物）消费的也是同一份 JSON。若把它拆成
+前端消费的也是同一份 JSON。若把它拆成
 options / answer / parts 等若干张表，就多出一层「库表 ↔ 解析器」
 映射要维护，任何一侧改了字段都会静默漂移。
 
@@ -171,7 +171,7 @@ class Question(Base):
     verify_report: Mapped[dict | None] = mapped_column(JSONType)
 
     # **原始的 Markdown 正文（front-matter 之下的部分）**：判分与渲染都用解析后的 payload，
-    # 但"原文"必须留着 —— 导出、离线构建、契约改动后重新解析，全靠它。
+    # 但"原文"必须留着 —— 导出、契约改动后重新解析，全靠它。
     # 没有这一列，库就只能算半个权威（丢不掉文件）。
     raw_markdown: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     # 与 question_to_dict() 完全一致的权威 JSON

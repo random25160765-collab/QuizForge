@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# 主题树解析（学科 → 单元 → 知识点），与 build.py 共用同一份
+# 主题树解析（学科 → 单元 → 知识点），与在线构建共用同一份
 import topics as _topics  # noqa: E402
 from question_parser import (  # noqa: E402
     QuestionParseError,
@@ -87,7 +87,7 @@ class Diagnostic:
 def load_topics() -> dict[str, dict]:
     """返回扁平节点表（含 depth/parent/path/descendants 等层级字段）。
 
-    解析逻辑放在 tools/topics.py，与 build.py 共用一份，避免两边漂移。
+    解析逻辑放在 tools/topics.py，与在线构建共用一份，避免两边漂移。
     """
     nodes, _ordered, _groups, problems = _topics.load()
     for problem in problems:

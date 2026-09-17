@@ -2,8 +2,9 @@
 
 设计要点：
 
-* **复用构建期那一套**：解析、校验、数据集装配都调 `tools/` 下的函数，
-  所以导入进库的题目与离线产物逐字节一致（`tools/dataset.build_dataset`）。
+* **只有一套解析器**：解析、校验、数据集装配都调 `tools/` 下的函数
+  （`tools/dataset.build_dataset`），所以「导入时的数据集」与「写库再读出来」
+  是同一份结构 —— 这也是 `test_bank.py` 里往返断言的根据。
 * **幂等**：按 `id` upsert，逐题比对内容哈希，没变的题连 UPDATE 都不发。
 * **退役而不是删除**：源里没有了的题 / 主题只置 `retired_at`。
   用户的做题记录挂在题目 id 上，物理删除会让历史进度出现空洞，
@@ -72,7 +73,7 @@ class ScanResult:
 
 
 def scan(settings: Settings | None = None) -> ScanResult:
-    """解析题目目录与考纲，产出与 `dist/data.json` 同构的数据集。
+    """解析题目目录与考纲，产出前端 `data.install()` 要吃的那份数据集。
 
     只做解析与校验，不连数据库 —— 这样 `--dry-run`、单元测试与真实导入
     走的是同一条代码路径，不会出现「预演说没事、真导入却炸」。
@@ -174,7 +175,7 @@ def apply(
     只算不写的预演才有意义，否则调用方一旦忘了回滚就会留下半成品。
     （早先的实现即使在预演模式下也在改 ORM 对象，只是没插版本行。）
 
-    `force=False` 时，只要校验有 ERROR 就拒绝导入 —— 与 `make build` 的行为一致，
+    `force=False` 时，只要校验有 ERROR 就拒绝导入 —— 与 `make check` 的口径一致，
     免得半成品题目进库污染统计。库里已有的旧数据也不会被清空，这是刻意的：
     修好题目再导一次即可。
     """
@@ -417,8 +418,8 @@ def _now():  # noqa: ANN202
 def current_bank(session: OrmSession) -> dict:
     """组装 `GET /api/bank` 的响应体。
 
-    结构必须与 `dist/data.json` 一致：前端 `data.install()` 直接吃它，
-    多一个字段少一个字段都会让某块界面静静地空掉。
+    结构必须与 `scan()` 产出的数据集一致（见 test_bank 的往返断言）：
+    前端 `data.install()` 直接吃它，多一个字段少一个字段都会让某块界面静静地空掉。
     """
     topics = _depth_first(
         [
@@ -451,9 +452,9 @@ def current_bank(session: OrmSession) -> dict:
         )
     _decorate_group_names(groups)
 
-    # 题目顺序必须与离线构建一致：先按主题树的位置（父在子前，同级按 order），
+    # 题目顺序必须与扫描出来的数据集一致：先按主题树的位置（父在子前，同级按 order），
     # 再按 id。前端的「从头开始」「再显示 20 题」都直接吃这个数组顺序，
-    # 顺序变了用户看到的题库排列就跟离线版不一样。
+    # 顺序变了用户看到的题库排列就会跟着变。
     order_index = {node["key"]: i for i, node in enumerate(topics)}
     payloads = [
         row.payload

@@ -14,13 +14,14 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 
 ## 这是什么项目
 
-Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。同一套前端运行时支持两种形态：
+Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。**只有在线一种形态**：
+FastAPI + PostgreSQL 提供数据，前端产物落在 `api/web/`，是普通静态资源 + `/api` 调用；
+进度按账号隔离、支持跨设备同步。
 
-- **离线单文件**：`tools/build.py` → `dist/`，题库内联进 HTML，进度存 localStorage
-- **在线 SaaS**：FastAPI + PostgreSQL，前端产物在 `api/web/`，进度按账号隔离、支持跨设备同步
+`store.js` 对外始终是同步接口（本地先写、后台按流水增量回传），所以 UI 调用点不必关心同步。
 
-分叉点只有两处：资源怎么给（内联 vs 外链 `/assets`）、数据从哪来（`window.__QB__` vs `/api/bank`）。
-`store.js` 对外始终是同步接口，所以 89 处 UI 调用点两种形态共用。
+（早先还有一条「离线单文件：题库内联进 HTML、双击即用」的形态 —— 它随
+「题库权威迁到数据库」一起淘汰了：那要求把整库与字体 base64 化，并放弃服务端才有的一切。）
 
 ## 目录地图
 
@@ -28,8 +29,8 @@ Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。同�
 |---|---|
 | `questions/<学科>/*.md` | 题库，一道题一个文件 —— **唯一事实来源** |
 | `meta/topics.yaml` | 考纲主题树（学科 → 单元 → 知识点），**只作归类**、可随时重构 |
-| `tools/` | `check.py` 校验 · `build.py` 构建 · `new_question.py` 脚手架 · `question_parser.py` 解析 · `topics.py` 考纲解析 |
-| `theme/` | 前端运行时（两形态共用）：`app.css` + `runtime/*.js`；改完要 `make web` / `make build` |
+| `tools/` | `check.py` 校验 · `build_web.py` 构建前端（入口）· `assemble.py` 外壳装配 · `question_parser.py` 解析 · `topics.py` 考纲解析 · `new_question.py` 脚手架 |
+| `theme/` | 前端运行时：`app.css` + `runtime/*.js`；改完要 `make web`（新增脚本还要登记进 `build_web.py` 的 `RUNTIME_ORDER`）|
 | `api/` | FastAPI 后端：题库导入、跨设备增量同步、按账号隔离的 AI 转发 |
 | `.codebuddy/skills/` | 出题 skill（本仓自包含，跟着仓库走） |
 | `docs/` | `STATUS.md`（当前状态）· `THESIS.md`（**业务立论**：为什么这么设计）· `DESIGN.md`（设计说明）· 截图 |
@@ -41,10 +42,10 @@ Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。同�
 ## 铁律（违反会出事）
 
 1. **材料只读。** `reference/` 与 `Codebase/` 都在 `.gitignore` 里；进 git 的只能是题目。
-2. **题目是事实，其余都是投影。** `dist/`、`api/web/`、数据库都是构建/导入产物，**不要手改**；
-   改题目源文件后重新构建。数据库内容由 `import_bank` 单向写入。
-3. **改完题必须** `python3 tools/check.py` 到 **0 error**，再 `python3 tools/build.py`。
-   契约里写明：只有 `[OK] ... 全部通过` 才算完成。
+2. **库是权威，其余都是投影。** `api/web/`（构建产物）、`bank.json`（导出）都是投影，**不要手改**；
+   改题目改库，然后重新物化构建。
+3. **改完题必须** `make check` 到 **0 error**（它先把库物化到临时目录再校验）。
+   契约里写明：只有 `[OK] ... 全部通过` 才算完成；`make test` 再补一层前端自测。
 4. **出题依据的优先级：原材料内容 + 用户诉求 > 考纲。** 考纲只作归类、可随时重构；
    绝不为填考纲出题，也不因考纲没有合适的 key 就不出题（顺序是「先出题 → 最后归类 → 兜不住就改考纲」）。
 5. **层 skill 的判定表是审核项，不是建议。** 每道题都要能通过对应层的那张表。
@@ -74,9 +75,9 @@ Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。同�
 make help         # 目标清单（按用途分组，含流水线那几条）
 make coverage     # 覆盖率对账：哪些材料出过题、还剩多少点
 make drive        # 状态机自动跑：出题 → 校验 → 发布 → 打回重出，收敛即停
-make check        # 题库校验，必须 0 error（基线在 docs/STATUS.md；题库来自数据库，物化后即删）
-make build        # 离线单文件 → dist/
-make web          # 在线前端 → api/web/
+make check        # 题库校验，必须 0 error（题库来自数据库，物化到临时目录后即删）
+make test         # 校验 + 前端逻辑自测（判分 / 渲染 / SM2 / 掌握度 / 合并口径）
+make web          # 前端 → api/web/
 make db-up        # PostgreSQL 容器（127.0.0.1:5432）
 make api-dev      # 后端热重载（127.0.0.1:8100）
 make api-test     # 后端 pytest

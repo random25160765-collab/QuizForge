@@ -1,8 +1,9 @@
 """运行时配置。
 
 全部从环境变量读取（前缀 ``QF_``），本地开发可写 ``api/.env``。
-**密钥只在这里出现**，绝不进前端产物 —— 这是离线单页时代
-「把 apiKey 内联进 HTML」那条路的替代方案。
+
+这里只有**实例级**的 AI 策略（总开关 / 每人日限 / 超时），没有任何人的密钥 ——
+密钥属于各自账号的设置，存在库里，浏览器侧拿不到也不该拿到。
 """
 
 from __future__ import annotations
@@ -106,8 +107,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """进程内单例。全部来自环境变量（容器里由 compose 的 .env 提供）。
 
-    刻意**不读** config/ai.local.json：那是离线单页时代用来内联进 HTML 的
-    本机默认值，现在只剩 `make build-local` 用得到它（构建离线产物时注入），
-    与在线服务端无关 —— 服务端不再持有任何人的 AI 密钥。
+    不读 `config/ai.local.json`：那是离线单页时代用来把密钥内联进 HTML 的本机文件，
+    随离线形态一起淘汰了 —— 现在没有任何代码读它，服务端也不持有任何人的 AI 密钥。
     """
     return Settings()

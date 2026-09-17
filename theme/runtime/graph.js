@@ -182,17 +182,17 @@
   }
 
   /* ------------------------------------------------------------ 载入数据 */
+  /**
+   * 取图谱数据 —— 只有 `/api/graph` 一个来源。
+   *
+   * 早先还会退回构建时写下的 `graph.json` 快照（那是离线单文件形态的降级）。
+   * 离线形态淘汰后这条路没有生产者：图与页面由同一个服务提供，
+   * 服务不在了页面本身也打不开 —— 留着只会掩盖真正的失败。
+   */
   function loadData() {
     return fetch('/api/graph', { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })
-      .catch(function () { return null; })
-      .then(function (live) {
-        if (live && live.nodes && live.nodes.length) return live;
-        // 离线或接口不可用：用构建时写下的快照（同一份拼图逻辑产出的）
-        return fetch('graph.json', { cache: 'no-store' })
-          .then(function (r) { return r.ok ? r.json() : null; })
-          .catch(function () { return null; });
-      });
+      .catch(function () { return null; });
   }
 
   function prepare() {
@@ -1019,7 +1019,7 @@
       if (el.boot) el.boot.hidden = true;
       if (!d || !d.nodes || !d.nodes.length) {
         el.count.textContent = '没有图谱数据';
-        el.legend.textContent = '服务端没有返回图谱数据，仓库里也没有 graph.json 快照。';
+        el.legend.textContent = '服务端没有返回图谱数据。';
         return;
       }
       data = d;

@@ -136,7 +136,7 @@
     var apiKeyInput = h('input.input.input--mono', {
       type: 'password',
       autocomplete: 'off',
-      placeholder: 'sk-…（只保存在本机 localStorage）',
+      placeholder: 'sk-…（保存在你的账号里）',
       value: aiConf.apiKey || '',
       onInput: function (event) {
         store.saveSettings({ ai: { apiKey: event.target.value.trim() } });
@@ -159,44 +159,16 @@
       },
     });
 
-    // **每个用户用自己的密钥**：这三项在两种形态下都要能填。
-    // 在线版填好之后存在自己的账号里，换设备不用重填（服务端只是代你转发，
-    // 因为不少模型供应商不允许浏览器直连）。
-    // 唯一的例外是「本机导出产物内置了密钥」——那种情况下再让你填一遍没有意义。
-    var injected = store.injectedAi;
-    var builtIn = !!(injected && String(injected.apiKey || '').trim());
-    var online = !!(QF.online && QF.api);
-    var connectionBlock = builtIn
-      ? h('div', { style: { marginTop: '12px' } },
-          field('接口与密钥',
-            '已随本次构建内置，无需在此填写。更换接口请修改本机配置后重新构建。',
-            h('div.statline', {
-              style: {
-                padding: '9px 12px',
-                border: '1px solid var(--line)',
-                borderRadius: '10px',
-                background: 'var(--bg2)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '12.5px',
-              },
-            },
-            h('span', { html: ui.icon('check', 15), style: { color: 'var(--ok)' } }),
-            h('span', { text: '已内置' }),
-            h('span', { style: { flex: '1 1 auto' } }),
-            h('span', {
-              style: { color: 'var(--fg2)' },
-              text: String(aiConf.baseUrl || '') + ' · ' + String(aiConf.model || ''),
-            }))))
-      : h('div', null,
-          h('div.form__grid', { style: { marginTop: '12px' } },
-            field('接口地址（OpenAI 兼容）', '例如 https://api.deepseek.com/v1', baseUrlInput),
-            field('模型名', '例如 deepseek-chat / gpt-4o-mini', modelInput)),
-          h('div', { style: { marginTop: '12px' } },
-            field('API 密钥',
-              online
-                ? '你自己的密钥，保存在你的账号里 —— 换设备不用重填。本站不提供共享密钥，AI 批改的用量记在你的账上。'
-                : '仅存在本机浏览器中，不会写入构建产物；导出的数据也不含密钥。',
-              apiKeyInput)));
+    // **每个用户用自己的密钥**：填好之后存在自己的账号里，换设备不用重填。
+    // 服务端只做转发（不少模型供应商不允许浏览器直连），不持有任何共享密钥。
+    var connectionBlock = h('div', null,
+      h('div.form__grid', { style: { marginTop: '12px' } },
+        field('接口地址（OpenAI 兼容）', '例如 https://api.deepseek.com/v1', baseUrlInput),
+        field('模型名', '例如 deepseek-chat / gpt-4o-mini', modelInput)),
+      h('div', { style: { marginTop: '12px' } },
+        field('API 密钥',
+          '你自己的密钥，保存在你的账号里 —— 换设备不用重填。本站不提供共享密钥，AI 批改的用量记在你的账上。',
+          apiKeyInput)));
 
     var aiForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: 'AI 批改（简答题）' }),

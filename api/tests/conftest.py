@@ -73,14 +73,20 @@ _ensure_bank_source()
 
 
 def _ensure_database() -> None:
-    """库不存在就建一个。用 psycopg 直连 admin 库，避免 ORM 的额外抽象。"""
+    """**重建**测试库（存在就先删）。用 psycopg 直连 admin 库，避免 ORM 的额外抽象。
+
+    为什么每次都重建而不是"不存在才建"：导入只增不删（缺的内容置 retired_at），
+    于是上一次跑留下的行会让断言取决于"这台机器之前跑过什么" ——
+    实测就撞过：题库里的凑数学科删掉之后，旧测试库里的考纲分组还在，
+    「入库再读出来 == 导入时的数据集」这条断言于是挂在分组上，
+    看起来像产品 bug，其实是残留。测试库本来就是一次性的。
+    """
     import psycopg
 
     dsn = ADMIN_URL.replace("postgresql+psycopg://", "postgresql://")
     with psycopg.connect(dsn, autocommit=True) as conn:
-        exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (TEST_DB_NAME,)).fetchone()
-        if not exists:
-            conn.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
+        conn.execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)')
+        conn.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
 
 
 # 必须在 import app.* 之前落到环境里
@@ -135,15 +141,23 @@ def client(engine) -> Iterator["object"]:  # noqa: ANN001
 
 @pytest.fixture(scope="session")
 def imported_bank(engine) -> "object":  # noqa: ANN001
-    """把真实题库导入一次并提交。
+    """把真实题库导入一次并提交，**并发布**。
 
     放在 conftest 而不是某个测试模块里：任何需要「库里有题」的用例都要用它，
     而 pytest 的 fixture 只在定义它的模块内可见。
 
     必须提交 —— 接口层每个请求用独立会话，只能看到已提交的数据。
+
+    为什么还要显式发布一次：导入器刻意只产出 `draft`（发布是流水线 `promote`
+    的职责），而 `/api/bank` 只放行 verified / published。少了这一步，库里有
+    1657 道题、接口却回空数组 —— 相关用例会以"接口没题"的形式失败，很容易
+    被误读成接口坏了。
     """
+    from sqlalchemy import update
+
     from app.bank_import import apply, scan
     from app.db import get_session_factory
+    from app.models import Question
 
     result = scan()
     assert not result.errors, [d.render() for d in result.errors]
@@ -152,6 +166,7 @@ def imported_bank(engine) -> "object":  # noqa: ANN001
     try:
         report = apply(session, result)
         assert report.added, "首次导入应当全部是新增"
+        session.execute(update(Question).where(Question.retired_at.is_(None)).values(status="published"))
         session.commit()
     finally:
         session.close()

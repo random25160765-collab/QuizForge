@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""离线同步第三方前端库到 vendor/。
+"""把第三方前端库同步到 vendor/。
 
 本机实测无法访问外网（HTTPS 出网超时、无本地代理），因此这里**不做任何
-网络请求**，只从本机已有的 KaTeX 副本同步，保证离线可构建。
+网络请求**，只从本机已有的 KaTeX 副本同步 —— 构建因此不依赖网络。
 
 来源自动探测顺序：
   1. 环境变量 QUIZFORGE_KATEX_SRC 指向的目录
@@ -202,7 +202,7 @@ def _rel(path: Path) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="离线同步 vendor 资源（不联网）")
+    parser = argparse.ArgumentParser(description="同步 vendor 资源（不联网）")
     parser.add_argument("--force", action="store_true", help="强制重新同步")
     parser.add_argument("--check", action="store_true", help="只检查 vendor 是否就绪")
     args = parser.parse_args()

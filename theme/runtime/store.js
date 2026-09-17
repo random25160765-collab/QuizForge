@@ -127,31 +127,10 @@
 
   var settingsCache = null;
 
-  // 构建期可选注入的本地默认值（见 build.py --ai-config）。
-  // 典型用途：把本机的接口地址/模型/密钥预置好，省去每次手填。
-  var INJECTED = (typeof window !== 'undefined' && window.__QB_AI_DEFAULTS__) || null;
-
   function settings() {
     if (!settingsCache) {
       var stored = readJSON(K.settings, null) || {};
       settingsCache = deepMerge(DEFAULT_SETTINGS, stored);
-      if (INJECTED) {
-        // 注入值只填「用户从未在界面上设置过」的字段：
-        //   - localStorage 里没有这个键（用户没动过）
-        //   - 或当前值仍等于内置默认值（默认值本身不是用户的选择）
-        // 两者取「或」而不是「且」：saveSettings 会把整份缓存（含 ai 的默认值）
-        // 一起落盘，只要用户动过主题之类的其它设置，stored.ai 就会存在，
-        // 用「且」会让注入永久失效。
-        var storedAi = stored.ai || {};
-        var ai = settingsCache.ai || {};
-        Object.keys(INJECTED).forEach(function (key) {
-          var untouched = storedAi[key] === undefined;
-          var stillDefault = ai[key] === undefined || ai[key] === null || ai[key] === '' ||
-            ai[key] === DEFAULT_SETTINGS.ai[key];
-          if (untouched || stillDefault) ai[key] = INJECTED[key];
-        });
-        settingsCache.ai = ai;
-      }
     }
     return settingsCache;
   }
@@ -1077,8 +1056,6 @@
   QF.store = {
     KEYS: K,
     available: available,
-    // 构建期注入的 AI 配置（无注入时为 null）。界面据此判断是否还要展示手填入口。
-    injectedAi: INJECTED,
     settings: settings,
     // 云端同步（离线模式下 QF.sync 为 null，这些函数不会被用到）
     hydrate: hydrate,
