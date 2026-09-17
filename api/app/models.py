@@ -705,11 +705,17 @@ class Conversation(Base):
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
     title: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    #: 置顶：用户自己钉在列表最上面的那些（排序里永远排在"按时间"之前）
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # 刻意**没有** `onupdate`：这一列是"最近活动"，而列表按它排序 ——
+    # 有 onupdate 的话，改个标题或取消置顶都会把这条会话顶到最前面去
+    # （实测撞到：取消置顶之后它反而排得更前）。谁真正动过它，由"产生了消息"
+    # 来定义，所以只有 `post_message` 显式写它。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)

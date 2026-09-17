@@ -38,6 +38,7 @@
   var hintEl = null;
   var barEl = null;
   var treeEl = null;
+  var demoEl = null;
   var clipInput = null;
   var pendingEl = null;
 
@@ -57,6 +58,7 @@
     editing: 0, // 正在就地编辑的那条用户消息（0 = 没有）
     treeOpen: false, // 对话树面板开着没有
     pending: [], // 已上传、还没随消息发出去的附件
+    demo: null, // 正在右侧面板里跑的演示（{title, html}）
   };
 
   var searchTimer = null;
@@ -295,6 +297,36 @@
 
   var LOCAL_ID = 0;
 
+  /**
+   * 图标按钮。
+   *
+   * 之前"附件"和"编辑并重发"是两个裸文字按钮，在一屏以内容为主的界面里
+   * 又吵又难看。换成同一种细线条图标按钮（16px 描边、低对比、hover 才提亮），
+   * 与界面里其它控件一致 —— 提示文字走 `title`，不占版面。
+   */
+  var ICONS = {
+    clip: '<path d="M8.5 12.8 14.7 6.6a3.1 3.1 0 0 1 4.4 4.4l-7.6 7.6a5 5 0 0 1-7.1-7.1l7.4-7.4"/>',
+    pencil:
+      '<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.4 6.6 17.4 10.6"/>',
+    pin: '<path d="M9.5 4h5l-1 5.5 3.5 3.5H7l3.5-3.5L9.5 4z"/><path d="M12 13v7"/>',
+    expand: '<path d="M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6"/>',
+    close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  };
+
+  function iconButton(name, title, onClick, extra) {
+    return h('button.chaticon' + (extra || ''), {
+      type: 'button',
+      title: title,
+      'aria-label': title,
+      onClick: onClick,
+      html:
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
+        (ICONS[name] || ICONS.close) +
+        '</svg>',
+    });
+  }
+
   /* ------------------------------------------------------------ 骨架 */
 
   function buildSkeleton() {
@@ -324,6 +356,7 @@
     noticeEl = h('div.chat__notice');
     barEl = h('div.chat__bar');
     treeEl = h('div.chattree', { role: 'dialog', 'aria-label': '对话树' });
+    demoEl = h('div.chatdemo', { role: 'dialog', 'aria-label': '演示' });
     rootEl.appendChild(
       h(
         'div.chat',
@@ -342,17 +375,9 @@
             h(
               'div.chat__box',
               null,
-              h(
-                'button.chat__clip',
-                {
-                  type: 'button',
-                  title: '加附件（文档、代码、PDF、截图）',
-                  onClick: function () {
-                    if (clipInput) clipInput.click();
-                  },
-                },
-                '附件'
-              ),
+              iconButton('clip', '加附件（文档、代码、PDF、截图）', function () {
+                if (clipInput) clipInput.click();
+              }),
               clipInput,
               inputEl,
               sendBtn
@@ -360,7 +385,8 @@
             hintEl
           )
         ),
-        treeEl
+        treeEl,
+        demoEl
       )
     );
   }
@@ -402,7 +428,9 @@
     var list = h('div.chatlist');
     state.list.forEach(function (conv) {
       var item = h(
-        'div.chatlist__item' + (conv.id === state.current ? '.is-on' : ''),
+        'div.chatlist__item' +
+          (conv.id === state.current ? '.is-on' : '') +
+          (conv.pinned ? '.is-pinned' : ''),
         {
           onClick: function () {
             if (conv.id !== state.current) openConversation(conv.id);
@@ -416,10 +444,19 @@
           conv.messageCount ? h('span', { text: '· ' + conv.messageCount + ' 条' }) : null
         ),
         conv.preview ? h('div.chatlist__preview', { text: conv.preview }) : null,
+        iconButton(
+          'pin',
+          conv.pinned ? '取消置顶' : '置顶',
+          function (event) {
+            event.stopPropagation(); // 别顺带把会话也切了
+            togglePin(conv);
+          },
+          '.chatlist__pin' + (conv.pinned ? '.is-on' : '')
+        ),
         h('button.chatlist__more', {
           type: 'button',
-          title: '重命名 / 删除',
-          'aria-label': '重命名或删除',
+          title: '重命名 / 删除 / 导出',
+          'aria-label': '更多',
           onClick: function (event) {
             event.stopPropagation(); // 别顺带把会话也切了
             openMenu(conv);
@@ -648,12 +685,8 @@
           h(
             'div.chatmsg__useractions',
             null,
-            h('button.chatmsg__action', {
-              type: 'button',
-              text: '编辑并重发',
-              onClick: function () {
-                editMessage(m);
-              },
+            iconButton('pencil', '编辑并重发（旧的那条会留在对话树里）', function () {
+              editMessage(m);
             })
           )
         );
@@ -771,8 +804,20 @@
     return box;
   }
 
+  // 演示的 CSP：**允许联网**（要能跑"各种脚本"：CDN 上的 d3 / three.js、调自己的 API
+  // 都得能用）。仍然关着的是 frame/object —— 演示不该再套娃。
+  // 真正挡住"碰到我们"的那一道是 iframe 的 `sandbox`（**不带** allow-same-origin），
+  // 不是 CSP：CSP 管的是它能往外拿什么，sandbox 管的是它能不能碰我们。
   var DEMO_CSP =
-    "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:";
+    "default-src 'none'; " +
+    "script-src 'unsafe-inline' 'unsafe-eval' blob: https:; " +
+    "style-src 'unsafe-inline' https:; " +
+    "img-src data: blob: https:; " +
+    "font-src data: https:; " +
+    "media-src data: blob: https:; " +
+    "connect-src https:; " +
+    "worker-src blob:; " +
+    "frame-src 'none'; object-src 'none';";
 
   /** 把 CSP 塞进演示文档：沙箱挡的是"碰我们的东西"，CSP 挡的是"往外发东西"。 */
   function withCsp(html) {
@@ -791,44 +836,81 @@
   }
 
   /**
-   * 演示沙箱：模型给一段自包含 HTML，这里塞进沙箱 iframe 里跑。
+   * 演示在消息里只是一张**卡片**：标题 + 说明 + 打开按钮。
    *
-   * 安全只靠两道，而且**都不靠"相信模型"**：
-   *
-   * * `sandbox="allow-scripts"` —— **不带 `allow-same-origin`**，所以里面的脚本
-   *   拿不到我们的 cookie / localStorage，也碰不到我们的 DOM。
-   * * 内联 CSP 断掉网络 —— 演示本来就该是自包含的，联网不是它的能力。
+   * 真正跑它的是右侧那个整屏高的面板 —— 嵌在消息流里又窄又矮，
+   * 稍微像样一点的可视化都会被框住（那是第一版的问题）。
    */
-  function demoNode(part) {
-    var box = h('div.chatdemo');
-    var frame = h('iframe.chatdemo__frame', {
-      sandbox: 'allow-scripts',
-      title: part.title || '演示',
-      srcdoc: withCsp(String(part.html || '')),
-      loading: 'lazy',
-    });
-
-    box.appendChild(
+  function demoCard(part) {
+    return h(
+      'div.chatdemo__card',
+      null,
       h(
-        'div.chatdemo__head',
+        'div.chatdemo__cardmain',
         null,
-        h('span.chatdemo__title', { text: part.title || '演示' }),
-        h('span.chatdemo__note', { text: '沙箱里跑：不联网、碰不到你的数据' }),
+        h('div.chatdemo__cardtitle', { text: part.title || '演示' }),
+        h('div.chatdemo__cardnote', { text: '在右侧面板里打开：沙箱运行，可加载外部库' })
+      ),
+      h('button.btn.btn--ghost.chatdemo__open', {
+        type: 'button',
+        text: '打开演示',
+        onClick: function () {
+          openDemo(part);
+        },
+      })
+    );
+  }
+
+  function openDemo(part) {
+    state.demo = { title: part.title || '演示', html: String(part.html || '') };
+    renderDemoPanel();
+  }
+
+  /**
+   * 演示面板（右侧整屏高）。
+   *
+   * 安全**不靠"相信模型"**：iframe 上只有 `allow-scripts`，**不带**
+   * `allow-same-origin` —— 里面的脚本拿不到我们的 cookie / localStorage，
+   * 也碰不到我们的 DOM；再叠 `referrerpolicy="no-referrer"`，
+   * 连"这个页面从哪来"都不往外带。
+   */
+  function renderDemoPanel() {
+    if (!demoEl) return;
+    ui.clear(demoEl);
+    if (!state.demo) return;
+
+    var close = function () {
+      state.demo = null;
+      renderDemoPanel();
+    };
+
+    demoEl.appendChild(
+      h(
+        'div.chatdemo__backdrop',
+        {
+          onClick: function (event) {
+            if (event.target === event.currentTarget) close();
+          },
+        },
         h(
-          'button.chatdemo__size',
-          {
-            type: 'button',
-            text: '放大',
-            onClick: function (event) {
-              box.classList.toggle('is-tall');
-              event.target.textContent = box.classList.contains('is-tall') ? '收起' : '放大';
-            },
-          }
+          'div.chatdemo__panel',
+          null,
+          h(
+            'div.chatdemo__head',
+            null,
+            h('span.chatdemo__title', { text: state.demo.title }),
+            h('span.chatdemo__note', { text: '沙箱 iframe：碰不到你的登录态与数据' }),
+            iconButton('close', '关闭（Esc）', close)
+          ),
+          h('iframe.chatdemo__frame', {
+            sandbox: 'allow-scripts',
+            referrerpolicy: 'no-referrer',
+            title: state.demo.title,
+            srcdoc: withCsp(state.demo.html),
+          })
         )
       )
     );
-    box.appendChild(frame);
-    return box;
   }
 
   /* ------------------------------------------------------------ 题卡 */
@@ -1289,7 +1371,7 @@
     if (type === 'card') return questionCard(part);
     if (type === 'action') return actionNode(part);
     if (type === 'file') return fileNode(part);
-    if (type === 'demo') return demoNode(part);
+    if (type === 'demo') return demoCard(part);
     if (type === 'citation') return citationNode(part);
     if (type === 'summary') return h('div.chatmsg__note', { text: part.text || '' });
     if (type === 'error') return h('div.chatmsg__why', { text: part.message || '出错了' });
@@ -2042,6 +2124,25 @@
     inputEl.focus();
   }
 
+  /** 置顶/取消置顶。本地立刻重排一次 —— 别等下一次拉列表才动。 */
+  function togglePin(conv) {
+    var next = !conv.pinned;
+    api
+      .patch('/chat/conversations/' + conv.id, { pinned: next })
+      .then(function () {
+        conv.pinned = next;
+        state.list = state.list.slice().sort(function (a, b) {
+          if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+          return (b.updatedAtMs || 0) - (a.updatedAtMs || 0);
+        });
+        renderAside();
+        ui.toast(next ? '已置顶到这个列表最上面' : '已取消置顶', 'info', 1400);
+      })
+      .catch(function (err) {
+        ui.toast(err.message, 'error');
+      });
+  }
+
   /** 触发一次下载。走 `<a download>`：同源带 cookie，服务端给的是 attachment 头。 */
   function download(path) {
     var link = h('a', { href: path, download: '' });
@@ -2170,6 +2271,22 @@
     if (chat.booted) return; // 幂等：boot.js 与 DOMContentLoaded 都可能触发
 
     ui.theme.init();
+    // Esc 逐层关：演示面板 → 对话树 → 就地编辑。
+    // 一律从"最上面那一层"关起，不然按一下把底下的编辑器也关了，人会愣一下
+    document.addEventListener('keydown', function (event) {
+      if (event.key !== 'Escape') return;
+      if (state.demo) {
+        state.demo = null;
+        renderDemoPanel();
+      } else if (state.treeOpen) {
+        state.treeOpen = false;
+        renderBar();
+        renderTree();
+      } else if (state.editing) {
+        state.editing = 0;
+        paintThread();
+      }
+    });
     var conf = QF.store.settings();
     document.documentElement.style.setProperty('--font-scale', String(conf.fontScale || 1));
     document.documentElement.style.setProperty('--content-max', (conf.maxWidth || 880) + 'px');

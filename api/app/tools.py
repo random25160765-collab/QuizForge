@@ -592,11 +592,13 @@ def render_demo(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 
     ## 写 HTML 的硬要求
 
-    * **自包含**：内联 `<style>` 与 `<script>`，不许外链脚本/样式/字体/图片
-      （沙箱里拿不到网络，外链就是空白）。
-    * **不联网**：不许 `fetch` / `XMLHttpRequest` / 外部资源 —— 沙箱会把它们
-      全部拦下，而这是**故意的**（演示不该有联网能力）。
-    * 尺寸自适应：容器宽度会变，别写死像素宽；配色用深色底（界面是深色的）。
+    * **尽量自包含**：内联 `<style>` 与 `<script>` 是首选。
+    * **可以用 https 的库**：CDN 上的 d3 / three.js / chart.js 之类都行，
+      `fetch` 一个 https 接口也行（演示跑在沙箱 iframe 里，**允许联网**）。
+      但别把一切都押在网络上：加载失败时要还能看出个大概。
+    * 尺寸自适应：面板宽度与高度都会变，别写死像素；配色用深色底（界面是深色的）。
+    * 拿不到网页本身的东西：沙箱不带 `allow-same-origin`，所以没有 cookie、
+      没有 localStorage、也碰不到宿主页面的 DOM —— 需要的数据请自己在 HTML 里带上。
     """
     html = str(args.get("html") or "").strip()
     title = str(args.get("title") or "").strip() or "演示"

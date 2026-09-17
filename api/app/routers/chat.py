@@ -154,6 +154,7 @@ def _conversation_out(c: Conversation, count: int, preview: str) -> dict:
         "title": c.title,
         "messageCount": count,
         "preview": " ".join((preview or "").split())[:80],
+        "pinned": bool(c.pinned),
         "createdAt": c.created_at.isoformat() if c.created_at else None,
         "updatedAt": c.updated_at.isoformat() if c.updated_at else None,
         "updatedAtMs": int(c.updated_at.timestamp() * 1000) if c.updated_at else 0,
@@ -362,13 +363,17 @@ def _history(db: DbSession, messages: list[Message]) -> list[dict]:  # noqa: ANN
 
 @router.get("/conversations")
 def list_conversations(user: CurrentUser, db: DbSession) -> dict:
-    """会话列表：标题、条数、最后一句话的预览。"""
+    """会话列表：标题、条数、最后一句话的预览。
+
+    排序 = **置顶的在前**，各自按最近活动倒序。置顶是用户自己钉的
+    （"这条我在攻"），所以它必须压过"谁最近动过"。
+    """
     rows = db.execute(
         select(Conversation, func.count(Message.id))
         .join(Message, Message.conversation_id == Conversation.id, isouter=True)
         .where(Conversation.user_id == user.id)
         .group_by(Conversation.id)
-        .order_by(Conversation.updated_at.desc())
+        .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
         .limit(200)
     ).all()
 
@@ -481,13 +486,24 @@ def get_conversation(cid: uuid.UUID, user: CurrentUser, db: DbSession) -> dict:
 
 @router.patch("/conversations/{cid}")
 def rename_conversation(cid: uuid.UUID, payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
+    """改标题 / 置顶。两个字段都**按需**更新（`pinned` 只认真正的布尔值，
+    否则 `pinned: false` 会被 `or` 当成"没给"）。"""
     conv = _own_conversation(db, user.id, cid)
-    title = str((payload or {}).get("title") or "").strip()[:120]
-    if not title:
-        raise HTTPException(400, "标题不能为空")
-    conv.title = title
+    body = payload or {}
+
+    if "title" in body:
+        title = str(body.get("title") or "").strip()[:120]
+        if not title:
+            raise HTTPException(400, "标题不能为空")
+        conv.title = title
+
+    if isinstance(body.get("pinned"), bool):
+        conv.pinned = body["pinned"]
+
+    # 这里**不碰** `updated_at`：改名与置顶不是"活动"，列表的"最近"排序
+    # 只该被消息推动（模型上的注释解释了为什么那一列没有 `onupdate`）。
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "pinned": bool(conv.pinned)}
 
 
 @router.delete("/conversations/{cid}")

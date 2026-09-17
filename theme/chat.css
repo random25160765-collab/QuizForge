@@ -70,7 +70,7 @@ body[data-page='chat'] .chat {
 
 .chatlist__item {
   position: relative;
-  padding: 9px 32px 9px 11px;
+  padding: 9px 58px 9px 11px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg2);
@@ -798,22 +798,6 @@ body[data-page='chat'] .chat {
 
 /* ---------------------------------------------------------------- 附件 */
 
-.chat__clip {
-  flex: none;
-  padding: 4px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: transparent;
-  color: var(--fg2);
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.chat__clip:hover {
-  color: var(--fg);
-  border-color: var(--line-strong);
-}
-
 .chat__file {
   display: none;
 }
@@ -903,57 +887,120 @@ body[data-page='chat'] .chat {
 
 /* ---------------------------------------------------------------- 演示沙箱 */
 
-.chatdemo {
+/* 消息里只有一张卡片 */
+.chatdemo__card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--pri);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+}
+
+.chatdemo__cardmain {
+  flex: 1;
+  min-width: 0;
+}
+
+.chatdemo__cardtitle {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.chatdemo__cardnote {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.chatdemo__open {
+  flex: none;
+}
+
+/* 真正跑它的是右侧这个整屏高的面板 */
+.chatdemo__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in srgb, #000 46%, transparent);
+}
+
+.chatdemo__panel {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  width: min(980px, 94vw);
+  height: 100%;
+  border-left: 1px solid var(--line);
+  background: var(--bg2);
 }
 
 .chatdemo__head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 10px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--line);
-  background: var(--bg2);
-  font-size: 12px;
 }
 
 .chatdemo__title {
+  font-size: 14px;
   font-weight: 600;
 }
 
 .chatdemo__note {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
-  color: var(--fg3);
-}
-
-.chatdemo__size {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--fg3);
   font-size: 11.5px;
-  cursor: pointer;
-}
-
-.chatdemo__size:hover {
-  color: var(--pri);
+  color: var(--fg3);
 }
 
 .chatdemo__frame {
+  flex: 1;
   width: 100%;
-  height: 340px;
   border: none;
   background: #0b0d10;
 }
 
-.chatdemo.is-tall .chatdemo__frame {
-  height: 72vh;
+/* ---------------------------------------------------------------- 图标按钮 */
+
+.chaticon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg3);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.chaticon:hover {
+  color: var(--fg);
+  border-color: var(--line);
+}
+
+.chaticon.is-on {
+  color: var(--pri);
+}
+
+.chatlist__pin {
+  position: absolute;
+  top: 6px;
+  right: 30px;
+  width: 22px;
+  height: 22px;
+}
+
+.chatlist__item.is-pinned {
+  border-color: color-mix(in srgb, var(--pri) 42%, var(--line));
 }
 
 /* 导出 */
@@ -1276,6 +1323,16 @@ body[data-page='chat'] .chat {
 
 .chat__composer {
   margin-top: 12px;
+  /* 常驻视口底部。
+     窄窗口下 .chat 会变成单栏、高度 auto（见文末断点），页面因此可以滚动；
+     长输出把内容越推越长时，输入框（以及流式时的「停止」）会被推到视口外 ——
+     实测 700×900 的窗口里它落在视口下方 135px，用户够不着停止按钮。
+     粘住它，任何布局、任何滚动位置都够得着。 */
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  padding: 8px 0 4px;
+  background: linear-gradient(to bottom, transparent, var(--bg) 26%);
 }
 
 .chat__box {
@@ -1327,6 +1384,10 @@ body[data-page='chat'] .chat {
     border-bottom: 1px solid var(--line);
     padding-right: 0;
     padding-bottom: 10px;
+    /* 单栏时左栏不再"占满一屏"：给它一个上限，内部滚动 ——
+       否则会话列表一长，正文与输入框都被推下去 */
+    max-height: 42vh;
+    overflow: auto;
   }
 
   .chat__list {
