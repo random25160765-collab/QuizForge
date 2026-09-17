@@ -422,6 +422,12 @@ def test_explore_graph_walks_two_layers_and_orders_prerequisites_first(client, d
     assert second.key in by_key and first.key in by_key, "两层都要到"
     assert by_key[first.key]["distance"] == 2
     assert [item["edge"] for item in payload["neighbors"]][0] == "requires", "前置排最前"
+    assert against.key not in by_key, "contrast_with 不在默认视图里（它多半是机械派生的）"
+
+    ok, payload = tools.call(
+        db_session, user, "explore_graph", {"key": third.key, "kinds": ["contrast_with"]}
+    )
+    assert ok and [item["key"] for item in payload["neighbors"]] == [against.key], "要看得显式要"
 
 
 def test_explore_graph_says_when_there_is_nothing(client, db_session, imported_bank) -> None:  # noqa: ANN001
@@ -433,7 +439,7 @@ def test_explore_graph_says_when_there_is_nothing(client, db_session, imported_b
 
     ok, payload = tools.call(db_session, user, "explore_graph", {"key": lonely.key})
     assert ok and payload["neighbors"] == []
-    assert "稀" in payload["note"]
+    assert "前置链" in payload["note"], "要说清是「还没接进前置链」，而不是含糊地说「图谱很稀」"
 
     ok, payload = tools.call(db_session, user, "explore_graph", {"key": "no-such-key"})
     assert ok and "error" in payload
