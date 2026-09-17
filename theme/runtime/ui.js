@@ -362,11 +362,15 @@
       // 必须取消 rAF，否则回调会把 is-open 又加回去，遮罩就再也关不掉了
       if (rafId) cancelAnimationFrame(rafId);
       root.classList.remove('is-open');
-      setTimeout(function () {
-        root.hidden = true;
-        clear(root);
-      }, 180);
       document.removeEventListener('keydown', onKey);
+      setTimeout(function () {
+        // **只摘掉自己这张卡**。弹层里再开一个弹层是常规操作
+        // （会话菜单 → "确认删除"，菜单项 → 确认框），而前一个的收尾定时器
+        // 还在跑 —— 原先它 `clear(root)` 会把后开的那个一并清掉，
+        // 用户看到的就是"对话框闪一下就没了，对话也没删掉"（实测就是这么失效的）。
+        card.remove();
+        if (!root.children.length) root.hidden = true;
+      }, 180);
       if (opts.onClose) opts.onClose();
     }
 
@@ -425,7 +429,7 @@
       root.onclick = null;
     }
 
-    clear(root);
+    // 不清空 root：可能还有别的弹层正在收尾（见 close 的说明），清掉就把它弄没了
     root.appendChild(card);
     root.hidden = false;
     document.addEventListener('keydown', onKey);
