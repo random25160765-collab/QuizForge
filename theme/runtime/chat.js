@@ -35,6 +35,7 @@
   var noticeEl = null;
   var jumpBtn = null;
   var notesEl = null;
+  var problemEl = null;
   var inputEl = null;
   var sendBtn = null;
   var hintEl = null;
@@ -556,6 +557,9 @@
       '<path d="M5 4.5h14v15H5z"/><path d="M8.5 9h7M8.5 12.5h7M8.5 16h4"/>',
     trash:
       '<path d="M4.5 7h15"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 12.5h9L17.5 7"/>',
+    problem:
+      '<path d="M4.5 5.5h9"/><path d="M4.5 10h6.5"/><path d="M4.5 14.5h5"/>' +
+      '<path d="M13 20l6.2-6.2a1.9 1.9 0 0 0-2.7-2.7L10.3 17.3V20z"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
   };
 
@@ -888,6 +892,247 @@
     draft.focus();
   }
 
+  /* ------------------------------------------------------------ 大题（子窗口） */
+
+  /**
+   * 大题走的是**另一条路**，因为它是另一种东西。
+   *
+   * 题卡承载的是"可点选、可填空"的题：判分确定，前端自己就能算。大题是多问、
+   * 要写推导或代码、答案是一段论证 —— 判分只能由一个**子代理**来（它有自己的
+   * 提示词、自己的上下文、收窄过的工具集，见 `routers/problem.py`）。
+   *
+   * 这个子窗口就是它的工作台：题目在上、分问的作答框在中、批改流在下。
+   * 它和主对话是**两套上下文** —— 子代理看不见聊天记录，只看得见这道题与这次的作答。
+   */
+  var problemOpen = false;
+  var problemData = null; // { problem, attempts }
+  var problemDrafts = {}; // index → 作答
+  var problemBusy = false;
+  var problemFeedback = '';
+  var problemRecord = '';
+  var problemFeedEl = null;
+
+  function openProblem() {
+    problemOpen = true;
+    problemFeedback = '';
+    problemRecord = '';
+    problemData = null;
+    renderProblem();
+    loadProblem();
+  }
+
+  function closeProblem() {
+    problemOpen = false;
+    problemData = null;
+    problemDrafts = {};
+    problemFeedback = '';
+    problemRecord = '';
+    renderProblem();
+  }
+
+  function loadProblem() {
+    api
+      .get('/problem/next')
+      .then(function (data) {
+        if (!problemOpen) return;
+        problemData = data;
+        problemDrafts = {};
+        problemFeedback = '';
+        problemRecord = '';
+        renderProblem();
+        if (!data.problem) ui.toast(data.note || '这个范围里没有大题', 'warn', 2600);
+      })
+      .catch(function (err) {
+        if (problemOpen) ui.toast((err && err.message) || '拿不到题', 'error', 4000);
+      });
+  }
+
+  function submitProblem() {
+    if (problemBusy || !problemData || !problemData.problem) return;
+    var answers = (problemData.problem.questions || [])
+      .map(function (sub) {
+        return { index: sub.index, text: String(problemDrafts[sub.index] || '').trim() };
+      })
+      .filter(function (item) {
+        return item.text;
+      });
+    if (!answers.length) {
+      ui.toast('至少答一问再交', 'warn');
+      return;
+    }
+
+    problemBusy = true;
+    problemFeedback = '';
+    problemRecord = '';
+    renderProblem();
+    paintProblemFeedback();
+
+    api.stream(
+      '/problem/solve',
+      { problemId: problemData.problem.id, answers: answers },
+      {
+        delta: function (data) {
+          problemFeedback += (data && data.text) || '';
+          paintProblemFeedback();
+        },
+        think: function () {}, // 子代理的思考不进这个窗口：用户要的是批语
+        tool: function (data) {
+          if (!data || data.phase !== 'start') return;
+          problemFeedback += '\n\n· 查了 ' + data.name + '…\n';
+          paintProblemFeedback();
+        },
+        error: function (data) {
+          problemFeedback += '\n\n**批改出错**：' + ((data && data.text) || '未知原因') + '\n';
+          paintProblemFeedback();
+        },
+        record: function (data) {
+          if (!data) return;
+          problemRecord =
+            '已记入答题记录：第 ' + data.attempts + ' 次 · ' +
+            (data.lastStatus === 'correct'
+              ? '全对'
+              : data.lastStatus === 'partial'
+                ? '部分对'
+                : data.lastStatus === 'wrong'
+                  ? '不对'
+                  : '已记录') +
+            (data.lastScore === null || data.lastScore === undefined
+              ? ''
+              : ' · ' + data.lastScore);
+          paintProblemFeedback();
+        },
+        done: function () {
+          problemBusy = false;
+          renderProblem();
+          paintProblemFeedback();
+        },
+      }
+    ).catch(function (err) {
+      problemBusy = false;
+      problemFeedback += '\n\n**批改失败**：' + ((err && err.message) || '未知原因');
+      renderProblem();
+      paintProblemFeedback();
+    });
+  }
+
+  function paintProblemFeedback() {
+    if (!problemFeedEl) return;
+    ui.clear(problemFeedEl);
+    if (!problemFeedback && !problemRecord && !problemBusy) return;
+    problemFeedEl.appendChild(
+      h('div.chatproblem__feedlabel', { text: problemBusy ? '正在批改…' : '批改' })
+    );
+    if (problemFeedback) problemFeedEl.appendChild(QF.md.render(problemFeedback));
+    if (problemRecord) {
+      problemFeedEl.appendChild(h('div.chatproblem__record', { text: problemRecord }));
+    }
+  }
+
+  function renderProblem() {
+    if (!problemEl) return;
+    ui.clear(problemEl);
+    if (!problemOpen) return;
+
+    var problem = problemData && problemData.problem;
+    var list = problem ? problem.questions || [] : [];
+    problemFeedEl = h('div.chatproblem__feed');
+
+    var body = h('div.chatproblem__body');
+    if (!problem) {
+      body.appendChild(
+        h('div.chatproblem__empty', {
+          text: problemData
+            ? problemData.note || '这个范围里没有大题'
+            : '正在取题…',
+        })
+      );
+    } else {
+      body.appendChild(
+        h('div.chatproblem__head', null,
+          h('span.chatproblem__title', { text: problem.title || '大题' }),
+          problem.layer ? h('span.chatproblem__tag', { text: problem.layer }) : null,
+          problem.wing ? h('span.chatproblem__tag', { text: problem.wing }) : null,
+          problem.difficulty ? h('span.chatproblem__tag', { text: '难度 ' + problem.difficulty }) : null,
+          problemData.attempts
+            ? h('span.chatproblem__tag', { text: '做过 ' + problemData.attempts + ' 次' })
+            : null
+        )
+      );
+      if (problem.stem) body.appendChild(h('div.chatproblem__stem', null, QF.md.render(problem.stem)));
+      list.forEach(function (sub) {
+        body.appendChild(
+          h('div.chatproblem__sub', null,
+            h('div.chatproblem__subtitle', { text: '第 ' + sub.index + ' 问｜' + (sub.title || '').replace(/^第 \d+ 问｜/, '') }),
+            sub.stem ? h('div.chatproblem__substem', null, QF.md.render(sub.stem)) : null,
+            sub.hint ? h('div.chatproblem__hint', { text: '提示：' + sub.hint }) : null,
+            h('textarea.chatproblem__answer', {
+              rows: '4',
+              placeholder: '写你的推导 / 计算 / 代码思路…（这一问不答就留空）',
+              value: problemDrafts[sub.index] || '',
+              onInput: (function (index) {
+                return function (event) {
+                  problemDrafts[index] = event.target.value;
+                };
+              })(sub.index),
+            })
+          )
+        );
+      });
+    }
+    body.appendChild(problemFeedEl);
+
+    problemEl.appendChild(
+      h(
+        'div.chatproblem__backdrop',
+        {
+          onClick: function (event) {
+            if (event.target === event.currentTarget) closeProblem();
+          },
+        },
+        h(
+          'div.chatproblem__sheet',
+          null,
+          h(
+            'div.chatproblem__bar',
+            null,
+            h('span.chatproblem__barTitle', { text: '大题' }),
+            h('span.chatproblem__barNote', { text: '批改由一个独立子代理做，它看不到聊天记录' }),
+            h(
+              'button.chatproblem__act',
+              {
+                type: 'button',
+                onClick: function () {
+                  if (problemBusy) return;
+                  loadProblem();
+                },
+              },
+              '换一道'
+            ),
+            iconButton('close', '关闭（Esc）', closeProblem)
+          ),
+          body,
+          h(
+            'div.chatproblem__foot',
+            null,
+            h(
+              'button.btn.btn--primary.chatproblem__submit',
+              {
+                type: 'button',
+                disabled: problemBusy || !problem,
+                onClick: submitProblem,
+              },
+              problemBusy ? '批改中…' : '提交批改'
+            ),
+            h('span.chatproblem__footnote', {
+              text: '批改结果会写进答题记录（掌握度与间隔重复跟着它走）',
+            })
+          )
+        )
+      )
+    );
+    paintProblemFeedback();
+  }
+
   /* ------------------------------------------------------------ 骨架 */
 
   function buildSkeleton() {
@@ -921,6 +1166,7 @@
     treeEl = h('div.chattree', { role: 'dialog', 'aria-label': '对话树' });
     demoEl = h('div.chatdemo', { role: 'dialog', 'aria-label': '演示' });
     notesEl = h('div.chatnotes', { role: 'dialog', 'aria-label': '便签' });
+    problemEl = h('div.chatproblem', { role: 'dialog', 'aria-label': '大题' });
     rootEl.appendChild(
       h(
         'div.chat',
@@ -949,6 +1195,10 @@
                 if (notesOpen) closeNotes();
                 else openNotes();
               }),
+              iconButton('problem', '大题（多问、要写推导，由子代理批改）', function () {
+                if (problemOpen) closeProblem();
+                else openProblem();
+              }),
               clipInput,
               inputEl,
               sendBtn
@@ -958,7 +1208,8 @@
         ),
         treeEl,
         demoEl,
-        notesEl
+        notesEl,
+        problemEl
       )
     );
   }
