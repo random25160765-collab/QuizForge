@@ -127,8 +127,44 @@
         });
         return false;
       }
-      QF.data.install(bank);
-      return true;
+      // 公共题库打上来源（练习/组卷靠 `source` 区分"公共"与"我的"）
+      (bank.questions || []).forEach(function (q) {
+        if (!q.source) q.source = 'public';
+      });
+      // 自己的题单**并进同一个池子**：练习与组卷那两头只认 QF.data，
+      // 这样它们不必为"题从哪来"分叉，只多一个来源标记。
+      // 取不到就当没有（自己的题少一项，公共题库照常）。
+      return api
+        .get('/my/questions')
+        .catch(function () {
+          return { questions: [] };
+        })
+        .then(function (mine) {
+          var mineIds = {};
+          (mine && mine.questions ? mine.questions : []).forEach(function (row) {
+            var q = Object.assign({}, row.payload || {});
+            q.id = row.id;
+            q.source = 'mine';
+            mineIds[q.id] = true;
+            if (!q.pointKey) q.pointKey = row.pointKey || '';
+            // 填空题的答案是题库自己的形状（一个带 accept 列表的字符串），
+            // 用户题存的是人写的那一句 —— 这里对齐，否则刷题页判分认不出来。
+            if (q.type === 'blank' && typeof q.answer === 'string') {
+              var accepts = [q.answer].concat(q.accepts || []);
+              q.answer = JSON.stringify(
+                accepts.map(function (one) {
+                  return { regex: [], accept: [String(one)] };
+                })
+              );
+            }
+            bank.questions.push(q);
+          });
+          QF.data.install(bank);
+          // 来源记成 **id 集合**，而不只靠题对象上的字段：install() 会把题规整一遍，
+          // 不认识的自定义字段留不留由它说了算 —— 实测公共题上的 `source` 没活下来。
+          QF.data.myIds = mineIds;
+          return true;
+        });
     });
   }
 
