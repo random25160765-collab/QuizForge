@@ -512,7 +512,10 @@
       dragging.x = (x - W / 2 - view.x) / view.k;
       dragging.y = (y - H / 2 - view.y) / view.k;
       dragging.fixed = true;
-      sim.alpha = Math.max(sim.alpha, 0.5);
+      // 这里原本还有一句 `sim.alpha = Math.max(sim.alpha, 0.5)` ——
+      // 它在**每次 mousemove** 上把整张图重新加热，于是拖一个节点时其他节点
+      // 跟着一起晃（用户看到的就是"拖动时其他节点抖得厉害"）。
+      // 拖动只需要移动**这一个**节点：其余位置留着，画面才稳。
       return;
     }
     if (panning) {
