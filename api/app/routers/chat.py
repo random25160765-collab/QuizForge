@@ -54,15 +54,16 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import func, select
 
 from .. import agent_loop, tools
 from .. import ai_gateway as gateway
+from .. import attachments as attach
 from .. import parts as msgparts
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
-from ..models import Conversation, Message
+from ..models import Attachment, Conversation, Message
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -246,7 +247,36 @@ def _heal_stale(db: DbSession, conv: Conversation) -> None:  # noqa: ANN001
     db.commit()
 
 
-def _history(messages: list[Message]) -> list[dict]:
+def _attachment_block(db: DbSession, message: Message) -> str:  # noqa: ANN001
+    """把这条消息挂的附件正文拼成一段，附在**发给模型的那一份**后面。
+
+    刻意不写进库里那条 `content`：那是用户说的话，规矩是"原样留着他说的"。
+    抽不到正文的（图片）也要说清"读不到"，免得模型把"附件是空的"当成"附件没用"。
+    """
+    ids = []
+    for part in message.parts or []:
+        if isinstance(part, dict) and part.get("type") == "file":
+            try:
+                ids.append(uuid.UUID(str(part.get("attachmentId"))))
+            except (TypeError, ValueError):
+                continue
+    if not ids:
+        return ""
+
+    rows = db.scalars(select(Attachment).where(Attachment.id.in_(ids))).all()
+    blocks = []
+    for row in rows:
+        head = f"【附件：{row.name}（{row.size // 1024}KB）】"
+        if row.text:
+            blocks.append(head + "\n" + row.text[: attach.CONTEXT_LIMIT])
+        elif row.kind == "image":
+            blocks.append(head + "\n（这是一张图片：当前模型读不到图像内容，只能看到它被贴在对话里。）")
+        else:
+            blocks.append(head + "\n（没能从里面抽出文本。）")
+    return "\n\n".join(blocks)
+
+
+def _history(db: DbSession, messages: list[Message]) -> list[dict]:  # noqa: ANN001
     """把当前分支转成上游要的 messages。
 
     ## 为什么必须回放工具调用
@@ -267,8 +297,12 @@ def _history(messages: list[Message]) -> list[dict]:
     out: list[dict] = []
     for message in messages:
         if message.role == "user":
-            if message.content:
-                out.append({"role": "user", "content": message.content})
+            text = message.content or ""
+            extra = _attachment_block(db, message)
+            if extra:
+                text = (text + "\n\n" + extra).strip()
+            if text:
+                out.append({"role": "user", "content": text})
             continue
         if message.role != "assistant":
             continue
@@ -472,6 +506,179 @@ def delete_conversation(cid: uuid.UUID, user: AuthenticatedWriter, db: DbSession
 # ------------------------------------------------------------------ 消息（流式）
 
 
+@router.post("/attachments")
+async def upload_attachment(
+    user: AuthenticatedWriter, db: DbSession, file: UploadFile = File(...)
+) -> dict:
+    """上传一个附件。**先传、再在发消息时引用它**。
+
+    为什么分两步而不是跟着消息一起 multipart 上去：发送那条路是 SSE 流，
+    要在里面同时收文件、校验、落盘、再开流，会把"流"这件事和非流的事情搅在一起。
+    分开之后这条路由是普通的请求-响应，失败也不用在半开的流里报错。
+
+    抽出来的正文（PDF 走 `pdftotext`）跟着附件一起入库，供模型读；
+    图片抽不出正文，但照常存下来给人看。
+    """
+    data = await file.read()
+    result = attach.save(db, user, file.filename or "附件", file.content_type or "", data)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
+
+
+@router.get("/attachments/{aid}")
+def read_attachment(aid: uuid.UUID, user: CurrentUser, db: DbSession) -> FileResponse:
+    """取回附件本身（图片直接显示、文本可预览）。别人的附件按 404 处理。"""
+    row = db.get(Attachment, aid)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(404, "没有这个附件")
+    path = attach.path_of(row)
+    if not path.exists():
+        raise HTTPException(410, "附件文件不在这台机器上（它只在本机存着）")
+    return FileResponse(
+        path,
+        media_type=row.mime or "application/octet-stream",
+        filename=row.name,
+    )
+
+
+EXPORT_FORMAT = "quizforge-chat/1"
+
+
+def _messages_of(db: DbSession, conv: Conversation) -> list[Message]:  # noqa: ANN001
+    """整个会话的消息（**全树**，按 id 升序 = 发生顺序）。
+
+    `order_by` 不是装饰：不加它，数据库按心情给顺序（子查询计划一变就变），
+    导出的文件里对话就是乱的 —— 这个洞是导出用例在全量跑时才露出来的
+    （单跑时恰好是插入顺序）。
+    """
+    return list(
+        db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conv.id, Message.user_id == conv.user_id)
+            .order_by(Message.id)
+        ).all()
+    )
+
+
+def _markdown_of(conv: Conversation, messages: list[Message]) -> str:
+    """给人读的那一份：只画**当前分支**，零件各记一笔但不抄正文。
+
+    为什么只画当前分支：md 是拿去读与归档的，把被顶下去的分支也铺进去就成了一份
+    到处是岔路的草稿。要看全树就用 json —— 那份连工具调用与每个分支都在。
+    """
+    lines = [f"# {conv.title or '未命名对话'}", ""]
+    lines.append(
+        f"> 导出时间 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+        f" · 当前分支 {len(messages)} 条消息"
+    )
+    lines.append("")
+
+    for message in messages:
+        lines.append("## " + ("我" if message.role == "user" else "AI"))
+        lines.append("")
+        if (message.content or "").strip():
+            lines.append(message.content.strip())
+            lines.append("")
+
+        notes = []
+        for part in message.parts or []:
+            kind = part.get("type")
+            if kind == "tool_call":
+                notes.append(
+                    "工具 `" + str(part.get("name")) + "`"
+                    + ("" if part.get("ok", True) else "（失败）")
+                )
+            elif kind == "card":
+                notes.append("题卡 `" + str((part.get("payload") or {}).get("questionId")) + "`")
+            elif kind == "citation":
+                notes.append(
+                    f"引用 `{part.get('slug')}:{part.get('startLine')}–{part.get('endLine')}`"
+                )
+            elif kind == "file":
+                notes.append("附件 `" + str(part.get("name")) + "`")
+            elif kind == "demo":
+                notes.append("演示「" + str(part.get("title")) + "」（HTML 见 json 导出）")
+            elif kind == "action":
+                notes.append("动作凭条 " + str(part.get("kind")))
+        if notes:
+            lines.extend("- " + note for note in notes)
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+@router.get("/conversations/{cid}/export")
+def export_conversation(
+    cid: uuid.UUID,
+    user: CurrentUser,
+    db: DbSession,
+    format: str = Query("md", description="md（给人读，当前分支）/ json（给机器读，全树）"),
+) -> PlainTextResponse:
+    """导出一次对话。
+
+    两种格式的分工是刻意的：`md` 只画**当前分支**（拿去读、拿去归档）；
+    `json` 带走**整棵树**（含被顶下去的分支、工具调用、令牌数）——
+    所以它是"轨迹"的完整备份，而不只是"看过的那些字"。
+    """
+    conv = _own_conversation(db, user.id, cid)
+    all_messages = _messages_of(db, conv)
+
+    if format == "json":
+        payload = {
+            "format": EXPORT_FORMAT,
+            "exportedAt": datetime.now(timezone.utc).isoformat(),
+            "conversation": {
+                "id": str(conv.id),
+                "title": conv.title,
+                "createdAt": conv.created_at.isoformat() if conv.created_at else "",
+                "updatedAt": conv.updated_at.isoformat() if conv.updated_at else "",
+            },
+            "messages": [_message_out(m) for m in all_messages],
+        }
+        return PlainTextResponse(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            media_type="application/json; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="chat-{str(conv.id)[:8]}.json"'},
+        )
+
+    branch = _active_path(db, conv)
+    return PlainTextResponse(
+        _markdown_of(conv, branch),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="chat-{str(conv.id)[:8]}.md"'},
+    )
+
+
+@router.get("/export")
+def export_all(
+    user: CurrentUser,
+    db: DbSession,
+    format: str = Query("json", description="只有 json：全部分支 + 全部零件"),
+) -> PlainTextResponse:
+    """把所有对话导出成一个文件 —— 这是"我的轨迹"的完整备份。"""
+    conversations = db.scalars(
+        select(Conversation).where(Conversation.user_id == user.id).order_by(Conversation.created_at)
+    ).all()
+    payload = {
+        "format": EXPORT_FORMAT,
+        "exportedAt": datetime.now(timezone.utc).isoformat(),
+        "conversations": [
+            {
+                "id": str(conv.id),
+                "title": conv.title,
+                "updatedAt": conv.updated_at.isoformat() if conv.updated_at else "",
+                "messages": [_message_out(m) for m in _messages_of(db, conv)],
+            }
+            for conv in conversations
+        ],
+    }
+    return PlainTextResponse(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        media_type="application/json; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="quizforge-chats.json"'},
+    )
+
+
 @router.post("/conversations/{cid}/messages")
 def post_message(
     cid: uuid.UUID, payload: dict, user: AuthenticatedWriter, db: DbSession
@@ -532,6 +739,32 @@ def post_message(
             content=content[:MAX_CONTENT],
             status="ok",
         )
+        # 附件：先上传、后引用（见 upload_attachment 的说明）。
+        # 只接受**本人**的、且还没挂到别的消息上的那些 —— 别人传的 id 猜不出来，
+        # 但猜出来了也不能用。
+        attach_ids = body.get("attachments") or []
+        attached = []
+        if attach_ids:
+            for raw in attach_ids[:8]:
+                try:
+                    row = db.get(Attachment, uuid.UUID(str(raw)))
+                except (TypeError, ValueError):
+                    continue
+                if row is not None and row.user_id == user.id and row.message_id is None:
+                    attached.append(row)
+            if attached:
+                user_msg.parts = [
+                    msgparts.file_part(
+                        attachment_id=row.id,
+                        name=row.name,
+                        mime=row.mime,
+                        size=row.size,
+                        kind=row.kind,
+                        text_chars=len(row.text),
+                    )
+                    for row in attached
+                ]
+
         db.add(user_msg)
         if not conv.title.strip():
             conv.title = _title_from(content)
@@ -539,8 +772,13 @@ def post_message(
         db.commit()
         db.refresh(user_msg)
 
+        for row in attached:
+            row.message_id = user_msg.id
+        if attached:
+            db.commit()
+
     # 上下文 = 到这条提问为止的那一段（不含任何别的分支上的回答）
-    history = _history(_chain(db, user_msg))
+    history = _history(db, _chain(db, user_msg))
 
     assistant = Message(
         conversation_id=conv.id,
@@ -750,6 +988,14 @@ def _stream(  # noqa: ANN001
 
                 # 写操作也一样：工具只**提案**，界面上长出一张待确认的凭条，
                 # 他点了才落到记录里（走的是收藏夹 / 错题本那两条老路）。
+                # 演示沙箱：模型给的是一段自包含 HTML，界面上长成一个沙箱 iframe
+                demo = (event.get("payload") or {}).get("demo")
+                if isinstance(demo, dict) and demo.get("html"):
+                    parts.append(
+                        msgparts.demo_part(title=demo.get("title") or "演示", html=demo["html"])
+                    )
+                    yield _sse("demo", {"callId": event["callId"], "demo": demo})
+
                 proposal = (event.get("payload") or {}).get("proposal")
                 if isinstance(proposal, dict) and proposal.get("kind"):
                     parts.append(

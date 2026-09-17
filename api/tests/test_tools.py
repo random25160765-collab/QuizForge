@@ -348,6 +348,24 @@ def test_proposal_for_an_unknown_question_says_so(client, db_session, imported_b
     assert ok and "error" in payload
 
 
+# ------------------------------------------------------------------ 演示沙箱
+
+
+def test_render_demo_refuses_a_giant_html(client, db_session) -> None:  # noqa: ANN001
+    """演示会落进零件、每次读会话都要发给前端 —— 它必须小，超了就直接拒。"""
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+
+    ok, payload = tools.call(
+        db_session, user, "render_demo", {"html": "<div>" + "x" * tools.DEMO_MAX_CHARS + "</div>"}
+    )
+    assert ok and "error" in payload and "demo" not in payload
+    assert "上限" in payload["error"]
+
+    ok, payload = tools.call(db_session, user, "render_demo", {"title": "T", "html": "<b>hi</b>"})
+    assert ok and payload["demo"] == {"title": "T", "html": "<b>hi</b>"}
+
+
 # ------------------------------------------------------------------ 图检索
 
 

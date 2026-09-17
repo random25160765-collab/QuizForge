@@ -7,6 +7,8 @@
 
 # --- Web 框架 ---
 fastapi>=0.115
+# 附件上传要它（FastAPI 的 UploadFile 依赖这个纯 Python 包，30KB，无传递依赖）
+python-multipart>=0.0.20
 uvicorn[standard]>=0.32
 
 # --- 数据层 ---

@@ -104,6 +104,38 @@ def action_part(*, kind: str, payload: dict) -> dict:
     return {"type": "action", "kind": kind, "payload": payload or {}}
 
 
+def file_part(
+    *,
+    attachment_id,
+    name: str,
+    mime: str = "",
+    size: int = 0,
+    kind: str = "",
+    text_chars: int = 0,  # noqa: ANN001
+) -> dict:
+    """附件零件：**只放元数据**。
+
+    正文（图片二进制、PDF 抽出来的几百 KB 文本）不在这里 —— 零件是每次读会话
+    都要发给前端的东西，塞大内容等于让每次翻历史都拖着一个附件走。
+    要看内容就按 `attachmentId` 去取（`GET /api/chat/attachments/{id}`）。
+    `textChars` 是"抽出来多少字给模型看"，0 表示没抽到（图片就是这样）。
+    """
+    return {
+        "type": "file",
+        "attachmentId": str(attachment_id),
+        "name": str(name)[:200],
+        "mime": str(mime or "")[:120],
+        "size": int(size or 0),
+        "kind": str(kind or ""),
+        "textChars": int(text_chars or 0),
+    }
+
+
+def demo_part(*, title: str, html: str) -> dict:
+    """演示沙箱：一段**自包含** HTML，前端塞进 sandbox iframe 里跑（不带 same-origin）。"""
+    return {"type": "demo", "title": str(title)[:80], "html": html}
+
+
 def text_of(parts) -> str:  # noqa: ANN001
     """正文投影：只拼 `text` 零件。
 

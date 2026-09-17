@@ -64,7 +64,7 @@
   function request(method, path, options) {
     var opts = options || {};
     var headers = {};
-    if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
+    if (opts.body !== undefined && !opts.form) headers['Content-Type'] = 'application/json';
     // 写请求必须带双提交令牌，服务端会与 Cookie 比对
     if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = csrfToken();
 
@@ -74,7 +74,13 @@
       // 会话是 HttpOnly Cookie，必须带上；同源所以用 same-origin
       credentials: 'same-origin',
     };
-    if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+    if (opts.form) {
+      // multipart：**不要**自己设 Content-Type —— boundary 只有浏览器知道，
+      // 手动设了服务端就解不出表单
+      init.body = opts.form;
+    } else if (opts.body !== undefined) {
+      init.body = JSON.stringify(opts.body);
+    }
     if (opts.signal) init.signal = opts.signal;
 
     return fetch(BASE + path, init).then(
@@ -229,6 +235,12 @@
     },
     onUnauthorized: onUnauthorized,
     csrfToken: csrfToken,
+    /** 上传一个文件：走 multipart（附件接口用） */
+    upload: function (path, file) {
+      var form = new FormData();
+      form.append('file', file, file.name || 'file');
+      return request('POST', path, { form: form });
+    },
   };
 
   /* ------------------------------------------------------ 具名接口 */
