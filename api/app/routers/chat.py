@@ -826,6 +826,8 @@ def post_message(
     conf = gateway.resolve_config(db, user.id)
     gateway.enforce_quota(db, user.id)
 
+    cont = False
+
     if reply_to not in (None, "", 0):
         try:
             parent_id = int(reply_to)
@@ -837,6 +839,23 @@ def post_message(
         if parent.role != "user":
             raise HTTPException(400, "只能针对用户消息重新生成")
         user_msg = parent
+    elif body.get("continue"):
+        # 「接一轮」：**不新增用户消息**，只让 agent 看着已有的历史说话。
+        #
+        # 用途是"大题批完自动开口"：批改结果会由 `problem._append_grade_note`
+        # 写一条 assistant 记事进对话，接着就该主 agent 就着它讲两句。
+        # 不能靠"存一条用户消息"来触发 —— 库里那条 `content` 只放**用户原话**，
+        # 机器生成的"继续"混进去，他会以为是自己说的。
+        last = db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.id.desc())
+            .limit(1)
+        ).first()
+        if last is None:
+            raise HTTPException(400, "这条对话还没有消息，没什么可接着说的")
+        user_msg = last  # 只是"挂载点"：历史从它往回取，回复挂在它下面
+        cont = True
     else:
         if not content:
             raise HTTPException(400, "消息内容不能为空")
@@ -912,6 +931,16 @@ def post_message(
         vision=bool(conf.get("vision")),
         model=str(conf.get("model") or ""),
     )
+    if cont:
+        # 合成的这一句**只进请求、不进库**：它替模型点明"现在该就着什么说话"。
+        # 不点的话，历史末尾是一条 assistant 记事，模型常常当自己已经答完了。
+        history.append(
+            {
+                "role": "user",
+                "content": "（以上是大题的批改结果。）就着它说几句：哪里对、哪里缺、"
+                "下一步练什么。不要重复题面，也不要复述批语全文。",
+            }
+        )
 
     assistant = Message(
         conversation_id=conv.id,
