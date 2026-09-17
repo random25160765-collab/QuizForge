@@ -478,10 +478,10 @@ ROOT = Path(__file__).resolve().parent.parent
 def question_to_dict(question: Question) -> dict:
     """转成前端消费的结构。答案按题型规范化成统一形状。
 
-    这是题目的**权威 JSON 表示**：离线构建（tools/build.py）与在线
-    导入（api/）都调用这里。放在解析器里而不是各自的调用方，是为了
+    这是题目的**权威 JSON 表示**：导入（写库）与导出（`GET /api/bank`、
+    `bankfile export`）都走这里。放在解析器里而不是各自的调用方，是为了
     避免两条路径各写一份序列化、然后悄悄漂移 —— 一旦漂移，
-    在线版与离线版渲染出来的题目就会不一样。
+    库里存的与前端拿到的就不是同一道题了。
     """
     if question.type == "single":
         answer: object = question.answer
@@ -501,7 +501,7 @@ def question_to_dict(question: Question) -> dict:
         answer = None
 
     # `file` 必须**稳定**：题库现在由数据库物化到临时目录，绝对路径每次都不同，
-    # 一旦写进数据集，「接口返回 == 离线产物」这条契约就会无端失败（实测就是这么挂的）。
+    # 一旦写进数据集，「入库再读出来 == 导入时的数据集」这条契约就会无端失败（实测就是这么挂的）。
     # 规则：落在某个 questions/ 目录下就取它之后的相对路径，否则退回仓库内相对路径。
     parts = question.path.parts
     if "questions" in parts:

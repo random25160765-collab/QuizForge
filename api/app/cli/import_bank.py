@@ -5,9 +5,13 @@
     python -m app.cli.import_bank --check-only    # 只校验，完全不连数据库
     python -m app.cli.import_bank --force         # 有校验错误也强行导入
     python -m app.cli.import_bank --json out.json # 额外把报告写成 JSON
+    python -m app.cli.import_bank --dataset-out bank.json   # 写出前端吃的题库 JSON
 
-刻意复用 `tools/` 下的解析器与校验器：导入进库的题目与离线产物
-逐字节一致，`make check` 能过的题也一定能导入。
+`--dataset-out` 写的是 `GET /api/bank` 的响应体（同一个 `build_dataset`），
+给前端自测用 —— 拿它测等于测"线上真正会发生什么"。
+
+刻意复用 `tools/` 下的解析器与校验器：`make check` 能过的题才导得进来，
+导入进库的题目与逐字节再读出来的一致。
 """
 
 from __future__ import annotations
@@ -37,6 +41,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-only", action="store_true", help="只做校验，不连数据库")
     parser.add_argument("--force", action="store_true", help="即使有校验错误也导入")
     parser.add_argument("--json", default="", help="把报告写成 JSON 文件的路径")
+    parser.add_argument(
+        "--dataset-out",
+        default="",
+        help="把前端吃的题库 JSON（/api/bank 的响应体）写成文件，不连数据库",
+    )
     args = parser.parse_args(argv)
 
     settings = get_settings()
@@ -44,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"考纲文件：{settings.topics_file}")
 
     result = scan(settings)
-    if not args.check_only:
+    if not args.check_only and not args.dataset_out:
         print(f"数据库：{_safe_db(settings.database_url)}")
 
     errors = len(result.errors)
@@ -52,6 +61,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"扫描完成：{result.file_count} 个文件 · {len(result.questions)} 道题 · {errors} 个错误 / {warns} 个告警\n")
 
     _print_diagnostics(result)
+
+    # 导出前端吃的 dataset 就到此为止：不写库、不连库。
+    # 校验不过直接拒绝 —— 导出一份有问题的题库给自测没有意义。
+    if args.dataset_out:
+        if errors:
+            print(f"\n校验未通过：{errors} 个错误，未导出", file=sys.stderr)
+            return 1
+        out = Path(args.dataset_out)
+        out.write_text(
+            json.dumps(result.dataset, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        print(f"\n题库 JSON 已写入 {out}")
+        return 0
 
     if args.check_only:
         if errors:

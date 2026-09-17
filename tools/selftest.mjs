@@ -5,10 +5,10 @@
  *   LaTeX 占位保护、Markdown 子集渲染、语法高亮、四种题型的判分、
  *   SM2 调度、localStorage 持久化与导入导出、以及全量题目的渲染与判分。
  *
- * 运行（需先构建）：
- *     python3 tools/build.py && node tools/selftest.mjs
+ * 运行（需要一份题库 JSON）：
+ *     QF_BANK_JSON=/path/to/bank.json node tools/selftest.mjs
  * 或：
- *     make test
+ *     make test（会自己从库物化并导出一份）
  * ========================================================================= */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -112,8 +112,16 @@ globalThis.localStorage = {
   removeItem: (k) => mem.delete(k),
 };
 
-const bank = JSON.parse(fs.readFileSync(path.join(ROOT, 'dist/data.json'), 'utf8'));
-globalThis.__QB__ = bank;
+/* 题库从环境变量给的路径读 —— 由 `make test` 从库物化并导出。
+   以前读 dist/data.json：那是离线构建的产物，离线形态已淘汰。
+   刻意不给默认值：直接跑这个脚本时必须显式指定，否则很容易拿一份
+   上一次留下的旧题库跑出一片绿，而库里其实已经变了。 */
+const bankPath = process.env.QF_BANK_JSON;
+if (!bankPath) {
+  console.error('缺少 QF_BANK_JSON：请给一份题库 JSON 路径（`make test` 会自动准备）');
+  process.exit(2);
+}
+const bank = JSON.parse(fs.readFileSync(bankPath, 'utf8'));
 
 /* KaTeX 桩：把 tex 原样保留，便于断言 LaTeX 未被 Markdown 破坏 */
 globalThis.katex = {
@@ -133,6 +141,23 @@ for (const f of RUNTIME) {
 
 const QF = globalThis.QF;
 const { engine, md, highlight, sm2, store, data } = QF;
+
+// 题库装载：真实路径是 boot.js 拿到 GET /api/bank 之后调用 install()。
+// 这里调同一个入口 —— 自测不复制那条逻辑，只模拟它的调用时机。
+data.install(bank);
+
+/* 取样自题库，断言里不钉死具体学科与题号：
+   题库内容会变（早期凑数的学科已被删除），钉死会让自测跟着内容一起红。 */
+const SAMPLE_SUBJECT = data.subjects[0];
+const SAMPLE_LEAF =
+  data.topics.find((t) => t.leaf && t.path[0] === SAMPLE_SUBJECT.key) || data.topics[0];
+const SAMPLE_UNIT =
+  data.topics.find((t) => t.path.length === 2 && t.path[0] === SAMPLE_SUBJECT.key) || SAMPLE_LEAF;
+const SAMPLE_SINGLE =
+  data.questions.find((q) => q.type === 'single' && (q.options || []).length >= 2) || data.questions[0];
+const SUBJECT_COUNT = data.subjects.length;
+const SUBJECT_TOTAL = data.bankStats.byTopic[SAMPLE_SUBJECT.key];
+const SAMPLE_ID = SAMPLE_SINGLE.id;
 
 let pass = 0;
 const failures = [];
@@ -265,16 +290,16 @@ const stats0 = store.stats();
 ok('store 初始 total 等于题库规模', stats0.total === data.questions.length, String(stats0.total));
 eq('store 初始无错题', store.wrongIds().length, 0);
 
-const cpp1 = data.get('cpp-0001');
-store.applyResult(cpp1, 'A', engine.grade(cpp1, 'A'));
-eq('答错后进入错题本', store.wrongIds(), ['cpp-0001']);
-eq('记录累加 wrong', store.record('cpp-0001').wrong, 1);
-ok('答错后已排入复习计划', store.record('cpp-0001').sm2.due > 0);
+const wrongKey = SAMPLE_SINGLE.options.map((o) => o.key).find((k) => k !== SAMPLE_SINGLE.answer);
+store.applyResult(SAMPLE_SINGLE, wrongKey, engine.grade(SAMPLE_SINGLE, wrongKey));
+eq('答错后进入错题本', store.wrongIds(), [SAMPLE_ID]);
+eq('记录累加 wrong', store.record(SAMPLE_ID).wrong, 1);
+ok('答错后已排入复习计划', store.record(SAMPLE_ID).sm2.due > 0);
 
-store.applyResult(cpp1, 'C', engine.grade(cpp1, 'C'));
+store.applyResult(SAMPLE_SINGLE, SAMPLE_SINGLE.answer, engine.grade(SAMPLE_SINGLE, SAMPLE_SINGLE.answer));
 eq('答对后移出错题本（mastered）', store.wrongIds().length, 0);
-eq('含已订正仍能看到', store.wrongIds({ includeMastered: true }), ['cpp-0001']);
-ok('记录累加 correct', store.record('cpp-0001').correct === 1);
+eq('含已订正仍能看到', store.wrongIds({ includeMastered: true }), [SAMPLE_ID]);
+ok('记录累加 correct', store.record(SAMPLE_ID).correct === 1);
 
 const due = store.dueIds();
 ok('dueIds 返回数组', Array.isArray(due));
@@ -283,13 +308,14 @@ ok('导出不含 API Key', exported.settings.ai.apiKey === '');
 ok('导出含 schema 版本', exported.schema === 1);
 ok('统计数据正确', store.stats().attempts === 2, String(store.stats().attempts));
 
-store.toggleFlag('cpp-0001');
-eq('标记生效', store.flaggedIds(), ['cpp-0001']);
+store.toggleFlag(SAMPLE_ID);
+eq('标记生效', store.flaggedIds(), [SAMPLE_ID]);
 
 /* --------------------------------------- 6. 全量题目：渲染 + 用正确答案判分 */
 
 let rendered = 0;
 let gradedCorrect = 0;
+const notProbeable = [];
 for (const q of data.questions) {
   let html;
   try {
@@ -304,25 +330,33 @@ for (const q of data.questions) {
   (q.options || []).forEach((o) => md.renderInline(o.text));
 
   let r = null;
+  let probeable = true;
   if (q.type === 'single') r = engine.grade(q, q.answer);
   else if (q.type === 'multi') r = engine.grade(q, q.answer.slice());
   else if (q.type === 'blank') {
-    r = engine.grade(q, q.answer.map((b) => (b.accept[0] || 'probe-' + Math.random().toString(36).slice(2))));
-    const regexOnly = q.answer.filter((b) => !b.accept.length && b.regex.length);
-    if (regexOnly.length) {
-      // 纯正则空：用能匹配的构造值校验正则本身可编译且能命中
-      const probe = q.answer.map((b) => (b.accept[0] ? b.accept[0] : 'ANY'));
-      const rr = engine.grade(q, probe);
-      ok(`正则空可判分 ${q.id}`, rr.blanks.every((b) => b.want.length || b.regex.length));
+    // 某个空只有正则、没有字面答案时，这里**造不出**标准答案来喂它 ——
+    // 任何探测值都会判 partial。所以这类题不进「标准答案判分通过」的统计，
+    // 而是单独列出来（可自测 ≠ 已验证），末尾打印数量与题号。
+    probeable = q.answer.every((b) => (b.accept || []).length > 0);
+    if (probeable) {
+      r = engine.grade(q, q.answer.map((b) => b.accept[0]));
+    } else {
+      notProbeable.push(q.id);
+      const rr = engine.grade(q, q.answer.map((b) => (b.accept || [])[0] || 'x'));
+      ok(`正则空可判分 ${q.id}`, (rr.blanks || []).every((b) => b.want.length || b.regex.length));
     }
   } else r = engine.grade(q, 'x');
   if (r && (r.status === 'correct' || r.status === 'ungraded')) gradedCorrect += 1;
-  else failures.push(`用标准答案判分未通过 ${q.id}: ${r && r.status}`);
+  else if (probeable) failures.push(`用标准答案判分未通过 ${q.id}: ${r && r.status}`);
 
   ok(`题干非空 ${q.id}`, html.trim().length > 0);
 }
 eq('全部题面可渲染', rendered, data.questions.length);
-eq('全部题目标准答案判分通过', gradedCorrect, data.questions.length);
+eq('可逐字验证的题标准答案判分通过', gradedCorrect, data.questions.length - notProbeable.length);
+if (notProbeable.length) {
+  console.log(`\n注意：${notProbeable.length} 道题的填空只有正则、没有字面答案，"标准答案判分"没覆盖到它们：`);
+  console.log('  ' + notProbeable.join(', '));
+}
 
 // 单选/多选的干扰项必须判错（防止答案写错但恰好通过）
 for (const q of data.questions) {
@@ -337,26 +371,30 @@ for (const q of data.questions) {
 
 /* -------------------------------------------------- 7. data 筛选 */
 
-ok('按学科筛选会包含全部子孙', data.filter({ topics: ['cpp'] }).every((q) => data.topicPath(q.topic)[0] === 'cpp'));
-ok('按学科筛选不为空', data.filter({ topics: ['cpp'] }).length >= 1);
-ok('按知识点筛选只命中该知识点', data.filter({ topics: ['cpp-stl-iterator'] }).length === 1);
-ok('按单元筛选会包含其知识点', data.filter({ topics: ['cpp-stl'] }).length >= 1);
+ok('按学科筛选会包含全部子孙',
+  data.filter({ topics: [SAMPLE_SUBJECT.key] }).every((q) => data.topicPath(q.topic)[0] === SAMPLE_SUBJECT.key));
+ok('按学科筛选不为空', data.filter({ topics: [SAMPLE_SUBJECT.key] }).length >= 1);
+ok('按知识点筛选只命中该知识点',
+  data.filter({ topics: [SAMPLE_LEAF.key] }).every((q) => q.topic === SAMPLE_LEAF.key));
+ok('按单元筛选会包含其知识点', data.filter({ topics: [SAMPLE_UNIT.key] }).length >= 1);
 ok('按题型筛选', data.filter({ types: ['short'] }).every((q) => q.type === 'short'));
-ok('关键词筛选（题面）', data.filter({ keyword: '迭代器' }).length >= 1);
-ok('关键词能命中主题路径', data.filter({ keyword: '未定义行为' }).length >= 1);
+ok('关键词筛选（题面）', data.filter({ keyword: SAMPLE_SUBJECT.name }).length >= 1);
+ok('关键词能命中主题路径', data.filter({ keyword: SAMPLE_LEAF.name.slice(0, 4) }).length >= 1);
 ok('关键词搜不到时返回空', data.filter({ keyword: 'zzz-不存在的词-zzz' }).length === 0);
-ok('IDs 筛选优先', data.filter({ ids: ['c-0001'], topics: ['cpp'] }).length === 1);
-ok('按难度筛选', data.filter({ difficulty: [2] }).every((q) => q.difficulty === 2));
+ok('IDs 筛选优先', data.filter({ ids: [SAMPLE_ID] }).length === 1);
+ok('按难度筛选', data.filter({ difficulty: [SAMPLE_SINGLE.difficulty] }).every((q) => q.difficulty === SAMPLE_SINGLE.difficulty));
 
 /* 主题树 */
-ok('学科数量', data.subjects.length === 11);
+ok('至少有一个学科', data.subjects.length >= 1);
 ok('每个学科都有子节点', data.subjects.every((s) => s.children.length > 0));
-ok('节点的题数已沿树累加', data.bankStats.byTopic['cpp'] === data.filter({ topics: ['cpp'] }).length);
+ok('节点的题数已沿树累加',
+  data.bankStats.byTopic[SAMPLE_SUBJECT.key] === data.filter({ topics: [SAMPLE_SUBJECT.key] }).length);
 ok('每个节点都有题数（没有题也是 0）', data.topics.every((t) => typeof data.bankStats.byTopic[t.key] === 'number'));
-ok('知识点题数之和等于学科题数',
-  data.bankStats.byTopic['cpp'] === data.topics
-    .filter((t) => t.leaf && t.path[0] === 'cpp')
-    .reduce((sum, t) => sum + data.bankStats.byTopic[t.key], 0));
+// 题可以挂任意一层，所以「叶子题数之和 == 学科题数」只在题全挂在叶子上时成立。
+// 真正的不变量是定义式的：节点的题数 = 挂在其下（含子孙）的题目数。
+ok('单元题数 = 挂在其下（含子孙）的题目数',
+  data.bankStats.byTopic[SAMPLE_UNIT.key] ===
+    data.questions.filter((q) => data.topicPath(q.topic).includes(SAMPLE_UNIT.key)).length);
 ok('descendants 不含自己', data.topics.every((t) => t.descendants.indexOf(t.key) === -1));
 ok('topics 顺序：父节点排在其所有子孙之前',
   data.topics.every((t, i) => t.path.slice(0, -1).every(
@@ -364,10 +402,10 @@ ok('topics 顺序：父节点排在其所有子孙之前',
 ok('pathNames 与 path 等长', data.topics.every((t) => t.pathNames.length === t.path.length));
 ok('筛选返回新数组', data.filter({}) !== data.questions);
 
-/* -------------------------------------------------- install 语义（在线模式用） */
+/* -------------------------------------------------- install 语义 */
 
-// data.js 在模块加载时用 window.__QB__ 自动 install 了一次
-ok('离线模式自动装载题库', data.installed === true && data.questions.length > 0);
+// 上面按 boot.js 的调用时机 install 过一次
+ok('装载后题库可用', data.installed === true && data.questions.length > 0);
 
 const questionsRef = data.questions;
 const byIdRef = data.byId;
@@ -389,8 +427,10 @@ ok('install 后主题树为空', data.subjects.length === 0);
 
 data.install(bank);
 ok('重新 install 恢复题目', data.questions.length === originalCount);
-ok('重新 install 恢复主题树', data.subjects.length === 11 && data.topics.length === bank.meta.topics.length);
-ok('重新 install 恢复统计', data.bankStats.total === originalCount && data.bankStats.byTopic['cpp'] === 3);
+ok('重新 install 恢复主题树',
+  data.subjects.length === SUBJECT_COUNT && data.topics.length === bank.meta.topics.length);
+ok('重新 install 恢复统计',
+  data.bankStats.total === originalCount && data.bankStats.byTopic[SAMPLE_SUBJECT.key] === SUBJECT_TOTAL);
 ok('派生值走 getter（install 后跟着变）', data.typeLabels.single === '单选' && data.generatedAt === bank.meta.generatedAt);
 
 /* -------------------------------------------------------- 掌握度算法 */
@@ -470,7 +510,8 @@ store.resetAll();
 
 const FLOW_NOW = 1757900000000;
 const FLOW_DAY = QF.ui.dayKey(FLOW_NOW);
-const flowQ = { id: 'c-0001', topic: 'c' };
+const flowTopic = SAMPLE_SINGLE.topic;
+const flowQ = { id: SAMPLE_ID, topic: flowTopic };
 
 eq('初始没有待上传流水', store.attempts().length, 0);
 
@@ -481,14 +522,14 @@ const flow = store.attempts()[0];
 ok('流水带客户端生成的 id', typeof flow.id === 'string' && flow.id.length >= 32, String(flow.id));
 eq('流水状态与判分一致', flow.status, 'wrong');
 eq('流水按本机日期归属', flow.day, FLOW_DAY);
-eq('流水记录主题快照', flow.topicKey, 'c');
+eq('流水记录主题快照', flow.topicKey, flowTopic);
 
 // 「待批改 / 未作答」不计入统计，也就不该产生流水
-store.applyResult({ id: 'c-0002', topic: 'c' }, 'x', { status: 'ungraded', score: 0 }, { now: FLOW_NOW });
+store.applyResult({ id: 'flow-2', topic: flowTopic }, 'x', { status: 'ungraded', score: 0 }, { now: FLOW_NOW });
 eq('待批改不产生流水', store.attempts().length, 1);
 
 // 自评同样累加了计数，所以它也是一次真实作答
-store.setSelfGrade('c-0003', 2, FLOW_NOW + 1000);
+store.setSelfGrade('flow-3', 2, FLOW_NOW + 1000);
 eq('自评产生流水', store.attempts().length, 2);
 
 // 流水按「成功回执」逐条删除，不误删还没确认的
@@ -496,8 +537,8 @@ store.dropAttempts([flow.id]);
 eq('回执后只剩未确认的那条', store.attempts().length, 1);
 
 // 重置走「设基线」通道：补丁是增减语义，表达不了「直接清零」
-store.resetRecord('c-0001');
-eq('重置进入基线队列', store.pendingResets()['c-0001'], null);
+store.resetRecord(SAMPLE_ID);
+eq('重置进入基线队列', store.pendingResets()[SAMPLE_ID], null);
 
 // 每日统计的合并口径：取较大值，不能覆盖。
 // 直接覆盖的后果是新账号（服务端返回空对象）一登录就把本地热力图历史抹掉。

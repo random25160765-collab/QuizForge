@@ -3197,7 +3197,7 @@
    * 数据照样更新了，下次渲染自然生效。
    */
   function refreshFromServer() {
-    if (!QF.online || !QF.boot || !QF.boot.refreshProgress) return Promise.resolve(false);
+    if (!QF.boot || !QF.boot.refreshProgress) return Promise.resolve(false);
     return QF.boot
       .refreshProgress()
       .then(function (info) {
@@ -3216,7 +3216,7 @@
     render: render,
     startPractice: startPractice,
     openSettings: function () { QF.settings.open(); },
-    // 在线模式下由 boot.js 调用 boot()：它要先完成鉴权与题库装载
+    // 由 boot.js 调用：它要先完成鉴权与题库装载
     boot: boot,
     booted: false,
     setView: setViewFromRoute,
@@ -3227,13 +3227,6 @@
     state: state,
   };
 
-  // 离线单文件没有启动编排器，自己起；
-  // 在线模式必须等 boot.js（鉴权 → 题库 → 进度）走完再渲染
-  if (!QF.online) {
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot);
-    } else {
-      boot();
-    }
-  }
+  // 启动交给 boot.js（鉴权 → 题库 → 进度）：它走完才会调用 QF.app.boot()，
+  // 否则会出现「还没鉴权就开始渲染」。
 })();

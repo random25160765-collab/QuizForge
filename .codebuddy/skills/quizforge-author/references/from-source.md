@@ -120,4 +120,4 @@ python3 tools/build.py
 - 一次只处理一个 topic，避免 context 被多份长文档撑爆。
 - 抽取时用 `grep`/`search` 先定位候选块，再逐块 `read_file`，不要整本 `read_file`。
 - 生成过程中如果发现某道题需要补充新 topic，先改 `meta/topics.yaml`。
-- 不要修改 `dist/` 下的产物；不要动 `Codebase/` 下的上游仓库。
+- 不要修改 `api/web/` 下的产物；不要动 `Codebase/` 下的上游仓库。

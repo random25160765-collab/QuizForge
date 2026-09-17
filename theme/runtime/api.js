@@ -1,10 +1,8 @@
 /* ===========================================================================
  * api.js —— 后端接口封装
  *
- * 两种运行模式由构建期注入的 window.QF_CONFIG 决定：
- *   offline（默认）：没有 apiBase，题库由内联的 window.__QB__ 提供，
- *                    本模块基本不会被调用，但保留以便代码路径统一。
- *   online         ：所有数据来自 /api，会话靠 HttpOnly Cookie。
+ * 数据全部来自 /api，会话靠 HttpOnly Cookie；基址由构建期注入的
+ * window.QF_CONFIG.apiBase 给出（默认 /api）。
  *
  * 统一在这里做三件事：拼基址、带 CSRF 头、把各种失败归一成
  * 带 status 的 Error —— 调用方只需要 try/catch，不用关心响应形态。
@@ -18,7 +16,6 @@
   var BASE = String(config.apiBase || '').replace(/\/+$/, '');
 
   QF.config = config;
-  QF.online = config.mode === 'online';
 
   /** 未授权时的回调（由 boot.js 注入，默认跳登录页） */
   var unauthorizedHandler = null;

@@ -1,8 +1,8 @@
 /* ===========================================================================
  * data.js —— 题库索引与筛选
  *
- * 题库在构建期被内联成 window.__QB__，这里把它整理成便于查询的结构。
- * 全流程零 fetch，因此 file:// 双击打开也能正常工作。
+ * 题库由 boot.js 取回（GET /api/bank）后交给 install()，这里把它整理成
+ * 便于查询的结构。全站只此一份索引：筛选、主题树、题数统计都从这里出。
  * ========================================================================= */
 (function () {
   'use strict';
@@ -34,8 +34,7 @@
   }
 
   /**
-   * 装载题库。离线模式在模块末尾用 window.__QB__ 自动调用一次；
-   * 在线模式由 boot.js 拿到 GET /api/bank 的结果后调用。
+   * 装载题库。由 boot.js 拿到 GET /api/bank 的结果后调用（它要先过鉴权）。
    */
   function install(bank) {
     var source = bank || {};
@@ -314,8 +313,4 @@
       return (meta.typeLabels || DEFAULT_TYPE_LABELS)[type] || type;
     },
   });
-
-  // 离线单文件：题库已经内联在页面里，模块加载即完成装载。
-  // 在线模式没有 window.__QB__，等 boot.js 拿到 /api/bank 之后再 install。
-  if (window.__QB__) install(window.__QB__);
 })();

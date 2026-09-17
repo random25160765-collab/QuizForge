@@ -1,6 +1,6 @@
 """题库读取接口。
 
-与 `dist/data.json` **完全同构**，前端 `data.install()` 直接消费，
+返回体就是 `tools/dataset.build_dataset` 的产物，前端 `data.install()` 直接消费，
 索引、主题树、筛选逻辑一行都不用改。
 
 为什么仍是一次返回全量：前端的筛选（主题树 / 题型 / 难度 / 掌握度 / 关键词）

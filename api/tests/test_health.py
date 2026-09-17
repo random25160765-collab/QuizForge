@@ -21,11 +21,29 @@ def test_health_ok(client) -> None:  # noqa: ANN001
 
 
 def test_health_reports_bank_scale(client, imported_bank) -> None:  # noqa: ANN001
-    """题库导入后，健康检查要报出真实规模与版本哈希。"""
+    """题库导入后，健康检查要报出真实规模，指纹与 `/api/bank` 的 ETag 同源。
+
+    指纹跟的是**实时数据**（health.py 直接复用 bank 的 `_current_hash`），
+    而不是导入那一刻的 `content_hash` —— 后者只在导入时算一次，正是
+    「界面停在旧题量」那个坑的来源。要拿 ETag 得先登录：题库接口不对外。
+    """
+    _login(client, "health-scale@example.com")
+
     body = client.get("/api/health").json()
     assert body["bank"]["loaded"] is True
     assert body["bank"]["questions"] == len(imported_bank.questions)
-    assert body["bank"]["versionHash"] == imported_bank.content_hash
+    assert body["bank"]["versionHash"]
+    assert body["bank"]["versionHash"] == client.get("/api/bank").headers["etag"].strip('"')
+
+
+def _login(client, email: str) -> None:  # noqa: ANN001
+    """注册或登录 —— 读题库需要会话。"""
+    client.cookies.clear()
+    resp = client.post("/api/auth/register", json={"email": email, "password": "password-1234"})
+    if resp.status_code == 409:
+        client.cookies.clear()
+        resp = client.post("/api/auth/login", json={"email": email, "password": "password-1234"})
+    assert resp.status_code in (200, 201), resp.text
 
 
 def test_health_never_leaks_api_key(client) -> None:  # noqa: ANN001
