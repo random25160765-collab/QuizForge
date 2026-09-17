@@ -1339,10 +1339,11 @@
   /* ------------------------------------------------------------ 附件与演示 */
 
   /**
-   * 附件：图片直接显示，别的给一个链接 + 元数据。
+   * 附件：图片给缩略图（双击放大），别的给一个链接 + 元数据。
    *
-   * 抽不出正文的图片要**明说**"AI 看不到图像内容" —— 用户传张截图然后纳闷
-   * 为什么它答非所问，是最容易消耗信任的一种情况。
+   * 图**不再**写"AI 看不到图像内容"那种提示：能读图的模型会真的收到图像
+   * （见 `ai_gateway.model_reads_images`），读不了的模型那边由服务端把原因
+   * 说进上下文里 —— 界面上不该再摆一句已经不成立的话。
    */
   function fileNode(part) {
     var url = '/api/chat/attachments/' + encodeURIComponent(String(part.attachmentId || ''));
@@ -1350,7 +1351,15 @@
 
     if (part.kind === 'image') {
       box.appendChild(
-        h('img.chatfile__img', { src: url, alt: part.name || '附件', loading: 'lazy' })
+        h('img.chatfile__img', {
+          src: url,
+          alt: part.name || '附件',
+          loading: 'lazy',
+          title: '双击放大',
+          onDblclick: function () {
+            zoomImage(url, part.name);
+          },
+        })
       );
     }
     box.appendChild(
@@ -1365,14 +1374,65 @@
         h('span.chatfile__meta', { text: attachmentMeta(part) })
       )
     );
-    if (part.kind === 'image' && !part.textChars) {
-      box.appendChild(
-        h('div.chatfile__hint', {
-          text: 'AI 看不到图像内容 —— 想让它讲图里的事，把关键文字抄进消息里。',
-        })
-      );
-    }
     return box;
+  }
+
+  /**
+   * 双击图片放大。
+   *
+   * 消息里的图是缩略图（宽度被限住，否则一张截图就占满整屏），想看细节只能点开 ——
+   * 不然用户得先另存到本地再打开，那是把活儿推给他。
+   * 覆盖层按需创建、关掉即销毁（不给页面常驻一个空壳）。
+   */
+  var lightbox = null;
+
+  function zoomImage(url, name) {
+    if (lightbox || !url) return;
+    var box = h(
+      'div.chatzoom',
+      {
+        role: 'dialog',
+        'aria-label': (name || '图片') + '（放大）',
+        onClick: function (event) {
+          // 点图片以外的空白处关闭；点在图上不关（常常要看细节）
+          if (event.target === event.currentTarget) closeZoom();
+        },
+      },
+      h('img.chatzoom__img', { src: url, alt: name || '图片' }),
+      h(
+        'div.chatzoom__bar',
+        null,
+        h('span.chatzoom__name', { text: name || '图片' }),
+        h(
+          'button.chatzoom__act',
+          {
+            type: 'button',
+            onClick: function () {
+              window.open(url, '_blank', 'noopener');
+            },
+          },
+          '新标签页打开'
+        ),
+        h(
+          'button.chatzoom__act',
+          { type: 'button', onClick: closeZoom },
+          '关闭（Esc）'
+        )
+      )
+    );
+    box.__esc = function (event) {
+      if (event.key === 'Escape') closeZoom();
+    };
+    document.addEventListener('keydown', box.__esc);
+    document.body.appendChild(box);
+    lightbox = box;
+  }
+
+  function closeZoom() {
+    if (!lightbox) return;
+    document.removeEventListener('keydown', lightbox.__esc);
+    lightbox.remove();
+    lightbox = null;
   }
 
   // 演示的 CSP：**允许联网**（要能跑"各种脚本"：CDN 上的 d3 / three.js、调自己的 API

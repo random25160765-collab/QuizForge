@@ -833,6 +833,13 @@ body[data-page='chat'] .chat {
   max-height: 320px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
+  /* 缩略图：双击放大（见 zoomImage）。指针要说得出这件事 */
+  cursor: zoom-in;
+  transition: border-color var(--dur) var(--ease);
+}
+
+.chatfile__img:hover {
+  border-color: var(--line-strong);
 }
 
 .chatfile__row {
@@ -1342,6 +1349,62 @@ body[data-page='chat'] .chat {
 .chatreceipt__go {
   padding: 3px 10px;
   font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- 图片放大 */
+
+.chatzoom {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 28px;
+  background: color-mix(in srgb, #000 82%, transparent);
+  cursor: zoom-out;
+}
+
+.chatzoom__img {
+  max-width: 100%;
+  max-height: calc(100% - 52px);
+  border-radius: 8px;
+  background: var(--bg2);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.chatzoom__bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 12.5px;
+  color: var(--fg2);
+  cursor: default;
+}
+
+.chatzoom__name {
+  max-width: 46vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg3);
+}
+
+.chatzoom__act {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chatzoom__act:hover {
+  color: var(--fg);
+  text-decoration: underline;
 }
 
 /* ---------------------------------------------------------------- 便签 */
