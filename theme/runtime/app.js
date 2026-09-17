@@ -58,18 +58,24 @@
     return D.get(id);
   }
 
-  function filteredIds() {
-    // 题源先分层：练"公共题库"还是"我的题单"。
-    // 判据是 **id 集合**（`QF.data.myIds`，由 boot 装载时记下），
-    // 不是题对象上的字段 —— `install()` 会规整题，自定义字段不一定留得住。
+  /**
+   * 题源是否命中：`all`（都要）/ `public`（公共题库）/ `mine`（我的题单）。
+   *
+   * 判据是 **id 集合**（`QF.data.myIds`，boot 装载时记下），不是题对象上的字段 ——
+   * `QF.data.install()` 会规整题，自定义字段不一定留得住（实测公共题上的没活下来）。
+   * 练习与组卷共用这一个判据，免得两边各写一套、日后又走岔。
+   */
+  function inSource(q) {
     var scope = state.qsource || 'all';
+    if (scope === 'all') return true;
     var mineIds = D.myIds || {};
+    if (scope === 'mine') return !!mineIds[q.id];
+    return !mineIds[q.id];
+  }
+
+  function filteredIds() {
     var ids = D.filter(state.filters)
-      .filter(function (q) {
-        if (scope === 'all') return true;
-        if (scope === 'mine') return !!mineIds[q.id];
-        return !mineIds[q.id];
-      })
+      .filter(inSource)
       .map(function (q) {
         return q.id;
       });
@@ -2180,6 +2186,31 @@
     var panel = h('div.card.panel');
     panel.appendChild(h('div.panel__head', null, h('h2.panel__title', { text: '试卷设置' })));
     panel.appendChild(buildTopicSelector(configAccessor(paperConfig, 'topics')));
+    // 题源：与练习页同一个判据（`state.qsource` + `QF.data.myIds`），
+    // 组卷的题库池在 `paperPool()` 里按它分层。
+    // 题单为空时不加这一行 —— `chipRow` 会把数量为 0 的档位剪掉，剩下一个空行没意义。
+    var mineCount = Object.keys(D.myIds || {}).length;
+    if (mineCount) {
+      addRow(
+        panel,
+        chipRow(
+          '题源',
+          [
+            { key: 'all', label: '都要', count: D.questions.length },
+            { key: 'public', label: '公共题库', count: D.questions.length - mineCount },
+            { key: 'mine', label: '我的题单', count: mineCount },
+          ],
+          {
+            get: function () {
+              return [state.qsource || 'all'];
+            },
+            set: function (keys) {
+              state.qsource = (keys && keys[0]) || 'all';
+            },
+          }
+        )
+      );
+    }
     addRow(panel, chipRow('题型', typeChipItems(), configAccessor(paperConfig, 'types')));
     addRow(panel, chipRow('难度', difficultyChipItems(), configAccessor(paperConfig, 'difficulty')));
 
@@ -2240,7 +2271,8 @@
   }
 
   function paperPool() {
-    return D.filter({ topics: paperConfig.topics, types: paperConfig.types, difficulty: paperConfig.difficulty });
+    return D.filter({ topics: paperConfig.topics, types: paperConfig.types, difficulty: paperConfig.difficulty })
+      .filter(inSource);
   }
 
   function pickBalanced(pool, count) {
