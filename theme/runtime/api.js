@@ -98,8 +98,119 @@
     );
   }
 
+  /**
+   * 拆 SSE 帧并逐条派发。
+   *
+   * 帧边界是空行；帧内只认 `event:` 与 `data:` 两种字段 —— 我们服务端就是这么发的
+   * （见 api/app/routers/chat.py 的 `_sse`）。**刻意不实现 `id:`**：
+   * 那是给 `Last-Event-ID` 断点续传用的，实现了就等于暗示支持它。
+   *
+   * @param {ReadableStreamDefaultReader} reader
+   * @param {object} handlers 事件名 → 回调
+   */
+  function pump(reader, handlers) {
+    var decoder = new TextDecoder('utf-8');
+    var buffer = '';
+
+    function dispatch() {
+      var index;
+      while ((index = buffer.indexOf('\n\n')) !== -1) {
+        var block = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+
+        var name = '';
+        var payload = null;
+        block.split('\n').forEach(function (line) {
+          if (line.indexOf('event: ') === 0) name = line.slice(7).trim();
+          else if (line.indexOf('data: ') === 0) {
+            try {
+              payload = JSON.parse(line.slice(6));
+            } catch (e) {
+              payload = null;
+            }
+          }
+        });
+
+        var fn = name && handlers[name];
+        if (fn) fn(payload);
+      }
+    }
+
+    function read() {
+      return reader.read().then(function (result) {
+        if (result.done) {
+          buffer += decoder.decode();
+          dispatch();
+          return;
+        }
+        buffer += decoder.decode(result.value, { stream: true });
+        dispatch();
+        return read();
+      });
+    }
+
+    return read();
+  }
+
+  /**
+   * 流式请求：读 SSE 并把每个事件交给 handlers。
+   *
+   * 为什么不用 `EventSource`：它发不了 POST、带不了 CSRF 头、也带不了自定义头。
+   * 用 fetch + ReadableStream 自己拆帧，图的是「可取消」与「可带凭据」。
+   *
+   * 与 `request()` 的差别只在成功路径上：那一个要的是整个 JSON，
+   * 这一个要的是过程中陆续来的事件。失败路径完全一致（错误对象、401 回调）。
+   *
+   * @param {string} path      以 / 开头的接口路径
+   * @param {object} body
+   * @param {object} handlers  { user, start, delta, usage, done, error }
+   * @param {object} [options] { signal, allow401 }
+   * @returns {Promise<void>}  流结束（或被 abort）时 resolve；被 abort 不算失败
+   */
+  function stream(path, body, handlers, options) {
+    var opts = options || {};
+    var init = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
+      credentials: 'same-origin',
+      body: JSON.stringify(body || {}),
+    };
+    if (opts.signal) init.signal = opts.signal;
+
+    return fetch(BASE + path, init).then(
+      function (response) {
+        if (!response.ok) {
+          // 开流之前的失败（没填密钥、超配额、不是你的会话）仍然带着正常的状态码，
+          // 所以按普通请求处理：把 detail 拿出来抛给调用方去 toast
+          return parseBody(response).then(function (data) {
+            if (response.status === 401 && !opts.allow401) {
+              if (unauthorizedHandler) unauthorizedHandler();
+            }
+            throw buildError(response, data);
+          });
+        }
+        if (!response.body || !response.body.getReader) {
+          throw new Error('当前浏览器不支持流式读取，请换一个较新的浏览器。');
+        }
+        return pump(response.body.getReader(), handlers).catch(function (err) {
+          // 用户按了停止：读取会以 AbortError 结束，这是预期路径，不是失败
+          if (err && err.name === 'AbortError') return;
+          throw err;
+        });
+      },
+      function (cause) {
+        if (cause && cause.name === 'AbortError') return;
+        var err = new Error('网络不可用，请检查连接后重试');
+        err.status = 0;
+        err.cause = cause;
+        throw err;
+      }
+    );
+  }
+
   var api = {
     base: BASE,
+    stream: stream,
     request: request,
     get: function (path, options) {
       return request('GET', path, options);

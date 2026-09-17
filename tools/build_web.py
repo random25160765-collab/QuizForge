@@ -82,22 +82,25 @@ PAGE_JS = {
     "quiz": ["app.js", "boot.js"],
     "wrongbook": ["wrongbook.js", "boot.js"],
     "graph": ["graph.js"],
+    "chat": ["chat.js", "boot.js"],
 }
 
 PAGE_TITLE = {
     "quiz": "quizforge · 刷题",
     "wrongbook": "quizforge · 错题本",
     "graph": "quizforge · 知识图谱",
+    "chat": "quizforge · 对话",
 }
 
 PAGE_BODY = {
     "quiz": "quiz.body.html",
     "wrongbook": "wrongbook.body.html",
     "graph": "graph.body.html",
+    "chat": "chat.body.html",
 }
 
-# 页面专属样式：默认共用合并后的 app.css，只有图谱页要再加一份
-PAGE_CSS = {"graph": ["graph.css"]}
+# 页面专属样式：默认共用合并后的 app.css，只有图谱页与对话页要再加一份
+PAGE_CSS = {"graph": ["graph.css"], "chat": ["chat.css"]}
 
 # 应用样式合并成一份，避免每页重复下载
 APP_CSS = ["markdown.css", "app.css"]

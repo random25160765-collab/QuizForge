@@ -157,6 +157,8 @@
   function startPage() {
     if (page === 'wrongbook') {
       if (QF.wrongbook && QF.wrongbook.boot) QF.wrongbook.boot();
+    } else if (page === 'chat') {
+      if (QF.chat && QF.chat.boot) QF.chat.boot();
     } else if (QF.app && QF.app.boot) {
       QF.app.boot();
     }
