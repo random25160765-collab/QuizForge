@@ -910,6 +910,10 @@
   var problemBusy = false;
   var problemFeedback = '';
   var problemRecord = '';
+  // 子代理的过程（思考 + 工具调用前那半句）单独攒着，渲染成可展开的一条 ——
+  // 用户要的是批语，但"它是怎么得出结论的"要能查得到（原先直接丢掉了）。
+  var problemThought = '';
+  var problemThinkOpen = false; // 过程区展不展开由用户决定，重画时要留住
   var problemFeedEl = null;
 
   function openProblem() {
@@ -975,10 +979,20 @@
           problemFeedback += (data && data.text) || '';
           paintProblemFeedback();
         },
-        think: function () {}, // 子代理的思考不进这个窗口：用户要的是批语
+        // 子代理的过程收进可展开的"批改过程"，不丢（原先直接丢掉：
+        // 用户看不到它查了什么、怎么得出结论的），也不占批语的位置。
+        think: function (data) {
+          problemThought += (data && data.text) || '';
+          paintProblemFeedback();
+        },
         tool: function (data) {
           if (!data || data.phase !== 'start') return;
-          problemFeedback += '\n\n· 查了 ' + data.name + '…\n';
+          // 工具调用说明"上面那段话只是铺垫"：连同这一行一起移进过程区，
+          // 批语区留下的才是真正的批改结论。
+          var pending = String(problemFeedback || '').trim();
+          if (pending) problemThought += (problemThought ? '\n\n' : '') + pending;
+          problemFeedback = '';
+          problemThought += (problemThought ? '\n' : '') + '· 查了 ' + data.name + '…';
           paintProblemFeedback();
         },
         error: function (data) {
@@ -1018,10 +1032,23 @@
   function paintProblemFeedback() {
     if (!problemFeedEl) return;
     ui.clear(problemFeedEl);
-    if (!problemFeedback && !problemRecord && !problemBusy) return;
+    if (!problemFeedback && !problemRecord && !problemBusy && !problemThought) return;
     problemFeedEl.appendChild(
       h('div.chatproblem__feedlabel', { text: problemBusy ? '正在批改…' : '批改' })
     );
+    if (problemThought) {
+      var details = h(
+        'details.chatproblem__think',
+        null,
+        h('summary', { text: '批改过程' }),
+        h('div.md', { html: QF.md.renderToString(problemThought) })
+      );
+      details.open = !!problemThinkOpen; // 重画很频繁（每来一段文字就重画），展开状态得留住
+      details.addEventListener('toggle', function () {
+        problemThinkOpen = details.open;
+      });
+      problemFeedEl.appendChild(details);
+    }
     if (problemFeedback) problemFeedEl.appendChild(QF.md.render(problemFeedback));
     if (problemRecord) {
       problemFeedEl.appendChild(h('div.chatproblem__record', { text: problemRecord }));
@@ -1986,6 +2013,249 @@
    * 记录口径、SM2、掌握度因此天然一致，不需要为对话另写一套 ——
    * 这是"卡片是消息的一种零件"最值钱的地方。
    */
+  /**
+   * 临时题卡：模型**现编**的一道题。
+   *
+   * 与题库题卡（`questionCard`）刻意分开，因为身份不同：那道题在题库里有 id、
+   * 有答题记录、判分靠本地题库；这道题只有一个草稿 id，答案就在卡片上，
+   * 用户按「存进我的题单」它才成为题单里的一道（`uq-…`）。
+   *
+   * 判分在本地算（single / multi / blank 都是确定的），所以不等网络 ——
+   * 这也是"临时题"该有的手感：答完立刻知道对错。
+   */
+  function draftCard(part) {
+    var payload = part.payload || {};
+    var name = String(payload.type || 'single');
+    var kinds = { single: '单选', multi: '多选', blank: '填空', short: '简答', problem: '大题' };
+    var picked = {};
+    var typed = '';
+    var subs = {};
+    var checked = false;
+    var savedId = '';
+    var host = h('div.chatcard__host');
+
+    function want() {
+      return String(payload.answer || '')
+        .toUpperCase()
+        .split(',')
+        .map(function (item) {
+          return item.trim();
+        })
+        .filter(Boolean);
+    }
+
+    /** 归一化：多余空格与标点不该判错（用户写的是意思，不是格式）。 */
+    function flat(text) {
+      return String(text || '')
+        .toLowerCase()
+        .replace(/\s+/g, '')
+        .replace(/[。，,．.；;：:！!？?、"'（）()「」【】]/g, '');
+    }
+
+    function verdict() {
+      if (name === 'single' || name === 'multi') {
+        var got = Object.keys(picked)
+          .filter(function (key) {
+            return picked[key];
+          })
+          .sort()
+          .join(',');
+        if (!got) return null;
+        return got === want().sort().join(',');
+      }
+      if (name === 'blank') {
+        var value = flat(typed);
+        if (!value) return null;
+        var accepted = [payload.answer || ''].concat(payload.accepts || []);
+        return accepted.some(function (item) {
+          return flat(item) === value;
+        });
+      }
+      return null;
+    }
+
+    function save() {
+      if (savedId) return;
+      QF.api
+        .post('/my/questions', {
+          payload: {
+            type: name,
+            stem: payload.stem || '',
+            options: payload.options || undefined,
+            answer: payload.answer || '',
+            accepts: payload.accepts,
+            explanation: payload.explanation || '',
+            hint: payload.hint || '',
+            questions: payload.questions,
+            layer: payload.layer || '',
+            wing: payload.wing || '',
+            topic: payload.topic || '',
+            difficulty: payload.difficulty || 3,
+          },
+          pointKey: payload.pointKey || '',
+        })
+        .then(function (data) {
+          savedId = ((data || {}).question || {}).id || 'ok';
+          ui.toast('已存进我的题单', 'info', 1600);
+          paint();
+        })
+        .catch(function (err) {
+          ui.toast((err && err.message) || '没存进去，稍后再试', 'error', 3000);
+        });
+    }
+
+    function paint() {
+      ui.clear(host);
+      var box = h('div.chatcard.chatcard--draft');
+
+      box.appendChild(
+        h(
+          'div.chatcard__head',
+          null,
+          h('span.chatcard__id', { text: '现编 · ' + (kinds[name] || '题') }),
+          h('span.chatcard__tag.is-draft', { text: savedId ? '已在题单' : '临时题' }),
+          payload.layer ? h('span.chatcard__tag', { text: payload.layer }) : null,
+          payload.wing ? h('span.chatcard__tag', { text: payload.wing }) : null,
+          payload.difficulty ? h('span.chatcard__tag', { text: '难度 ' + payload.difficulty }) : null
+        )
+      );
+      box.appendChild(h('div.chatcard__stem', null, QF.md.render(payload.stem || '')));
+
+      if (name === 'problem') {
+        (payload.questions || []).forEach(function (sub) {
+          var area = h('textarea.chatcard__text', {
+            rows: 3,
+            placeholder: '写你的推导…',
+            onInput: function (event) {
+              subs[sub.index] = event.target.value;
+            },
+          });
+          area.value = String(subs[sub.index] || '');
+          box.appendChild(
+            h(
+              'div.chatcard__body',
+              null,
+              h('div.chatcard__subtitle', { text: sub.title || '第 ' + sub.index + ' 问' }),
+              sub.stem ? h('div.chatcard__substem', { html: QF.md.renderInline(sub.stem) }) : null,
+              area,
+              checked && sub.reference
+                ? h('div.chatcard__answer', null, h('div.chatcard__explain', { html: QF.md.renderToString(sub.reference) }))
+                : null
+            )
+          );
+        });
+      } else if (name === 'single' || name === 'multi') {
+        (payload.options || []).forEach(function (option) {
+          box.appendChild(
+            h(
+              'button.chatcard__opt' + (picked[option.key] ? '.is-on' : ''),
+              {
+                type: 'button',
+                onClick: function () {
+                  if (name === 'single') {
+                    picked = {};
+                    picked[option.key] = true;
+                  } else {
+                    picked[option.key] = !picked[option.key];
+                  }
+                  checked = false;
+                  paint();
+                },
+              },
+              h('span.chatcard__key', { text: option.key }),
+              h('span.chatcard__opttext', { html: QF.md.renderInline(option.text || '') })
+            )
+          );
+        });
+      } else {
+        var input =
+          name === 'blank'
+            ? h('input.chatcard__blank', {
+                placeholder: '填答案…',
+                onInput: function (event) {
+                  typed = event.target.value;
+                },
+              })
+            : h('textarea.chatcard__text', {
+                rows: 3,
+                placeholder: '用自己的话答…',
+                onInput: function (event) {
+                  typed = event.target.value;
+                },
+              });
+        input.value = typed;
+        box.appendChild(h('div.chatcard__body', null, input));
+      }
+
+      // 判定：选择题与填空能算；简答/大题没有确定答案，只能给参考、自己比
+      if (checked && (name === 'single' || name === 'multi' || name === 'blank')) {
+        var ok = verdict();
+        box.appendChild(
+          h(
+            'div.chatcard__verdict' + (ok ? '.is-ok' : '.is-bad'),
+            null,
+            h('span.chatcard__verdicttext', {
+              text: ok ? '对了' : ok === false ? '不对 —— 看下面的答案' : '（还没作答）',
+            })
+          )
+        );
+      }
+
+      if (checked) {
+        if (payload.answer) {
+          box.appendChild(h('div.chatcard__answer', null, h('div.chatcard__answerlabel', { text: '答案：' + payload.answer })));
+        }
+        if (payload.explanation) {
+          box.appendChild(h('div.chatcard__explain', { html: QF.md.renderToString(payload.explanation) }));
+        }
+      }
+
+      box.appendChild(
+        h(
+          'div.chatcard__actions',
+          null,
+          h('button.chatcard__submit', {
+            type: 'button',
+            text: checked ? '收起答案' : name === 'short' || name === 'problem' ? '看参考答案' : '对答案',
+            onClick: function () {
+              checked = !checked;
+              paint();
+            },
+          }),
+          h('button.chatcard__again' + (savedId ? '.is-done' : ''), {
+            type: 'button',
+            text: savedId ? '已在题单' : '存进我的题单',
+            disabled: !!savedId,
+            onClick: save,
+          }),
+          h('button.chatcard__again', {
+            type: 'button',
+            text: '再改一版',
+            onClick: function () {
+              prefillComposer('把上面那道题改一下：');
+            },
+          })
+        )
+      );
+
+      host.appendChild(box);
+    }
+
+    paint();
+    return host;
+  }
+
+  /** 往输入框里放一句话（"再改一版"这类入口用），光标停在末尾。 */
+  function prefillComposer(prefix) {
+    var input = document.querySelector('.chat__input');
+    if (!input) return;
+    var existing = String(input.value || '').trim();
+    input.value = existing || prefix;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+    if (input.setSelectionRange) input.setSelectionRange(input.value.length, input.value.length);
+  }
+
   function questionCard(part) {
     var host = h('div.chatcard__host');
 
@@ -2406,10 +2676,13 @@
 
   function partNode(part) {
     var type = part && part.type;
-    if (type === 'text') return QF.md.render(String(part.text || ''));
+    if (type === 'text') {
+      return part.process ? thinkNode(part) : QF.md.render(String(part.text || ''));
+    }
     if (type === 'think') return thinkNode(part);
     if (type === 'tool_call') return toolNode(part);
     if (type === 'card') return questionCard(part);
+    if (type === 'draft') return draftCard(part);
     if (type === 'action') return actionNode(part);
     if (type === 'file') return fileNode(part);
     if (type === 'demo') return demoCard(part);
@@ -2419,14 +2692,41 @@
     return null;
   }
 
-  /** 推理：折起来。它是过程，不是结论 —— 想看的人点开，不想看的人不被它挤走。 */
+  /**
+   * 过程：折起来。它是过程，不是结论 —— 想看的人点开，不想看的人不被它挤走。
+   *
+   * 两种东西落在同一个折叠块里：
+   * * `think` 零件 —— 模型的推理通道（服务端单独发的）；
+   * * 被工具调用打断的那段话 —— 它其实是同一类东西（"我先查一下…"），
+   *   见 `demoteProcess`：工具一开始，上一段话就从正文降级到这里。
+   */
   function thinkNode(part) {
     return h(
       'details.chatmsg__think',
       null,
-      h('summary', { text: '思考过程' }),
+      h('summary', { text: part.label || '思考过程' }),
       h('div.md', { html: QF.md.renderToString(String(part.text || '')) })
     );
+  }
+
+  /**
+   * 把"被工具调用打断的那段话"降级成过程。
+   *
+   * 为什么按这个判据：一段话紧跟着一次工具调用，它就不是结论而是**铺垫**
+   * （"我先看看材料…"）。真正给用户的批语在工具**之后**，那段不会被降级。
+   * 所以这样切，正文里留下的正是答案，过程里留下的是它怎么走到答案的。
+   */
+  function demoteProcess(parts) {
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (!part || part.type !== 'text' || part.process) continue;
+      var next = parts[i + 1];
+      if (next && next.type === 'tool_call' && String(part.text || '').trim()) {
+        part.process = true;
+        part.label = '过程';
+      }
+    }
+    return parts;
   }
 
   /** 工具调用：一行摘要 + 可展开的结果。调用中与调用完是同一条，只是结果填进来了。 */
@@ -2690,6 +2990,9 @@
           ok: true,
           ms: 0,
         });
+        // 紧跟在工具调用之前的那段话是**铺垫**（"我先查一下…"），不是结论 ——
+        // 降级成折叠的过程（判据见 `demoteProcess`）。
+        demoteProcess(parts);
         render(true);
       },
       toolResult: function (data) {
@@ -2719,6 +3022,9 @@
       },
       settle: function (m) {
         if (m && m.parts && m.parts.length) parts = m.parts;
+        // 服务端存下来的零件里没有这个标记（那是渲染层的事），落定时再判一次 ——
+        // 否则刷新一下，被折叠的过程又散回正文里了。
+        demoteProcess(parts);
         row.dataset.id = String((m && m.id) || '');
         row.classList.remove('is-error');
         if (m && m.status === 'error') row.classList.add('is-error');
@@ -2918,6 +3224,9 @@
             },
             card: function (d) {
               if (state.live && d && d.card) state.live.pushCard(d.card);
+            },
+            draft: function (d) {
+              if (state.live && d && d.draft) state.live.pushPart({ type: 'draft', payload: d.draft });
             },
             action: function (d) {
               if (state.live && d && d.proposal) state.live.pushAction(d.proposal);
