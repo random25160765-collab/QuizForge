@@ -41,6 +41,45 @@ _BETA_CACHE: dict = {"path": "", "mtime": 0.0, "data": {}}
 # 用户没在设置里填接口地址时的默认值（OpenAI 兼容）
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
+
+# 能读图的模型（按名字判断）。**保守**：认不出就当读不了 ——
+# 往一个不支持视觉的接口塞 image_url，上游会直接 400，那比"读不到图"更糟。
+# 用户也可以在自己的设置里显式写 `"vision": true/false` 覆盖这个判断。
+_VISION_HINTS = (
+    "gpt-4o",
+    "gpt-4.1",
+    "gpt-5",
+    "o3",
+    "o4",
+    "claude",
+    "gemini",
+    "glm-4v",
+    "vision",
+    "internvl",
+    "llava",
+    "pixtral",
+    "-vl",
+    "vl-",
+)
+
+
+def model_reads_images(model: str) -> bool:
+    """这个模型能不能读图。"""
+    name = (model or "").lower()
+    return any(hint in name for hint in _VISION_HINTS)
+
+
+def _vision_of(conf: dict, model: str) -> bool:
+    """能不能读图：配置里显式写了就听配置，否则按模型名判断。
+
+    留这个显式开关是因为自动判断必然有漏（自建网关上的模型名千奇百怪），
+    而猜错的代价是双向的：猜"能读"会给上游塞 image_url（400），
+    猜"不能读"则白白浪费一个本来能看图的模型。
+    """
+    flag = conf.get("vision")
+    if isinstance(flag, bool):
+        return flag
+    return model_reads_images(model)
 DEFAULT_TIMEOUT_MS = 60000
 MIN_TIMEOUT_MS = 5000
 # 低于这个预算就装不下"系统提示 + 一轮问答"，设更小没有意义
@@ -126,10 +165,12 @@ def resolve_config(db, user_id) -> dict:  # noqa: ANN001
     context_tokens = max(MIN_CONTEXT_TOKENS, min(context_tokens, settings.ai_max_context_tokens))
 
     if conf.get("enabled") and api_key:
+        model = str(conf.get("model") or "").strip() or DEFAULT_MODEL
         return {
             "apiKey": api_key,
             "baseUrl": str(conf.get("baseUrl") or "").strip() or DEFAULT_BASE_URL,
-            "model": str(conf.get("model") or "").strip() or DEFAULT_MODEL,
+            "model": model,
+            "vision": _vision_of(conf, model),
             "timeoutMs": timeout_ms,
             "maxContextTokens": context_tokens,
             "source": "user",
@@ -147,6 +188,7 @@ def resolve_config(db, user_id) -> dict:  # noqa: ANN001
             "apiKey": beta_key,
             "baseUrl": str(beta.get("baseUrl") or "").strip() or DEFAULT_BASE_URL,
             "model": model,
+            "vision": _vision_of(beta, model),
             "timeoutMs": max(MIN_TIMEOUT_MS, min(beta_timeout, settings.ai_timeout_ms)),
             "maxContextTokens": context_tokens,
             "source": "beta",

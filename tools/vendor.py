@@ -61,6 +61,21 @@ PYODIDE_FILES = (
     "pyodide-lock.json",
 )
 
+# ---------------------------------------------------------------- 演示套件
+#
+# 对话里的演示（`render_demo`）跑在沙箱 iframe 里。这些库由服务端注入到那一页，
+# 模型因此不必自己写 `<script src>`（也就不必猜版本、不必担心 CDN 挂掉）。
+# 版本同样钉死。
+VENDOR_DEMO_KIT = ROOT / "vendor" / "demo-kit"
+DEMO_KIT_SOURCES = {
+    "react.js": "https://unpkg.com/react@18.3.1/umd/react.production.min.js",
+    "react-dom.js": "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js",
+    "htm.js": "https://unpkg.com/htm@3.1.1/dist/htm.js",
+    "d3.js": "https://unpkg.com/d3@7.9.0/dist/d3.min.js",
+    "babel.js": "https://unpkg.com/@babel/standalone@7.26.4/babel.min.js",
+    "tailwind.js": "https://cdn.tailwindcss.com/3.4.17",
+}
+
 # 本机已知的 KaTeX 分布位置（按优先级）。这些路径只读，绝不修改。
 CANDIDATE_SOURCES = [
     "~/Source/random25160765-collab.github.io/node_modules/katex/dist",
@@ -191,10 +206,73 @@ def sync_pyodide(force: bool = False) -> int:
     return 0
 
 
+def sync_demo_kit(force: bool = False) -> int:
+    """把**演示沙箱用的前端套件**同步到 vendor/demo-kit/。
+
+    演示页面是模型现写的一页 HTML，跑在沙箱 iframe 里。原先它是一张白纸：
+    引哪个库、什么版本、怎么摆布局，全要模型每次自己决定 —— 结果就是"能跑但难看"。
+    这一套装进沙箱之后，模型只写正文（那些库与样式由服务端统一注入，见
+    `tools._demo_page`）。
+
+    与 Pyodide 同样对待：可选、失败只警告（那会让演示退回"自己引 CDN"的老样子）。
+    """
+    ready = all((VENDOR_DEMO_KIT / name).is_file() for name in DEMO_KIT_SOURCES)
+    if ready and not force:
+        print(f"[INFO] 演示套件已就绪，跳过：{_rel(VENDOR_DEMO_KIT)}")
+        return 0
+
+    src_env = os.environ.get("QUIZFORGE_DEMO_KIT_SRC")
+    source_dir = Path(src_env).expanduser() if src_env else None
+    VENDOR_DEMO_KIT.mkdir(parents=True, exist_ok=True)
+
+    if source_dir and source_dir.is_dir():
+        for name in DEMO_KIT_SOURCES:
+            origin = source_dir / name
+            if not origin.is_file():
+                print(f"[ERROR] 来源目录缺 {name}：{source_dir}", file=sys.stderr)
+                return 2
+            shutil.copyfile(origin, VENDOR_DEMO_KIT / name)
+        origin_text = str(source_dir)
+    else:
+        for name, url in DEMO_KIT_SOURCES.items():
+            print(f"[INFO] 取 {name} …")
+            try:
+                _download(url, VENDOR_DEMO_KIT / name)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
+                print(
+                    "       演示会退回「自己引 CDN」的老样子（能联网时仍可用）。"
+                    "要离线可用，请用 QUIZFORGE_DEMO_KIT_SRC 指向一份本地副本。",
+                    file=sys.stderr,
+                )
+                return 1
+        origin_text = "unpkg / cdn.tailwindcss.com（版本见下表）"
+
+    total = sum((VENDOR_DEMO_KIT / name).stat().st_size for name in DEMO_KIT_SOURCES)
+    lines = "\n".join(f"- {name}: {url}" for name, url in DEMO_KIT_SOURCES.items())
+    (VENDOR_DEMO_KIT / "SOURCE.md").write_text(
+        "# vendored 演示套件\n\n"
+        f"- source: {origin_text}\n"
+        f"- files: {len(DEMO_KIT_SOURCES)}（{total // 1024}KB）\n"
+        f"- synced_at: {_dt.datetime.now().isoformat(timespec='seconds')}\n\n"
+        f"{lines}\n\n"
+        "由 `tools/vendor.py` 生成，请勿手工修改。\n"
+        "用途：对话里 render_demo 生成的演示页在沙箱 iframe 里跑，这些库由服务端注入。\n",
+        encoding="utf-8",
+    )
+    print(f"[INFO] 已同步演示套件：{len(DEMO_KIT_SOURCES)} 个文件 -> {_rel(VENDOR_DEMO_KIT)}")
+    return 0
+
+
 def sync(force: bool = False) -> int:
-    """同步 vendor 下的第三方资源。KaTeX 必需，Pyodide 可选（缺了不影响构建）。"""
+    """同步 vendor 下的第三方资源。
+
+    KaTeX 必需（缺了页面公式会退化）；Pyodide 与演示套件都是**可选**的
+    （缺了各少一项能力，不该让构建停下）。
+    """
     code = sync_katex(force=force)
     sync_pyodide(force=force)
+    sync_demo_kit(force=force)
     return code
 
 

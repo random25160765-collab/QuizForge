@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -707,9 +708,79 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # 所以它得小。80KB 足够画一个像样的数据流/切分/流水线可视化。
 DEMO_MAX_CHARS = 80_000
 
+# 演示套件（React + JSX + d3 + 我们那层组件）由服务端统一注入，见 `_demo_page`。
+# 顺序有讲究：经典脚本按出现顺序执行 —— Tailwind 先（它的预置样式要被 kit CSS 盖住）、
+# React/ReactDOM 在 kit 之前、Babel 在模型的 `text/babel` 之前。
+DEMO_KIT_DIR = "__ORIGIN__/assets/demo-kit/"
+DEMO_KIT_FILES = (
+    "tailwind.js",
+    "react.js",
+    "react-dom.js",
+    "htm.js",
+    "d3.js",
+    "babel.js",
+    "qf-kit.js",
+)
+DEMO_VENDOR_KIT = Path(__file__).resolve().parents[2] / "vendor" / "demo-kit"
+DEMO_SERVED_KIT = Path(__file__).resolve().parents[1] / "web" / "assets" / "demo-kit"
+
+
+def _demo_kit_ready() -> bool:
+    """套件是否已就位（`make vendor` 取回、构建拷进 /assets/demo-kit/）。"""
+    for directory in (DEMO_SERVED_KIT, DEMO_VENDOR_KIT):
+        if (directory / "react.js").is_file() and (directory / "qf-kit.js").is_file():
+            return True
+    return False
+
+
+def _demo_page(page: str, title: str) -> str:
+    """把模型给的 HTML 变成**带套件**的一页。
+
+    ## 为什么由服务端注入，而不是让模型自己引
+
+    沙箱页面原先是一张白纸：引哪个库、什么版本、怎么摆布局、用什么配色，
+    全要模型每次自己决定。实测出来的结果是"能跑但难看" —— 手画的刻度是歪的、
+    图例是随手贴的、每个演示一套配色、动画还常常写成 `setInterval` 改 DOM。
+
+    所以把"公共的那一半"提到这里：**库与样式统一注入**（模型不必写任何 `<script src>`），
+    模型只管写正文 —— 它写的是那个机制本身，那才是它该发挥的地方。
+
+    ## 顺序有讲究
+
+    经典脚本按出现顺序执行，所以：Tailwind 最先（它的预置样式要被 kit CSS 盖住）、
+    React/ReactDOM 在 kit 之前、Babel 在**模型那段 `text/babel` 之前**。
+
+    路径带 `__ORIGIN__`：沙箱里相对路径解析不了，绝对地址只能由宿主填
+    （见 `pyodide_base` 的说明）。
+    """
+    head = ['<link rel="stylesheet" href="' + DEMO_KIT_DIR + 'qf-kit.css">']
+    for name in DEMO_KIT_FILES:
+        head.append('<script src="' + DEMO_KIT_DIR + name + '"></script>')
+    block = "\n".join(head)
+
+    if re.search(r"<head[^>]*>", page, re.I):
+        return re.sub(
+            r"<head[^>]*>", lambda match: match.group(0) + "\n" + block, page, count=1, flags=re.I
+        )
+    if re.search(r"<html[^>]*>", page, re.I):
+        return re.sub(
+            r"<html[^>]*>",
+            lambda match: match.group(0) + "\n<head>" + block + "</head>",
+            page,
+            count=1,
+            flags=re.I,
+        )
+    return (
+        '<!doctype html>\n<html lang="zh">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>" + html.escape(title) + "</title>\n" + block + "\n</head>\n<body>\n"
+        + page
+        + "\n</body>\n</html>"
+    )
+
 
 def render_demo(db, user, args, ctx=None) -> dict:  # noqa: ANN001
-    """产出一个**可运行的演示**（自包含 HTML），界面在沙箱 iframe 里跑它。
+    """产出一个**可运行的演示**，界面在沙箱 iframe 里跑它。
 
     ## 什么时候值得用
 
@@ -721,28 +792,68 @@ def render_demo(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     结论、定义、名词解释、代码逐行讲解。那些用文字说清更好，
     硬做个动画反而把重点冲淡，还占掉整个屏幕。
 
-    ## 写 HTML 的硬要求
+    ## 沙箱里已经给你备好了套件（别再自己引库）
 
-    * **尽量自包含**：内联 `<style>` 与 `<script>` 是首选。
-    * **可以用 https 的库**：CDN 上的 d3 / three.js / chart.js 之类都行，
-      `fetch` 一个 https 接口也行（演示跑在沙箱 iframe 里，**允许联网**）。
-      但别把一切都押在网络上：加载失败时要还能看出个大概。
-    * 尺寸自适应：面板宽度与高度都会变，别写死像素；配色用深色底（界面是深色的）。
-    * 拿不到网页本身的东西：沙箱不带 `allow-same-origin`，所以没有 cookie、
-      没有 localStorage、也碰不到宿主页面的 DOM —— 需要的数据请自己在 HTML 里带上。
+    页面**自动**带上 React 18 + JSX（`<script type="text/babel">` 直接写 JSX 就行）、
+    htm、d3 v7、Tailwind（配好了本项目的深色）、以及 `window.QFKit` ——
+    里面是配色令牌与几个现成组件：
+
+    * `QFKit.mount(<App/>)` —— 一行挂载（没给节点就挂到 `#app`）
+    * `QFKit.Frame / Card / Row / Btn / Legend / KV / Note / Chip` —— 布局与信息块
+    * `QFKit.useTicker(speed, {paused})` —— 帧驱动步进（**别用 `setInterval` 改 DOM**）
+    * `QFKit.scales({width, height, xDomain, yDomain})` + `QFKit.useAxis(ref, {scales})`
+      —— **坐标轴与数据共用同一组比例尺**（手写坐标轴十次九次是歪的）
+    * `QFKit.colors` —— 色板（`series` 是给多条序列用的）
+
+    ## 骨架（照它写，别从空白页开始）
+
+        <div id="app"></div>
+        <script type="text/babel">
+        const { useState } = React;
+        function App() {
+          const [run, setRun] = useState(true);
+          const t = QFKit.useTicker(1, { paused: !run });
+          return (
+            <QFKit.Frame title="…" caption="你在看什么：…"
+              right={<QFKit.Btn on={run} onClick={() => setRun(!run)}>{run ? '暂停' : '播放'}</QFKit.Btn>}>
+              <QFKit.Card title="机制">
+                <svg className="qf-svg" viewBox="0 0 640 300">{/* 用 d3 算坐标，别手写字面量 */}</svg>
+              </QFKit.Card>
+            </QFKit.Frame>
+          );
+        }
+        QFKit.mount(<App/>);
+        </script>
+
+    ## 其余
+
+    * 尺寸自适应：面板宽高都会变，用 `viewBox` 与百分比，别写死像素。
+    * 沙箱**允许联网**（https 的 CDN 与 fetch 都行），但套件已经够用；
+      别把一切押在网络上 —— 加载失败时要还能看出个大概。
+    * 拿不到网页本身的东西：沙箱不带 `allow-same-origin`，没有 cookie、
+      没有 localStorage、也碰不到宿主页面的 DOM —— 数据请自己在页面里带上。
     """
-    html = str(args.get("html") or "").strip()
+    page = str(args.get("html") or "").strip()
     title = str(args.get("title") or "").strip() or "演示"
-    if not html:
+    if not page:
         return {"error": "html 不能为空。"}
-    if len(html) > DEMO_MAX_CHARS:
+    if len(page) > DEMO_MAX_CHARS:
         return {
-            "error": f"演示太大了（{len(html)} 字，上限 {DEMO_MAX_CHARS}）—— 精简一版再看。",
+            "error": f"演示太大了（{len(page)} 字，上限 {DEMO_MAX_CHARS}）—— 精简一版再看。",
             "note": "把动画逻辑压缩到最小可演示的程度，别把整份材料都塞进去。",
         }
+
+    if not _demo_kit_ready():
+        # 套件没同步就退回老规矩：让模型自己引库（能联网时可用）
+        return {
+            "demo": {"title": title[:80], "html": page},
+            "note": "演示已挂上（沙箱 iframe，允许联网）。套件未就绪（`make vendor` 可取回），"
+            "所以库里得自己引 —— 建议直接用 d3 这类 https CDN。",
+        }
+
     return {
-        "demo": {"title": title[:80], "html": html},
-        "note": "演示已挂在这条消息上（他那边是个沙箱 iframe）。"
+        "demo": {"title": title[:80], "html": _demo_page(page, title)},
+        "note": "演示已挂在这条消息上（他那边是个沙箱 iframe，套件已自动注入）。"
         "**不要**把同一份 HTML 再贴进正文 —— 正文里说清它在演示什么、看哪里就行。",
     }
 
@@ -1174,20 +1285,46 @@ REGISTRY = {
     },
     "render_demo": {
         "fn": render_demo,
-        "description": "产出一个**可运行的演示**（一个 HTML 页面），界面在沙箱 iframe 里跑。"
+        "description": "产出一个**能动的演示**（跑在沙箱 iframe 里）。"
         "机制里有空间/时间结构时用它：数据怎么流、怎么切、怎么重叠、流水线怎么排、瓶颈在哪 —— "
-        "一张能动的图胜过三段文字。**不要**用它讲定义、结论或代码逐行解释；"
-        "要跑 Python 用 run_python。"
-        "**沙箱是允许联网的**（https 的 CDN 库、fetch 接口都能用），"
-        "但也请尽量自包含：外链加载失败时，页面得还能看出个大概。"
-        "深色底、宽度自适应。上限 " + str(DEMO_MAX_CHARS) + " 字。",
+        "一张能动的图胜过三段文字。**不要**用它讲定义、结论或代码逐行解释；要跑 Python 用 run_python。\n"
+        "**沙箱里已经备好一套前端套件，由服务端自动注入 —— 你不要写任何 `<script src>`，"
+        "也不要引 CDN。** 可用的是：React 18 + JSX（写在 `<script type=\"text/babel\">` 里）、"
+        "htm、d3 v7、Tailwind，以及 `window.QFKit`：\n"
+        "* `QFKit.mount(<App/>)` —— 一行挂载\n"
+        "* `QFKit.Frame / Card / Row / Btn / Legend / KV / Note / Chip` —— 布局与信息块\n"
+        "* `QFKit.useTicker(speed, {paused})` —— 帧驱动步进（**不要**用 setInterval 改 DOM）\n"
+        "* `QFKit.scales({width,height,xDomain,yDomain})` + `QFKit.useAxis(ref,{scales})` —— "
+        "坐标轴与数据**共用同一组比例尺**（手画坐标轴十次九次是歪的）\n"
+        "* `QFKit.colors` —— 色板（`series` 给多条序列）\n"
+        "**照这个骨架写，别从空白页开始**：\n"
+        "<div id=\"app\"></div>\n"
+        "<script type=\"text/babel\">\n"
+        "const {useState} = React;\n"
+        "function App() {\n"
+        "  const [run, setRun] = useState(true);\n"
+        "  const t = QFKit.useTicker(1, {paused: !run});\n"
+        "  return (<QFKit.Frame title=\"…\" caption=\"你在看什么：…\"\n"
+        "      right={<QFKit.Btn on={run} onClick={() => setRun(!run)}>{run?'暂停':'播放'}</QFKit.Btn>}>\n"
+        "    <QFKit.Card title=\"机制\"><svg className=\"qf-svg\" viewBox=\"0 0 640 300\">{/* 坐标用 d3 算 */}</svg></QFKit.Card>\n"
+        "  </QFKit.Frame>);\n"
+        "}\n"
+        "QFKit.mount(<App/>);\n"
+        "</script>\n"
+        "（JSX 里插值必须写成 `{}`，例如 `{\'共 \' + n + \' 拍\'}` —— "
+        "直接写 `+` 会原样显示在页面上，实测踩过。）"
+        "三条硬规矩：**手不要画坐标轴/刻度/图例**（用 QFKit 的）；"
+        "**动画用 useTicker + React 状态**，不要 setInterval 改 DOM；"
+        "**至少给一个控件**（播放/切换/拖拽）并写一句「你在看什么」。"
+        "尺寸自适应（viewBox + 百分比）。上限 " + str(DEMO_MAX_CHARS) + " 字。",
         "parameters": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "演示的标题（一句话）"},
                 "html": {
                     "type": "string",
-                    "description": "完整的自包含 HTML（内联 style/script，无外链）",
+                    "description": "页面正文（套件自动注入，别写 <script src>）；"
+                    "推荐 `<div id=\"app\"></div>` + 一段 `text/babel` 脚本",
                 },
             },
             "required": ["html"],

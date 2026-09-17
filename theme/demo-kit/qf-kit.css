@@ -1,0 +1,276 @@
+/* 演示套件的基础样式。
+   与 app 同一套色与圆角 —— 演示看起来该像这个应用的一部分。
+   不依赖 Tailwind：下面是自足的 `.qf-*` 组件；Tailwind 在的时候可以用它的工具类，
+   但**没有它也不该难看**。 */
+
+:root {
+  --qf-bg: #0e1116;
+  --qf-panel: #161b22;
+  --qf-panel2: #1c2430;
+  --qf-line: #2a3240;
+  --qf-line2: #39465a;
+  --qf-fg: #e6edf3;
+  --qf-fg2: #c3ccd8;
+  --qf-dim: #8b97a6;
+  --qf-pri: #4da3ff;
+  --qf-ok: #41d67a;
+  --qf-warn: #ffb454;
+  --qf-bad: #ff5c6c;
+  --qf-r: 10px;
+  --qf-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 18px 18px 40px;
+  background: var(--qf-bg);
+  color: var(--qf-fg);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 宽屏两列（图 + 面板），窄屏自动落成一列 */
+.qf-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 820px) {
+  .qf-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.qf-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ---------------------------------------------------------------- 外框 */
+
+.qf-frame {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.qf-frame__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.qf-frame__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.qf-frame__right {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qf-frame__caption {
+  margin-bottom: 16px;
+  color: var(--qf-dim);
+  font-size: 13px;
+}
+
+/* ---------------------------------------------------------------- 面板 */
+
+.qf-card {
+  padding: 14px;
+  border: 1px solid var(--qf-line);
+  border-radius: var(--qf-r);
+  background: var(--qf-panel);
+}
+
+.qf-card + .qf-card {
+  margin-top: 14px;
+}
+
+.qf-card__title {
+  margin-bottom: 10px;
+  color: var(--qf-dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.qf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qf-row + .qf-row {
+  margin-top: 10px;
+}
+
+/* ---------------------------------------------------------------- 控件 */
+
+.qf-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--qf-line2);
+  border-radius: 7px;
+  background: #20293a;
+  color: var(--qf-fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.qf-btn:hover {
+  background: #2a3548;
+  border-color: #4a5b74;
+}
+
+.qf-btn.is-on {
+  border-color: var(--qf-pri);
+  background: #1d3a5c;
+  color: #cfe6ff;
+}
+
+.qf-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.qf-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--qf-line2);
+  border-radius: 999px;
+  color: var(--qf-dim);
+  font-size: 11.5px;
+}
+
+/* ---------------------------------------------------------------- 图例 */
+
+.qf-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--qf-fg2);
+}
+
+.qf-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.qf-legend__sw {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+
+.qf-legend__sw.is-dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+}
+
+.qf-legend__sw.is-line {
+  width: 16px;
+  height: 0;
+  border-width: 0;
+  border-top: 3px solid currentColor;
+  border-radius: 0;
+}
+
+/* ---------------------------------------------------------------- 数值 */
+
+.qf-kv {
+  font-size: 12.5px;
+}
+
+.qf-kv__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed #232c39;
+}
+
+.qf-kv__row:last-child {
+  border-bottom: none;
+}
+
+.qf-kv__val {
+  color: #9fb4cc;
+  font-family: var(--qf-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.qf-note {
+  margin-top: 12px;
+  padding-left: 10px;
+  border-left: 2px solid var(--qf-line2);
+  color: var(--qf-dim);
+  font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- 图 */
+
+.qf-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+}
+
+/* d3 画出来的轴文字/线由 useAxis 上色，这里只管字重 */
+.qf-svg .qf-axis-label {
+  fill: var(--qf-dim);
+  font-size: 11px;
+}
+
+/* 表格：演示里常要列参数、列步骤 */
+.qf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.qf-table th,
+.qf-table td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--qf-line);
+  text-align: left;
+}
+
+.qf-table th {
+  color: var(--qf-dim);
+  font-weight: 600;
+}
+
+.qf-table td {
+  color: var(--qf-fg2);
+  font-variant-numeric: tabular-nums;
+}
+
+.qf-mono {
+  font-family: var(--qf-mono);
+}
