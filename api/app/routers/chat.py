@@ -49,6 +49,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 import uuid
@@ -85,7 +86,9 @@ SYSTEM_PROMPT = (
     "在文字里说「我给你推了一道」而他那边什么都没有，是最糟的一种回答。\n"
     "推了题就等他自己作答：不要报答案、不要替他念选项，等他答完再讲。\n"
     "他要「跑一段脚本 / 算一下 / 验证某个算法」时**直接动手**：`run_python` 能在沙箱里"
-    "真跑 Python，`render_demo` 能跑自包含页面（沙箱**允许联网**，https 的 CDN 库可用）。"
+    "真跑 Python；机制里有空间或时间结构时，`render_demo` 画一个能动的演示"
+    "（沙箱里已经备好 React + JSX + d3 与一套现成组件，见该工具说明里的骨架 —— "
+    "**别自己引库、也别手画坐标轴**）。"
     "不要因为「我做不到」就推辞，也不要把「做不到」当结论 —— 先看看手上的工具能做到哪一步。\n"
     "要动他的记录（收藏、标记掌握）就走对应的工具**提案**：界面上会出现一张凭条，"
     "他点了才生效 —— 永远不要声称你已经替他改了记录。"
@@ -96,6 +99,12 @@ MAX_CONTENT = 8000
 
 # 一条消息最多挂几处引用：再多就成了引文清单，而不是对话
 CITATION_MAX = 6
+
+# 图片发给模型时的两道闸：单张上限与每轮张数上限。
+# base64 之后体积要涨三分之一，而这图会进每一次请求 —— 一张 4MB 的照片
+# 换来的上下文占用，比它带来的信息值钱得多。
+VISION_MAX_BYTES = 4 * 1024 * 1024
+VISION_MAX_IMAGES = 3
 
 # 回放历史时，单条工具输出最多带这么多字。
 # 工具输出会被**每一轮**重新带上，而它往往比对话本身长（一次知识点详情上千字）；
@@ -251,12 +260,8 @@ def _heal_stale(db: DbSession, conv: Conversation) -> None:  # noqa: ANN001
     db.commit()
 
 
-def _attachment_block(db: DbSession, message: Message) -> str:  # noqa: ANN001
-    """把这条消息挂的附件正文拼成一段，附在**发给模型的那一份**后面。
-
-    刻意不写进库里那条 `content`：那是用户说的话，规矩是"原样留着他说的"。
-    抽不到正文的（图片）也要说清"读不到"，免得模型把"附件是空的"当成"附件没用"。
-    """
+def _attachment_rows(db: DbSession, message: Message) -> list:  # noqa: ANN001
+    """这条消息挂的附件行（按零件顺序）。"""
     ids = []
     for part in message.parts or []:
         if isinstance(part, dict) and part.get("type") == "file":
@@ -265,22 +270,78 @@ def _attachment_block(db: DbSession, message: Message) -> str:  # noqa: ANN001
             except (TypeError, ValueError):
                 continue
     if not ids:
+        return []
+    rows = db.scalars(select(Attachment).where(Attachment.id.in_(ids))).all()
+    order = {str(value): index for index, value in enumerate(ids)}
+    return sorted(rows, key=lambda row: order.get(str(row.id), 0))
+
+
+def _attachment_images(db: DbSession, message: Message) -> list[dict]:  # noqa: ANN001
+    """图片附件 → 上游能吃的图像块（data URL）。
+
+    只在模型能读图时调用（见 `ai_gateway.model_reads_images`）。
+    单张限 `VISION_MAX_BYTES`、最多 `VISION_MAX_IMAGES` 张：base64 之后体积还要涨三分之一，
+    而这张图会进每一次请求的上下文。
+    """
+    blocks = []
+    for row in _attachment_rows(db, message):
+        if row.kind != "image" or (row.size or 0) > VISION_MAX_BYTES:
+            continue
+        if len(blocks) >= VISION_MAX_IMAGES:
+            break
+        try:
+            raw = attach.path_of(row).read_bytes()
+        except OSError:
+            continue
+        mime = str(row.mime or "").strip() or "image/png"
+        if not mime.startswith("image/"):
+            mime = "image/png"
+        blocks.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:" + mime + ";base64," + base64.b64encode(raw).decode("ascii")},
+            }
+        )
+    return blocks
+
+
+def _attachment_block(db: DbSession, message: Message, *, model: str = "", vision: bool = False) -> str:  # noqa: ANN001
+    """把这条消息挂的附件正文拼成一段，附在**发给模型的那一份**后面。
+
+    刻意不写进库里那条 `content`：那是用户说的话，规矩是"原样留着他说的"。
+    抽不到正文的（图片）也要说清是怎么回事 —— 但**别只说"读不到"**：
+
+    * 模型能读图（`vision`）→ 图像已经随消息发过去了，这里只留一行"有图"的说明
+    * 读不了 → 说清是**哪个模型**读不了、以及能怎么办（抄文字 / 换个能读图的模型）。
+      原先只说"读不到"，用户看到的是一句无解的话（实测他就是这么问回来的）。
+    """
+    rows = _attachment_rows(db, message)
+    if not rows:
         return ""
 
-    rows = db.scalars(select(Attachment).where(Attachment.id.in_(ids))).all()
     blocks = []
     for row in rows:
         head = f"【附件：{row.name}（{row.size // 1024}KB）】"
         if row.text:
             blocks.append(head + "\n" + row.text[: attach.CONTEXT_LIMIT])
         elif row.kind == "image":
-            blocks.append(head + "\n（这是一张图片：当前模型读不到图像内容，只能看到它被贴在对话里。）")
+            if vision:
+                blocks.append(head + "\n（这是一张图片，图像已随这条消息交给你，可以直接看图回答。）")
+            else:
+                blocks.append(
+                    head
+                    + "\n（这是一张图片。当前模型"
+                    + (f"（{model}）" if model else "")
+                    + "读不到图像内容：你只知道他贴了一张图，看不到里面是什么。"
+                    "别猜图里有什么 —— 直接说你需要他把关键内容抄成文字，"
+                    "或者让他换一个能读图的模型。）"
+                )
         else:
             blocks.append(head + "\n（没能从里面抽出文本。）")
     return "\n\n".join(blocks)
 
 
-def _history(db: DbSession, messages: list[Message]) -> list[dict]:  # noqa: ANN001
+def _history(db: DbSession, messages: list[Message], *, vision: bool = False, model: str = "") -> list[dict]:  # noqa: ANN001
     """把当前分支转成上游要的 messages。
 
     ## 为什么必须回放工具调用
@@ -295,17 +356,33 @@ def _history(db: DbSession, messages: list[Message]) -> list[dict]:  # noqa: ANN
     与循环里发给上游的形状完全一样。代价是上下文长一些，
     但预算机制本来就按"从最新往前塞"裁剪，工具输出也各自截断过。
 
+    ## 图片只在"最新那条"上带
+
+    `vision` 为真（模型能读图）时，用户消息里的图片会作为图像发出去。
+    但**只带最后一条**：图像很占上下文，历史里每轮重发一次既贵又没意义 ——
+    上一轮的图，上一轮已经讲过了。
+
     系统提示**不在这里加**：它由 `agent_loop.build_messages` 统一放进去，
     两边各加一次会让模型收到两条 system 消息（白花 token，还容易被带偏）。
     """
     out: list[dict] = []
+    last_user_id = messages[-1].id if messages else None
     for message in messages:
         if message.role == "user":
             text = message.content or ""
-            extra = _attachment_block(db, message)
+            extra = _attachment_block(db, message, model=model, vision=vision)
             if extra:
                 text = (text + "\n\n" + extra).strip()
-            if text:
+            images = (
+                _attachment_images(db, message)
+                if vision and message.id == last_user_id
+                else []
+            )
+            if images:
+                # OpenAI 兼容的多模态形状：文本块 + 图像块
+                content = [{"type": "text", "text": text or "（见附件）"}] + images
+                out.append({"role": "user", "content": content})
+            elif text:
                 out.append({"role": "user", "content": text})
             continue
         if message.role != "assistant":
@@ -797,7 +874,13 @@ def post_message(
             db.commit()
 
     # 上下文 = 到这条提问为止的那一段（不含任何别的分支上的回答）
-    history = _history(db, _chain(db, user_msg))
+    # 模型能读图时，图片才作为图像发出去（判断见 ai_gateway.model_reads_images）
+    history = _history(
+        db,
+        _chain(db, user_msg),
+        vision=bool(conf.get("vision")),
+        model=str(conf.get("model") or ""),
+    )
 
     assistant = Message(
         conversation_id=conv.id,

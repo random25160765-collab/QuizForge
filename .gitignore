@@ -22,6 +22,8 @@ api/web/
 api/var/
 # Pyodide 运行时（13MB，版本钉死在 tools/vendor.py，`make vendor` 可取回）
 vendor/pyodide/
+# 演示沙箱的前端套件（3.7MB，同上）
+vendor/demo-kit/
 
 # ------------------------------------------------------------ 运行期数据
 *.db

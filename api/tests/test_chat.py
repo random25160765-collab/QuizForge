@@ -862,6 +862,103 @@ def test_an_attachment_rides_along_into_the_request(client, monkeypatch) -> None
     assert stored["parts"][0]["type"] == "file"
 
 
+def test_vision_is_detected_conservatively() -> None:
+    """认不出就当读不了 —— 猜"能读"会给上游塞 image_url，上游直接 400。"""
+    from app import ai_gateway as gateway
+
+    assert gateway.model_reads_images("gpt-4o") is True
+    assert gateway.model_reads_images("qwen2.5-vl-72b-instruct") is True
+    assert gateway.model_reads_images("glm-4v-plus") is True
+    assert gateway.model_reads_images("deepseek-chat") is False
+    assert gateway.model_reads_images("my-local-llm") is False
+    assert gateway.model_reads_images("") is False
+
+
+def test_images_reach_a_vision_model(client, monkeypatch) -> None:  # noqa: ANN001
+    """能读图的模型：图片作为**图像**发出去，而不是只丢一个文件名。
+
+    这是"用户看到的图"与"模型看到的图"之间唯一的桥。文本模型那条路
+    永远只能看到一行文件名（所以它会说读不到，见下一条用例）。
+    """
+    seen: list[list[dict]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        seen.append([dict(message) for message in messages])
+        yield ("delta", "看到了")
+        yield ("finish", "stop")
+
+    # 一次写清：设置是整体覆盖 + 按 rev 的 LWW，写两次同 rev 的第二次会被丢掉
+    _register(client)
+    _set_ai(
+        client,
+        enabled=True,
+        apiKey="sk-test",
+        baseUrl="http://127.0.0.1:9/v1",
+        model="test-model",
+        vision=True,  # 显式声明"这个模型能读图"（自动判断按名字来，test-model 认不出）
+    )
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+
+    # 这一层不解析图片，只搬运字节 —— 头对了就够
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    up = client.post(
+        "/api/chat/attachments",
+        files={"file": ("shot.png", png, "image/png")},
+        headers=_headers(client),
+    )
+    assert up.status_code == 200, up.text
+    info = up.json()
+    assert info["kind"] == "image" and info["textChars"] == 0
+
+    resp = _send(client, cid, content="这张图里有什么", attachments=[info["id"]])
+    assert resp.status_code == 200, resp.text
+
+    user = [m for m in seen[-1] if m["role"] == "user"][-1]
+    content = user["content"]
+    assert isinstance(content, list), "能读图的模型收到的应是文本块 + 图像块"
+    assert content[0]["type"] == "text"
+    assert "这张图里有什么" in content[0]["text"]
+    assert "图像已随这条消息交给你" in content[0]["text"]
+
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_a_text_model_is_told_why_it_cannot_see_the_image(client, monkeypatch) -> None:  # noqa: ANN001
+    """读不了图的模型：说明里要写清**为什么**、以及能怎么办。
+
+    原先只说"读不到"，用户看到的是一句无解的话（实测他就是这么问回来的）。
+    """
+    seen: list[list[dict]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        seen.append([dict(message) for message in messages])
+        yield ("delta", "嗯")
+        yield ("finish", "stop")
+
+    _ready(client)  # test-model、不带 vision → 自动判断为"读不了"
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+
+    up = client.post(
+        "/api/chat/attachments",
+        files={"file": ("shot.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 64, "image/png")},
+        headers=_headers(client),
+    )
+    info = up.json()
+    resp = _send(client, cid, content="这张图里有什么", attachments=[info["id"]])
+    assert resp.status_code == 200, resp.text
+
+    user = [m for m in seen[-1] if m["role"] == "user"][-1]
+    assert isinstance(user["content"], str), "读不了图时不发图像块"
+    text = user["content"]
+    assert "【附件：shot.png" in text
+    assert "test-model" in text, "要说清是哪个模型读不了"
+    assert "读不到图像内容" in text
+    assert "换一个能读图的模型" in text, "光说读不到没有用，得给出路"
+
+
 def test_an_attachment_belongs_to_its_owner(client, monkeypatch) -> None:  # noqa: ANN001
     """别人的附件按 404 处理 —— 与「别人的会话」同一条规矩。"""
     _ready(client)
@@ -932,7 +1029,10 @@ def test_render_demo_becomes_a_sandbox_part(client, monkeypatch) -> None:  # noq
     assert "demo" in [name for name, _ in events], events
 
     demo = next(data for name, data in events if name == "demo")["demo"]
-    assert demo["html"] == html and demo["title"] == "数据流"
+    assert demo["title"] == "数据流"
+    # 页面里带着模型写的东西，以及服务端注入的套件（它自己不必引库）
+    assert "<canvas id='c'>" in demo["html"] and "<script>1</script>" in demo["html"]
+    assert "__ORIGIN__/assets/demo-kit/react.js" in demo["html"]
 
     part = next(p for p in dict(events)["done"]["parts"] if p["type"] == "demo")
     assert part["title"] == "数据流" and "<canvas" in part["html"]

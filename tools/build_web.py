@@ -60,6 +60,9 @@ PAGES_DIR = THEME_DIR / "pages"
 VENDOR_KATEX = ROOT / "vendor" / "katex"
 # Pyodide：对话里「跑 Python」的运行时（可选，`make vendor` 取回）
 VENDOR_PYODIDE = ROOT / "vendor" / "pyodide"
+# 演示沙箱的前端套件：第三方（vendor/demo-kit）+ 我们自己那层（theme/demo-kit）
+VENDOR_DEMO_KIT = ROOT / "vendor" / "demo-kit"
+THEME_DEMO_KIT = ROOT / "theme" / "demo-kit"
 
 # 运行时脚本按依赖顺序加载；**新增脚本要登记在这里**，顺序错会引用到未定义的模块
 RUNTIME_ORDER = [
@@ -164,6 +167,20 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
                 shutil.copy2(src, pyodide_out / src.name)
                 pyodide_count += 1
 
+    # ---------------------------------------------------------- 演示套件
+    # 演示页跑在沙箱 iframe 里，库与样式由服务端注入（tools._demo_page）。
+    # 三方库可选（没同步过就跳过），我们自己那层（theme/demo-kit）总是拷。
+    kit_count = 0
+    kit_out = assets / "demo-kit"
+    for source_dir in (VENDOR_DEMO_KIT, THEME_DEMO_KIT):
+        if not source_dir.is_dir():
+            continue
+        kit_out.mkdir(parents=True, exist_ok=True)
+        for src in sorted(source_dir.iterdir()):
+            if src.is_file() and src.name != "SOURCE.md":
+                shutil.copy2(src, kit_out / src.name)
+                kit_count += 1
+
     # ------------------------------------------------------ 应用样式
     (assets / "app.css").write_text(
         _assemble.concat_css([THEME_DIR / name for name in APP_CSS]), encoding="utf-8"
@@ -254,12 +271,14 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         "runtime": len(RUNTIME_ORDER),
         "fonts": font_count,
         "pyodide": pyodide_count,
+        "demoKit": kit_count,
         "out": out_dir,
     }
     log.step(
         f"在线前端：{len(pages_written)} 个页面 · {len(RUNTIME_ORDER)} 个运行时脚本 · "
         f"{font_count} 个字体"
         + (f" · Pyodide {pyodide_count} 个文件" if pyodide_count else " · 无 Pyodide（跑 Python 会退回 CDN）")
+        + (f" · 演示套件 {kit_count} 个文件" if kit_count else "")
         + f" -> {out_dir}"
     )
     return info

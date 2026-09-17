@@ -14,6 +14,8 @@ import json
 import threading
 import uuid
 from datetime import datetime, timezone
+
+import pytest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from sqlalchemy import select
@@ -412,7 +414,61 @@ def test_render_demo_refuses_a_giant_html(client, db_session) -> None:  # noqa: 
     assert "上限" in payload["error"]
 
     ok, payload = tools.call(db_session, user, "render_demo", {"title": "T", "html": "<b>hi</b>"})
-    assert ok and payload["demo"] == {"title": "T", "html": "<b>hi</b>"}
+    assert ok and payload["demo"]["title"] == "T"
+    assert "<b>hi</b>" in payload["demo"]["html"], "模型写的东西要原样留着"
+
+
+def test_demo_page_carries_the_kit(client, db_session) -> None:  # noqa: ANN001
+    """演示页由服务端注入套件。
+
+    让模型自己引库是"能跑但难看"的一半原因：版本猜错、CDN 挂掉、配色与布局
+    每次重新发明一遍。套件注入之后就只剩正文要写了。
+    """
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+    if not tools._demo_kit_ready():
+        pytest.skip("演示套件未同步（make vendor）")
+
+    fragment = '<div id="app"></div>\n<script type="text/babel">QFKit.mount(<h1>hi</h1>);</script>'
+    ok, payload = tools.call(db_session, user, "render_demo", {"title": "帽子里放什么", "html": fragment})
+    assert ok, payload
+    page = payload["demo"]["html"]
+
+    assert page.startswith("<!doctype html>"), "片段要包成完整的一页"
+    assert "帽子里放什么" in page
+    assert '<div id="app">' in page and "QFKit.mount" in page
+
+    for name in ("tailwind.js", "react.js", "react-dom.js", "d3.js", "babel.js", "qf-kit.js"):
+        assert "__ORIGIN__/assets/demo-kit/" + name in page, name
+    assert "qf-kit.css" in page
+
+    # 顺序：React 在 kit 之前（kit 要用它）；Babel 必须在模型那段 `text/babel` 之前
+    assert page.index("react.js") < page.index("react-dom.js") < page.index("qf-kit.js")
+    assert page.index("babel.js") < page.index("QFKit.mount")
+    # 路径带占位符：沙箱里相对路径解析不了，绝对地址只能由宿主填（见 pyodide_base）
+    assert "__ORIGIN__" in page
+
+
+def test_demo_page_keeps_a_full_document_intact(client, db_session) -> None:  # noqa: ANN001
+    """模型给完整 HTML 时，套件插进 `<head>`，它自己写的东西一个都不能丢。"""
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+    if not tools._demo_kit_ready():
+        pytest.skip("演示套件未同步（make vendor）")
+
+    full = (
+        '<!doctype html><html lang="zh"><head><meta charset="utf-8">'
+        "<title>我自己写的标题</title><style>body{color:red}</style></head>"
+        '<body><canvas id="c"></canvas></body></html>'
+    )
+    ok, payload = tools.call(db_session, user, "render_demo", {"title": "演示", "html": full})
+    assert ok, payload
+    page = payload["demo"]["html"]
+
+    for keep in ("<title>我自己写的标题</title>", "body{color:red}", '<canvas id="c">'):
+        assert keep in page, keep
+    assert "__ORIGIN__/assets/demo-kit/react.js" in page
+    assert page.index("qf-kit.js") < page.index("<body>"), "套件要在 head 里先就位"
 
 
 # ------------------------------------------------------------------ 图检索
