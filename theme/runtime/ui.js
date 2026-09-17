@@ -340,6 +340,10 @@
     if (!root) {
       root = document.createElement('div');
       root.id = 'modal-root';
+      // class 不能少：定位与遮罩（position: fixed / grid / place-items: center）
+      // 全挂在 `.modal-root` 上 —— 只给 id 的话它没有样式，卡片会落在 <body> 末尾，
+      // 也就是"先在页面底部闪一下、再跳回中心"（实测踩过）。
+      root.className = 'modal-root';
       root.hidden = true;
       document.body.appendChild(root);
     }
@@ -361,15 +365,21 @@
       // 若在入场动画的那一帧之前就被关闭（例如程序化快速点击），
       // 必须取消 rAF，否则回调会把 is-open 又加回去，遮罩就再也关不掉了
       if (rafId) cancelAnimationFrame(rafId);
-      root.classList.remove('is-open');
       document.removeEventListener('keydown', onKey);
+      // 这一张进入"退场"：脱离流（否则它会在 grid 里占掉一行，把新弹层顶到下面 ——
+      // 用户看到的就是"确认框先在下面闪一下再回到中心"），自己淡出。
+      // 遮罩的透明度**不动**：可能还有别的弹层在用（菜单里点删除就是这个情形）。
+      card.classList.add('is-leaving');
       setTimeout(function () {
         // **只摘掉自己这张卡**。弹层里再开一个弹层是常规操作
-        // （会话菜单 → "确认删除"，菜单项 → 确认框），而前一个的收尾定时器
-        // 还在跑 —— 原先它 `clear(root)` 会把后开的那个一并清掉，
-        // 用户看到的就是"对话框闪一下就没了，对话也没删掉"（实测就是这么失效的）。
+        // （会话菜单 → "确认删除"），而前一个的收尾定时器还在跑 ——
+        // 原先它 `clear(root)` 会把后开的那个一并清掉，
+        // 用户看到的就是"对话框闪一下就没了，对话也没删掉"（实测）。
         card.remove();
-        if (!root.children.length) root.hidden = true;
+        if (!root.children.length) {
+          root.classList.remove('is-open');
+          root.hidden = true;
+        }
       }, 180);
       if (opts.onClose) opts.onClose();
     }
