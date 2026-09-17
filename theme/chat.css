@@ -796,6 +796,228 @@ body[data-page='chat'] .chat {
   color: var(--fg3);
 }
 
+/* ---------------------------------------------------------------- 工具栏 */
+
+.chat__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chat__treebtn {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.chat__treebtn:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.chat__treebtn.is-on {
+  color: var(--pri);
+  border-color: var(--pri);
+}
+
+/* 用户消息的动作：**不藏在 hover 里** —— 藏起来的入口等于没有入口 */
+.chatmsg__useractions {
+  display: flex;
+  gap: 10px;
+  margin-top: 5px;
+}
+
+.chatmsg__action {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chatmsg__action:hover {
+  color: var(--pri);
+}
+
+/* 就地编辑 */
+.chatmsg__edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chatmsg__editarea {
+  width: 100%;
+  min-height: 72px;
+  padding: 8px 10px;
+  border: 1px solid var(--pri);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+.chatmsg__editfoot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.chatmsg__editcancel {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chatmsg__editcancel:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.chatmsg__edithint {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+/* ---------------------------------------------------------------- 对话树 */
+
+.chattree__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in srgb, #000 42%, transparent);
+}
+
+.chattree__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(540px, 92vw);
+  height: 100%;
+  border-left: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.chattree__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chattree__title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.chattree__sub {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.chattree__close {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg3);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chattree__close:hover {
+  color: var(--fg);
+}
+
+.chattree__list {
+  flex: 1;
+  padding: 10px 12px 24px;
+  overflow: auto;
+}
+
+.chattree__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 3px 6px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg3);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chattree__row:hover {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
+.chattree__row.is-onpath {
+  color: var(--fg);
+}
+
+.chattree__row.is-onpath .chattree__prefix {
+  color: var(--pri);
+}
+
+.chattree__row.is-user .chattree__who {
+  color: var(--pri);
+}
+
+.chattree__prefix {
+  flex: none;
+  font-family: var(--font-mono);
+  white-space: pre;
+  color: var(--line-strong);
+}
+
+.chattree__who {
+  flex: none;
+  font-size: 11px;
+}
+
+.chattree__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chattree__tags {
+  flex: none;
+  font-size: 11px;
+  color: var(--amber);
+}
+
+.chattree__empty {
+  padding: 20px;
+  color: var(--fg3);
+  font-size: 12.5px;
+}
+
 /* ---------------------------------------------------------------- 动作凭条 */
 
 .chatreceipt {
