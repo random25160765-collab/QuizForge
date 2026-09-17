@@ -987,7 +987,7 @@
             iconButton('copy', '复制我这条', function () {
               copyText(m.content, '已复制我这条');
             }),
-            iconButton('pencil', '编辑并重发（旧的那条会留在对话树里）', function () {
+            iconButton('pencil', '编辑并重发', function () {
               editMessage(m);
             })
           )
@@ -1198,8 +1198,101 @@
     );
   }
 
+  /**
+   * 沙箱回传的运行结果，按 runId 存。
+   *
+   * 为什么不塞进消息零件：零件是**库里那份**（刷新会重读），而这是"这一次运行"
+   * 的产物 —— 沙箱页面刷新后会自己重跑一遍再回传，所以前端临时持有就够了。
+   */
+  var demoRuns = {};
+  var demoRunEl = null;
+
+  function demoRunOf(runId) {
+    return runId ? demoRuns[runId] || null : null;
+  }
+
+  // 沙箱页面（Python 那种）跑完会 postMessage 回来：{qfRun: runId, ok, text}
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || !data.qfRun) return;
+    demoRuns[data.qfRun] = { ok: data.ok !== false, text: String(data.text || '') };
+    if (state.demo && state.demo.runId === data.qfRun) {
+      state.demo.run = demoRuns[data.qfRun];
+      paintDemoRun();
+    }
+  });
+
+  /**
+   * 把沙箱输出发回给模型 —— 这是输出能回到它手里的**唯一一条路**，而且由人按。
+   *
+   * 不自动追发：那等于替用户说话，还可能在他还没看结果时白烧一轮额度。
+   * 摆一个按钮在这儿，什么时候发、发哪一次，他说了算。
+   */
+  function sendDemoRun(run) {
+    if (state.busy) return;
+    var text = String((run && run.text) || '').trim();
+    if (!text) {
+      ui.toast('这次运行没有输出可发', 'warn');
+      return;
+    }
+    state.demo = null;
+    renderDemoPanel();
+    send({ content: '沙箱里跑出来的结果（原样贴给你）：\n```\n' + text + '\n```\n按这个结果说下去。' });
+  }
+
+  function paintDemoRun() {
+    if (!demoRunEl) return;
+    ui.clear(demoRunEl);
+    if (!state.demo || !state.demo.runId) return;
+
+    var run = state.demo.run;
+    if (!run) {
+      demoRunEl.appendChild(
+        h('div.chatdemo__runwait', { text: '沙箱还在跑…（跑完这里会显示输出）' })
+      );
+      return;
+    }
+
+    demoRunEl.appendChild(
+      h(
+        'div.chatdemo__runhead',
+        null,
+        h('span.chatdemo__runlabel' + (run.ok ? '' : '.is-bad'), {
+          text: run.ok ? '沙箱输出' : '沙箱报错',
+        }),
+        h(
+          'button.btn.btn--ghost.chatdemo__runsend',
+          {
+            type: 'button',
+            onClick: function () {
+              sendDemoRun(run);
+            },
+          },
+          '把输出发给它'
+        ),
+        h(
+          'button.chatdemo__runcopy',
+          {
+            type: 'button',
+            onClick: function () {
+              copyText(run.text || '', '输出已复制');
+            },
+          },
+          '复制'
+        )
+      )
+    );
+    demoRunEl.appendChild(h('pre.chatdemo__runtxt', { text: run.text || '（没有输出）' }));
+  }
+
   function openDemo(part) {
-    state.demo = { title: part.title || '演示', html: String(part.html || '') };
+    // runId 要带过来：沙箱跑完会把输出 postMessage 回来，靠它认领到这次运行
+    state.demo = {
+      title: part.title || '演示',
+      html: String(part.html || ''),
+      runId: String(part.runId || ''),
+      run: demoRunOf(part.runId) || null,
+    };
     renderDemoPanel();
   }
 
@@ -1220,6 +1313,11 @@
       state.demo = null;
       renderDemoPanel();
     };
+
+    // 输出那一块单独拎出来：沙箱回传时只重画它，**不重建 iframe**
+    // （重建 = 重新跑一遍 = 又回传一次，会打转）
+    var runBox = h('div.chatdemo__run');
+    demoRunEl = runBox;
 
     demoEl.appendChild(
       h(
@@ -1243,10 +1341,13 @@
             referrerpolicy: 'no-referrer',
             title: state.demo.title,
             srcdoc: withCsp(state.demo.html),
-          })
+          }),
+          runBox
         )
       )
     );
+
+    paintDemoRun();
   }
 
   /* ------------------------------------------------------------ 题卡 */

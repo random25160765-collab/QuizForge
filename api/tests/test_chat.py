@@ -869,7 +869,9 @@ def test_vision_is_detected_conservatively() -> None:
     assert gateway.model_reads_images("gpt-4o") is True
     assert gateway.model_reads_images("qwen2.5-vl-72b-instruct") is True
     assert gateway.model_reads_images("glm-4v-plus") is True
-    assert gateway.model_reads_images("deepseek-chat") is False
+    # 实测：deepseek-chat 能读图（名字里的 chat 不代表纯文本）。这条断言是
+    # "模型名推不出能力"这件事的钉子 —— 改动它之前请先真的发一张图试试。
+    assert gateway.model_reads_images("deepseek-chat") is True
     assert gateway.model_reads_images("my-local-llm") is False
     assert gateway.model_reads_images("") is False
 
@@ -957,6 +959,49 @@ def test_a_text_model_is_told_why_it_cannot_see_the_image(client, monkeypatch) -
     assert "test-model" in text, "要说清是哪个模型读不了"
     assert "读不到图像内容" in text
     assert "换一个能读图的模型" in text, "光说读不到没有用，得给出路"
+
+
+def test_an_unsupported_image_format_is_not_sent_but_is_explained(client, monkeypatch) -> None:  # noqa: ANN001
+    """上游只收 png / jpeg / webp / gif。
+
+    bmp、svg 存得下（`attachments.IMAGE_SUFFIXES` 比上游宽），但传上去会 400 ——
+    所以不发；**但不能静默丢掉**：说明里要讲清是哪张、为什么没给出去，
+    否则模型会以为"用户没发图"。
+    """
+    seen: list[list[dict]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        seen.append([dict(message) for message in messages])
+        yield ("delta", "嗯")
+        yield ("finish", "stop")
+
+    _register(client)
+    _set_ai(
+        client,
+        enabled=True,
+        apiKey="sk-test",
+        baseUrl="http://127.0.0.1:9/v1",
+        model="test-model",
+        vision=True,
+    )
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+
+    up = client.post(
+        "/api/chat/attachments",
+        files={"file": ("shot.bmp", b"BM" + b"\x00" * 64, "image/bmp")},
+        headers=_headers(client),
+    )
+    info = up.json()
+    assert info["kind"] == "image"
+
+    resp = _send(client, cid, content="这张图里有什么", attachments=[info["id"]])
+    assert resp.status_code == 200, resp.text
+
+    user = [m for m in seen[-1] if m["role"] == "user"][-1]
+    assert isinstance(user["content"], str), "格式不收就不该发图像块"
+    assert "image/bmp" in user["content"]
+    assert "转成 png 或 jpg" in user["content"]
 
 
 def test_an_attachment_belongs_to_its_owner(client, monkeypatch) -> None:  # noqa: ANN001

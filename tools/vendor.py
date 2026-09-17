@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import json
 import os
 import re
 import shutil
@@ -60,6 +61,14 @@ PYODIDE_FILES = (
     "python_stdlib.zip",
     "pyodide-lock.json",
 )
+# 预置的包（依赖会从 lock 里解出来，比如 scipy → numpy + openblas）。
+#
+# 为什么要预置：Pyodide 按 `indexURL` 找包（运行时目录里必须有那些 .whl），
+# 不在那儿就是"没有这个模块"。实测就是这么缺的 —— 模型在演示里
+# `import numpy`，面板上却是 `No module named 'numpy'`。
+#
+# 体积是真的：numpy 12MB、openblas 6MB、scipy 45MB。想加包就往这里加名字。
+PYODIDE_PACKAGES = ("numpy", "scipy")
 
 # ---------------------------------------------------------------- 演示套件
 #
@@ -152,57 +161,114 @@ def _download(url: str, dest: Path) -> None:
             shutil.copyfileobj(response, out)
 
 
+def pyodide_package_files(names=PYODIDE_PACKAGES) -> list[str]:
+    """按 pyodide-lock.json 解析出这些包（含依赖）的**文件名**。
+
+    为什么不手拼文件名：它带 abi 与版本
+    （`numpy-1.26.4-cp312-cp312-pyodide_2024_0_wasm32.whl`），猜错了就是 404 ——
+    而 404 的表现是运行时"没有这个模块"，离真正的原因很远（实测就吃了这一下）。
+    """
+    lock_path = VENDOR_PYODIDE / "pyodide-lock.json"
+    if not lock_path.is_file():
+        return []
+    try:
+        packages = json.loads(lock_path.read_text(encoding="utf-8")).get("packages") or {}
+    except (OSError, ValueError):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    queue = list(names)
+    while queue:
+        name = queue.pop(0)
+        if name in seen or name not in packages:
+            continue
+        seen.add(name)
+        out.append(str(packages[name].get("file_name") or ""))
+        queue.extend(packages[name].get("depends") or [])
+    return [name for name in out if name]
+
+
 def sync_pyodide(force: bool = False) -> int:
-    """把 Pyodide 运行时同步到 vendor/pyodide/。
+    """把 Pyodide 运行时（含 `PYODIDE_PACKAGES` 里预置的包）同步到 vendor/pyodide/。
 
     来源顺序：`QUIZFORGE_PYODIDE_SRC` → 已有的 vendor/pyodide/ → 钉死版本的 CDN。
     **同步失败不当成致命错误**：Python 跑不了是少一项能力，不该让整个构建停下 ——
     但要大声说出来，否则会变成"演示面板一直转圈"那种没人知道为什么的故障。
-    """
-    ready = all((VENDOR_PYODIDE / name).is_file() for name in PYODIDE_FILES)
-    if ready and not force:
-        print(f"[INFO] Pyodide 已就绪，跳过：{_rel(VENDOR_PYODIDE)}")
-        return 0
 
+    包和运行时放在**同一个目录**：Pyodide 按 `indexURL` 找 `.whl`，放别处它找不到
+    （实测的表现是运行时 `No module named 'numpy'`，而原因离得很远）。
+    """
     src_env = os.environ.get("QUIZFORGE_PYODIDE_SRC")
     source_dir = Path(src_env).expanduser() if src_env else None
     VENDOR_PYODIDE.mkdir(parents=True, exist_ok=True)
 
-    if source_dir and source_dir.is_dir():
-        for name in PYODIDE_FILES:
-            origin = source_dir / name
-            if not origin.is_file():
-                print(f"[ERROR] 来源目录缺 {name}：{source_dir}", file=sys.stderr)
-                return 2
-            shutil.copyfile(origin, VENDOR_PYODIDE / name)
-        origin_text = str(source_dir)
+    core_missing = [name for name in PYODIDE_FILES if not (VENDOR_PYODIDE / name).is_file()]
+    origin_text = _rel(VENDOR_PYODIDE)
+    if core_missing or force:
+        if source_dir and source_dir.is_dir():
+            for name in PYODIDE_FILES:
+                origin = source_dir / name
+                if not origin.is_file():
+                    print(f"[ERROR] 来源目录缺 {name}：{source_dir}", file=sys.stderr)
+                    return 2
+                shutil.copyfile(origin, VENDOR_PYODIDE / name)
+            origin_text = str(source_dir)
+        else:
+            print(f"[INFO] 从 CDN 取 Pyodide {PYODIDE_VERSION} 运行时（约 13MB，只此一次）")
+            for name in PYODIDE_FILES:
+                if (VENDOR_PYODIDE / name).is_file() and not force:
+                    continue
+                try:
+                    _download(PYODIDE_CDN + name, VENDOR_PYODIDE / name)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
+                    print(
+                        "       Python 沙箱将退回 CDN（能联网时可用）。"
+                        "要离线可用，请用 QUIZFORGE_PYODIDE_SRC 指向一份本地副本。",
+                        file=sys.stderr,
+                    )
+                    return 1
+            origin_text = PYODIDE_CDN
     else:
-        print(f"[INFO] 从 CDN 取 Pyodide {PYODIDE_VERSION}（约 13MB，只此一次）：{PYODIDE_CDN}")
-        for name in PYODIDE_FILES:
-            try:
-                _download(PYODIDE_CDN + name, VENDOR_PYODIDE / name)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
-                print(
-                    "       Python 沙箱将退回 CDN（能联网时可用）。"
-                    "要离线可用，请用 QUIZFORGE_PYODIDE_SRC 指向一份本地副本。",
-                    file=sys.stderr,
-                )
-                return 1
-        origin_text = PYODIDE_CDN
+        print(f"[INFO] Pyodide 运行时已就绪：{_rel(VENDOR_PYODIDE)}")
 
-    total = sum((VENDOR_PYODIDE / name).stat().st_size for name in PYODIDE_FILES)
+    # 预置包：核心文件到位之后才能读 lock，所以放在这一步之后
+    wanted = pyodide_package_files()
+    if not wanted:
+        print("[WARN] 读不出 pyodide-lock.json，跳过预置包", file=sys.stderr)
+    packages_missing = [name for name in wanted if force or not (VENDOR_PYODIDE / name).is_file()]
+    for name in packages_missing:
+        print(f"[INFO] 取预置包 {name} …")
+        origin = (source_dir / name) if (source_dir and source_dir.is_dir()) else None
+        try:
+            if origin and origin.is_file():
+                shutil.copyfile(origin, VENDOR_PYODIDE / name)
+            else:
+                _download(PYODIDE_CDN + name, VENDOR_PYODIDE / name)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
+            print(
+                "       那些包在沙箱里表现为「没有这个模块」（run_python 会把报错打在面板上）。",
+                file=sys.stderr,
+            )
+            return 1
+
+    have = [name for name in wanted if (VENDOR_PYODIDE / name).is_file()]
+    total = sum((VENDOR_PYODIDE / name).stat().st_size for name in have)
     (VENDOR_PYODIDE / "SOURCE.md").write_text(
         "# vendored Pyodide\n\n"
         f"- version: {PYODIDE_VERSION}\n"
         f"- source: {origin_text}\n"
-        f"- files: {len(PYODIDE_FILES)}（{total // 1024 // 1024}MB）\n"
+        f"- 运行时: {len(PYODIDE_FILES)} 个文件\n"
+        f"- 预置包: {len(have)} 个（{total // 1024 // 1024}MB）"
+        " —— " + ", ".join(PYODIDE_PACKAGES) + "\n"
         f"- synced_at: {_dt.datetime.now().isoformat(timespec='seconds')}\n"
         "\n由 `tools/vendor.py` 生成，请勿手工修改。\n"
-        "用途：对话里的 run_python 工具在沙箱 iframe 里真跑 Python。\n",
+        "用途：对话里的 run_python 工具在沙箱 iframe 里真跑 Python；\n"
+        "包必须与 pyodide.js 同目录 —— Pyodide 按 indexURL 找 .whl。\n",
         encoding="utf-8",
     )
-    print(f"[INFO] 已同步 Pyodide {PYODIDE_VERSION}：{len(PYODIDE_FILES)} 个文件 -> {_rel(VENDOR_PYODIDE)}")
+    print(f"[INFO] Pyodide 已同步：运行时 {len(PYODIDE_FILES)} + 预置包 {len(have)} 个 -> {_rel(VENDOR_PYODIDE)}")
     return 0
 
 

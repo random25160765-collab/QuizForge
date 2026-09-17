@@ -965,6 +965,73 @@ body[data-page='chat'] .chat {
   background: #0b0d10;
 }
 
+/* 沙箱回传的输出：贴在面板底部，最多占四成高（别把 iframe 挤没了） */
+.chatdemo__run {
+  flex: none;
+  max-height: 40%;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+}
+
+.chatdemo__run:empty {
+  display: none;
+}
+
+.chatdemo__runwait {
+  padding: 8px 16px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.chatdemo__runhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px 4px;
+}
+
+.chatdemo__runlabel {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--fg3);
+  letter-spacing: 0.04em;
+}
+
+.chatdemo__runlabel.is-bad {
+  color: var(--bad);
+}
+
+.chatdemo__runsend {
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
+.chatdemo__runcopy {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chatdemo__runcopy:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.chatdemo__runtxt {
+  margin: 0;
+  padding: 4px 16px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg2);
+}
+
 /* ---------------------------------------------------------------- 图标按钮 */
 
 .chaticon {
