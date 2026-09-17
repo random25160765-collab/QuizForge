@@ -1170,6 +1170,13 @@ def _stream(  # noqa: ANN001
                     parts.append(msgparts.card_part(kind="question", payload=card))
                     yield _sse("card", {"callId": event["callId"], "card": card})
 
+                # 临时题卡（`create_question`）：模型现编的一道题，还不在任何题单里。
+                # 答案随卡片交给界面（它要判分）—— 模型那一侧只留一行答案。
+                draft = (event.get("payload") or {}).get("draft")
+                if isinstance(draft, dict) and draft.get("id"):
+                    parts.append(msgparts.draft_part(payload=draft))
+                    yield _sse("draft", {"callId": event["callId"], "draft": draft})
+
                 # 写操作也一样：工具只**提案**，界面上长出一张待确认的凭条，
                 # 他点了才落到记录里（走的是收藏夹 / 错题本那两条老路）。
                 # 演示沙箱：模型给的是一段自包含 HTML，界面上长成一个沙箱 iframe

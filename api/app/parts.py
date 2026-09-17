@@ -93,6 +93,19 @@ def card_part(*, kind: str, payload: dict) -> dict:
     return {"type": "card", "kind": kind, "payload": payload or {}}
 
 
+def draft_part(*, payload: dict) -> dict:
+    """临时题卡：模型**现编**的一道题（还没进任何题单）。
+
+    与 `card_part` 分开，是因为两者的"身份"不同：卡片里那道题在题库里
+    （判分、答题记录、掌握度都认得它），草稿只在这次对话里 ——
+    只有用户按了「存进题单」，它才会拿到一个 `uq-…` 的 id。
+
+    答案随卡片一起走（界面要判分、要讲解）；模型那边由 `tools.output_text`
+    裁成一行答案，避免整张卡随历史反复重放。
+    """
+    return {"type": "draft", "payload": payload or {}}
+
+
 def action_part(*, kind: str, payload: dict) -> dict:
     """待确认的动作凭条（收藏这道题 / 标成已掌握…）。
 

@@ -1502,6 +1502,141 @@ def mark_mastered(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 登记
 
 
+DRAFT_TYPES = ("single", "multi", "blank", "short", "problem")
+
+
+def _draft_options(raw: object) -> list[dict]:
+    """选项：既接受 `[{key,text}]`，也接受 `["文字", …]`（模型两种都会写）。"""
+    out: list[dict] = []
+    if not isinstance(raw, list):
+        return out
+    for index, item in enumerate(raw):
+        letter = chr(ord("A") + index)
+        if isinstance(item, dict):
+            text = str(item.get("text") or item.get("label") or "").strip()
+            key = str(item.get("key") or letter).strip().upper()[:2] or letter
+        else:
+            text = str(item or "").strip()
+            key = letter
+        if text:
+            out.append({"key": key, "text": text})
+    return out
+
+
+def create_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """自己出一道题 —— **临时题**：先只留在对话里，用户按「存进题单」才落库。
+
+    ## 为什么要这个工具
+
+    题库是按知识点预先出好的（`push_question` 从里面挑）。但真实的教学里有一半是
+    "就着刚才这段话，我给你编一道" —— 材料里没有现成的、或用户想要个更贴他错法的。
+    没有这个工具时，模型只能推题库里的题，于是常常"讲得很好、一到练就离题"。
+
+    ## 临时题与题库的关系
+
+    * **默认不落库**：返回的是一张草稿卡，用户看着它作答；他觉得值得留，按「存进题单」
+      才写进 `user_questions`（与公共题库分开，见 `routers/mybank.py`）。
+    * **随出随改**：要改就再调一次这个工具（或让用户说哪里不对）—— 每次都是新草稿，
+      不必去动题单里已有的那道。
+    * 答案**随草稿一起发给界面**（前端要判分），但**不进模型的上下文回放**
+      （见 `output_text` 对 `draft` 的裁剪）。
+
+    ## 写题的要求
+
+    题干要**自足**（不依赖刚讲过的原话）、选项要互相排斥、错误项要有诊断价值
+    （每个错项对应一种典型误解，写进 `explanation`）。解析里说清"错的人是怎么想的"——
+    这比"正确答案是 B"有用得多。
+    """
+    raw = args.get("question")
+    if not isinstance(raw, dict):
+        return {"error": "要给出 question（题目本身）。"}
+
+    stem = str(raw.get("stem") or "").strip()
+    if not stem:
+        return {"error": "题干不能为空。"}
+
+    qtype = str(raw.get("type") or "single").strip().lower()
+    if qtype not in DRAFT_TYPES:
+        return {"error": f"type 得是这几种之一：{'/'.join(DRAFT_TYPES)}。"}
+
+    draft: dict = {
+        "id": "draft-" + uuid.uuid4().hex[:8],
+        "type": qtype,
+        "stem": stem,
+        "layer": str(raw.get("layer") or "").strip()[:8],
+        "wing": str(raw.get("wing") or "").strip()[:8],
+        "topic": str(raw.get("topic") or "").strip()[:64],
+        "pointKey": str(args.get("pointKey") or raw.get("pointKey") or "").strip()[:96],
+        "difficulty": int(raw.get("difficulty") or 3) if str(raw.get("difficulty") or "3").isdigit() else 3,
+        "explanation": str(raw.get("explanation") or "").strip(),
+        "hint": str(raw.get("hint") or "").strip(),
+    }
+
+    if qtype in ("single", "multi"):
+        options = _draft_options(raw.get("options"))
+        if len(options) < 2:
+            return {"error": "选择题至少要两个选项（options）。"}
+        answer = raw.get("answer")
+        if isinstance(answer, list):
+            answer = ",".join(str(item).strip() for item in answer if str(item).strip())
+        answer = str(answer or "").strip().upper()
+        keys = {item["key"] for item in options}
+        chosen = [part.strip() for part in answer.replace("，", ",").split(",") if part.strip()]
+        if not chosen or not set(chosen) <= keys:
+            return {"error": "answer 要是选项里的字母（多选写成 \"A,C\"）。"}
+        draft["options"] = options
+        draft["answer"] = ",".join(chosen)
+    elif qtype == "blank":
+        answer = str(raw.get("answer") or "").strip()
+        if not answer:
+            return {"error": "填空题得有 answer。"}
+        draft["answer"] = answer
+        accepts = raw.get("accepts")
+        if isinstance(accepts, list):
+            draft["accepts"] = [str(item).strip() for item in accepts if str(item).strip()]
+    elif qtype == "problem":
+        subs = raw.get("questions")
+        if not isinstance(subs, list) or not subs:
+            return {"error": "大题要给出 questions（小问列表）。"}
+        cleaned = []
+        for index, sub in enumerate(subs, start=1):
+            if not isinstance(sub, dict):
+                continue
+            text = str(sub.get("stem") or "").strip()
+            if not text:
+                continue
+            cleaned.append(
+                {
+                    "index": int(sub.get("index") or index),
+                    "title": str(sub.get("title") or f"第 {index} 问").strip()[:80],
+                    "stem": text,
+                    "hint": str(sub.get("hint") or "").strip(),
+                    "reference": str(sub.get("reference") or "").strip(),
+                    "points": [str(item).strip() for item in (sub.get("points") or []) if str(item).strip()]
+                    if isinstance(sub.get("points"), list)
+                    else [],
+                }
+            )
+        if not cleaned:
+            return {"error": "大题的小问都得有题干（stem）。"}
+        draft["questions"] = cleaned
+    else:  # short
+        answer = str(raw.get("answer") or raw.get("reference") or "").strip()
+        if not answer:
+            return {"error": "简答题得有 answer（参考答案）。"}
+        draft["answer"] = answer
+        rubric = raw.get("rubric")
+        if isinstance(rubric, list):
+            draft["rubric"] = [str(item).strip() for item in rubric if str(item).strip()]
+
+    return {
+        "draft": draft,
+        "note": "题目已挂在这条消息上（他那边是**临时题卡**：能直接作答，默认不进题单）。"
+        "**不要**把题干与选项再贴进正文 —— 正文里说清这道题在考什么、以及它对着哪个知识点就好。"
+        "他说要存进题单时，界面上的按钮会处理；他说题目哪里不对时，**改一版重新调这个工具**。",
+    }
+
+
 REGISTRY = {
     "search_knowledge": {
         "fn": search_knowledge,
@@ -1785,6 +1920,31 @@ REGISTRY = {
             },
         },
     },
+    "create_question": {
+        "fn": create_question,
+        "description": "**自己出一道题**给他做（挂成一张**临时题卡**：能直接作答，默认不进题单）。"
+        "题库里没有贴切的题、或你想就着刚讲的内容专门考他一个点时用它 —— "
+        "`push_question` 是从**已有题库**里挑，这个是**现编**。\n"
+        "写得像一道真题：题干自足（不依赖你刚说的原话）、选项互斥、"
+        "每个错项对应一种典型误解（在 `explanation` 里说清\"错的人是怎么想的\" —— "
+        "那比\"正确答案是 B\"有用得多）。\n"
+        "题型用 single / multi / blank / short / problem；要多问的大题用 problem"
+        "（`questions` 里每问给 stem 与 reference）。\n"
+        "答案随题目一起交给界面（它要判分），所以**不要在正文里报答案**；"
+        "他说题目哪里不对，就**改一版重新调这个工具**（每次都是新草稿）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pointKey": {"type": "string", "description": "这道题冲着哪个知识点（可省略）"},
+                "question": {
+                    "type": "object",
+                    "description": "题目本身：type / stem / options / answer / explanation / hint "
+                    "/ layer / wing / difficulty / questions（大题的小问）",
+                },
+            },
+            "required": ["question"],
+        },
+    },
 }
 
 
@@ -1831,7 +1991,20 @@ def output_text(payload: dict) -> str:
     因此涨到 90 秒撞上超时。给模型留一张"身份证"就够了：
     它知道推了哪道题、什么层什么翼，要讲题时自己会去取。
     """
-    trimmed = {key: value for key, value in payload.items() if key != "card"}
+    trimmed = {key: value for key, value in payload.items() if key not in ("card", "draft")}
+
+    # 草稿卡（`create_question`）同理，但**答案要留**：它给用户讲评"为什么选 B"时得看答案；
+    # 而整张卡（选项 + 解析）随历史一次次重放纯属白花 token。
+    draft = payload.get("draft")
+    if isinstance(draft, dict) and draft.get("id"):
+        trimmed["draft"] = {
+            "id": draft.get("id"),
+            "type": draft.get("type"),
+            "stem": str(draft.get("stem") or "")[:120],
+            "answer": draft.get("answer") or "",
+            "note": "（题面与解析已交给界面；讲评时用这里的答案。）",
+        }
+
     card = payload.get("card")
     if isinstance(card, dict) and card.get("questionId"):
         trimmed["card"] = {

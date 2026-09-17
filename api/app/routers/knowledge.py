@@ -17,7 +17,19 @@ from sqlalchemy import func, select, text
 
 from .. import materials as material_text
 from ..deps import CurrentUser, DbSession
-from ..models import KnowledgePoint, Material, PointEdge, PointSource, Question, QuestionPoint, Record
+from ..models import (
+    KnowledgePoint,
+    Material,
+    PointEdge,
+    PointSource,
+    Question,
+    QuestionPoint,
+    Record,
+    UserQuestion,
+)
+
+# 题源是"我的题单"时，一次最多取这么多道进来打分（它是自己攒的题，规模有限）
+MAX_SCOPE_QUESTIONS = 500
 
 router = APIRouter(prefix="/api", tags=["knowledge"])
 
@@ -190,6 +202,10 @@ def picks(
     layers: str = Query("", description="逗号分隔的认知层，空 = 不限"),
     count: int = Query(10, ge=1, le=100),
     mode: str = Query("mix", description="mix=综合 / due=该复习 / weak=薄弱与错题 / gaps=覆盖薄的知识点"),
+    scope: str = Query(
+        "public",
+        description="题源：public=公共题库（默认，保持老行为）/ mine=我的题单 / all=都要",
+    ),
 ) -> dict:
     """**算法选题**：给定条件，服务端挑出最该练的那些题，并说明每道为什么被挑中。
 
@@ -200,6 +216,14 @@ def picks(
       从未接触过的知识点            +10
       同主题去重（同一知识点最多 2 道）
     最后一律按 (分数, 题目 id) 排序 —— 同样的输入给同样的结果，可复现。
+
+    ## 题源（`scope`）
+
+    公共题库与用户题单是**两份东西**（见 `routers/mybank.py` 里为什么不合成一张表），
+    但练习时它们是同一个池子里的候选 —— 差别只在"来源"这一列上，
+    所以这里按 `scope` 决定把哪些放进池子，并在结果里标出 `source`。
+
+    默认 `public` 是刻意的：老调用方（与老测试）看到的行为一个字都不变。
     """
     topic_list = [t.strip() for t in topics.split(",") if t.strip()]
     layer_list = [l.strip() for l in layers.split(",") if l.strip()]
@@ -231,7 +255,10 @@ def picks(
     }
 
     scored: list[tuple[int, str, dict]] = []
-    for qid, qtype, topic, difficulty, pkey, qlayers, nq in rows:
+    # `scope=mine` 时公共题一道都不进池子 —— 这是"只看我的题单"那句话的全部实现
+    for qid, qtype, topic, difficulty, pkey, qlayers, nq in (
+        rows if scope in ("public", "all") else []
+    ):
         if topic_list and not ({topic, pkey} & set(topic_list)):
             continue
         if layer_list and not (set(layers_of(qlayers)) & set(layer_list)):
@@ -256,13 +283,71 @@ def picks(
             reasons.append("按复习优先级排序")
         scored.append((score, qid, {"id": qid, "type": qtype, "topic": topic,
                                     "difficulty": difficulty, "point": pkey,
-                                    "reasons": reasons}))
+                                    "source": "public", "reasons": reasons}))
+
+    # 用户题单进池子：同一套打分，但"覆盖薄"那一条不适用 ——
+    # 它本来就不挂知识点、也不参与覆盖率对账（那正是它与公共题分开的原因）。
+    if scope in ("mine", "all"):
+        for row in db.scalars(
+            select(UserQuestion)
+            .where(UserQuestion.user_id == user.id)
+            .order_by(UserQuestion.created_at.desc())
+            .limit(MAX_SCOPE_QUESTIONS)
+        ).all():
+            payload = row.payload or {}
+            topic = str(payload.get("topic") or "")
+            pkey = row.point_key or ""
+            if topic_list and not ({topic, pkey} & set(topic_list)):
+                continue
+            record = records.get(row.id)
+            score = 0
+            reasons = ["自己攒的题"]
+            if record is None or record.attempts == 0:
+                score += 30
+                reasons.append("还没练过")
+            elif record.last_status != "correct":
+                score += 30
+                reasons.append("上次没做对")
+            if record is not None and (record.wrong > 0 or record.flagged):
+                score += 25
+                reasons.append("做错过或被标记")
+            try:
+                difficulty = int(payload.get("difficulty") or 3)
+            except (TypeError, ValueError):
+                difficulty = 3
+            scored.append(
+                (
+                    score,
+                    row.id,
+                    {
+                        "id": row.id,
+                        "type": str(payload.get("type") or "single"),
+                        "topic": topic,
+                        "difficulty": difficulty,
+                        "point": pkey,
+                        "source": "mine",
+                        "reasons": reasons,
+                    },
+                )
+            )
 
     # 同一知识点最多 2 道：避免一份卷子里全是同一个点
     scored.sort(key=lambda item: (-item[0], item[1]))
+
+    # `scope=all` 时给自己攒的题**留配额**：公共题有上百道，纯按分排序会把题单
+    # 整个挤掉 —— 那样"都要"就等于"只要公共"了。留一半（至少一道），
+    # 剩下的位置再按分数补公共题与其余的题单题。
+    ordered = scored
+    if scope == "all":
+        mine_rows = [row for row in scored if row[2].get("source") == "mine"]
+        reserve = max(1, count // 2) if mine_rows else 0
+        head = mine_rows[:reserve]
+        reserved = {row[1] for row in head}
+        ordered = head + [row for row in scored if row[1] not in reserved]
+
     picked: list[dict] = []
     per_point: dict[str, int] = {}
-    for _score, _qid, item in scored:
+    for _score, _qid, item in ordered:
         pkey = item.get("point") or ""
         if pkey and per_point.get(pkey, 0) >= 2:
             continue
