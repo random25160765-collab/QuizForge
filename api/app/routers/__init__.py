@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import ai, auth, bank, chat, graph, health, knowledge, progress
+from . import ai, auth, bank, chat, graph, health, knowledge, problem, progress
 
 
 def all_routers() -> list[APIRouter]:
@@ -22,6 +22,7 @@ def all_routers() -> list[APIRouter]:
         progress.router,
         ai.router,
         chat.router,
+        problem.router,
     ]
 
 

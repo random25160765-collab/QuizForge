@@ -34,7 +34,8 @@ import time
 import uuid
 from pathlib import Path
 
-from sqlalchemy import String, cast, or_, select
+from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy.orm.attributes import flag_modified
 
 from . import mastery, materials
 from .models import (
@@ -180,18 +181,24 @@ def _sources(db, point: KnowledgePoint) -> list[dict]:  # noqa: ANN001
     ]
 
 
-def _questions_of(db, point_keys: list[str], limit: int, include_answer: bool) -> list[dict]:  # noqa: ANN001
+def _questions_of(  # noqa: ANN001
+    db, point_keys: list[str], limit: int, include_answer: bool, layer: str = ""
+) -> list[dict]:
     if not point_keys:
         return []
-    rows = db.execute(
+    stmt = (
         select(Question, KnowledgePoint.key)
         .join(QuestionPoint, QuestionPoint.question_id == Question.id)
         .join(KnowledgePoint, KnowledgePoint.id == QuestionPoint.point_id)
         .where(KnowledgePoint.key.in_(point_keys))
         .where(Question.retired_at.is_(None))
-        .order_by(Question.id)
-        .limit(limit)
-    ).all()
+    )
+    # 层必须**在 limit 之前**筛。原先是在结果上过滤 —— 先按 id 取前 N 条再筛，
+    # 于是"应用层有 104 道填空 + 34 道大题"这件事被截成了 2 条填空，
+    # 模型据此得出"题库里没有 problem"（错的，而且错得理直气壮）。
+    if layer:
+        stmt = stmt.where(Question.layer == layer)
+    rows = db.execute(stmt.order_by(Question.id).limit(limit)).all()
     out = []
     for question, point_key in rows:
         item = {
@@ -311,13 +318,29 @@ def get_existing_questions(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         ).all()
         keys = [row[0] for row in rows]
 
-    items = _questions_of(db, keys, limit, include_answer)
-    if layer:
-        items = [item for item in items if item["layer"] == layer][:limit]
+    items = _questions_of(db, keys, limit, include_answer, layer=layer)
     return {
         "items": items,
-        "note": "answer 默认不给（推题时剧透）；要讲解就把 includeAnswer 设为 true。",
+        # 顺带把**题库的形状**报出来：类型 × 层 各有多少。
+        # 不加这一项，模型就会拿到的样本去推整体（实测推错成"没有大题"）——
+        # 这是可以让数据库直接回答的问题，不该让它猜。
+        "bank": _bank_shape(db),
+        "note": "answer 默认不给（推题时剧透）；要讲解就把 includeAnswer 设为 true。"
+        "items 是**抽样**，要判「题库里有没有某类题」请看 bank（那是全量统计）。",
     }
+
+
+def _bank_shape(db) -> dict:  # noqa: ANN001
+    """题库的形状：{type: {layer: 数量}}，只数已发布的。"""
+    rows = db.execute(
+        select(Question.type, Question.layer, func.count())
+        .where(Question.retired_at.is_(None), Question.status == "published")
+        .group_by(Question.type, Question.layer)
+    ).all()
+    shape: dict[str, dict[str, int]] = {}
+    for qtype, layer, count in rows:
+        shape.setdefault(str(qtype or "?"), {})[str(layer or "（未标层）")] = int(count)
+    return shape
 
 
 def _record_dict(record: Record | None) -> dict:  # noqa: ANN001
@@ -1309,6 +1332,109 @@ def read_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+# ---------------------------------------------------------------- 大题批改写回
+
+
+def grade_problem(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """把一次**大题批改**的结果写进答题记录。
+
+    这是这一层里唯一会改状态的工具，而它改的是 `records` —— 与选择题/填空题
+    同一条路。于是掌握度、间隔重复、错题本**不必为大题再立一套**：记录是事实，
+    其余都是它的投影（前端按同一套规则算）。
+
+    `verdicts` 是逐问的判定：`[{index, verdict, score, comment}]`，
+    verdict 取 `correct` / `partial` / `wrong`。整体判定取各问的均值：
+    全都对 → correct；一点没对 → wrong；其余 → partial。
+    """
+    question_id = str(args.get("questionId") or "").strip()
+    question = db.get(Question, question_id) if question_id else None
+    if question is None or question.retired_at is not None:
+        return {"error": "题库里没有这道题：" + (question_id or "(空)")}
+
+    raw = args.get("verdicts")
+    if not isinstance(raw, list) or not raw:
+        return {"error": "verdicts 不能为空（逐问给 [{index, verdict, score, comment}]）。"}
+
+    verdicts = []
+    for item in raw[:12]:
+        if not isinstance(item, dict):
+            continue
+        verdict = str(item.get("verdict") or "").strip().lower()
+        if verdict not in ("correct", "partial", "wrong"):
+            verdict = "partial"
+        try:
+            score = float(item.get("score"))
+        except (TypeError, ValueError):
+            score = {"correct": 1.0, "partial": 0.5, "wrong": 0.0}[verdict]
+        verdicts.append(
+            {
+                "index": int(item.get("index") or len(verdicts) + 1),
+                "verdict": verdict,
+                "score": max(0.0, min(1.0, score)),
+                "comment": str(item.get("comment") or "")[:600],
+            }
+        )
+    if not verdicts:
+        return {"error": "verdicts 里没有一条能用的条目。"}
+
+    score = sum(item["score"] for item in verdicts) / len(verdicts)
+    if all(item["verdict"] == "correct" for item in verdicts):
+        status = "correct"
+    elif all(item["verdict"] == "wrong" for item in verdicts):
+        status = "wrong"
+    else:
+        status = "partial"
+
+    now = int(time.time() * 1000)
+    record = db.scalar(
+        select(Record).where(Record.user_id == user.id, Record.question_id == question.id)
+    )
+    if record is None:
+        record = Record(
+            user_id=user.id,
+            question_id=question.id,
+            attempts=0,
+            correct=0,
+            wrong=0,
+            mastered=False,
+            flagged=False,
+            partial=0,
+            first_at=now,
+            patch={},
+            client_rev=0,
+        )
+        db.add(record)
+
+    record.attempts = (record.attempts or 0) + 1
+    record.correct = (record.correct or 0) + (1 if status == "correct" else 0)
+    record.wrong = (record.wrong or 0) + (1 if status == "wrong" else 0)
+    record.partial = (record.partial or 0) + (1 if status == "partial" else 0)
+    record.last_at = now
+    record.last_status = status
+    record.last_score = round(score, 3)
+    record.last_response = (
+        "大题（" + str(len(verdicts)) + " 问）："
+        + "、".join(f"第{item['index']}问 {item['verdict']}" for item in verdicts)
+    )
+    # JSON 列：造新 dict 再挂回去（原地改不会触发脏检查，实测静默丢过）
+    patch = dict(record.patch or {})
+    history = list(patch.get("problem") or [])[-19:]
+    history.append({"at": now, "score": round(score, 3), "verdicts": verdicts})
+    patch["problem"] = history
+    record.patch = patch
+    flag_modified(record, "patch")
+
+    db.commit()
+    return {
+        "recorded": True,
+        "status": status,
+        "score": round(score, 3),
+        "attempts": record.attempts,
+        "note": "已写进答题记录（掌握度与间隔重复跟着它走）。"
+        "现在开始逐问讲评：先说他答对的，再指出缺口与依据。",
+    }
+
+
 # ---------------------------------------------------------------- 动作提案
 
 
@@ -1581,6 +1707,34 @@ REGISTRY = {
             "required": ["slug"],
         },
     },
+    "grade_problem": {
+        "fn": grade_problem,
+        "description": "把一次**大题批改**的逐问判定写进答题记录（掌握度与间隔重复因此"
+        "与其它题走同一条路）。批完**必须**调它，否则这次作答不算数 —— 记录是事实，"
+        "讲评只是投影。verdict 取 correct / partial / wrong，score 是该问的得分率 0–1；"
+        "comment 写一句依据（引材料要看得到出处）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "questionId": {"type": "string", "description": "题号，例如 tt-arch-0082"},
+                "verdicts": {
+                    "type": "array",
+                    "description": "逐问判定",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": {"type": "integer", "description": "第几问（从 1 起）"},
+                            "verdict": {"type": "string", "enum": ["correct", "partial", "wrong"]},
+                            "score": {"type": "number", "description": "该问得分率 0–1"},
+                            "comment": {"type": "string", "description": "一句依据（缺什么/对在哪）"},
+                        },
+                        "required": ["index", "verdict"],
+                    },
+                },
+            },
+            "required": ["questionId", "verdicts"],
+        },
+    },
     "flag_question": {
         "fn": flag_question,
         "description": "提议把某道题加入/移出**收藏夹**（=「这题值得再看」的标记，刷题页里叫收藏夹）。"
@@ -1615,7 +1769,9 @@ REGISTRY = {
         "description": "推一道题给他做（返回一张**可作答的题卡**，不含答案）。"
         "他说「考考我」「来道题」「练一道」时用它；你刚讲完一段机制、想确认他确实懂了时也可以主动推。"
         "题卡由界面渲染、他答完结果会自动进答题记录 —— 所以**不要**报答案，也不要替他念选项。"
-        "大题（problem）不在这张卡里，要练大题就让他去刷题页。",
+        "**大题（problem）不在这张卡里** —— 它有多问、要写推导，由界面上的「大题」"
+        "子窗口负责（那边有专职的子代理批改，题库里也确实有大题）。"
+        "**别凭印象说题库里有没有某类题**：`get_existing_questions` 会连全量统计一起返回。",
         "parameters": {
             "type": "object",
             "properties": {
