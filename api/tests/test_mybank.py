@@ -76,6 +76,29 @@ def test_a_question_without_a_stem_is_refused(client) -> None:  # noqa: ANN001
     assert "题干" in resp.json()["detail"]
 
 
+def test_picks_can_draw_from_my_questions(client, imported_bank) -> None:  # noqa: ANN001
+    """题源区分：默认 `scope=public` 一个字不变，`mine`/`all` 才把题单放进池子。
+
+    练习与组卷靠它区分"公共题库"与"我的题单" —— 两边用同一套打分、
+    同一条可复现的排序，差别只在来源那一列上。
+    """
+    _register(client)
+    client.post("/api/my/questions", json={"payload": _draft()}, headers=_csrf(client))
+
+    public = client.get("/api/picks?count=50").json()
+    assert all(item["source"] == "public" for item in public["items"])
+    assert not [item for item in public["items"] if item["id"].startswith("uq-")]
+
+    mine = client.get("/api/picks?count=50&scope=mine").json()
+    assert mine["items"], "题单里的题也该被抽出来"
+    assert all(item["source"] == "mine" for item in mine["items"])
+    assert "自己攒的题" in mine["items"][0]["reasons"]
+
+    both = client.get("/api/picks?count=50&scope=all").json()
+    assert [item for item in both["items"] if item["id"].startswith("uq-")]
+    assert len(both["items"]) >= len(mine["items"])
+
+
 def test_my_questions_belong_to_me_alone(client) -> None:  # noqa: ANN001
     """题单是私有的：别人既看不到、也改不动、更删不掉。"""
     _register(client)

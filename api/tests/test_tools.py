@@ -475,6 +475,65 @@ def test_render_demo_refuses_a_giant_html(client, db_session) -> None:  # noqa: 
     assert "<b>hi</b>" in payload["demo"]["html"], "模型写的东西要原样留着"
 
 
+def test_a_question_can_be_written_on_the_spot(client, db_session) -> None:  # noqa: ANN001
+    """模型自己出一道题：挂成一张**临时题卡**（默认不进题单）。
+
+    这是"只能从题库里选题"那条限制的解药：真实教学里有一半是"就着刚才这段话编一道"。
+    """
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+
+    ok, payload = tools.call(
+        db_session,
+        user,
+        "create_question",
+        {
+            "pointKey": "tt-arch",
+            "question": {
+                "type": "single",
+                "stem": "circular buffer 的同步靠什么？",
+                "options": ["软件锁", "硬件元数据同步", "轮询", "中断"],
+                "answer": "b",
+                "explanation": "材料 L78：implemented in SRAM、hardware metadata synchronization。",
+                "layer": "识记",
+            },
+        },
+    )
+    assert ok, payload
+    draft = payload["draft"]
+    assert draft["id"].startswith("draft-")
+    assert draft["answer"] == "B"  # 小写会被归一化
+    assert [item["key"] for item in draft["options"]] == ["A", "B", "C", "D"]
+    assert "临时题卡" in payload["note"]
+
+    # 给模型看的那一份要被裁过，而且**答案要留着**（它讲评时要用）
+    seen = json.loads(tools.output_text(payload))
+    assert "draft" in seen and seen["draft"]["answer"] == "B"
+    assert "options" not in seen["draft"], "整张卡不该随历史反复重放"
+
+
+def test_a_draft_question_must_be_answerable(client, db_session) -> None:  # noqa: ANN001
+    """写不成题的（没题干、答案不在选项里、大题没小问）当场退回，而不是挂一张空卡。"""
+    _register(client)
+    user = db_session.get(User, uuid.UUID(_me_id(client)))
+
+    ok, payload = tools.call(db_session, user, "create_question", {"question": {"stem": " "}})
+    assert ok and "题干" in payload["error"]
+
+    ok, payload = tools.call(
+        db_session,
+        user,
+        "create_question",
+        {"question": {"stem": "题", "type": "single", "options": ["A", "B"], "answer": "D"}},
+    )
+    assert ok and "answer" in payload["error"]
+
+    ok, payload = tools.call(
+        db_session, user, "create_question", {"question": {"stem": "题", "type": "problem"}}
+    )
+    assert ok and "小问" in payload["error"]
+
+
 def test_demo_page_carries_the_kit(client, db_session) -> None:  # noqa: ANN001
     """演示页由服务端注入套件。
 
