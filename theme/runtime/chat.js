@@ -36,6 +36,7 @@
   var jumpBtn = null;
   var notesEl = null;
   var problemEl = null;
+  var problemBtn = null; // 工具栏那个「大题」按钮：开合要反映在它身上
   var inputEl = null;
   var sendBtn = null;
   var hintEl = null;
@@ -956,6 +957,9 @@
 
   function openProblem() {
     problemOpen = true;
+    // 工具栏那个按钮要显示"开着的"—— 否则面板浮在中间、按钮却毫无变化，
+    // 用户会以为它只是个入口，看不出当前状态。
+    if (problemBtn) problemBtn.classList.add('is-on');
     problemFeedback = '';
     problemRecord = '';
     problemData = null;
@@ -965,6 +969,7 @@
 
   function closeProblem() {
     problemOpen = false;
+    if (problemBtn) problemBtn.classList.remove('is-on');
     problemData = null;
     problemDrafts = {};
     problemFeedback = '';
@@ -1280,10 +1285,10 @@
                 if (notesOpen) closeNotes();
                 else openNotes();
               }),
-              iconButton('problem', '大题（多问、要写推导，由子代理批改）', function () {
+              (problemBtn = iconButton('problem', '大题（多问、要写推导，由子代理批改）', function () {
                 if (problemOpen) closeProblem();
                 else openProblem();
-              }),
+              })),
               clipInput,
               inputEl,
               sendBtn
@@ -2172,8 +2177,14 @@
           null,
           h('span.chatcard__id', { text: '现编 · ' + (kinds[name] || '题') }),
           h('span.chatcard__tag.is-draft', { text: savedId ? '已在题单' : '临时题' }),
-          payload.layer ? h('span.chatcard__tag', { text: payload.layer }) : null,
-          payload.wing ? h('span.chatcard__tag', { text: payload.wing }) : null,
+          // 带上"层/翼"两个字：光写「应用 · 应用」看不出是哪两个维度，
+          // 而这两列的取值本来就重名（层有"应用"、翼也有"应用"）。
+          payload.layer
+            ? h('span.chatcard__tag', { text: payload.layer + '层', title: '认知层：识记 / 理解 / 应用 / 迁移' })
+            : null,
+          payload.wing
+            ? h('span.chatcard__tag', { text: payload.wing + '翼', title: '难度翼：基础 / 应用 / 综合 / 创新' })
+            : null,
           payload.difficulty ? h('span.chatcard__tag', { text: '难度 ' + payload.difficulty }) : null
         )
       );

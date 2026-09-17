@@ -1436,22 +1436,44 @@ body[data-page='chat'] .chat {
 
 /* ---------------------------------------------------------------- 大题（子窗口） */
 
+/* 居中浮现：它是"一道题"，不是从右边推进来的抽屉 ——
+   居中更像"被摆到面前"，侧滑那道动画反而让人以为它是侧栏（用户的原话也是这个意思）。 */
 .chatproblem__backdrop {
   position: fixed;
   inset: 0;
   z-index: 64;
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
   background: color-mix(in srgb, #000 45%, transparent);
+  animation: qf-fade var(--dur) var(--ease);
 }
 
 .chatproblem__sheet {
   display: flex;
   flex-direction: column;
-  width: min(600px, 96vw);
-  height: 100%;
-  border-left: 1px solid var(--line);
+  width: min(760px, 92vw);
+  max-height: 86vh;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
   background: var(--bg);
+  box-shadow: 0 24px 64px -28px #000;
+  animation: qf-rise calc(var(--dur) * 1.7) var(--ease);
+}
+
+@keyframes qf-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes qf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
 }
 
 .chatproblem__bar {
@@ -2107,4 +2129,42 @@ body[data-page='chat'] .chat {
 /* 「对答案」靠左：它是这一屏的主按钮，另外两个是次要动作 */
 .chatcard--draft .chatcard__submit {
   margin-right: auto;
+}
+
+/* 「对答案」是主按钮：实心、有边界，不再是裸文字 */
+.chatcard--draft .chatcard__submit {
+  margin-right: auto;
+  padding: 6px 15px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: var(--pri);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chatcard--draft .chatcard__submit:hover {
+  filter: brightness(1.08);
+}
+
+.chatcard--draft .chatcard__again {
+  padding: 6px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.chatcard--draft .chatcard__again:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.chatcard--draft .chatcard__again.is-done {
+  color: var(--fg3);
+  border-style: dashed;
+  cursor: default;
 }
