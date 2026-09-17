@@ -383,8 +383,8 @@ def test_run_python_wraps_the_code_in_a_working_page(client, db_session) -> None
         assert "cdn.jsdelivr.net/pyodide" in page
     assert "loadPyodide" in page and "runPythonAsync" in page
     assert '"print([1, 1, 2, 3])"' in page, "代码要原样嵌进去（JSON 转义过）"
-    # 子集是固定的：点名不点名都带上 numpy 与 scipy（见另一条用例）
-    assert 'const want = ["numpy", "scipy"]' in page
+    # numpy 每次都装；这段代码没提到 scipy，所以不装它（省一次 47MB 的等待）
+    assert 'const want = ["numpy"]' in page
     assert 'id="out"' in page, "要有输出容器，否则跑了也看不见"
     assert "setStderr" in page, "报错也要显示出来"
 
