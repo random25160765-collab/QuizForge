@@ -505,33 +505,8 @@ body[data-page='chat'] .chat {
   overflow-wrap: anywhere;
 }
 
-/* 成功回答下的低调动作（重新回答）：平时不抢眼，悬停才明显 */
-.chatmsg__action {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--fg3);
-  font-size: 11.5px;
-  cursor: pointer;
-}
-
-.chatmsg__action:hover {
-  color: var(--pri);
-  text-decoration: underline;
-}
-
-.chatmsg__retry {
-  border: none;
-  background: none;
-  padding: 0;
-  color: var(--pri);
-  font-size: 11.5px;
-  cursor: pointer;
-}
-
-.chatmsg__retry:hover {
-  text-decoration: underline;
-}
+/* 「重新回答」现在是图标（.chaticon），这两个文字按钮的样式随之作废 ——
+   留着只会让下一个人以为还有地方在用 */
 
 .chat__caret {
   display: inline-block;
@@ -1131,15 +1106,6 @@ body[data-page='chat'] .chat {
   margin-top: 5px;
 }
 
-.chatmsg__action {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--fg3);
-  font-size: 12px;
-  cursor: pointer;
-}
-
 .chatmsg__action:hover {
   color: var(--pri);
 }
@@ -1438,15 +1404,15 @@ body[data-page='chat'] .chat {
 
 .chat__input {
   flex: 1;
-  min-height: 24px;
+  min-height: 21px;
   max-height: 220px;
-  padding: 2px 4px;
+  padding: 1px 3px;
   border: none;
   background: none;
   color: var(--fg);
   font: inherit;
-  font-size: 14.5px;
-  line-height: 1.6;
+  font-size: 14px;
+  line-height: 1.5;
   resize: none;
   outline: none;
 }

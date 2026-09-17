@@ -622,9 +622,38 @@
     return key;
   }
 
+  /**
+   * 优先用 highlight.js（真语法），没有就用手写那份。
+   *
+   * 手写这份是当年本机无外网时的产物：token 切得粗，遇到没见过的语言常常整段
+   * 一个颜色。hljs 到位之后就不必委屈自己了 —— 但**留着它兜底**：
+   * 资源没同步（`make vendor`）或加载失败时，代码块仍然看得出结构，
+   * 而不是退化成一片没有层次的纯文本。
+   */
   function code(source, lang) {
     var text = String(source == null ? '' : source).replace(/\r\n?/g, '\n').replace(/\s+$/, '');
     var key = normalizeLang(lang);
+    var viaHljs = useHljs(text, key);
+    if (viaHljs !== null) return viaHljs;
+    return fallbackCode(text, key);
+  }
+
+  function useHljs(text, key) {
+    var lib = window.hljs;
+    if (!lib || typeof lib.highlight !== 'function') return null;
+    try {
+      if (key && key !== 'text' && lib.getLanguage && lib.getLanguage(key)) {
+        return lib.highlight(text, { language: key, ignoreIllegals: true }).value;
+      }
+      // 没标语言（或标了个它不认识的）就让它自己猜 —— 猜偏了只是配色差一点，
+      // 比整段一个颜色强
+      return lib.highlightAuto(text).value;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function fallbackCode(text, key) {
     // 简单的多色高亮开销很小；仅当没有可识别语言时走纯转义
     var cached = cache[key + '\u0001' + text];
     if (cached !== undefined) return cached;

@@ -24,6 +24,9 @@ api/var/
 vendor/pyodide/
 # 演示沙箱的前端套件（3.7MB，同上）
 vendor/demo-kit/
+# 代码排版：JetBrains Mono 字体 + highlight.js（同上）
+vendor/mono/
+vendor/hljs/
 
 # ------------------------------------------------------------ 运行期数据
 *.db

@@ -114,16 +114,27 @@ html[data-theme='light'] .icode { color: #0E7C6B; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.4em 0.75em;
-  background: color-mix(in srgb, var(--md-code-line) 60%, transparent);
+  gap: 10px;
+  padding: 0.35em 0.6em 0.35em 0.9em;
   border-bottom: 1px solid var(--md-code-line);
 }
+/* 语言标签：小写 + 一个小圆点。大写加字距那套（CODE / PYTHON）看着老气，
+   而小写正好和代码本身一样是等宽的，安静一点。 */
 .codeblock__lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--fg3);
+  opacity: 0.85;
+}
+.codeblock__lang::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--pri) 55%, transparent);
 }
 .codeblock__copy {
   font-size: 11.5px;
@@ -132,21 +143,30 @@ html[data-theme='light'] .icode { color: #0E7C6B; }
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
-  padding: 2px 8px;
+  padding: 2px 9px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  opacity: 0;
+  transition: color 0.15s, border-color 0.15s, background 0.15s, opacity 0.15s;
+}
+/* 复制按钮平时不显形（它不该抢代码的注意力），悬停或键盘聚焦时才出来 */
+.codeblock:hover .codeblock__copy,
+.codeblock__copy:focus-visible {
+  opacity: 1;
 }
 .codeblock__copy:hover { color: var(--pri); border-color: color-mix(in srgb, var(--pri) 45%, transparent); background: color-mix(in srgb, var(--pri) 10%, transparent); }
-.codeblock__copy.is-done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
+.codeblock__copy.is-done { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); opacity: 1; }
 
 .codeblock__pre {
   margin: 0;
-  padding: 0.85em 1em;
+  padding: 0.95em 1.1em;
   overflow-x: auto;
   font-family: var(--font-mono);
-  font-size: calc(12.8px * var(--font-scale, 1));
-  line-height: 1.62;
+  font-size: calc(13px * var(--font-scale, 1));
+  line-height: 1.72;
   tab-size: 4;
+  /* 等宽字要连字与破折号都各就各位，滚动条别把最后一行顶上去 */
+  font-variant-ligatures: contextual;
+  scrollbar-width: thin;
 }
 .codeblock__pre code { font-family: inherit; white-space: pre; }
 
@@ -198,6 +218,70 @@ html[data-theme='light'] {
 .tok-key { color: var(--tok-key); }
 .tok-fn { color: var(--tok-fn); }
 .tok-deco, .tok-attr { color: var(--tok-deco); }
+
+/* --------------------------------------------- 语法高亮：highlight.js 的类名
+ *
+ * 不引 hljs 自带主题 —— 那些花色是另一个世界的配色。这里把它吐出来的类名
+ * **映射到上面同一组令牌**，于是深浅两套主题自动都对（变量会跟着翻），
+ * 代码块和正文也永远是同一套色。
+ */
+.hljs-comment,
+.hljs-quote { color: var(--tok-com); font-style: italic; }
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-doctag,
+.hljs-formula { color: var(--tok-kw); font-weight: 600; }
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_ { color: var(--tok-fn); }
+
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-selector-id { color: var(--tok-type); }
+
+.hljs-built_in,
+.hljs-literal,
+.hljs-symbol { color: var(--tok-builtin); }
+
+.hljs-number,
+.hljs-bullet { color: var(--tok-num); }
+
+.hljs-string,
+.hljs-template-tag,
+.hljs-addition,
+.hljs-char.escape_ { color: var(--tok-str); }
+
+.hljs-regexp { color: var(--tok-reg); }
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-class { color: var(--tok-var); }
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-selector-attr,
+.hljs-section,
+.hljs-name,
+.hljs-tag { color: var(--tok-attr); }
+
+.hljs-meta,
+.hljs-meta .hljs-keyword,
+.hljs-meta .hljs-string { color: var(--tok-pre); }
+
+.hljs-params,
+.hljs-subst,
+.hljs-link { color: inherit; }
+
+/* 标点压暗一档：它就该退到背景里，代码的层次靠关键字与字面量撑 */
+.hljs-punctuation,
+.hljs-operator { color: color-mix(in srgb, var(--fg) 62%, transparent); }
+
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
+.hljs-deletion { color: var(--bad); }
 
 /* ------------------------------------------------------------- 公式 */
 
