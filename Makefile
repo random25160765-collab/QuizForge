@@ -183,9 +183,13 @@ test:
 # 题库、考纲、知识空间的**唯一权威在数据库**；仓库里已经没有它们的小文件，
 # 所以数据库必须被推送 —— 否则这份数据只存在于一台机器上。
 DB_DUMP ?= db/quizforge.sql.gz
+# 导出开发库。**落盘前先把 API 密钥抹掉**：这份快照是进版本控制的（仓库公开），
+# 而 `user_settings` 里存着用户自己填的密钥（见 api/app/routers/ai.py 里那个取舍），
+# 内测通道的密钥也在同一张表里出现过。抹的是**快照里的那份**，库里照旧。
+# 踩过的坑：2026-09-17 导出的快照里带过一把真密钥（幸运的是那个提交还没 push）。
 db-dump:
-	@mkdir -p db && docker compose exec -T db pg_dump -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} --no-owner --no-privileges | gzip -9 > $(DB_DUMP)
-	@ls -lh $(DB_DUMP) | awk '{print "  已导出 " $$9 "（" $$5 "）"}'
+	@mkdir -p db && docker compose exec -T db pg_dump -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} --no-owner --no-privileges | sed -E 's/"apiKey": "[^"]*"/"apiKey": ""/g' | gzip -9 > $(DB_DUMP)
+	@ls -lh $(DB_DUMP) | awk '{print "  已导出 " $$9 "（" $$5 "，密钥已抹）"}'
 db-restore:
 	@gunzip -c $(DB_DUMP) | PGPASSWORD=$${QF_DB_PASSWORD:-quizforge} psql -h $${QF_DB_HOST:-127.0.0.1} -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} -q
 	@echo "  已从 $(DB_DUMP) 恢复"
