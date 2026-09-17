@@ -311,6 +311,26 @@ ok('统计数据正确', store.stats().attempts === 2, String(store.stats().atte
 store.toggleFlag(SAMPLE_ID);
 eq('标记生效', store.flaggedIds(), [SAMPLE_ID]);
 
+/* 计数只算题库里现存的题。
+   记录会长期保留（题退役/下架后进度不丢，回滚回来还能接着刷），
+   但"数给用户看"的地方不能带上已经取不到题目的记录 —— 否则会出现
+   「待复习还有 6 题，点进去只有 3 题」（实测就是这个症状）。 */
+store.patchRecord('ghost-1', {
+  attempts: 1,
+  wrong: 1,
+  flagged: true,
+  sm2: { due: Date.now() - 1000, ef: 2.5, interval: 1, reps: 1 },
+});
+ok('幽灵记录确实存在（否则下面的断言没有意义）', !!store.records()['ghost-1']);
+ok('题库里没有这道题', !data.get('ghost-1'));
+eq('待复习不数它', store.dueIds().includes('ghost-1'), false);
+eq('错题本不数它', store.wrongIds().includes('ghost-1'), false);
+eq('星标不数它', store.flaggedIds().includes('ghost-1'), false);
+ok('概览的"今日到期"与复习列表同口径',
+  sm2.overview(store.records(), data.questions.map((q) => q.id)).dueToday === store.dueIds().length,
+  String(sm2.overview(store.records(), data.questions.map((q) => q.id)).dueToday) +
+    ' vs ' + store.dueIds().length);
+
 /* --------------------------------------- 6. 全量题目：渲染 + 用正确答案判分 */
 
 let rendered = 0;

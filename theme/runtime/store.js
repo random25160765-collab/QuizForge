@@ -884,6 +884,18 @@
   }
 
   /**
+   * 这道题还在题库里吗。
+   *
+   * 记录（`records`）会**长期保留**：题退役或下架之后进度不丢，回滚回来还能接着刷。
+   * 但"数给用户看"的数字只能算现存的题 —— 否则会出现
+   * 「待复习还有 6 题，点进去只有 3 题」这种自相矛盾的界面（实测撞过：
+   * 题库删掉一批题之后，计数还带着那些已经取不到题目的记录）。
+   */
+  function inBank(id) {
+    return !!(QF.data && QF.data.get && QF.data.get(id));
+  }
+
+  /**
    * 错题本集合：答错或答得「不完整」（多选漏选、填空只对一部分、AI 判 partial）
    * 的题目都算需要巩固；最近一次作答正确后自动移出默认视图。
    */
@@ -892,6 +904,7 @@
     var all = records();
     var ids = Object.keys(all).filter(function (id) {
       var rec = all[id];
+      if (!inBank(id)) return false;
       if (!rec || (!rec.wrong && !rec.partial)) return false;
       if (!opts.includeMastered && rec.mastered) return false;
       return true;
@@ -909,13 +922,14 @@
   function flaggedIds() {
     var all = records();
     return Object.keys(all).filter(function (id) {
-      return all[id].flagged;
+      return inBank(id) && all[id].flagged;
     });
   }
 
   function dueIds(now) {
     if (!QF.sm2) return [];
-    return QF.sm2.dueList(records(), now).map(function (rec) {
+    // 把题库的 id 一起给过去：复习列表是按题库过滤的，计数必须同一个口径
+    return QF.sm2.dueList(records(), now, allIds()).map(function (rec) {
       return rec.id;
     });
   }
