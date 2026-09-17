@@ -572,9 +572,15 @@ def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 图检索
 
 
-# 走图默认只看**语义关系**。`co_occurs` 是程序按字面算出来的弱边（两千多条），
-# 默认上桌只会把邻域冲淡 —— 要看它得显式要。
-GRAPH_KINDS = ("requires", "part_of", "contrast_with", "implements")
+# 走图默认只看**真的承载含义**的边。
+#
+# `contrast_with` 刻意**不在默认里**：它名义上是"易混"，实际大多是机械派生的
+# —— 实测 8238 条里大量 `why` 写着「选项辨析：题 tt-arch-XXXX 把它们放在一起
+# 当干扰项」，也就是"这两个概念在同一道题的选项里出现过"。拿它当语义关系，
+# 邻域立刻就变成一堆随机配对（实测某个话题概念的 8 个邻居全是这种）。
+#
+# `co_occurs`（按字面共现）同理，甚至更弱。两者要看都得显式列进 kinds。
+GRAPH_KINDS = ("requires", "part_of", "implements")
 
 # 方向约定：`from` 是主动的那一头 —— `A →(requires) B` 读作"A 是 B 的前置"
 # （库里抽读下来 6 条里 5 条这么读才通，剩一条是判边的噪声）。
@@ -639,10 +645,16 @@ def explore_graph(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     档位取该概念下**最弱那个点**，并且与 `get_mastery` 共用同一份口径
     （同一件事不能有两个说法）。
 
-    ## 已知的稀
+    ## 默认不看 `contrast_with` 与 `co_occurs`
 
-    前置链现在很稀（686 条有序边 / 912 个概念），所以走一层常常只有一两个邻居，
-    甚至没有 —— 那种时候返回里会直说，而不是假装图谱很全。
+    前者名义是"易混"，实际大多是从**题目选项**机械派生的（"这两个概念在同一道
+    题的选项里出现过"），后者是按字面共现算的。拿它们当语义关系，邻域会立刻
+    变成一堆随机配对。要看就显式列进 `kinds`。
+
+    ## 已知的缺口
+
+    **370 / 912 个概念一条 `requires` / `part_of` 都没有** —— 也就是四成概念
+    根本还没接进前置链。碰上它们时返回里会直说，而不是假装图谱很全。
     """
     key = str(args.get("key") or "").strip()
     query = str(args.get("query") or "").strip()
@@ -690,8 +702,9 @@ def explore_graph(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         return {
             "seed": {"key": seed.key, "name": seed.name},
             "neighbors": [],
-            "note": "这个概念还没有语义关系边（图谱还稀：686 条有序边 / 912 个概念）。"
-            "可以先用 search_material 看材料原文。",
+            "note": "这个概念还没有语义关系边（370 / 912 个概念都还没接进前置链）。"
+            "它可能只有 co_occurs / contrast_with 那种机械派生的弱边，"
+            "要看就显式列进 kinds；想理解它本身，先用 search_material 读材料原文。",
         }
 
     ids = [item["id"] for item in reached]
@@ -965,7 +978,8 @@ REGISTRY = {
         "「我该先学什么」「这两块什么关系」「为什么我学不懂 X」用它；按词找节点用 search_knowledge。"
         "每个邻居都带 relation 与 band（你的掌握档位，取该概念下最弱的点），"
         "所以「哪个前置还没打牢」可以直接看出来。"
-        "默认不看 co_occurs（程序按字面算的弱边），要看得显式列进 kinds。",
+        "默认只看 requires / part_of / implements；contrast_with 与 co_occurs "
+        "大多是机械派生的（前者大量来自「题目选项里一起出现过」），要看需显式列进 kinds。",
         "parameters": {
             "type": "object",
             "properties": {
