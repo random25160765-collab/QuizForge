@@ -33,6 +33,8 @@
   var listEl = null;
   var threadEl = null;
   var noticeEl = null;
+  var jumpBtn = null;
+  var notesEl = null;
   var inputEl = null;
   var sendBtn = null;
   var hintEl = null;
@@ -545,6 +547,11 @@
       '<rect x="9" y="9" width="11.5" height="11.5" rx="2.4"/>' +
       '<path d="M15 6.2A2.7 2.7 0 0 0 12.3 3.5H6.5A3 3 0 0 0 3.5 6.5v5.8A2.7 2.7 0 0 0 6.2 15"/>',
     retry: '<path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"/><path d="M20.4 3.4v5.4h-5.4"/>',
+    down: '<path d="M12 5.5v13"/><path d="m6 12.5 6 6 6-6"/>',
+    note:
+      '<path d="M5 4.5h14v15H5z"/><path d="M8.5 9h7M8.5 12.5h7M8.5 16h4"/>',
+    trash:
+      '<path d="M4.5 7h15"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 12.5h9L17.5 7"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
   };
 
@@ -627,6 +634,256 @@
     });
   }
 
+  /* ------------------------------------------------------------ 便签 */
+
+  /**
+   * 聊天时的便签：想到什么随手记一笔，不打断对话。
+   *
+   * 存在 settings 里（`QF.store.notes`），所以本地优先、跨设备跟着账号走 ——
+   * 没有新表、新接口、新的冲突规则。代价是每条都跟着设置整份同步，
+   * 因此有条数与字数上限（见 store.js 里那两个常量）。
+   *
+   * 「写进输入框」是它与对话之间唯一的接口，而且**只填不发** ——
+   * 便签是素材，什么时候用、怎么用，由人决定。
+   */
+  var notesOpen = false;
+  var notesDraft = '';
+  var notesEditing = '';
+
+  function openNotes() {
+    notesOpen = true;
+    notesEditing = '';
+    renderNotes();
+  }
+
+  function closeNotes() {
+    notesOpen = false;
+    notesDraft = '';
+    notesEditing = '';
+    renderNotes();
+  }
+
+  function noteTime(note) {
+    var d = new Date(note.editedAt || note.at);
+    var pad = function (value) {
+      return (value < 10 ? '0' : '') + value;
+    };
+    return (
+      d.getMonth() +
+      1 +
+      '月' +
+      d.getDate() +
+      '日 ' +
+      pad(d.getHours()) +
+      ':' +
+      pad(d.getMinutes()) +
+      (note.editedAt ? ' · 改过' : '')
+    );
+  }
+
+  function saveNote() {
+    var text = String(notesDraft || '').trim();
+    if (!text) return;
+    if (notesEditing) {
+      QF.store.updateNote(notesEditing, text);
+    } else if (!QF.store.addNote(text, state.current)) {
+      ui.toast('便签满了（200 条）—— 先清理几条再记新的', 'warn', 3200);
+      return;
+    }
+    notesDraft = '';
+    notesEditing = '';
+    renderNotes();
+    ui.toast('已记下', 'info', 1200);
+  }
+
+  /** 把便签写进输入框（**不发送**）：便签是素材，怎么用由人决定。 */
+  function insertNote(text) {
+    var body = String(text || '').trim();
+    if (!body || !inputEl) return;
+    var current = String(inputEl.value || '');
+    inputEl.value = current ? current.replace(/\s+$/, '') + '\n' + body : body;
+    growInput();
+    closeNotes();
+    inputEl.focus();
+  }
+
+  function noteNode(note) {
+    var box = h('div.chatnotes__item');
+
+    if (notesEditing === note.id) {
+      var draft = h('textarea.chatnotes__input', {
+        rows: '3',
+        value: note.text,
+        onInput: function (event) {
+          notesDraft = event.target.value;
+        },
+        onKeydown: function (event) {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            notesEditing = '';
+            notesDraft = '';
+            renderNotes();
+          } else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+            event.preventDefault();
+            saveNote();
+          }
+        },
+      });
+      notesDraft = note.text;
+      box.appendChild(draft);
+      box.appendChild(
+        h(
+          'div.chatnotes__acts',
+          null,
+          h('button.chatnotes__act.is-pri', { type: 'button', onClick: saveNote }, '保存'),
+          h(
+            'button.chatnotes__act',
+            {
+              type: 'button',
+              onClick: function () {
+                notesEditing = '';
+                notesDraft = '';
+                renderNotes();
+              },
+            },
+            '取消'
+          )
+        )
+      );
+      return box;
+    }
+
+    box.appendChild(
+      h(
+        'div.chatnotes__meta',
+        null,
+        h('span.chatnotes__time', { text: noteTime(note) }),
+        note.cid && note.cid === state.current
+          ? h('span.chatnotes__tag', { text: '记于本次对话' })
+          : null
+      )
+    );
+    box.appendChild(h('div.chatnotes__text', { text: note.text }));
+    box.appendChild(
+      h(
+        'div.chatnotes__acts',
+        null,
+        h(
+          'button.chatnotes__act.is-pri',
+          {
+            type: 'button',
+            onClick: function () {
+              insertNote(note.text);
+            },
+          },
+          '写进输入框'
+        ),
+        h(
+          'button.chatnotes__act',
+          {
+            type: 'button',
+            onClick: function () {
+              copyText(note.text, '便签已复制');
+            },
+          },
+          '复制'
+        ),
+        h(
+          'button.chatnotes__act',
+          {
+            type: 'button',
+            onClick: function () {
+              notesEditing = note.id;
+              notesDraft = note.text;
+              renderNotes();
+            },
+          },
+          '编辑'
+        ),
+        h(
+          'button.chatnotes__act.is-bad',
+          {
+            type: 'button',
+            onClick: function () {
+              if (QF.store.removeNote(note.id)) {
+                renderNotes();
+                ui.toast('已删除', 'info', 1200);
+              }
+            },
+          },
+          '删除'
+        )
+      )
+    );
+    return box;
+  }
+
+  function renderNotes() {
+    if (!notesEl) return;
+    ui.clear(notesEl);
+    if (!notesOpen) return;
+
+    var notes = QF.store.notes();
+    var saveBtn = h(
+      'button.btn.btn--primary.chatnotes__save',
+      {
+        type: 'button',
+        disabled: !String(notesDraft || '').trim(),
+        onClick: saveNote,
+      },
+      '记下来'
+    );
+    var draft = h('textarea.chatnotes__input', {
+      rows: '3',
+      placeholder: '随手记点什么…（Ctrl / ⌘ + Enter 保存）',
+      value: notesDraft,
+      onInput: function (event) {
+        notesDraft = event.target.value;
+        saveBtn.disabled = !String(notesDraft || '').trim();
+      },
+      onKeydown: function (event) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closeNotes();
+        } else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+          event.preventDefault();
+          saveNote();
+        }
+      },
+    });
+
+    notesEl.appendChild(
+      h(
+        'div.chatnotes__backdrop',
+        {
+          onClick: function (event) {
+            if (event.target === event.currentTarget) closeNotes();
+          },
+        },
+        h(
+          'div.chatnotes__sheet',
+          null,
+          h(
+            'div.chatnotes__head',
+            null,
+            h('span.chatnotes__title', { text: '便签' }),
+            h('span.chatnotes__count', {
+              text: notes.length ? notes.length + ' 条' : '',
+            }),
+            iconButton('close', '关闭（Esc）', closeNotes)
+          ),
+          h('div.chatnotes__compose', null, draft, saveBtn),
+          notes.length
+            ? h('div.chatnotes__list', null, notes.map(noteNode))
+            : h('div.chatnotes__empty', {
+                text: '还没有便签。聊天时想到什么就记一笔 —— 它会跟着你的账号同步，也能一键写进输入框。',
+              })
+        )
+      )
+    );
+    draft.focus();
+  }
+
   /* ------------------------------------------------------------ 骨架 */
 
   function buildSkeleton() {
@@ -639,6 +896,8 @@
     asideEl.appendChild(asideHeadEl);
     asideEl.appendChild(listEl);
     threadEl = h('div.chat__thread', { role: 'log', 'aria-live': 'polite' });
+    // 滚上去就露出「回到最新」（见 refreshJump）
+    threadEl.addEventListener('scroll', refreshJump);
     inputEl = h('textarea.chat__input', {
       rows: '1',
       placeholder: '问点什么，或者贴一段材料…（Enter 发送，Shift+Enter 换行）',
@@ -657,6 +916,7 @@
     barEl = h('div.chat__bar');
     treeEl = h('div.chattree', { role: 'dialog', 'aria-label': '对话树' });
     demoEl = h('div.chatdemo', { role: 'dialog', 'aria-label': '演示' });
+    notesEl = h('div.chatnotes', { role: 'dialog', 'aria-label': '便签' });
     rootEl.appendChild(
       h(
         'div.chat',
@@ -672,11 +932,18 @@
             'div.chat__composer',
             null,
             pendingEl,
+            (jumpBtn = iconButton('down', '回到最新', function () {
+              scrollToEnd(true);
+            }, '.chat__jump')),
             h(
               'div.chat__box',
               null,
               iconButton('clip', '加附件（文档、代码、PDF、截图）', function () {
                 if (clipInput) clipInput.click();
+              }),
+              iconButton('note', '便签（边聊边记）', function () {
+                if (notesOpen) closeNotes();
+                else openNotes();
               }),
               clipInput,
               inputEl,
@@ -686,7 +953,8 @@
           )
         ),
         treeEl,
-        demoEl
+        demoEl,
+        notesEl
       )
     );
   }
@@ -2470,12 +2738,15 @@
     if (!noticeEl) return;
     ui.clear(noticeEl);
     var mode = aiState && aiState.mode;
-    if (!mode || mode === 'user' || mode === 'local') return;
+    // `mode` 的取值：user（自己的密钥）/ beta（本站内测通道）/ off（AI 关着）/ none（都不行）。
+    // 内测通道能答就别挂横幅 —— 这条提示原先会把 mode='beta' 也算成"不能对话"，
+    // 于是开了内测的用户一直在被劝去填密钥。
+    if (!mode || mode === 'user' || mode === 'beta' || mode === 'local') return;
 
     var text =
       mode === 'off'
         ? '本站已关闭 AI 功能，对话暂时不可用。'
-        : '还不能对话：去设置里填自己的 API 密钥，或让站长开启内测通道。';
+        : '还不能对话：本站内测通道未就绪，去设置里填自己的 API 密钥即可使用。';
     noticeEl.appendChild(
       h(
         'div.chat__noticebox',
@@ -2520,6 +2791,20 @@
     var gap = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight;
     // 只在贴着底的时候跟着滚：用户往上翻着读旧消息时，不该被新字拽回去
     if (force || gap < 120) threadEl.scrollTop = threadEl.scrollHeight;
+    refreshJump();
+  }
+
+  /**
+   * 「回到最新」按钮：浮在输入框上沿的右下角，滚上去之后才出现。
+   *
+   * 为什么要有它：长回答能把对话拉得很长，往上翻几屏之后想回到底部，
+   * 只能一路滚（或者去点输入框再敲字）。它是个纯导航件，
+   * 所以只在**离开底部**时显形，贴着底的时候不占视线。
+   */
+  function refreshJump() {
+    if (!jumpBtn || !threadEl) return;
+    var gap = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight;
+    jumpBtn.classList.toggle('is-on', gap > 160);
   }
 
   function ensureConversation() {
