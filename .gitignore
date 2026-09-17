@@ -20,13 +20,8 @@ __pycache__/
 api/web/
 # 用户上传的附件：只在本机，绝不进版本库（内容是别人的文档，还可能有个人信息）
 api/var/
-# Pyodide 运行时（13MB，版本钉死在 tools/vendor.py，`make vendor` 可取回）
-vendor/pyodide/
-# 演示沙箱的前端套件（3.7MB，同上）
-vendor/demo-kit/
+# vendor/ 全部入库：离线也要能起（pyodide 约 76MB，含 numpy/scipy 预置包）
 # 代码排版：JetBrains Mono 字体 + highlight.js（同上）
-vendor/mono/
-vendor/hljs/
 
 # ------------------------------------------------------------ 运行期数据
 *.db
