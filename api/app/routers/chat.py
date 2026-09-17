@@ -1145,6 +1145,19 @@ def _stream(  # noqa: ANN001
                     },
                 )
             elif kind == "tool_result":
+                # 工具调用之前的那段话是**铺垫**，不是结论（"我先查一下…"）—— 打上 `process`，
+                # 界面上它就成了可折叠的"过程"，正文里留下的才是答案。
+                #
+                # 为什么在这打、而不是只在界面上临时折：**存下来的零件要带着这个标记**。
+                # 只在界面上折的话，刷新一下铺垫又散回正文了（用户就是这么反馈的：
+                # "我这边看不到 thinking" —— 他看到的其实是散开的铺垫）。
+                for earlier in reversed(parts):
+                    if earlier.get("type") == "tool_call":
+                        continue  # 跳过工具本身，找它前面最近的那段文字
+                    if earlier.get("type") == "text" and str(earlier.get("text") or "").strip():
+                        earlier["process"] = True
+                        earlier["label"] = "过程"
+                    break
                 part = tool_parts.get(event["callId"])
                 if part is not None:
                     part["output"] = event["output"]
