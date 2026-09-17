@@ -120,11 +120,25 @@
   }
 
   /** 从记录集合里筛出到期待复习的（按到期时间升序） */
-  function dueList(records, now) {
+  /** 把 id 列表变成查找表；没给列表就返回 null，表示"不裁剪"。 */
+  function idScope(allIds) {
+    if (!allIds || !allIds.length) return null;
+    var set = {};
+    allIds.forEach(function (id) {
+      set[id] = true;
+    });
+    return set;
+  }
+
+  function dueList(records, now, allIds) {
     var t = now || Date.now();
+    var scope = idScope(allIds);
     var out = [];
     Object.keys(records || {}).forEach(function (id) {
       var rec = records[id];
+      // 题库里已经没有这道题了：它的到期时间不该出现在"待复习"里
+      // （列表是按题库渲染的，算了也显示不出来）
+      if (scope && !scope[id]) return;
       if (!rec || !rec.sm2) return;
       if (rec.mastered) return;
       if (typeof rec.sm2.due === 'number' && rec.sm2.due <= t) out.push(rec);
@@ -142,9 +156,13 @@
     var learning = 0;
     var scheduled = 0;
     var inSeven = t + 7 * DAY;
+    var scope = idScope(allIds);
 
     Object.keys(records || {}).forEach(function (id) {
       var rec = records[id];
+      // 只统计题库里现存的题：这里的数字是给学生看的，
+      // 必须和"能显示出来的题"同一个口径（见 store.js 的 inBank）
+      if (scope && !scope[id]) return;
       if (!rec || !rec.sm2) return;
       if (rec.mastered) return;
       scheduled += 1;
