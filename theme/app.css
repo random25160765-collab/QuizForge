@@ -10,6 +10,25 @@
 
 /* ============================================================ 设计令牌 */
 
+/* 等宽字体自带一份（vendor/mono，构建拷进 assets/fonts/）。
+   为什么非带不可：`--font-mono` 首选就是 JetBrains Mono，而本机（Linux）没有
+   SF Mono / Menlo / Consolas，于是实际落到 DejaVu Sans Mono —— 代码块满屏都是它，
+   很难看。24KB×2 换掉整屏代码的样子，值。 */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2');
+}
+
 :root {
   /* 品牌色 */
   --pri: #2DD4BF;

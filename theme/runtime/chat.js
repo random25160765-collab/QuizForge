@@ -544,6 +544,7 @@
     copy:
       '<rect x="9" y="9" width="11.5" height="11.5" rx="2.4"/>' +
       '<path d="M15 6.2A2.7 2.7 0 0 0 12.3 3.5H6.5A3 3 0 0 0 3.5 6.5v5.8A2.7 2.7 0 0 0 6.2 15"/>',
+    retry: '<path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"/><path d="M20.4 3.4v5.4h-5.4"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
   };
 
@@ -1186,7 +1187,7 @@
         'div.chatdemo__cardmain',
         null,
         h('div.chatdemo__cardtitle', { text: part.title || '演示' }),
-        h('div.chatdemo__cardnote', { text: '在右侧面板里打开：沙箱运行，可加载外部库' })
+        h('div.chatdemo__cardnote', { text: '在右侧面板里打开' })
       ),
       h('button.btn.btn--ghost.chatdemo__open', {
         type: 'button',
@@ -1992,15 +1993,13 @@
       }
       if (bits.length) foot.appendChild(h('span.chatmsg__meta', { text: bits.join(' · ') }));
       // 成功的回答也能重来一次 —— 没有这个按钮，"再生成一次"这条分支就造不出来，
-      // 切换器也就永远只有 1 / 1（LibreChat 在每条回答下都放了这个入口）
+      // 切换器也就永远只有 1 / 1（LibreChat 在每条回答下都放了这个入口）。
+      // 显示为图标：页脚里已经有一行元信息（模型 · 耗时 · token），
+      // 再加三个字就显得吵；图标与「复制」是同一套，安静且认得出来。
       foot.appendChild(
-        h('button.chatmsg__action', {
-          type: 'button',
-          text: '重新回答',
-          onClick: function () {
-            if (state.busy) return;
-            regenerate(m);
-          },
+        iconButton('retry', '重新回答（会另开一条分支）', function () {
+          if (state.busy) return;
+          regenerate(m);
         })
       );
     }
@@ -2020,13 +2019,9 @@
   }
 
   function retryButton(m) {
-    return h('button.chatmsg__retry', {
-      type: 'button',
-      text: '重新回答',
-      onClick: function () {
-        if (state.busy) return;
-        regenerate(m);
-      },
+    return iconButton('retry', '重新回答', function () {
+      if (state.busy) return;
+      regenerate(m);
     });
   }
 

@@ -63,6 +63,9 @@ VENDOR_PYODIDE = ROOT / "vendor" / "pyodide"
 # 演示沙箱的前端套件：第三方（vendor/demo-kit）+ 我们自己那层（theme/demo-kit）
 VENDOR_DEMO_KIT = ROOT / "vendor" / "demo-kit"
 THEME_DEMO_KIT = ROOT / "theme" / "demo-kit"
+# 代码排版：真等宽字体（进 assets/fonts/）+ highlight.js（进 assets/）
+VENDOR_MONO = ROOT / "vendor" / "mono"
+VENDOR_HLJS = ROOT / "vendor" / "hljs"
 
 # 运行时脚本按依赖顺序加载；**新增脚本要登记在这里**，顺序错会引用到未定义的模块
 RUNTIME_ORDER = [
@@ -154,6 +157,18 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         shutil.copy2(src, fonts_out / src.name)
         font_count += 1
 
+    # 正文字体：等宽那份（代码块用）。`--font-mono` 首选 JetBrains Mono，
+    # 而本机没有它时浏览器只能退到 DejaVu Sans Mono —— 那份字在代码里很难看。
+    for src in sorted(VENDOR_MONO.glob("*.woff2")) if VENDOR_MONO.is_dir() else []:
+        shutil.copy2(src, fonts_out / src.name)
+        font_count += 1
+
+    # 语法高亮：到位就优先用它（手写那份留在 theme/runtime/highlight.js 兜底）
+    hljs_out = assets / "hljs.min.js"
+    hljs_ready = (VENDOR_HLJS / "highlight.min.js").is_file()
+    if hljs_ready:
+        shutil.copy2(VENDOR_HLJS / "highlight.min.js", hljs_out)
+
     # ---------------------------------------------------------- Pyodide
     # 对话里「跑 Python」用的运行时。**可选**：没同步过就跳过（那种情况下
     # run_python 生成的页面会回退到 CDN）。放到 /assets/pyodide/ 下，
@@ -217,6 +232,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         page: _asset(f"{page}.css", _digest(assets / f"{page}.css")) for page in PAGE_CSS
     }
     katex_js_url = _asset("katex.min.js", _digest(assets / "katex.min.js"))
+    hljs_js_url = _asset("hljs.min.js", _digest(hljs_out)) if hljs_ready else ""
     runtime_url = {name: _asset(f"runtime/{name}", _digest(runtime_out / name)) for name in scripts_to_copy}
 
     for page, page_js in PAGE_JS.items():
@@ -231,6 +247,9 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
             _config_script(api_base, page),
             f'<script src="{katex_js_url}"></script>',
         ]
+        # hljs 也要排在运行时之前：`QF.highlight` 在渲染代码块时就问它有没有到位
+        if hljs_js_url:
+            scripts.append(f'<script src="{hljs_js_url}"></script>')
         # KaTeX 必须先于运行时：md.js 在渲染时就调用 window.katex
         scripts += [f'<script src="{runtime_url[name]}"></script>' for name in RUNTIME_ORDER]
         scripts += [f'<script src="{runtime_url[name]}"></script>' for name in page_js]

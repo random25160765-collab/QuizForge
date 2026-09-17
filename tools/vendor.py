@@ -85,6 +85,27 @@ DEMO_KIT_SOURCES = {
     "tailwind.js": "https://cdn.tailwindcss.com/3.4.17",
 }
 
+# ---------------------------------------------------------------- 代码排版
+#
+# 见 `sync_frontend`：一份真等宽字体 + 一个真正的高亮器。
+VENDOR_MONO = ROOT / "vendor" / "mono"
+VENDOR_HLJS = ROOT / "vendor" / "hljs"
+HLJS_FILES_MONO = {
+    "jetbrains-mono-latin-400-normal.woff2": (
+        "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.1.1/files/"
+        "jetbrains-mono-latin-400-normal.woff2"
+    ),
+    "jetbrains-mono-latin-700-normal.woff2": (
+        "https://cdn.jsdelivr.net/npm/@fontsource/jetbrains-mono@5.1.1/files/"
+        "jetbrains-mono-latin-700-normal.woff2"
+    ),
+}
+HLJS_FILES_HLJS = {
+    "highlight.min.js": (
+        "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/highlight.min.js"
+    ),
+}
+
 # 本机已知的 KaTeX 分布位置（按优先级）。这些路径只读，绝不修改。
 CANDIDATE_SOURCES = [
     "~/Source/random25160765-collab.github.io/node_modules/katex/dist",
@@ -330,15 +351,53 @@ def sync_demo_kit(force: bool = False) -> int:
     return 0
 
 
+def sync_frontend(force: bool = False) -> int:
+    """同步**代码排版**要用的两样：真字体与真正的语法高亮。
+
+    * **JetBrains Mono**（24KB×2）：`--font-mono` 首选就是它，但本机
+      （Linux）没有 SF Mono / Menlo / Consolas，实际落到 `DejaVu Sans Mono` ——
+      等宽字里它是难看的那一类，而代码块满屏都是。带一份真字体就够了。
+    * **highlight.js**（128KB，含常用语言）：原先的高亮是**手写的**
+      （`theme/runtime/highlight.js`，当年本机无外网），token 切得粗。
+      hljs 到位就优先用它，手写那份留作兜底。
+    """
+    jobs = (
+        (VENDOR_MONO, HLJS_FILES_MONO),
+        (VENDOR_HLJS, HLJS_FILES_HLJS),
+    )
+    missing_total = 0
+    for target_dir, sources in jobs:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        missing = [
+            name for name in sources if force or not (target_dir / name).is_file()
+        ]
+        if not missing:
+            print(f"[INFO] 已就绪，跳过：{_rel(target_dir)}")
+            continue
+        for name in missing:
+            print(f"[INFO] 取 {name} …")
+            try:
+                _download(sources[name], target_dir / name)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
+                print(
+                    "       代码块会退回手写高亮与系统等宽字体（能用，但没那么好看）。",
+                    file=sys.stderr,
+                )
+                missing_total += 1
+    return 1 if missing_total else 0
+
+
 def sync(force: bool = False) -> int:
     """同步 vendor 下的第三方资源。
 
-    KaTeX 必需（缺了页面公式会退化）；Pyodide 与演示套件都是**可选**的
-    （缺了各少一项能力，不该让构建停下）。
+    KaTeX 必需（缺了页面公式会退化）；其余（Pyodide / 演示套件 / 字体与高亮）
+    都是**可选**的 —— 缺了各少一项能力或好看度，不该让构建停下。
     """
     code = sync_katex(force=force)
     sync_pyodide(force=force)
     sync_demo_kit(force=force)
+    sync_frontend(force=force)
     return code
 
 
