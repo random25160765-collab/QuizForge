@@ -1998,3 +1998,113 @@ body[data-page='chat'] .chat {
   border-left: 1px solid var(--line);
   color: var(--fg2);
 }
+
+/* ------------------------------------------------- 图标按钮与临时题卡 */
+
+.chat__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat__icon svg {
+  display: block;
+}
+
+/* 发送键：正文只剩一个箭头，靠 padding 撑成方形（两态见 paintSend） */
+.chat__send {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 对话树：图标 + 角标（信息还在，但不占一整行） */
+.chat__treebtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat__treebadge {
+  min-width: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.chat__treefork {
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.chat__treebtn.is-on .chat__treebadge {
+  background: color-mix(in srgb, var(--pri) 26%, transparent);
+  color: var(--fg);
+}
+
+/* 临时题卡：把一堆标签收成一行安静的小字，重点留给题面 */
+.chatcard--draft {
+  padding: 14px 16px 12px;
+}
+
+.chatcard--draft .chatcard__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.chatcard--draft .chatcard__id {
+  font-weight: 650;
+  color: var(--fg);
+  letter-spacing: 0.01em;
+}
+
+.chatcard--draft .chatcard__tag {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--fg3);
+  font-size: 11.5px;
+}
+
+.chatcard--draft .chatcard__tag.is-draft {
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--fg2);
+  background: color-mix(in srgb, var(--pri) 14%, transparent);
+}
+
+.chatcard--draft .chatcard__tag + .chatcard__tag::before {
+  content: '·';
+  margin-right: 8px;
+  color: var(--line);
+}
+
+.chatcard--draft .chatcard__stem {
+  font-size: 14px;
+  line-height: 1.7;
+  margin-bottom: 12px;
+}
+
+.chatcard--draft .chatcard__opt {
+  margin-bottom: 6px;
+}
+
+.chatcard--draft .chatcard__actions {
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* 「对答案」靠左：它是这一屏的主按钮，另外两个是次要动作 */
+.chatcard--draft .chatcard__submit {
+  margin-right: auto;
+}

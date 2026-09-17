@@ -327,9 +327,27 @@
 
   /* ------------------------------------------------------------- Modal */
 
-  function modal(options) {
+  /**
+   * 弹层的挂载点，**按需创建**。
+   *
+   * 原先是从页面里取 `#modal-root`，取不到就直接返回一个空壳 ——
+   * 而四个页面**都没有**这个元素，于是 `ui.confirm` 永远不弹、它的 promise
+   * 永远不 settle：用户看到的就是"点了删除没反应，对话删不掉"（实测复现）。
+   * 挂载点这种东西不该由每个页面各自记得写 —— 缺了就补一个。
+   */
+  function modalRoot() {
     var root = document.getElementById('modal-root');
-    if (!root) return { close: function () {} };
+    if (!root) {
+      root = document.createElement('div');
+      root.id = 'modal-root';
+      root.hidden = true;
+      document.body.appendChild(root);
+    }
+    return root;
+  }
+
+  function modal(options) {
+    var root = modalRoot();
     var opts = options || {};
     var closable = opts.closable !== false;
 
