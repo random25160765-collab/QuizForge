@@ -13,6 +13,9 @@
 ② 题目的 `topic` 等于点 key —— 点 key 进了考纲（补成叶子）之后这条很可靠：
    那一步的意义正是让"点 key"成为合法考点，两套命名空间在这里对齐。
 
+最后还有一条**硬断言**：**游离题（现行题里没挂概念的）必须为零**，
+否则退出码非零 —— 它们对图谱不可见，覆盖率 / 选题 / 掌握度会一起漏掉它们。
+
 用法：
 
     python -m pipeline.coverage                     # 全部材料，按缺口排序
@@ -23,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from sqlalchemy import text
@@ -88,10 +92,53 @@ GAPS_SQL = text(
 )
 
 
+ORPHAN_SQL = text(
+    """
+    SELECT q.id, q.topic, q.layer, q.payload
+    FROM questions q
+    WHERE q.retired_at IS NULL
+      AND q.status IN ('published', 'verified')
+      AND NOT EXISTS (SELECT 1 FROM question_concepts qc WHERE qc.question_id = q.id)
+    ORDER BY q.id
+    """
+)
+
+
 def _engine():
     from app.db import get_engine  # noqa: PLC0415
 
     return get_engine()
+
+
+def orphans(limit: int = 0) -> list[dict]:
+    """**游离题**：现行题里一条概念边都没有的。
+
+    为什么它是硬断言而不是"看一眼"：没挂概念的题对图谱是**不可见**的 ——
+    覆盖率算不到它、按知识点选题选不到它、掌握度也回流不到图上。它不报错，
+    只是安静地掉出所有算法（实测曾经有 86 道）。所以对账里必须让它为零。
+
+    `payload` 在应用层切片（不用 `->>`）：B 段要换内置引擎，SQL 里的 JSON 运算符
+    是最容易被方言绊住的一处。
+    """
+    out: list[dict] = []
+    with _engine().connect() as conn:
+        for row in conn.execute(ORPHAN_SQL):
+            payload = row[3]
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except ValueError:
+                    payload = {}
+            stem = str((payload or {}).get("stem") or "").replace("\n", " ")
+            out.append(
+                {
+                    "id": row[0],
+                    "topic": row[1] or "",
+                    "layer": row[2] or "",
+                    "stem": stem[:40],
+                }
+            )
+    return out[:limit] if limit else out
 
 
 def rows_for(material: str | None) -> list[dict]:
@@ -173,6 +220,22 @@ def main(argv: list[str] | None = None) -> int:
             sum(1 for row in data if row["covered"] == 0),
         )
     )
+
+    # 硬断言：游离题必须为零（详见 `orphans`）
+    stray = orphans()
+    print()
+    print(f"游离题（现行题里没挂概念）：{len(stray)} 道")
+    if stray:
+        for item in stray[:10]:
+            print("  %-16s %-6s %s" % (item["id"], item["layer"] or "-", item["stem"]))
+        if len(stray) > 10:
+            print(f"  …… 另有 {len(stray) - 10} 道")
+        print(
+            "  ⟵ 它们对图谱不可见（覆盖率 / 选题 / 掌握度全漏）。\n"
+            "     补法：`python -m pipeline.graph_build merge`（按题↔点回填概念），"
+            "再不到位就得人工挂。"
+        )
+        return 1
     return 0
 
 
