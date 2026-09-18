@@ -113,16 +113,34 @@ def test_move_swaps_with_the_neighbour_block(lib: notelib.Library):
     assert notelib.read_note(lib, "A.md")["body"].splitlines() == before
 
 
-def test_undo_restores_the_previous_version_and_is_itself_undoable(lib: notelib.Library):
-    before = notelib.read_note(lib, "A.md")["body"]
-    notelib.line_op(lib, "A.md", op="replace", index=0, raw="# 改过的标题")
-    assert notelib.read_note(lib, "A.md")["body"] != before
+def test_undo_walks_back_through_several_changes(lib: notelib.Library):
+    """**回归**：连着撤销要能一直往回退。
 
-    notelib.undo(lib, "A.md")
-    assert notelib.read_note(lib, "A.md")["body"] == before
-    # 撤销本身也留了痕：再撤一次能回到"改过标题"的那一版
-    notelib.undo(lib, "A.md")
-    assert "改过的标题" in notelib.read_note(lib, "A.md")["body"]
+    原先每次撤销都把当前状态也存一份，于是"最新那份"永远是刚撤掉的那版 ——
+    再点一次就在最后两个状态之间来回切，怎么点都退不回去（实测连撤 11 次都没干净）。
+    """
+    start = notelib.read_note(lib, "A.md")["body"]
+    for step in range(4):
+        notelib.line_op(lib, "A.md", op="replace", index=0, raw=f"# 第 {step} 版")
+    assert "第 3 版" in notelib.read_note(lib, "A.md")["body"]
+
+    for _ in range(4):
+        notelib.undo(lib, "A.md")
+    assert notelib.read_note(lib, "A.md")["body"] == start
+    with pytest.raises(notelib.NoteError):
+        notelib.undo(lib, "A.md")   # 已经是最早那一版，如实报错而不是空转
+
+
+def test_restore_picks_a_specific_version(lib: notelib.Library):
+    notelib.line_op(lib, "A.md", op="replace", index=0, raw="# 第一版")
+    notelib.line_op(lib, "A.md", op="replace", index=0, raw="# 第二版")
+    versions = notelib.snapshots(lib, "A.md")
+    assert len(versions) >= 2
+    # 最早那一版就是原始内容
+    notelib.restore(lib, "A.md", versions[-1]["name"])
+    assert notelib.read_note(lib, "A.md")["body"].startswith("# A")
+    with pytest.raises(notelib.NoteNotFound):
+        notelib.restore(lib, "A.md", "../不存在.snap")
 
 
 def test_write_body_keeps_the_header(lib: notelib.Library):
