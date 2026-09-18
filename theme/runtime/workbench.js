@@ -45,6 +45,8 @@
     QF.panes.register('canvas', {
       title: '画布',
       icon: 'grip',
+      // 同一样东西再开一次就切过去（`key` 决定"什么算同一个标签"）
+      key: function (opts) { return (opts.lib || '') + '/' + (opts.path || ''); },
       mount: function (host, opts, ctx) {
         var paneId = ctx && ctx.leaf ? ctx.leaf.id : null;
 
@@ -102,8 +104,8 @@
             item.appendChild(h('span.wkb__pick-lib', null, lib.name));
             item.appendChild(h('span', null, file.name));
             item.addEventListener('click', function () {
-              // 换内容走引擎：它负责卸掉旧视图、重新 mount，并把新选择写进布局
-              QF.panes.setView('canvas', { lib: lib.name, path: file.path });
+              // 开一个标签（已有同名的就切过去）；引擎负责挂载与持久化
+              QF.panes.open('canvas', { lib: lib.name, path: file.path }, file.name);
             });
             listBox.appendChild(item);
           });
@@ -117,6 +119,115 @@
       return paneId;   // 只是表明这个参数留着：将来要做"记住上次选的那块"时用得上
     }).catch(function () {
       listBox.appendChild(h('p.panes__missing-s', null, '读不到笔记库列表'));
+    });
+  }
+
+  /* ------------------------------------------------------------------ 笔记 */
+
+  function registerNote() {
+    QF.panes.register('note', {
+      title: '笔记',
+      icon: 'book',
+      key: function (opts) { return (opts.lib || '') + '/' + (opts.path || ''); },
+      mount: function (host, opts) {
+        var doc = h('div.panes__doc');
+        host.appendChild(doc);
+        if (!opts.lib || !opts.path) {
+          doc.appendChild(h('p.panes__muted', { text: '没给笔记路径' }));
+          return;
+        }
+        doc.appendChild(h('p.panes__muted', { text: '正在读 ' + opts.path + '…' }));
+        api.get('/notes/note?lib=' + encodeURIComponent(opts.lib) + '&path=' + encodeURIComponent(opts.path))
+          .then(function (note) {
+            ui.clear(doc);
+            doc.appendChild(h('h1', { text: note.title || opts.path }));
+            var meta = h('div.panes__meta');
+            (note.tags || []).forEach(function (tag) {
+              meta.appendChild(h('span.panes__chip', { text: '#' + tag }));
+            });
+            if (note.backlinks && note.backlinks.length) {
+              meta.appendChild(h('span.panes__muted', { text: '被引 ' + note.backlinks.length + ' 处' }));
+            }
+            doc.appendChild(meta);
+            // 正文交给共用的 Markdown 零件（与笔记页、对话里用的是同一份）
+            doc.appendChild(h('div.md', null, QF.md.render(note.body || '')));
+          })
+          .catch(function (err) {
+            ui.clear(doc);
+            doc.appendChild(h('p.panes__muted', {
+              text: '读不到这篇笔记：' + ((err && err.message) || err),
+            }));
+          });
+      },
+    });
+  }
+
+  /* ------------------------------------------------------------------ 资料条目 */
+
+  function registerDoc() {
+    QF.panes.register('doc', {
+      title: '资料',
+      icon: 'book',
+      key: function (opts) { return opts.citekey || ''; },
+      mount: function (host, opts) {
+        var doc = h('div.panes__doc');
+        host.appendChild(doc);
+        if (!opts.citekey) {
+          doc.appendChild(h('p.panes__muted', { text: '没给引用键' }));
+          return;
+        }
+        doc.appendChild(h('p.panes__muted', { text: '正在读 ' + opts.citekey + '…' }));
+        api.get('/library/item?citekey=' + encodeURIComponent(opts.citekey) + '&text=4000')
+          .then(function (data) {
+            // 接口返回的是**摊平的字典**：brief() 的字段 + bibtex / citedBy / assets / files，
+            // 传了 `text` 参数时再多一个 `text` 对象（state / chars / ratio / head）。
+            // 踩过：我原先按 `data.item` 取，取不到；正文也当成字符串，实际在 `text.head` 里。
+            var item = (data && data.item) || data || {};
+            var info = (data && data.text) || {};
+            var text = info.head || '';
+            ui.clear(doc);
+            doc.appendChild(h('h1', { text: item.title || opts.citekey }));
+            var meta = h('div.panes__meta');
+            if (item.authors && item.authors.length) {
+              meta.appendChild(h('span.panes__muted', { text: item.authors.join('、') }));
+            }
+            if (item.year) meta.appendChild(h('span.panes__muted', { text: String(item.year) }));
+            if (item.kind) meta.appendChild(h('span.panes__chip', { text: item.kind }));
+            (item.topics || []).forEach(function (topic) {
+              meta.appendChild(h('span.panes__chip', { text: topic }));
+            });
+            meta.appendChild(h('span.panes__chip', { text: item.citekey || opts.citekey }));
+            doc.appendChild(meta);
+            if (item.source) {
+              doc.appendChild(h('p.panes__muted', { text: '来源：' + item.source }));
+            }
+            if (item.files && item.files.length > 1) {
+              doc.appendChild(h('p.panes__muted', {
+                text: '这条还带 ' + (item.files.length - 1) + ' 个附属资源',
+              }));
+            }
+            if (item.citedBy && item.citedBy.length) {
+              doc.appendChild(h('p.panes__muted', {
+                text: '被这些笔记引用：' + item.citedBy.map(function (one) { return one.title || one.path; }).join('、'),
+              }));
+            }
+            if (text) {
+              var label = { pdf: 'PDF 抽取', md: '原文', html: '网页抽取' }[info.state] || info.state || '';
+              doc.appendChild(h('p.panes__muted', {
+                text: '正文 ' + (info.chars || text.length) + ' 字' + (label ? ' · ' + label : ''),
+              }));
+              doc.appendChild(h('div.md', null, QF.md.render(text)));
+            } else {
+              doc.appendChild(h('p.panes__muted', { text: '还没有抽取到正文（资料页里点"建索引"就会缓存一份）' }));
+            }
+          })
+          .catch(function (err) {
+            ui.clear(doc);
+            doc.appendChild(h('p.panes__muted', {
+              text: '读不到这份资料：' + ((err && err.message) || err),
+            }));
+          });
+      },
     });
   }
 
@@ -137,6 +248,8 @@
     ui.clear(root);
     registerBlank();
     registerCanvas();
+    registerNote();
+    registerDoc();
 
     // 主题必须显式初始化：`ui.theme.current()` 的兜底是 dark，
     // 不调这一句，整页（含顶栏）会是深色 —— app.js / chat.js / wrongbook.js 各自都调了
@@ -150,7 +263,12 @@
     QF.panes.mount(wrap, { default: DEFAULT_LAYOUT });
   }
 
-  QF.workbench = { boot: boot, DEFAULT_LAYOUT: DEFAULT_LAYOUT };
+  QF.workbench = {
+    boot: boot,
+    DEFAULT_LAYOUT: DEFAULT_LAYOUT,
+    // 资源树接上之后就用它：树上点一下 = 在这一格开一个标签
+    openResource: function (kind, ref, title) { QF.panes.open(kind, ref, title); },
+  };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
