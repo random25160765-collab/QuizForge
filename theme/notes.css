@@ -1,77 +1,157 @@
-/* 笔记页样式。只用在 body[data-page='notes'] 下，颜色/间距一律走 app.css 的令牌
- * （浅色深色共用一套变量，切主题即时生效 —— 写死色值浅色下就会看到半页深色）。
+/* 笔记页样式。只在 body[data-page='notes'] 下生效。
  *
- * 结构：三栏 —— 树 / 正文 / 属性与反链。窄了就把右侧折成抽屉（见文件末尾）。
+ * 三条讲究：
+ *  1. 颜色一律走 app.css 的令牌（浅色深色共用一套变量）。写死色值的话，浅色用户会看到半页深色。
+ *  2. **字体与留白先定，装饰最后**：这一页是拿来写字/读字的，行高与正文宽度比边框花纹重要。
+ *  3. 层级靠"留白 + 发丝线 + 次级文字色"表达，不靠色块与阴影堆叠。
  */
 
 .notes {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr) 300px;
-  gap: 0;
+  grid-template-columns: 264px minmax(0, 1fr) 304px;
   height: calc(100vh - var(--topbar-h, 48px) - var(--statusbar-h, 26px));
   min-height: 0;
 }
 
-/* ------------------------------------------------------------ 左栏：树 */
+/* ============================================================ 通用小件 */
+
+.nbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg2);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  transition: color var(--dur, 140ms) var(--ease, ease-out),
+    border-color var(--dur, 140ms) var(--ease, ease-out),
+    background var(--dur, 140ms) var(--ease, ease-out);
+}
+
+.nbtn:hover {
+  color: var(--fg);
+  border-color: var(--line-strong, var(--line));
+  background: var(--bg2);
+}
+
+.nbtn--primary {
+  color: var(--bg);
+  background: var(--pri);
+  border-color: var(--pri);
+  font-weight: 500;
+}
+
+.nbtn--primary:hover {
+  color: var(--bg);
+  background: var(--pri-2, var(--pri));
+  border-color: var(--pri-2, var(--pri));
+}
+
+.nbtn--danger:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.nbtn--icon {
+  width: 26px;
+  padding: 0;
+}
+
+.nbtn[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.nhair {
+  height: 1px;
+  background: var(--line);
+}
+
+/* ============================================================ 左栏：树 */
 
 .notes__aside {
   display: flex;
   flex-direction: column;
   min-height: 0;
   border-right: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .notes__asidehead {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 10px 10px 8px;
+  padding: 10px 10px 10px;
   border-bottom: 1px solid var(--line);
 }
 
-.notes__lib {
-  width: 100%;
-  padding: 5px 8px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
+.notes__librow,
+.notes__searchrow {
+  display: flex;
+  gap: 6px;
 }
 
+.notes__lib,
 .notes__search {
-  width: 100%;
-  padding: 6px 9px;
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
   font: inherit;
   font-size: 12px;
   color: var(--fg);
   background: var(--bg2);
   border: 1px solid var(--line);
   border-radius: var(--r-sm, 6px);
+  transition: border-color var(--dur, 140ms) var(--ease, ease-out);
 }
 
-.notes__search:focus,
-.notes__lib:focus {
+.notes__lib:focus,
+.notes__search:focus {
   outline: none;
   border-color: var(--pri);
+  background: var(--bg);
+}
+
+.notes__search::placeholder {
+  color: var(--fg3);
 }
 
 .notes__scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 6px 6px 16px;
+  padding: 8px 8px 24px;
 }
 
-/* 树：目录与文件一行一个，层级靠缩进（不画连接线，留白就够） */
+.ntree__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 4px 8px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+/* 树行：高度统一，缩进表达层级，选中给一道左侧竖线（不用整行色块） */
 .ntree__dir,
 .ntree__file {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 4px 6px;
+  min-height: 28px;
+  padding: 0 8px 0 4px;
+  font: inherit;
   font-size: 12.5px;
   color: var(--fg2);
   text-align: left;
@@ -79,6 +159,8 @@
   border: 0;
   border-radius: var(--r-sm, 6px);
   cursor: pointer;
+  transition: background var(--dur, 140ms) var(--ease, ease-out),
+    color var(--dur, 140ms) var(--ease, ease-out);
 }
 
 .ntree__file {
@@ -93,44 +175,66 @@
 .ntree__file.is-on {
   background: var(--bg3);
   color: var(--fg);
+  font-weight: 500;
+}
+
+.ntree__file.is-on::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--pri);
 }
 
 .ntree__caret {
-  width: 12px;
-  color: var(--fg3);
-  font-size: 10px;
   flex: none;
+  width: 12px;
+  font-size: 9.5px;
+  color: var(--fg3);
+  transition: transform var(--dur, 140ms) var(--ease, ease-out);
+}
+
+.ntree__caret--folded {
+  transform: rotate(-90deg);
 }
 
 .ntree__label {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .ntree__count {
+  flex: none;
+  font-size: 10.5px;
   color: var(--fg3);
-  font-size: 11px;
-  flex: none;
+  font-variant-numeric: tabular-nums;
 }
 
-.ntree__tagdot {
+.ntree__dirty {
   flex: none;
-  font-size: 10px;
-  color: var(--pri);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--amber, var(--pri));
 }
 
-/* 检索结果：一节一行，命中处给一点点标记 */
+/* 检索结果 */
 .nsearch__item {
   display: block;
   width: 100%;
-  padding: 6px 7px;
+  padding: 7px 8px;
   text-align: left;
   background: none;
   border: 0;
   border-radius: var(--r-sm, 6px);
   cursor: pointer;
+  transition: background var(--dur, 140ms) var(--ease, ease-out);
 }
 
 .nsearch__item:hover {
@@ -138,119 +242,341 @@
 }
 
 .nsearch__title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 12.5px;
   color: var(--fg);
 }
 
-.nsearch__snippet {
-  margin-top: 2px;
-  font-size: 11.5px;
+.nsearch__where {
+  font-size: 10.5px;
   color: var(--fg3);
+}
+
+.nsearch__snippet {
+  margin-top: 3px;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--fg3);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.nsearch__hl {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--pri) 22%, transparent);
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+/* ============================================================ 中栏 */
+
+.notes__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* 工具条：常驻在顶部，不随正文滚走 */
+.note__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  min-height: 46px;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.note__title {
+  flex: 1;
+  min-width: 80px;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+  cursor: text;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.nsearch__where {
-  margin-left: 6px;
-  font-size: 10px;
-  color: var(--fg3);
-}
-
-/* ------------------------------------------------------------ 中栏：正文 */
-
-.notes__main {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  padding: 16px 22px 60px;
-}
-
-.note__head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding-bottom: 10px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--line);
-}
-
-.note__title {
+.note__titleinput {
   flex: 1;
-  min-width: 120px;
-  margin: 0;
-  font-size: 19px;
+  min-width: 80px;
+  height: 28px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 15px;
   font-weight: 600;
   color: var(--fg);
-  cursor: text;
+  background: var(--bg2);
+  border: 1px solid var(--pri);
+  border-radius: var(--r-sm, 6px);
 }
 
-.note__tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.note__titleinput:focus {
+  outline: none;
 }
 
-.note__meta {
+.note__status {
+  flex: none;
   font-size: 11.5px;
   color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-/* 文档 / 大纲两态切换：细边框的分段控件，不做填充色块 */
+.note__status--dirty {
+  color: var(--amber, var(--fg2));
+}
+
+/* 模式切换：四档（阅读 / 分栏 / 编辑 / 大纲） */
 .seg {
   display: inline-flex;
+  flex: none;
+  padding: 2px;
   border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
-  overflow: hidden;
+  border-radius: calc(var(--r-sm, 6px) + 2px);
+  background: var(--bg2);
 }
 
 .seg__item {
-  padding: 4px 12px;
+  padding: 4px 11px;
   font: inherit;
-  font-size: 12px;
-  color: var(--fg2);
+  font-size: 11.5px;
+  color: var(--fg3);
   background: none;
   border: 0;
+  border-radius: var(--r-sm, 6px);
   cursor: pointer;
+  transition: color var(--dur, 140ms) var(--ease, ease-out),
+    background var(--dur, 140ms) var(--ease, ease-out);
 }
 
-.seg__item + .seg__item {
-  border-left: 1px solid var(--line);
+.seg__item:hover {
+  color: var(--fg);
 }
 
 .seg__item.is-on {
   color: var(--fg);
+  background: var(--bg);
+  box-shadow: var(--shadow-1, 0 1px 2px rgb(0 0 0 / 12%));
+  font-weight: 500;
+}
+
+/* 正文区：阅读 / 编辑 / 分栏共用一个滚动容器 */
+.note__pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.note__pane--split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+}
+
+.nsplit__half {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+
+.nsplit__half + .nsplit__half {
+  border-left: 1px solid var(--line);
+}
+
+/* ---- 编辑器 ---- */
+
+.nedit {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.nedit__pad {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+}
+
+.nedit__btn {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg2);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  transition: color var(--dur, 120ms) var(--ease, ease-out),
+    background var(--dur, 120ms) var(--ease, ease-out);
+}
+
+.nedit__btn:hover {
+  color: var(--fg);
   background: var(--bg3);
 }
 
-.doc {
-  max-width: 78ch;
-  font-size: var(--font-scale, 13px);
-  line-height: 1.75;
+.nedit__sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--line);
+}
+
+.nedit__area {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 22px 26px 40vh;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13.5px;
+  line-height: 1.85;
+  color: var(--fg);
+  background: var(--bg);
+  border: 0;
+  resize: none;
+  tab-size: 4;
+  caret-color: var(--pri);
+}
+
+.nedit__area:focus {
+  outline: none;
+}
+
+.nedit__area::placeholder {
+  color: var(--fg3);
+}
+
+/* ---- 阅读区 ---- */
+
+.nread {
+  padding: 24px 30px 40vh;
+}
+
+.nread__inner {
+  max-width: 74ch;
+  font-size: 14px;
+  line-height: 1.82;
   color: var(--fg);
 }
 
-/* 双链：细下划线，不用亮色块 —— 正文里一眼能认出，又不打断阅读 */
+.nread__inner > :first-child {
+  margin-top: 0;
+}
+
+.nread__inner h1,
+.nread__inner h2,
+.nread__inner h3,
+.nread__inner h4 {
+  margin: 1.6em 0 0.6em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.nread__inner h1 {
+  font-size: 1.5em;
+}
+
+.nread__inner h2 {
+  font-size: 1.25em;
+}
+
+.nread__inner h3 {
+  font-size: 1.1em;
+}
+
+.nread__inner p,
+.nread__inner ul,
+.nread__inner ol,
+.nread__inner blockquote,
+.nread__inner pre,
+.nread__inner table {
+  margin: 0.85em 0;
+}
+
+.nread__inner blockquote {
+  padding: 2px 0 2px 14px;
+  color: var(--fg2);
+  border-left: 2px solid var(--line-strong, var(--line));
+}
+
+.nread__inner code {
+  padding: 1px 5px;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.92em;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.nread__inner pre {
+  padding: 12px 14px;
+  overflow: auto;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 8px);
+}
+
+.nread__inner pre code {
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+.nread__inner hr {
+  height: 1px;
+  margin: 1.8em 0;
+  background: var(--line);
+  border: 0;
+}
+
+/* 双链：细下划线，不用亮色块 —— 正文里一眼认出，又不打断阅读 */
 .wikilink {
   color: var(--pri);
   text-decoration: none;
-  border-bottom: 1px solid color-mix(in srgb, var(--pri) 40%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--pri) 42%, transparent);
+  transition: border-color var(--dur, 120ms) var(--ease, ease-out);
 }
 
 .wikilink:hover {
   border-bottom-color: var(--pri);
 }
 
-.wikilink--embed {
-  color: var(--fg2);
+.wikilink--missing {
+  color: var(--fg3);
   border-bottom-style: dashed;
 }
 
-/* ------------------------------------------------------ 大纲（幕布那半边） */
+.nread__empty {
+  color: var(--fg3);
+  font-size: 13px;
+}
+
+/* ---- 大纲（幕布那半边） ---- */
 
 .outline {
-  font-size: var(--font-scale, 13px);
+  padding: 14px 18px 40vh;
+  font-size: 14px;
 }
 
 .oline {
@@ -258,9 +584,9 @@
   display: flex;
   align-items: flex-start;
   gap: 4px;
-  padding: 2px 6px 2px 0;
+  padding: 3px 6px 3px 0;
   border-radius: var(--r-sm, 6px);
-  cursor: default;
+  transition: background var(--dur, 120ms) var(--ease, ease-out);
 }
 
 .oline:hover {
@@ -271,19 +597,31 @@
   background: var(--bg3);
 }
 
-/* 选中/悬停时才出现的折叠箭头与编辑按钮：平时不抢视线 */
+.oline.is-on::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--pri);
+}
+
 .oline__fold {
   flex: none;
-  width: 14px;
-  height: 20px;
+  width: 15px;
+  height: 22px;
   padding: 0;
-  font-size: 9px;
-  line-height: 20px;
+  font-size: 9.5px;
+  line-height: 22px;
   color: var(--fg3);
   background: none;
   border: 0;
+  border-radius: 4px;
   cursor: pointer;
   opacity: 0;
+  transition: opacity var(--dur, 120ms) var(--ease, ease-out);
 }
 
 .oline:hover .oline__fold,
@@ -298,8 +636,8 @@
 
 .oline__bullet {
   flex: none;
-  width: 14px;
-  line-height: 1.75;
+  width: 15px;
+  line-height: 1.82;
   font-size: 11px;
   color: var(--fg3);
   text-align: center;
@@ -309,41 +647,42 @@
 .oline__text {
   flex: 1;
   min-width: 0;
-  line-height: 1.75;
+  line-height: 1.82;
   color: var(--fg);
   word-break: break-word;
 }
 
 .oline[data-kind='heading'] .oline__text {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 15px;
 }
 
-.oline[data-kind='code'] .oline__text {
+.oline[data-kind='code'] .oline__text,
+.oline[data-kind='math'] .oline__text {
   font-family: var(--font-mono, monospace);
-  font-size: 12px;
-  color: var(--fg3);
+  font-size: 12.5px;
+  color: var(--fg2);
 }
 
 .oline[data-kind='quote'] .oline__text {
   color: var(--fg2);
+  padding-left: 10px;
   border-left: 2px solid var(--line-strong, var(--line));
-  padding-left: 8px;
 }
 
 .oline[data-kind='blank'] {
-  min-height: 18px;
+  min-height: 20px;
 }
 
 .oline__placeholder {
   color: var(--fg3);
-  font-size: 11px;
+  font-size: 11.5px;
 }
 
 .oline__edit {
   flex: none;
-  padding: 0 6px;
-  height: 20px;
+  height: 22px;
+  padding: 0 7px;
   font: inherit;
   font-size: 11px;
   color: var(--fg3);
@@ -352,6 +691,7 @@
   border-radius: var(--r-sm, 6px);
   cursor: pointer;
   opacity: 0;
+  transition: opacity var(--dur, 120ms) var(--ease, ease-out);
 }
 
 .oline:hover .oline__edit,
@@ -362,9 +702,10 @@
 .oline__input {
   flex: 1;
   min-width: 0;
-  padding: 2px 6px;
-  font: inherit;
-  font-size: 12.5px;
+  height: 26px;
+  padding: 0 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--pri);
@@ -376,12 +717,12 @@
 }
 
 .outline__hint {
-  margin-top: 14px;
-  padding-top: 10px;
+  margin-top: 16px;
+  padding-top: 12px;
   border-top: 1px dashed var(--line);
   font-size: 11.5px;
+  line-height: 2;
   color: var(--fg3);
-  line-height: 1.9;
 }
 
 .outline__hint kbd {
@@ -394,43 +735,65 @@
   border-radius: 4px;
 }
 
-/* ------------------------------------------------------------ 右栏：面板 */
+/* ============================================================ 右栏 */
 
 .notes__side {
   min-height: 0;
   overflow: auto;
-  padding: 12px 12px 40px;
+  padding: 14px 14px 40px;
   border-left: 1px solid var(--line);
+  background: var(--bg);
 }
 
 .npanel {
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .npanel__title {
-  margin-bottom: 6px;
-  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: 7px;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
   color: var(--fg3);
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.npanel__title:hover {
+  color: var(--fg2);
+}
+
+.npanel__count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .npanel__hint {
-  margin-top: 4px;
-  font-size: 11px;
+  margin-top: 5px;
+  font-size: 11.5px;
+  line-height: 1.6;
   color: var(--fg3);
 }
 
 .nprop {
   display: flex;
+  align-items: center;
   gap: 8px;
-  padding: 3px 0;
-  font-size: 12px;
+  min-height: 26px;
+  font-size: 12.5px;
 }
 
 .nprop__key {
   flex: none;
-  width: 46px;
+  width: 44px;
   color: var(--fg3);
 }
 
@@ -441,6 +804,7 @@
   cursor: text;
   border-bottom: 1px dashed transparent;
   word-break: break-word;
+  transition: border-color var(--dur, 120ms) var(--ease, ease-out);
 }
 
 .nprop__val:hover {
@@ -454,12 +818,13 @@
 .nitem {
   display: block;
   width: 100%;
-  padding: 5px 6px;
+  padding: 6px 7px;
   text-align: left;
   background: none;
   border: 0;
   border-radius: var(--r-sm, 6px);
   cursor: pointer;
+  transition: background var(--dur, 120ms) var(--ease, ease-out);
 }
 
 .nitem:hover {
@@ -469,15 +834,33 @@
 .nitem__title {
   font-size: 12.5px;
   color: var(--fg);
-}
-
-.nitem__sub {
-  margin-top: 2px;
-  font-size: 11px;
-  color: var(--fg3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.nitem__sub {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg3);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.nitem--head {
+  padding-left: 7px;
+  font-size: 12.5px;
+  color: var(--fg2);
+}
+
+.nitem__lvl {
+  display: inline-block;
+  width: 14px;
+  font-size: 10px;
+  color: var(--fg3);
 }
 
 .nchips {
@@ -487,7 +870,7 @@
 }
 
 .nchip {
-  padding: 2px 8px;
+  padding: 3px 9px;
   font: inherit;
   font-size: 11px;
   color: var(--fg2);
@@ -495,6 +878,8 @@
   border: 1px solid var(--line);
   border-radius: 999px;
   cursor: pointer;
+  transition: color var(--dur, 120ms) var(--ease, ease-out),
+    border-color var(--dur, 120ms) var(--ease, ease-out);
 }
 
 .nchip:hover {
@@ -505,12 +890,82 @@
 .nchip__count {
   margin-left: 5px;
   color: var(--fg3);
+  font-variant-numeric: tabular-nums;
 }
 
-/* 窄屏：右栏折成抽屉（浮层，不挤压正文宽度） */
+.nhist__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  font-size: 11.5px;
+  color: var(--fg2);
+  border-radius: var(--r-sm, 6px);
+}
+
+.nhist__row:hover {
+  background: var(--bg2);
+}
+
+.nhist__at {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.nhist__why {
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.nhist__cur {
+  color: var(--pri);
+  font-size: 11px;
+}
+
+/* ============================================================ 空态 */
+
+.nempty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  padding: 40px;
+  text-align: center;
+}
+
+.nempty__mark {
+  width: 44px;
+  height: 44px;
+  color: var(--fg3);
+  opacity: 0.75;
+}
+
+.nempty__title {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.nempty__text {
+  max-width: 42ch;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--fg3);
+}
+
+.nempty__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ============================================================ 窄屏 */
+
 @media (max-width: 1180px) {
   .notes {
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: 232px minmax(0, 1fr);
   }
 
   .notes__side {
@@ -518,8 +973,7 @@
     top: var(--topbar-h, 48px);
     right: 0;
     bottom: var(--statusbar-h, 26px);
-    width: 300px;
-    background: var(--bg);
+    width: 304px;
     box-shadow: var(--shadow-3, 0 8px 30px rgb(0 0 0 / 25%));
     transform: translateX(100%);
     transition: transform var(--dur, 160ms) var(--ease, ease-out);
@@ -528,4 +982,178 @@
   .notes__side.is-open {
     transform: none;
   }
+
+  .note__pane--split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .nsplit__half--src {
+    display: none;
+  }
+}
+
+/* ============================================================ 与 Trilium 对齐的那几件
+ *
+ * 排版四项走 CSS 变量，由 notes.js 的「排版」面板写进 #notes-root ——
+ * 它把这几项放在"选项 → 外观 → 字体"并用服务端样式表下发（services/font.ts），
+ * 我们是本地单页，不为此多一次往返。
+ * 这一页是拿来看字写字的地方，"字号不合适"不是审美问题而是不能用。
+ */
+
+#notes-root {
+  --notes-size: 14px;
+  --notes-line: 1.82;
+  --notes-width: 74ch;
+  --notes-mono: inherit;
+}
+
+.nedit__area,
+.nread__inner {
+  font-family: var(--notes-mono);
+  font-size: var(--notes-size);
+  line-height: var(--notes-line);
+}
+
+.nread__inner {
+  max-width: var(--notes-width);
+}
+
+/* 预览里"光标那一行对应的块"（Trilium 的 useSyncedHighlight） */
+.nread__inner .is-cur {
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+  border-radius: var(--r-sm, 6px);
+  box-shadow: -8px 0 0 color-mix(in srgb, var(--pri) 10%, transparent);
+}
+
+/* ---- 树上的图标 / 颜色 / 就地改名 ---- */
+
+.ntree__icon {
+  flex: none;
+  font-size: 12px;
+}
+
+.ntree__color {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.ntree__file.is-archived {
+  opacity: 0.45;
+}
+
+.ntree__rename {
+  display: block;
+  width: calc(100% - 8px);
+  min-width: 0;
+  height: 26px;
+  margin-bottom: 2px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--pri);
+  border-radius: var(--r-sm, 6px);
+}
+
+.ntree__rename:focus {
+  outline: none;
+}
+
+.ntree__dir.is-drop {
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  outline: 1px dashed var(--pri);
+  outline-offset: -1px;
+}
+
+/* ---- 右键菜单 ---- */
+
+.nctx {
+  position: fixed;
+  z-index: 60;
+  min-width: 168px;
+  padding: 5px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 8px);
+  box-shadow: var(--shadow-3, 0 8px 30px rgb(0 0 0 / 25%));
+}
+
+.nctx__item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.nctx__item:hover {
+  background: var(--bg3);
+}
+
+.nctx__item--danger:hover {
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+}
+
+.nctx__sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--line);
+}
+
+/* ---- 版本差异 ---- */
+
+.ndiff {
+  max-height: 58vh;
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.ndiff__line {
+  padding: 0 8px;
+  color: var(--fg2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ndiff__line--add {
+  color: var(--ok, #2e7d32);
+  background: color-mix(in srgb, #2e7d32 10%, transparent);
+}
+
+.ndiff__line--del {
+  color: var(--bad, #d9534f);
+  background: color-mix(in srgb, #d9534f 10%, transparent);
+}
+
+.ndiff__line--at {
+  color: var(--fg3);
+}
+
+/* ---- 排版面板的滑块 ---- */
+
+.ntypo {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+}
+
+.ntypo__val {
+  flex: none;
+  width: 46px;
+  font-size: 11px;
+  color: var(--fg3);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }

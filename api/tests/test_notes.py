@@ -25,7 +25,9 @@ from app.notes import (
     move_block,
     note_id,
     outline,
+    parse_query,
     render,
+    search_row,
     replace_line,
     resolve,
     rewrite_links,
@@ -177,6 +179,50 @@ def test_sha256_helpers_agree(tmp_path: Path):
 
 
 # ------------------------------------------------------------------ 大纲（幕布那半边）
+
+
+def _rows():
+    return [
+        search_row("甲/极限.md", "数列的极限", "夹逼准则与等价无穷小", ["微积分", "极限"]),
+        search_row("乙/卷积.md", "卷积", "信号与系统", ["信号"]),
+        search_row("丙/空.md", "没写内容", "", []),
+    ]
+
+
+def test_query_expression_fields_and_operators():
+    """检索表达式的形状照搬 Trilium（`services/search/`）：字段、取反、`AND`/`OR`、排序。"""
+    rows = _rows()
+    cases = {
+        "极限": ["甲/极限.md"],
+        "title:极限": ["甲/极限.md"],
+        "path:乙": ["乙/卷积.md"],
+        "#微积分": ["甲/极限.md"],
+        "#微积分 OR #信号": ["甲/极限.md", "乙/卷积.md"],
+        "#微积分 AND 夹逼": ["甲/极限.md"],
+        "-卷积": ["甲/极限.md", "丙/空.md"],
+        "not 卷积": ["甲/极限.md", "丙/空.md"],
+        "is:empty": ["丙/空.md"],
+        "(极限 OR 卷积) AND -空": ["甲/极限.md", "乙/卷积.md"],
+        "type:canvas": [],
+    }
+    for text, expected in cases.items():
+        query = parse_query(text)
+        got = [row["rel"] for row in rows if query.match(row)]
+        assert got == expected, f"{text} → {got}"
+
+
+def test_query_orderby_and_limit():
+    query = parse_query("极限 OR 卷积 orderby title desc limit 5")
+    assert query.order == "title" and query.desc and query.limit == 5
+    ordered = sorted([row for row in _rows() if query.match(row)], key=query.sort_key, reverse=query.desc)
+    assert [row["title"] for row in ordered] == ["数列的极限", "卷积"]
+
+
+def test_query_tolerates_malformed_input():
+    """写歪了不能炸、也不能把结果清空 —— 一个手滑不该让人以为"库是空的"。"""
+    for text in ("((极限", '极限"', "title:", "#", "orderby 不存在的字段 极限"):
+        query = parse_query(text)
+        assert isinstance(query.match, type(lambda: None))
 
 
 def test_outline_nests_bullets_under_headings():

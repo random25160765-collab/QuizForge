@@ -1,8 +1,9 @@
 <!--
-  笔记：三栏 —— 左是树与检索，中是正文（文档 / 大纲两态），右是属性与反链。
+  笔记：三栏写作台 —— 左是树与检索，中是**能写的地方**（阅读 / 分栏 / 编辑 / 大纲），
+  右是属性、大纲导航、反链与改动历史。
 
   为什么另开一页：这一页是"笔记"，与刷题页那几个 hash 视图不是一回事；和 graph / chat
-  一样走独立页，顶栏由 shell.js 统一接线（见 theme/runtime/shell.js）。
+  一样走独立页，顶栏由 shell.js 统一接线。
 
   `data-page` 必须写：页面级样式与顶栏图标隐藏都靠它（见 app.css 的 body[data-page] 规则）。
 -->
@@ -10,19 +11,22 @@
   <div class="notes" id="notes-root">
     <aside class="notes__aside">
       <div class="notes__asidehead">
-        <select class="notes__lib" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
-        <input class="notes__search" id="notes-search" type="search" placeholder="全文检索…"
-               autocomplete="off" spellcheck="false" aria-label="全文检索">
+        <div class="notes__librow">
+          <select class="notes__lib" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
+          <button class="nbtn nbtn--primary" id="notes-new" type="button" title="新建笔记（⌘N）"
+                  aria-label="新建笔记">＋</button>
+        </div>
+        <div class="notes__searchrow">
+          <input class="notes__search" id="notes-search" type="search" placeholder="搜索全文…"
+                 autocomplete="off" spellcheck="false" aria-label="搜索全文">
+          <button class="nbtn" id="notes-clear" type="button" title="清空检索" aria-label="清空检索"
+                  hidden>×</button>
+        </div>
       </div>
       <div class="notes__scroll" id="notes-tree" role="tree"></div>
     </aside>
 
-    <main class="notes__main" id="notes-main">
-      <div class="empty">
-        <div class="empty__title">选一篇笔记</div>
-        <div class="empty__text">左边挑一篇，或者在上面检索。</div>
-      </div>
-    </main>
+    <main class="notes__main" id="notes-main"></main>
 
     <aside class="notes__side" id="notes-side"></aside>
   </div>

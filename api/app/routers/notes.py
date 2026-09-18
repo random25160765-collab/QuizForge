@@ -132,6 +132,44 @@ def rename(body: dict) -> dict:
     return _run(notelib.rename_note, lib, _text(body, "path"), _text(body, "to"))
 
 
+@router.post("/delete")
+def delete(body: dict) -> dict:
+    """删除一篇 —— **移到回收站**（`.trash/`），不是真删。见 `notelib.delete_note`。"""
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.delete_note, lib, _text(body, "path"))
+
+
+@router.post("/move")
+def move(body: dict) -> dict:
+    """把一篇挪进另一个目录（树里拖拽就是这个）。按路径写的引用会一起改。"""
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.move_note, lib, _text(body, "path"), _text(body, "folder"))
+
+
+@router.get("/trash")
+def trash(lib: str) -> dict:
+    return {"items": _run(notelib.trash_list, _lib(lib))}
+
+
+@router.post("/trash/restore")
+def trash_restore(body: dict) -> dict:
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.restore_from_trash, lib, _text(body, "name"), _text(body, "folder"))
+
+
+@router.post("/snapshot")
+def snapshot(body: dict) -> dict:
+    """手动存一版（命名快照）。它不参与撤销游标，也不会被自动清理掉。"""
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.snapshot_named, lib, _text(body, "path"), _text(body, "name"))
+
+
+@router.get("/diff")
+def diff(lib: str, path: str, name: str) -> dict:
+    """当前版与某一版的逐行差异（"改动可对比"）。"""
+    return _run(notelib.diff_version, _lib(lib), path, name)
+
+
 @router.post("/undo")
 def undo(body: dict) -> dict:
     """撤销这篇笔记的最近一次改动（撤回前会先把当前状态存一份，于是撤销也可撤销）。"""

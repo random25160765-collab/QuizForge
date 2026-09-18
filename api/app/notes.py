@@ -695,6 +695,236 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+# ------------------------------------------------------------------ 检索表达式
+#
+# 形状照搬 Trilium 的表达式检索（`packages/trilium-core/src/services/search/`）：
+# `#标签` / `title:` / `-` 取反 / `AND` `OR` `not` / 括号 / `orderby` / `limit`。
+# 它是**纯函数** —— 输入一批已解析好的条目，输出命中集合，与存储无关，所以能整套搬过来。
+#
+# 为什么不做成"搜索框 = 子串匹配"：库一大，"带某标签、标题含某词、而且还没整理"这种念头
+# 会天天冒出来，子串匹配表达不了"且"与"非"。表达式是这套东西里唯一越用越值钱的部分。
+
+#: 排序字段 → 取值函数。与 Trilium 的 `orderby` 对应的最小集合。
+_ORDER_FIELDS = {
+    "title": lambda row: row.get("title", ""),
+    "path": lambda row: row.get("rel", ""),
+    "created": lambda row: row.get("created", ""),
+    "modified": lambda row: row.get("modified", 0.0),
+    "size": lambda row: row.get("size", 0),
+    "links": lambda row: row.get("links", 0),
+}
+
+
+@dataclass
+class Query:
+    """解析好的检索表达式。`match` 收一条"检索行"（见 `search_row`）。"""
+
+    match: Callable[[dict], bool]
+    order: str = ""
+    desc: bool = False
+    limit: int = 0
+    text: str = ""
+
+    def sort_key(self, row: dict) -> Any:
+        field = _ORDER_FIELDS.get(self.order)
+        return field(row) if field else 0
+
+
+def _tokenize_query(text: str) -> list[str]:
+    """切词。引号里的整段算一个词（用引号包着保留，便于后面识别"这是短语"）。"""
+    tokens: list[str] = []
+    buffer = ""
+    quoted = False
+    for char in text:
+        if char == '"':
+            quoted = not quoted
+            if not quoted:
+                tokens.append(f'"{buffer}"')
+                buffer = ""
+            continue
+        if quoted:
+            buffer += char
+            continue
+        if char in "()":
+            if buffer:
+                tokens.append(buffer)
+                buffer = ""
+            tokens.append(char)
+            continue
+        if char.isspace():
+            if buffer:
+                tokens.append(buffer)
+                buffer = ""
+            continue
+        buffer += char
+    if buffer:
+        tokens.append(f'"{buffer}"' if quoted else buffer)
+    return tokens
+
+
+def _strip_quotes(token: str) -> str:
+    return token[1:-1] if len(token) >= 2 and token.startswith('"') and token.endswith('"') else token
+
+
+def _atom(token: str, row: dict) -> bool:
+    """一个字段/词条是否命中。`token` 已经去掉取反前缀。"""
+    raw = _strip_quotes(token)
+    lowered = raw.lower()
+    if lowered in ("and", "or", "not"):
+        return True  # 运算符不该走到这里；真走到了就当空条件（不炸）
+
+    if raw.startswith("#"):
+        tag = raw[1:]
+        if "=" in tag:                      # `#标签=值`：我们的标签是纯字符串，值只作别名
+            tag = tag.split("=", 1)[1]
+        wanted = tag.strip().lower()
+        return any(wanted == str(item).strip().lower() for item in row.get("tags", []))
+
+    if ":" in raw:
+        field, _, value = raw.partition(":")
+        key = field.strip().lower()
+        want = value.strip().lower()
+        if key == "title":
+            return want in str(row.get("title", "")).lower()
+        if key == "path":
+            return want in str(row.get("rel", "")).lower()
+        if key == "type":
+            return want == str(row.get("kind", "note"))
+        if key == "tag":
+            return any(want == str(item).strip().lower() for item in row.get("tags", []))
+        if key == "is":
+            if want == "unresolved":
+                return bool(row.get("unresolved", 0))
+            if want == "empty":
+                return not str(row.get("body", "")).strip()
+            if want == "generated":
+                return bool(row.get("generated", False))
+            if want == "archived":
+                return bool(row.get("archived", False))
+            return False
+        # 不认识的字段：当成普通词，别让一个笔误把结果清空
+        lowered = raw.lower()
+
+    if not lowered:
+        return True
+    return lowered in str(row.get("haystack", ""))
+
+
+def parse_query(text: str) -> Query:
+    """解析检索表达式。
+
+    语法（`AND` 与相邻即与，`OR` 绑定更松）：
+
+        term                 正文或标题包含
+        "两个 词"             短语
+        #标签 / #标签=值       有某个标签
+        title:词 path:词 tag:词 type:note|canvas
+        is:unresolved|empty|generated|archived
+        -原子                取反
+        A AND B / A OR B / ( … ) / not A
+        orderby title|path|created|modified|size|links [asc|desc]
+        limit 20
+    """
+    tokens = _tokenize_query(text or "")
+    order = ""
+    desc = False
+    limit = 0
+    kept: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index].lower()
+        if token == "orderby" and index + 1 < len(tokens):
+            order = _strip_quotes(tokens[index + 1]).lower()
+            index += 2
+            if index < len(tokens) and tokens[index].lower() in ("asc", "desc"):
+                desc = tokens[index].lower() == "desc"
+                index += 1
+            continue
+        if token == "limit" and index + 1 < len(tokens):
+            try:
+                limit = max(0, int(_strip_quotes(tokens[index + 1])))
+            except ValueError:
+                limit = 0
+            index += 2
+            continue
+        kept.append(tokens[index])
+        index += 1
+
+    position = 0
+
+    def peek() -> str:
+        return kept[position].lower() if position < len(kept) else ""
+
+    def parse_or() -> Callable[[dict], bool]:
+        nonlocal position
+        node = parse_and()
+        while peek() == "or":
+            position += 1
+            right = parse_and()
+            left = node
+            node = lambda row, left=left, right=right: left(row) or right(row)
+        return node
+
+    def parse_and() -> Callable[[dict], bool]:
+        nonlocal position
+        node = parse_unary()
+        while position < len(kept) and peek() not in ("or", ")"):
+            if peek() == "and":
+                position += 1
+            if position >= len(kept) or peek() in ("or", ")"):
+                break
+            right = parse_unary()
+            left = node
+            node = lambda row, left=left, right=right: left(row) and right(row)
+        return node
+
+    def parse_unary() -> Callable[[dict], bool]:
+        nonlocal position
+        token = peek()
+        if token in ("not", "-"):
+            position += 1
+            inner = parse_unary()
+            return lambda row, inner=inner: not inner(row)
+        return parse_primary()
+
+    def parse_primary() -> Callable[[dict], bool]:
+        nonlocal position
+        if position >= len(kept):
+            return lambda row: True
+        token = kept[position]
+        if token == "(":
+            position += 1
+            node = parse_or()
+            if position < len(kept) and kept[position] == ")":
+                position += 1
+            return node
+        if token == ")":
+            position += 1
+            return lambda row: True
+        position += 1
+        if token.startswith("-") and len(token) > 1:
+            inner = token[1:]
+            return lambda row, t=inner: not _atom(t, row)
+        return lambda row, t=token: _atom(t, row)
+
+    predicate = parse_or() if kept else (lambda row: True)
+    return Query(match=predicate, order=order if order in _ORDER_FIELDS else "", desc=desc, limit=limit, text=text)
+
+
+def search_row(rel: str, title: str, body: str, tags: list[str], **extra: Any) -> dict[str, Any]:
+    """把一条笔记拍成"检索行"。表达式只认这一种形状，于是解析与存储解耦。"""
+    row: dict[str, Any] = {
+        "rel": rel,
+        "title": title,
+        "body": body,
+        "tags": tags,
+        "haystack": (title + "\n" + body).lower(),
+        "kind": extra.pop("kind", "note"),
+    }
+    row.update(extra)
+    return row
+
+
 __all__ = [
     "CANVAS_SUFFIX",
     "DEFAULT_INDENT",
@@ -726,6 +956,7 @@ __all__ = [
     "replace_line",
     "resolve",
     "rewrite_links",
+    "search_row",
     "sha256_bytes",
     "sha256_file",
     "shift_line",

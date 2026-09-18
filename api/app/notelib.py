@@ -9,9 +9,11 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
+import shutil
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -29,10 +31,12 @@ from .notes import (
     iter_links,
     minimal_meta,
     outline,
+    parse_query,
     read_text,
     render,
     resolve,
     rewrite_links,
+    search_row,
     splice_body,
     split_lines,
     split_text,
@@ -42,9 +46,10 @@ from .notes import (
 #: 再多会变成一个没人管的黑洞目录
 MAX_SNAPSHOTS = 50
 
-#: 笔记根目录下的两个隐藏目录：快照（可撤销）与导入清单
+#: 笔记根目录下的隐藏目录：快照（可撤销）、导入清单、回收站
 SNAPSHOT_DIR = ".snapshots"
 IMPORT_DIR = ".import"
+TRASH_DIR = ".trash"
 #: 不该出现在笔记树里的目录
 SKIP_DIRS = frozenset({SNAPSHOT_DIR, IMPORT_DIR, ".obsidian", ".trash", ".git", "__pycache__"})
 
@@ -400,42 +405,63 @@ class Index:
         ]
 
     def search(self, query: str, *, limit: int = 50) -> list[dict[str, Any]]:
-        """全文检索：标题命中排在正文命中前面。
+        """检索：表达式（`#标签` / `title:` / `-词` / `AND` `OR` / `orderby` / `limit`）+ 全文。
 
-        没做倒排索引 —— 1113 篇、单用户、点一下搜一次，直接扫全文就够快；
-        先上倒排会把"索引与文件不同步"这类 bug 引进来，而收益在这个规模上是零。
+        没做倒排索引 —— 单用户、点一下搜一次，直接扫就够快；先上倒排会把
+        "索引与文件不同步"这类 bug 引进来，而收益在这个规模上是零。
         """
-        needle = query.strip().lower()
-        if not needle:
+        parsed = parse_query(query or "")
+        if not parsed.text.strip():
             return []
-        title_hits: list[dict[str, Any]] = []
-        body_hits: list[dict[str, Any]] = []
+        limit = parsed.limit or limit
+        needle = _plain_needle(parsed.text)
+        rows: list[tuple[dict[str, Any], Entry]] = []
         for entry in self.entries():
-            if needle in entry.title.lower():
-                title_hits.append(
-                    {
-                        "path": entry.rel,
-                        "title": entry.title,
-                        "line": 0,
-                        "snippet": entry.title,
-                        "where": "标题",
-                    }
-                )
-            for index, line in enumerate(entry.body.splitlines()):
-                if needle in line.lower():
-                    body_hits.append(
-                        {
-                            "path": entry.rel,
-                            "title": entry.title,
-                            "line": index,
-                            "snippet": line.strip()[:160],
-                            "where": "正文",
-                        }
-                    )
-                    break
-            if len(title_hits) + len(body_hits) >= limit * 4:
-                break
-        return (title_hits + body_hits)[:limit]
+            row = search_row(
+                entry.rel,
+                entry.title,
+                entry.body,
+                entry.tags,
+                kind="canvas" if entry.rel.endswith(CANVAS_SUFFIX) else "note",
+                modified=entry.mtime,
+                size=entry.size,
+                links=len(entry.refs),
+                unresolved=len(entry.unresolved),
+                generated=entry.generated_header,
+                archived=bool(entry.meta.get("archived")),
+            )
+            if parsed.match(row):
+                rows.append((row, entry))
+
+        if parsed.order:
+            rows.sort(key=lambda pair: parsed.sort_key(pair[0]), reverse=parsed.desc)
+        elif needle:
+            # 纯文本查询：标题命中排前面（表达式查询有自己的排序，不插一脚）
+            rows.sort(key=lambda pair: (0 if needle in pair[1].title.lower() else 1, pair[1].rel))
+        else:
+            rows.sort(key=lambda pair: pair[1].rel)
+
+        hits: list[dict[str, Any]] = []
+        for row, entry in rows[:limit]:
+            line, snippet, where = 0, entry.title, "标题"
+            if needle and needle not in entry.title.lower():
+                for index, text in enumerate(entry.body.splitlines()):
+                    if needle in text.lower():
+                        line, snippet, where = index, text.strip()[:160], "正文"
+                        break
+            if where == "标题" and not needle:
+                snippet = _first_meaningful_line(entry.body) or entry.title
+                where = "整篇命中"
+            hits.append(
+                {
+                    "path": entry.rel,
+                    "title": entry.title,
+                    "line": line,
+                    "snippet": snippet,
+                    "where": where,
+                }
+            )
+        return hits
 
 
 _INDEXES: dict[str, Index] = {}
@@ -467,6 +493,32 @@ def reset_index() -> None:
 # 撤销自己也会存一份，于是"最新那份"永远是刚撤掉的那版 —— 再点就在最后两个状态
 # 之间来回跳，连撤 11 次都退不回原样。改成"记下每一版 + 一个游标"之后，
 # 撤销就是"把游标往回挪一格"，再挪一格还能继续往回。
+
+
+def _natural_key(text: str) -> list[Any]:
+    """自然序排序键：把数字段当数字比（`10` 排在 `2` 后面，而不是前面）。"""
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", text or "")]
+
+
+def _plain_needle(text: str) -> str:
+    """纯文本查询返回那段词，否则空串。
+
+    "标题命中排前面"只对纯文本查询有意义 —— 表达式查询有自己的 `orderby`，别去插一脚。
+    """
+    lowered = (text or "").strip().lower()
+    if not lowered or lowered.startswith("-"):
+        return ""
+    if any(mark in lowered for mark in ("#", ":", "(", ")", " and ", " or ", " not ")):
+        return ""
+    return lowered
+
+
+def _first_meaningful_line(body: str) -> str:
+    for line in (body or "").splitlines():
+        text = line.strip().lstrip("#> -*`").strip()
+        if text:
+            return text[:160]
+    return ""
 
 
 def _snapshot_dir(lib: Library, rel: str) -> Path:
@@ -549,16 +601,33 @@ def snapshots(lib: Library, rel: str) -> list[dict[str, Any]]:
                 "size": stat.st_size,
                 "why": parts[1] if len(parts) > 2 else "",
                 "current": _seq_of(path) == cursor,
+                "named": False,
+            }
+        )
+    # 命名快照（手动"存一版"）排在后面：它们不参与游标、也不被轮转清理
+    for path in sorted(folder.glob("named-*.snap"), reverse=True):
+        stat = path.stat()
+        out.append(
+            {
+                "name": path.name,
+                "seq": -1,
+                "at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "size": stat.st_size,
+                "why": path.stem.split("-", 2)[1] if path.name.count("-") >= 2 else "命名",
+                "current": False,
+                "named": True,
             }
         )
     return out
 
 
 def history_state(lib: Library, rel: str) -> dict[str, Any]:
-    items = snapshots(lib, rel)
+    """自动版本的状态。**命名快照不算在内** —— 否则"存一版留档"会让"可撤销"永远为真。"""
+    items = [item for item in snapshots(lib, rel) if not item["named"]]
     cursor = next((item["seq"] for item in items if item["current"]), -1)
     return {
         "versions": len(items),
+        "named": len([item for item in snapshots(lib, rel) if item["named"]]),
         "cursor": cursor,
         "can_undo": any(item["seq"] < cursor for item in items),
     }
@@ -749,11 +818,22 @@ def line_op(
 
 
 def create_note(lib: Library, folder: str, title: str) -> dict[str, Any]:
-    """新建一篇笔记（「未解析链接」一键补齐也走这里）。"""
+    """新建一篇笔记（「未解析链接」一键补齐也走这里）。
+
+    **标题可以为空** —— 界面上的新建是"先把它建出来，再在树里起名"（Trilium 的
+    Ctrl+O 就是这样：`keyboard_actions.ts:126-133`，建完直接在树上改标题）。
+    要求先想好名字，等于给最高频的动作加一道仪式；而空标题只要给个占位名、
+    重名往后编号就行。
+    """
     clean = _BAD_NAME.sub(" ", title).strip()
-    if not clean:
-        raise NoteError("标题不能为空")
     folder_rel = (folder or "").replace("\\", "/").strip("/")
+    if not clean:
+        clean, series = "未命名", 2
+        while True:
+            probe = f"{folder_rel}/{clean}.md" if folder_rel else f"{clean}.md"
+            if not safe_path(lib, probe).exists():
+                break
+            clean, series = f"未命名 {series}", series + 1
     rel = f"{folder_rel}/{clean}.md" if folder_rel else f"{clean}.md"
     path = safe_path(lib, rel)
     if path.exists():
@@ -822,6 +902,16 @@ def rename_note(lib: Library, rel: str, new_rel: str) -> dict[str, Any]:
             written.append((other, text))
         new_path.parent.mkdir(parents=True, exist_ok=True)
         old_path.rename(new_path)
+        # **标题就是文件名**：front-matter 里的 `title` 跟着改。
+        # 不改的话，树里显示新名字、打开却还是旧标题 —— 实测就是这么对不上的。
+        try:
+            moved = split_text(read_text(new_path))
+        except NoteError:
+            moved = None
+        if moved is not None and str(moved.meta.get("title") or "") != new_path.stem:
+            meta = dict(moved.meta)
+            meta["title"] = new_path.stem
+            _save(lib, new_rel, new_path, render(meta, moved.body), why="rename")
     except OSError as exc:
         # 把已经改过的引用者还原回去：宁可"什么都没发生"，也不要留一堆断链
         for other, text in written:
@@ -838,6 +928,141 @@ def rename_note(lib: Library, rel: str, new_rel: str) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------ 读
+
+
+# ------------------------------------------------------------------ 回收站 / 移动
+
+
+def _trash_dir(lib: Library) -> Path:
+    return notes_root() / TRASH_DIR / lib.name
+
+
+def delete_note(lib: Library, rel: str) -> dict[str, Any]:
+    """删一篇 —— **移到回收站，不是真删**。
+
+    Trilium 是"软删除 + 孤儿回收"两阶段（`bbranch.ts:141-206`）：先标 `deleteId`，
+    等所有父都删了才回收。那套是为多父（克隆）服务的，文件系统上只会多出一堆
+    "删了但还在"的中间态。最小可恢复方案就是挪到 `.trash/`：文件还在、能看能捞，
+    树里不再出现。
+    """
+    path = safe_path(lib, rel)
+    if not path.is_file():
+        raise NoteNotFound(f"没有这篇笔记：{rel}")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    trash = _trash_dir(lib)
+    trash.mkdir(parents=True, exist_ok=True)
+    target = trash / f"{stamp}__{path.name}"
+    shutil.move(str(path), str(target))
+    # 快照目录一起挪走：不然回收站里那篇还能"撤销"，而树里已经找不到它了
+    folder = _snapshot_dir(lib, rel)
+    if folder.is_dir():
+        shutil.move(str(folder), str(trash / f"{stamp}__{path.name}.snapshots"))
+    _prune_empty_dirs(lib, path.parent)
+    _invalidate(lib)
+    return {"deleted": rel, "trash": target.name}
+
+
+def trash_list(lib: Library) -> list[dict[str, Any]]:
+    folder = _trash_dir(lib)
+    if not folder.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for item in sorted(folder.iterdir(), reverse=True):
+        if not item.is_file():
+            continue
+        stat = item.stat()
+        out.append(
+            {
+                "name": item.name,
+                "title": item.name.split("__", 1)[-1],
+                "at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "bytes": stat.st_size,
+            }
+        )
+    return out
+
+
+def restore_from_trash(lib: Library, name: str, folder: str = "") -> dict[str, Any]:
+    """从回收站捞回来。同名冲突时加序号，**不覆盖**现有笔记。"""
+    source = _trash_dir(lib) / Path(name).name
+    if not source.is_file():
+        raise NoteNotFound(f"回收站里没有这一份：{name}")
+    base = Path(name.split("__", 1)[-1])
+    dest_dir = safe_path(lib, folder) if folder else lib.root
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / base.name
+    suffix = 2
+    while target.exists():
+        target = dest_dir / f"{base.stem} {suffix}{base.suffix}"
+        suffix += 1
+    shutil.move(str(source), str(target))
+    _invalidate(lib)
+    return read_note(lib, target.relative_to(lib.root).as_posix())
+
+
+def move_note(lib: Library, rel: str, folder: str) -> dict[str, Any]:
+    """把一篇挪进另一个目录（树里拖拽就是这个）。
+
+    与改名走**同一套**：两者都改路径，所以都要重写"按路径写的引用"。
+    只按文件名写的双链（`[[标题]]`）不受影响 —— 那正是 Obsidian 习惯的好处。
+    """
+    folder = folder.strip("/")
+    target_rel = f"{folder}/{Path(rel).name}" if folder else Path(rel).name
+    if target_rel == rel:
+        return read_note(lib, rel)
+    moved = rename_note(lib, rel, target_rel)
+    # 移走最后一篇之后把空目录收掉 —— 与删除同一个讲究，别在树里留空壳
+    _prune_empty_dirs(lib, safe_path(lib, rel).parent)
+    return moved
+
+
+def _prune_empty_dirs(lib: Library, folder: Path) -> None:
+    """删掉最后一篇之后，把空目录一路收掉 —— 别在树里留一串空壳。"""
+    while folder != lib.root and folder.is_dir():
+        if any(folder.iterdir()):
+            return
+        folder.rmdir()
+        folder = folder.parent
+
+
+def snapshot_named(lib: Library, rel: str, name: str) -> dict[str, Any]:
+    """手动存一版（命名快照）。
+
+    它**不参与 `undo` 的游标，也不参与轮转** —— 与 Trilium 的
+    `revisionIgnoreNamedSnapshots`（`options_init.ts:151`）同一个意思：
+    命名的那些是"我特意留下的"，不该被自动清理掉。
+    """
+    path = safe_path(lib, rel)
+    if not path.is_file():
+        raise NoteNotFound(f"没有这篇笔记：{rel}")
+    folder = _snapshot_dir(lib, rel)
+    folder.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^\w\u4e00-\u9fff-]+", "-", (name or "").strip())[:40].strip("-") or "snapshot"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    target = folder / f"named-{slug}-{stamp}.snap"
+    target.write_bytes(path.read_bytes())
+    return {"saved": target.name, "slug": slug, "bytes": target.stat().st_size}
+
+
+def diff_version(lib: Library, rel: str, name: str) -> dict[str, Any]:
+    """当前版与某一版的**逐行差异**（给"改动可对比"用）。
+
+    Trilium 是在前端用 `diffWords` 算（`dialogs/revisions.tsx`）；我们在后端用
+    `difflib` 出统一格式，前端只要给行着色就行 —— 少了把两边正文都塞进浏览器的开销。
+    """
+    path = safe_path(lib, rel)
+    target = _snapshot_dir(lib, rel) / Path(name).name
+    if not target.is_file():
+        raise NoteNotFound(f"没有这一版：{name}")
+    old = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    new = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+    lines = list(difflib.unified_diff(old, new, fromfile=name, tofile="当前", lineterm="", n=2))
+    return {
+        "name": name,
+        "lines": lines[:2000],
+        "added": sum(1 for line in lines if line.startswith("+") and not line.startswith("+++")),
+        "removed": sum(1 for line in lines if line.startswith("-") and not line.startswith("---")),
+    }
 
 
 def _tag_list(meta: dict[str, Any], body: str) -> list[str]:
@@ -939,13 +1164,22 @@ def tree(lib: Library) -> dict[str, Any]:
                 "kind": "canvas" if entry.rel.endswith(CANVAS_SUFFIX) else "note",
                 "tags": entry.tags,
                 "mtime": entry.mtime,
+                # Trilium 的三个展示位：`#iconClass` / `#color` / `branch.prefix`（见 docs/笔记模块设计.md）。
+                # 落成 front-matter 的 icon / color / prefix —— 文件里怎么写，树里就怎么显示。
+                "icon": str(entry.meta.get("icon") or ""),
+                "color": str(entry.meta.get("color") or ""),
+                "prefix": str(entry.meta.get("prefix") or ""),
+                "archived": bool(entry.meta.get("archived")),
             }
         )
 
     def finalize(node: dict[str, Any], prefix: str) -> dict[str, Any]:
         here = f"{prefix}/{node['name']}" if prefix else node["name"]
         dirs = [finalize(child, here) for _, child in sorted(node["dirs"].items())]
-        files = sorted(node["files"], key=lambda item: item["path"])
+        # 自然序（Trilium 的 `sortNatural`）：`第 2 章` 排在 `第 10 章` 前面。
+        # **不做手工排序**（它靠 branch.notePosition）—— 文件系统上那要么写进文件名、
+        # 要么另开顺序文件，都是噪音；代价是不能拖拽排序同级条目，接受。
+        files = sorted(node["files"], key=lambda item: _natural_key(item["title"] or item["name"]))
         return {
             "name": node["name"],
             "path": here if prefix or node["name"] != lib.name else "",
@@ -1004,22 +1238,28 @@ __all__ = [
     "NoteNotFound",
     "Ref",
     "create_note",
+    "delete_note",
+    "diff_version",
+    "history_state",
     "index",
     "libraries",
     "library",
     "line_op",
+    "move_note",
     "notes_root",
     "read_note",
     "rename_note",
     "reset_index",
     "restore",
+    "restore_from_trash",
     "safe_path",
     "search",
     "set_meta",
-    "history_state",
+    "snapshot_named",
     "snapshots",
     "stats",
     "tag_list",
+    "trash_list",
     "tree",
     "undo",
     "write_body",
