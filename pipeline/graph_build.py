@@ -641,6 +641,280 @@ async def relate_pairs(limit: int = 40, min_weight: float = 2.0) -> dict:
     return {"checked": len(rows), "typed": typed, "none": none, "failed": failed}
 
 
+# --------------------------------------------------------- 判边（以概念为中心）
+
+#: 一次给模型看多少个候选。
+#: 12 起手，实测还有一批"候选里确实没有前置"的概念 —— 放宽到 20 再问一次（只问那些
+#: 还没接进图、且上一次判空的），给它们一个更宽的挑选面。
+CENTRIC_PEER_LIMIT = 20
+
+
+def _centric_candidates(limit: int) -> list[dict]:
+    """挑出这一批要问的**目标概念**：还没接进有序边的那些，各带一组候选。
+
+    与 `_relate_candidates` 的差别是问题的形状：那边问"这两个之间是什么关系"，
+    这边问"要读懂它，得先懂哪几个"。后者更接近人排课时的思路，而且一次就能把一个
+    孤点接进图 —— 这正是"每个概念都能走到根"缺的那一步。
+
+    ## 候选从哪来（这里踩过一次）
+
+    一开始只拿**同一段切片**里共现过的概念当候选，实测几乎全是"没有前置"：
+    两个概念在同一段里被抽出来，多半只是同一页上一起出现过，而**前置常常跨小节**。
+    所以候选改成两层，合起来用：
+
+    1. 同切片共现过的（有证据，排前面）；
+    2. **同一份材料里**的其它概念（前置关系常常跨小节，这一层把池子放宽）。
+
+    两层都空就跳过 —— 没东西可挑的问题没有意义，也别把它标记成"问过"。
+    """
+    with _engine().connect() as conn:
+        targets = conn.execute(
+            text(
+                """
+                SELECT id, key, name, COALESCE(definition, '') AS definition,
+                       COALESCE(topic_key, '') AS topic_key
+                FROM concepts c
+                WHERE c.centric_at IS NULL
+                  AND LENGTH(COALESCE(c.definition, '')) >= :min_def
+                  AND NOT EXISTS (
+                      SELECT 1 FROM concept_edges e
+                      WHERE e.type IN ('requires', 'part_of')
+                        AND (e.from_concept_id = c.id OR e.to_concept_id = c.id)
+                  )
+                ORDER BY c.id
+                LIMIT :limit
+                """
+            ),
+            {"min_def": MIN_DEFINITION_CHARS, "limit": limit},
+        ).all()
+
+        out: list[dict] = []
+        for row in targets:
+            concept_id = int(row[0])
+            # ① 同切片共现过的
+            peers = [
+                {
+                    "id": int(peer[0]),
+                    "key": peer[1],
+                    "name": peer[2],
+                    "definition": peer[3],
+                }
+                for peer in conn.execute(
+                    text(
+                        """
+                        SELECT DISTINCT p.id, p.key, p.name, COALESCE(p.definition, '') AS definition
+                        FROM concept_edges e
+                        JOIN concepts p ON p.id = CASE
+                            WHEN e.from_concept_id = :cid THEN e.to_concept_id
+                            ELSE e.from_concept_id
+                        END
+                        WHERE e.type = 'co_occurs'
+                          AND (e.from_concept_id = :cid OR e.to_concept_id = :cid)
+                        ORDER BY p.id
+                        """
+                    ),
+                    {"cid": concept_id},
+                ).all()
+            ]
+            # ② 同一份材料里的其它概念（共现过的排前面）
+            seen = {peer["id"] for peer in peers}
+            for peer in conn.execute(
+                text(
+                    """
+                    SELECT p.id, p.key, p.name, COALESCE(p.definition, '') AS definition
+                    FROM knowledge_points self
+                    JOIN knowledge_points other ON other.material_id = self.material_id
+                    JOIN concepts p ON p.id = other.concept_id
+                    WHERE self.concept_id = :cid AND p.id <> :cid
+                    GROUP BY p.id, p.key, p.name, p.definition
+                    ORDER BY p.id
+                    """
+                ),
+                {"cid": concept_id},
+            ).all():
+                if int(peer[0]) in seen:
+                    continue
+                seen.add(int(peer[0]))
+                peers.append(
+                    {
+                        "id": int(peer[0]),
+                        "key": peer[1],
+                        "name": peer[2],
+                        "definition": peer[3],
+                    }
+                )
+                if len(peers) >= CENTRIC_PEER_LIMIT:
+                    break
+
+            peers = peers[:CENTRIC_PEER_LIMIT]
+            if not peers:
+                continue
+            out.append(
+                {
+                    "id": concept_id,
+                    "key": row[1],
+                    "name": row[2],
+                    "definition": row[3],
+                    "topic": row[4],
+                    "peers": peers,
+                }
+            )
+        return out
+
+
+async def relate_centric(limit: int = 20) -> dict:
+    """以概念为中心的判边：给模型**一个概念 + 它的候选**，问"要懂它得先懂哪几个"。
+
+    ## 为什么要再开一条路
+
+    配对判边（`relate_pairs`）已经把现网共现对判完了，产出很低（1912 对 → 19 条边）：
+    "同切片共现"这个信号本身撑不起"前置"—— 两个概念在同一段里被抽出来，
+    多半只是同一页上一起出现过。但"要读懂这个概念得先懂什么"是另一个问题，
+    可以带着候选一起问，也可以直接盯着**还没接进图的概念**问。
+
+    ## 三条稳妥的规矩
+
+    * 只加**不产生环**的边（加之前在内存里查一次可达性）—— 图的硬不变量不能破；
+    * 候选和它已经有任何边就跳过（不覆盖既有结论）；
+    * 问过就记 `centric_at`（模型说"没有前置"的也记）—— 同一批不重复买。
+    """
+    from . import config  # noqa: PLC0415
+    from .llm import LLM, parse_json  # noqa: PLC0415
+    from .worker import load_prompt, render  # noqa: PLC0415
+
+    targets = _centric_candidates(limit)
+    if not targets:
+        return {"checked": 0, "edges": 0, "empty": 0, "cycled": 0, "failed": 0}
+
+    with _engine().connect() as conn:
+        ordered = [
+            (int(row[0]), int(row[1]))
+            for row in conn.execute(
+                text(
+                    "SELECT from_concept_id, to_concept_id FROM concept_edges"
+                    " WHERE type IN ('requires', 'part_of')"
+                )
+            )
+        ]
+        known = {
+            (int(row[0]), int(row[1]))
+            for row in conn.execute(
+                text("SELECT from_concept_id, to_concept_id FROM concept_edges")
+            )
+        }
+
+    adj: dict[int, set[int]] = defaultdict(set)
+    for source, target in ordered:
+        adj[source].add(target)
+
+    def reaches(start: int, goal: int) -> bool:
+        """`start` 顺着有序边能不能走到 `goal`（用来判"加这条边会不会成环"）。"""
+        stack = [start]
+        seen: set[int] = set()
+        while stack:
+            node = stack.pop()
+            if node == goal:
+                return True
+            if node in seen:
+                continue
+            seen.add(node)
+            stack.extend(adj.get(node, ()))
+        return False
+
+    template = load_prompt("relate_centric")
+    edges_added = 0
+    empty = 0
+    cycled = 0
+    failed = 0
+
+    async def ask(target: dict, llm) -> tuple[dict, dict]:  # noqa: ANN001
+        peers = "\n".join(
+            "- %s · %s · %s" % (peer["key"], peer["name"], peer["definition"][:160])
+            for peer in target["peers"]
+        )
+        prompt = render(
+            template,
+            {
+                "TARGET_KEY": target["key"],
+                "TARGET_NAME": target["name"] or target["key"],
+                "TARGET_DEF": target["definition"][:400],
+                "TARGET_TOPIC": target["topic"] or "（未挂考纲）",
+                "PEERS": peers,
+            },
+        )
+        try:
+            reply = await llm.chat([{"role": "user", "content": prompt}], max_tokens=800)
+            return target, parse_json(reply.text)
+        except Exception:  # noqa: BLE001 —— 单条判失败不该毁掉整批
+            return target, {}
+
+    async with LLM(config.load()) as llm:
+        results = await asyncio.gather(*(ask(target, llm) for target in targets))
+
+    # (字段, 边类型, 是否反过来)：`contains` 是"目标是候选的一部分"，
+    # 所以边要反着写（候选 ←part_of← 目标 读作"目标属于候选"）
+    fields = (("requires", "requires", False), ("partOf", "part_of", False),
+              ("contains", "part_of", True))
+
+    with _engine().begin() as conn:
+        for target, data in results:
+            target_id = target["id"]
+            if not data:
+                failed += 1
+                continue
+
+            peer_ids = {peer["key"]: peer["id"] for peer in target["peers"]}
+            added = 0
+            for field, kind, flip in fields:
+                items = data.get(field)
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    peer_id = peer_ids.get(str(item.get("key") or "").strip())
+                    if peer_id is None:
+                        continue
+                    source, dest = (target_id, peer_id) if flip else (peer_id, target_id)
+                    if source == dest or (source, dest) in known:
+                        continue
+                    if reaches(dest, source):  # 加进去就成环 —— 丢掉这条边，图不能破
+                        cycled += 1
+                        continue
+                    conn.execute(
+                        text(
+                            "INSERT INTO concept_edges (from_concept_id, to_concept_id, type,"
+                            " why, derived_by, weight) VALUES (:a, :b, :t, :w, 'llm', 1.0)"
+                            " ON CONFLICT (from_concept_id, to_concept_id, type) DO NOTHING"
+                        ),
+                        {
+                            "a": source,
+                            "b": dest,
+                            "t": kind,
+                            "w": str(item.get("why") or "")[:500],
+                        },
+                    )
+                    adj[source].add(dest)
+                    known.add((source, dest))
+                    added += 1
+
+            if not added:
+                empty += 1
+            edges_added += added
+            conn.execute(
+                text("UPDATE concepts SET centric_at = now() WHERE id = :id"),
+                {"id": target_id},
+            )
+
+    return {
+        "checked": len(targets),
+        "edges": edges_added,
+        "empty": empty,
+        "cycled": cycled,
+        "failed": failed,
+    }
+
+
 # --------------------------------------------------------------------------- 导出
 
 
@@ -945,6 +1219,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("edges", help="派生共现边")
     rel = sub.add_parser("relate", help="模型判语义关系")
     rel.add_argument("--limit", type=int, default=40)
+    cen = sub.add_parser(
+        "relate-centric", help="以概念为中心判前置（一次问一个概念 + 它的候选）"
+    )
+    cen.add_argument("--limit", type=int, default=20)
     # 默认从 2.0 降到 1.0：共现权重就是"一起出现在几个切片里"，现网 2288 条里
     # 2271 条是 1 —— 只喂 weight>=2 等于只判 17 对，补不动那张图。
     # 要"证据更硬"就显式传 --min-weight 2。
@@ -966,6 +1244,8 @@ def main(argv: list[str] | None = None) -> int:
         print("派生边：", build_edges())
     elif args.cmd == "relate":
         print("语义关系：", asyncio.run(relate_pairs(limit=args.limit, min_weight=args.min_weight)))
+    elif args.cmd == "relate-centric":
+        print("以概念为中心判边：", asyncio.run(relate_centric(limit=args.limit)))
     elif args.cmd == "export":
         print("导出：", export(Path(args.out), min_weight=args.min_weight))
     elif args.cmd == "stats":

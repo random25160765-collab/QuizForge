@@ -24,7 +24,8 @@ WEB_OUT   ?= api/web
 
 .PHONY: vendor check test new web api-venv api-dev api-test api-migrate api-migration \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
-        bank-export bank-import graph graph-check graph-relate graph-export skills-link \
+        bank-export bank-import graph graph-check graph-relate graph-relate-centric \
+        graph-export skills-link \
         coverage coverage-gaps drive help
 
 vendor:
@@ -144,6 +145,11 @@ graph-check:
 
 graph-relate:
 	@$(VENV)/bin/python -m pipeline.graph_build relate --limit $(or $(LIMIT),400)
+
+# 以概念为中心判前置：一次问一个概念 + 它的候选。盯着**还没接进有序边**的概念问，
+# 那是"路径推荐断在半路"的地方。问过就记 `centric_at`，重跑不重复买。
+graph-relate-centric:
+	@$(VENV)/bin/python -m pipeline.graph_build relate-centric --limit $(or $(LIMIT),20)
 
 graph-export:
 	@$(VENV)/bin/python -m pipeline.graph_build export --out $(CURDIR)/graph.json
