@@ -24,15 +24,17 @@
     return ui.h.apply(ui, arguments);
   }
 
-  //: 条目类型的显示名与色阶（同一套色阶区分论文 / 手册 / 网页文档）。
+  //: 类别标签**以服务端为准**（`GET /library/kinds` ← `app.library.KIND_LABEL`）。
+  //: 这里这份只是首屏兜底 —— 抄第二份就会有一天对不上，而那种对不上很难查。
   var KIND_LABEL = {
     paper: '论文',
-    book: '书',
     manual: '手册',
+    spec: '规范',
     report: '报告',
+    book: '书',
+    slides: '幻灯片',
     webpage: '网页',
     blog: '博客',
-    slides: '幻灯片',
     code: '代码',
     note: '笔记',
     other: '其他'
@@ -59,6 +61,7 @@
     citekey: '',
     detail: null,
     indexing: false,
+    kinds: [],
     status: ''
   };
 
@@ -81,6 +84,7 @@
     el.list = document.getElementById('library-items');
     el.count = document.getElementById('library-count');
     el.indexBtn = document.getElementById('library-index');
+    el.classifyBtn = document.getElementById('library-classify');
     el.main = document.getElementById('library-main');
     el.side = document.getElementById('library-side');
 
@@ -106,6 +110,7 @@
     });
     el.addRoot.addEventListener('click', addRootPrompt);
     el.indexBtn.addEventListener('click', toggleIndex);
+    el.classifyBtn.addEventListener('click', classifyPrompt);
     el.pick.addEventListener('change', function () {
       if (el.pick.value === '__add__') {
         addRootPrompt();
@@ -122,7 +127,22 @@
 
     renderMain();
     renderSide();
+    loadKinds();
     loadRoots();
+  }
+
+  function loadKinds() {
+    api
+      .get('/library/kinds')
+      .then(function (res) {
+        state.kinds = res.kinds || [];
+        var map = {};
+        state.kinds.forEach(function (one) { map[one.key] = one.label; });
+        if (Object.keys(map).length) KIND_LABEL = map;
+      })
+      .catch(function () {
+        /* 拿不到就用兜底那份，不值得打扰用户 */
+      });
   }
 
   function fail(err) {
@@ -227,6 +247,7 @@
     el.indexBtn.title = state.indexing
       ? '停下（已经抓到的不会丢，下次从剩下的接着抓）'
       : '抽正文（PDF 抽取较慢，分批推进，可随时停下）';
+    el.classifyBtn.textContent = '模型归类';
   }
 
   /** 把刚抓过的几条从"待抓"里划掉 —— 不动整列表（重画会顶掉滚动位置）。 */
@@ -390,15 +411,33 @@
     grid.appendChild(metaRow('标题', 'title', one.title, 'text'));
     grid.appendChild(metaRow('作者', 'authors', (one.authors || []).join(', '), 'text', '逗号分隔'));
     grid.appendChild(metaRow('年份', 'year', one.year || '', 'number'));
-    grid.appendChild(metaRow('类型', 'kind', one.kind, 'text', kindHint()));
+    grid.appendChild(kindRow(one.kind));
     grid.appendChild(metaRow('主题', 'topics', (one.topics || []).join(', '), 'text', '逗号分隔，取自目录'));
     if (one.arxiv) grid.appendChild(metaRow('arXiv', 'arxiv', one.arxiv, 'text'));
     panel.appendChild(grid);
     return panel;
   }
 
-  function kindHint() {
-    return Object.keys(KIND_LABEL).map(function (key) { return key + '=' + KIND_LABEL[key]; }).join('，');
+  /** 类型用下拉：类别是有限集合，手打只会打错（`spec` 打成 `specs` 这一次归类就白判了）。 */
+  function kindRow(current) {
+    var select = h('select.lib__field', { 'aria-label': '类型' });
+    Object.keys(KIND_LABEL).forEach(function (key) {
+      var option = h('option', { value: key, text: KIND_LABEL[key] + '（' + key + '）' });
+      if (key === current) option.selected = true;
+      select.appendChild(option);
+    });
+    select.addEventListener('change', function () {
+      api
+        .post('/library/meta', { citekey: state.citekey, meta: { kind: select.value } })
+        .then(function () {
+          ui.toast('类型已更新（记为「人定的」）', 'ok');
+          loadDetail(state.citekey);
+          loadItems();
+        })
+        .catch(fail);
+    });
+    select.addEventListener('keydown', function (ev) { ev.stopPropagation(); });
+    return h('label.lib__metarow', null, h('span.lib__metakey', { text: '类型' }), select);
   }
 
   function metaRow(label, key, value, type, hint) {
@@ -559,6 +598,110 @@
       ]
     });
     setTimeout(function () { input.focus(); }, 0);
+  }
+
+  /** 模型归类：调模型拿建议 → 人来复核 → 落盘（与笔记那套「建议-接受」同一套规矩）。 */
+  function classifyPrompt() {
+    var button = el.classifyBtn;
+    button.disabled = true;
+    button.textContent = '问模型…';
+    api
+      .post('/library/classify', {})
+      .then(function (res) {
+        button.disabled = false;
+        button.textContent = '模型归类';
+        showProposals(res);
+      })
+      .catch(function (err) {
+        button.disabled = false;
+        button.textContent = '模型归类';
+        fail(err);
+      });
+  }
+
+  function showProposals(res) {
+    var items = res.items || [];
+    var picked = {};
+    if (!items.length) {
+      ui.toast(res.note || '没有需要归类的条目（人定过与模型定过的都不再送）', 'ok');
+      return;
+    }
+    items.forEach(function (one) { picked[one.citekey] = true; });
+    var body = h('div.lib__review');
+    body.appendChild(
+      h('div.lib__hint', {
+        text: '模型给了 ' + items.length + ' 条建议。勾上要接受的（默认全勾）；写进元数据时会记成「模型填的」，' +
+          '人手改过的那些**不会被覆盖**。'
+      })
+    );
+    items.forEach(function (one) {
+      var check = h('input', { type: 'checkbox' });
+      check.checked = true;
+      check.addEventListener('change', function () { picked[one.citekey] = check.checked; });
+      body.appendChild(
+        h(
+          'label.lib__reviewrow',
+          null,
+          check,
+          h(
+            'span.lib__reviewmain',
+            null,
+            h('span.lib__reviewtitle', { text: one.rel || one.citekey }),
+            h(
+              'span.lib__reviewkind',
+              null,
+              h('span.lib__kind', { text: KIND_LABEL[one.was] || one.was || '—' }),
+              h('span.lib__reviewarrow', { text: '→' }),
+              h('span.lib__kind.lib__kind--' + one.kind, { text: KIND_LABEL[one.kind] || one.kind }),
+              (one.topics || []).length ? h('span.lib__reviewtopics', { text: one.topics.join(' · ') }) : null
+            ),
+            one.why ? h('span.lib__reviewwhy', { text: one.why }) : null
+          )
+        )
+      );
+    });
+    if ((res.failed || []).length) {
+      body.appendChild(
+        h('div.lib__hint', {
+          text: '这几份模型没给结论，下次再试：' +
+            res.failed.map(function (one) { return one.rel || one.citekey; }).join('、')
+        })
+      );
+    }
+    if ((res.dropped || []).length) {
+      body.appendChild(
+        h('div.lib__hint', { text: '有 ' + res.dropped.length + ' 条引用键对不上库里，已丢掉（宁可少改，不可乱改）。' })
+      );
+    }
+    ui.modal({
+      title: '模型归类 · ' + items.length + ' 条建议',
+      size: 'lg',
+      body: body,
+      actions: [
+        { label: '取消', kind: 'ghost', onClick: function (close) { close(); } },
+        {
+          label: '接受勾选的',
+          kind: 'primary',
+          onClick: function (close) {
+            var chosen = items.filter(function (one) { return picked[one.citekey]; });
+            close();
+            if (!chosen.length) return;
+            api
+              .post('/library/classify/apply', { items: chosen })
+              .then(function (out) {
+                ui.toast(
+                  '已写入 ' + (out.written || []).length + ' 条' +
+                    ((out.skipped || []).length ? '，跳过 ' + out.skipped.length + ' 条' : ''),
+                  'ok'
+                );
+                loadItems();
+                if (state.citekey) loadDetail(state.citekey);
+              })
+              .catch(fail);
+          }
+        }
+      ]
+    });
   }
 
   /** 抓正文：分批循环，随时能停。 */

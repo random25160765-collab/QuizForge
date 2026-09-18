@@ -31,8 +31,12 @@
       <div class="lib__scroll" id="library-items" role="listbox" aria-label="资料条目列表"></div>
       <footer class="lib__foot">
         <span class="lib__count" id="library-count">—</span>
-        <button class="lib__btn" id="library-index" type="button"
-                title="抽正文（PDF 抽取较慢，分批推进，可随时停下）">抓正文</button>
+        <span class="lib__footbtns">
+          <button class="lib__btn" id="library-classify" type="button"
+                  title="让模型判类型与主题（它给建议、你复核，写入时记为「模型填的」）">模型归类</button>
+          <button class="lib__btn" id="library-index" type="button"
+                  title="抽正文（PDF 抽取较慢，分批推进，可随时停下）">抓正文</button>
+        </span>
       </footer>
     </aside>
 
