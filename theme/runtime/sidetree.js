@@ -256,14 +256,30 @@
       icon: 'list',
       load: paintVaults,
     }));
-    // 文档图谱：还没做（笔记为节点、双链为边）。先把位置留出来，
-    // 免得用户以为"这东西没有"，而不是"还没做"
-    var graph = leaf(0, { label: '文档图谱', icon: 'target', dim: true, title: '还没做：笔记之间的双链网络（题库的知识图谱在练习中心里）' });
-    graph.addEventListener('click', function (ev) {
-      ev.stopPropagation();
-      ui.toast('文档图谱还没做：笔记为节点、双链为边', 'info', 3200);
-    }, true);
-    box.appendChild(graph);
+    // 文档图谱：一间库一张图（笔记为节点、双链为边）。
+    // 入口留在左栏（用户的原话"文档站的知识图谱就放左栏"），图本身开在右边窗格里 ——
+    // 左栏只有 240px 宽，真画起来没法看。
+    box.appendChild(group(0, {
+      key: 'root:notegraph',
+      label: '文档图谱',
+      icon: 'target',
+      load: function (body) {
+        api.get('/notes/stats').then(function (data) {
+          var libs = (data && data.libraries) || [];
+          if (!libs.length) { err(body, '还没有笔记库'); return; }
+          libs.forEach(function (lib) {
+            body.appendChild(leaf(2, {
+              label: lib.name + ' 的双链',
+              icon: 'target',
+              count: lib.notes || lib.count || null,
+              title: '把这一库的笔记双链画成图（开在右边窗格里）',
+              kind: 'notegraph',
+              ref: { lib: lib.name },
+            }));
+          });
+        }).catch(function () { err(body, '读不到笔记库'); });
+      },
+    }));
   }
 
   function boot() {

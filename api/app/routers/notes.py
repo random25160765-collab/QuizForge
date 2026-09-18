@@ -60,6 +60,12 @@ def tree(lib: str = Query(..., description="库名，例如 Math")) -> dict:
     return _run(lambda: notelib.tree(_lib(lib)))
 
 
+@router.get("/graph")
+def graph(lib: str = Query(..., description="库名，例如 Math")) -> dict:
+    """文档图谱：一篇笔记一个节点、一条双链一条边（读索引里现成的解析结果）。"""
+    return _run(lambda: notelib.link_graph(_lib(lib)))
+
+
 @router.get("/note")
 def note(lib: str, path: str) -> dict:
     """一篇笔记的全貌：正文 + 大纲 + 出链 + 反链（前端一次渲染不用来回问）。"""
