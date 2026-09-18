@@ -35,91 +35,92 @@
 </head>
 <body data-page="__QUIZFORGE_PAGE__">
 
-<!-- 顶部导航：品牌 / 主导航 / 全局动作。主导航项由页面脚本按需填充。 -->
-<header class="topbar" role="banner">
-  <div class="topbar-inner">
-    <a class="brand" href="index.html" aria-label="QuizForge 首页" title="返回首页">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"
-             stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="14.4" cy="14.4" r="8.4"></circle>
-          <path d="M20.6 20.6 L26.4 26.4"></path>
-        </svg>
-      </span>
-    </a>
+<!--
+  外壳：活动栏 + 资源栏 + 舞台。
+  活动栏与资源栏是**全站共用**的（左边收资源，右边干活），所以它们在外壳里，
+  不在任何单个页面里 —— 页面只往舞台的 <main> 里画自己的东西。
+  「资源栏装什么」由 sidetree.js 填；「活动栏装什么」由 shell.js 填。
+-->
+<div class="shell">
 
-    <nav class="mainnav" id="mainnav" aria-label="主导航"></nav>
-
+  <!-- 活动栏：最左一条窄图标条。页面入口、工具挂载、设置与主题都在这儿。
+       它替代了原先挤在顶栏里那排页面按钮 —— 顶栏于是能瘦下来给"打开的标签"用。 -->
+  <nav class="rail" aria-label="活动栏">
+    <div class="rail__group" id="rail-nav"></div>
+    <div class="rail__sep" aria-hidden="true"></div>
     <!-- 工具挂载：亮起＝AI 能调这一块，熄灭＝两边各自独立，全部熄灭＝极简聊天模式。
-         它管的是"AI 能碰到什么"，与上面那排页面导航是两回事，所以单独一组。
+         它管的是"AI 能碰到什么"，与上面那排页面入口是两回事，所以单独一组。
          内容由运行时脚本 mounts.js 填充（新增脚本已登记 RUNTIME_ORDER）。 -->
     <div class="hubs" id="tool-hubs" role="group" aria-label="工具挂载"></div>
+    <div class="rail__spacer"></div>
+    <button class="rail__btn" id="btn-theme" type="button" title="切换浅色/深色主题" aria-label="切换主题">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
+      </svg>
+    </button>
+    <button class="rail__btn" id="btn-settings" type="button" title="设置" aria-label="设置">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
+           stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"></circle>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.3a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.7 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 7 2.6h.1A1.7 1.7 0 0 0 8.7 1V1a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15 2.7a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 7v.1a1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4H22a1.7 1.7 0 0 0-1.6 1Z"></path>
+      </svg>
+    </button>
+  </nav>
 
-    <div class="topbar-actions">
-      <!-- 同步异常提示。正常同步时整块不渲染 ——
-           跨设备场景下用户需要知道的只有「出问题了」，不是「正在同步」。 -->
-      <button class="sync-note" id="sync-note" type="button" hidden
-              title="点击立即重试" aria-live="polite"></button>
-      <button class="icon-btn" id="btn-theme" type="button" title="切换浅色/深色主题" aria-label="切换主题">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
+  <!-- 资源栏：一棵大树，三个根（对话 / 资料 / 文档）＋ 文档图谱。
+       可整体收起（body[data-side] 控制宽度，见 pane.css 的外壳一节）。 -->
+  <aside class="side" aria-label="资源">
+    <div class="side__head">
+      <span class="side__title" id="side-title">资源</span>
+      <button class="side__fold" id="side-fold" type="button" title="收起资源栏（Alt+B）" aria-label="收起资源栏">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"
              stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
-        </svg>
-      </button>
-      <a class="icon-btn" href="chat.html" id="btn-chat" title="对话" aria-label="对话">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M20 12.5a6.8 6.8 0 0 1-7 6.6 8.6 8.6 0 0 1-2.6-.4L6 20.5l1-3.3a6.5 6.5 0 0 1-3-5.5c0-3.8 3.3-6.8 7.5-6.8s7.5 3 7.5 6.8Z"></path>
-          <path d="M9.4 12.4h5.2"></path>
-        </svg>
-      </a>
-      <a class="icon-btn" href="graph.html" id="btn-graph" title="知识图谱" aria-label="知识图谱">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
-             stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="6" cy="7" r="2.4"></circle>
-          <circle cx="18" cy="6" r="2.4"></circle>
-          <circle cx="12" cy="17" r="2.6"></circle>
-          <path d="M8.1 8.2 10.7 15M15.8 7.4 13.4 14.8M7.9 6.4l7.7-.6"></path>
-        </svg>
-      </a>
-      <a class="icon-btn" href="wrongbook.html" id="btn-wrongbook" title="错题本" aria-label="错题本">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H18a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5.5A1.5 1.5 0 0 1 4 18.5Z"></path>
-          <path d="M8 9h7M8 13h5"></path>
-        </svg>
-      </a>
-      <a class="btn btn--ghost" href="library.html" id="btn-library" title="资料" aria-label="资料">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"
-             stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px">
-          <path d="M8.5 3.5H15L18.5 7v13H8.5Z"></path>
-          <path d="M15 3.5V7h3.5"></path>
-          <path d="M4.5 6v14.5h9"></path>
-        </svg>资料</a>
-      <a class="btn btn--ghost" href="notes.html" id="btn-notes" title="笔记" aria-label="笔记">
-        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"
-             stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px">
-          <path d="M6.5 3.5h8L19.5 8.5v12h-13Z"></path>
-          <path d="M14.5 3.5v5h5"></path>
-          <path d="M9.5 12.5h6M9.5 16h6M9.5 9h2.5"></path>
-        </svg>笔记</a>
-      <button class="icon-btn" id="btn-settings" type="button" title="设置" aria-label="设置">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
-             stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.3a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H1a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 2.7 7a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 7 2.6h.1A1.7 1.7 0 0 0 8.7 1V1a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 15 2.7a1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 7v.1a1.7 1.7 0 0 0 1.6 1h.1a2 2 0 1 1 0 4H22a1.7 1.7 0 0 0-1.6 1Z"></path>
+          <path d="M14.5 6 8.5 12l6 6"></path>
         </svg>
       </button>
     </div>
+    <div class="side__body" id="side-body">
+      <!-- 资源树由 sidetree.js 填（对话 / 资料 / 文档 三个根 + 文档图谱）。
+           还没接上之前，先放一句说明 —— 空面板看着像坏了。 -->
+      <p class="side__hint">资源树正在接：对话 / 资料 / 文档三个根，加文档图谱。</p>
+    </div>
+  </aside>
+
+  <div class="stage">
+    <!-- 顶栏瘦身：只剩品牌 + 页面自己的子导航（刷题页那四个视图）+ 同步提示。
+         登录/退出的跳转随"单用户本地"一起没了，这里也不再有那排页面按钮。 -->
+    <header class="topbar" role="banner">
+      <div class="topbar-inner">
+        <a class="brand" href="index.html" aria-label="QuizForge 首页" title="返回首页">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="14.4" cy="14.4" r="8.4"></circle>
+              <path d="M20.6 20.6 L26.4 26.4"></path>
+            </svg>
+          </span>
+        </a>
+
+        <nav class="mainnav" id="mainnav" aria-label="主导航"></nav>
+
+        <div class="topbar-actions">
+          <!-- 同步异常提示。正常同步时整块不渲染 ——
+               跨设备场景下用户需要知道的只有「出问题了」，不是「正在同步」。 -->
+          <button class="sync-note" id="sync-note" type="button" hidden
+                  title="点击立即重试" aria-live="polite"></button>
+        </div>
+      </div>
+      <div class="topbar-progress" id="topbar-progress" aria-hidden="true"></div>
+    </header>
+
+    <main class="view" id="view" role="main">
+    <!--@INJECT:BODY@-->
+    </main>
+
+    <footer class="statusbar" id="statusbar" role="contentinfo"></footer>
   </div>
-  <div class="topbar-progress" id="topbar-progress" aria-hidden="true"></div>
-</header>
-
-<main class="view" id="view" role="main">
-<!--@INJECT:BODY@-->
-</main>
-
-<footer class="statusbar" id="statusbar" role="contentinfo"></footer>
+</div>
 
 <div class="toast-root" id="toast-root" aria-live="polite" aria-atomic="false"></div>
 <div class="modal-root" id="modal-root" hidden></div>

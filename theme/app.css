@@ -1723,3 +1723,218 @@ body[data-page='wrongbook'] .part {
 .hubs__note.is-bad {
   color: #d9534f;
 }
+
+/* ================================================================= 外壳骨架
+ *
+ * 左边收资源、右边干活。做法是最朴素的 CSS Grid：
+ *
+ *   body  →  [活动栏][资源栏][舞台]
+ *   舞台  →  顶栏 / 视图 / 状态栏（上下三段）
+ *
+ * 为什么不"再往里套一层 div 慢慢挪"：四个页面各自按 100vh 减顶栏减状态栏
+ * 算高度（notes / library / graph / chat 都是这么写的），格子写对了，
+ * 这几页一行都不用改。
+ */
+
+body {
+  display: grid;
+  grid-template-columns: var(--rail-w, 46px) var(--side-w, 264px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100dvh;
+  overflow: hidden;
+}
+
+body[data-side='closed'] { --side-w: 0px; }
+
+.shell { display: contents; }
+
+.stage {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* 舞台里的视图自己滚：整页不再滚，否则顶栏与状态栏会被一起滚走 */
+.stage > .view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  /* 关键一处：`.view` 原本是 `margin: 0 auto`（给阅读列居中用的）。
+     在普通块容器里它无害 —— 宽度照旧铺满；可到了弹性列里，
+     **auto 外边距会压过 align-self: stretch**，视图就按内容宽度缩起来
+     （实测窗格页被缩到 483，两边各空 353）。所以这里把边距归零，
+     只给真正的阅读列（`.view--narrow`）留居中。 */
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.stage > .view--narrow {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 状态栏原本是通栏 fixed，现在得从活动栏与资源栏的右边开始 */
+.statusbar {
+  left: calc(var(--rail-w, 46px) + var(--side-w, 264px));
+  transition: left var(--dur, 160ms) var(--ease, ease-out);
+}
+
+/* ---- 活动栏：最左那条窄图标条 ---- */
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0 6px;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  overflow: hidden;
+}
+
+.rail__group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+
+.rail__spacer { flex: 1 1 auto; }
+
+.rail__sep {
+  width: 22px;
+  height: 1px;
+  margin: 6px 0;
+  background: var(--line);
+}
+
+.rail__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md, 8px);
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+  text-decoration: none;
+  transition: background var(--dur, 160ms) var(--ease, ease-out),
+    color var(--dur, 160ms) var(--ease, ease-out);
+}
+
+.rail__btn:hover {
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg);
+}
+
+/* 当前页：高亮而不是隐藏 —— 图标条上少一个图标比"点了没反应"更让人困惑 */
+.rail__btn.is-active {
+  color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+}
+
+.rail__btn.is-on { color: var(--fg); }
+
+/* 工具挂载开关竖着排在活动栏里 */
+.rail .hubs {
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border-left: 0;
+}
+
+/* ---- 资源栏 ---- */
+
+.side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  overflow: hidden;
+}
+
+.side__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.side__title {
+  flex: 1;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--fg3);
+}
+
+.side__fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+}
+
+.side__fold:hover { background: var(--bg3); color: var(--fg); }
+
+.side__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0 14px;
+}
+
+body[data-side='closed'] .side { border-right: 0; }
+body[data-side='closed'] .side > * { display: none; }
+
+/* 窄屏：资源栏改成浮层，不再挤压舞台 */
+@media (max-width: 1180px) {
+  body { grid-template-columns: var(--rail-w, 46px) minmax(0, 1fr); }
+
+  .side {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: var(--rail-w, 46px);
+    width: 264px;
+    z-index: 70;
+    background: var(--bg);
+    box-shadow: var(--shadow-2, 0 8px 24px rgba(15, 26, 36, 0.16));
+    transition: transform var(--dur, 160ms) var(--ease, ease-out);
+  }
+
+  body[data-side='closed'] .side {
+    display: flex;
+    transform: translateX(-108%);
+  }
+
+  body[data-side='closed'] .side > * { display: flex; }
+
+  .statusbar { left: var(--rail-w, 46px); }
+}
+
+.side__hint {
+  margin: 4px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg3);
+}

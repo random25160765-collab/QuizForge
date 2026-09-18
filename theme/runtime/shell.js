@@ -34,6 +34,83 @@
     { view: 'review', label: '复习', icon: 'refresh', badge: true },
   ];
 
+  /* ------------------------------------------------------------ 活动栏 */
+  /* 最左那条窄图标条。原先这些页面入口挤在顶栏里（页面一多就挤不下，
+     而且每个页面还会各自把顶栏改成自己的样子），现在归到这儿 ——
+     顶栏于是能瘦下来，把位置让给"打开的标签"。 */
+  var RAIL = [
+    { key: 'side', label: '资源', icon: 'grip', hint: '收起 / 展开资源栏（Alt+B）' },
+    { href: 'quiz.html', label: '练习中心', icon: 'play', page: 'quiz',
+      hint: '练习 · 组卷 · 复习 · 题库图谱' },
+    { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
+    { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
+    { href: 'notes.html', label: '文档', icon: 'list', page: 'notes' },
+    { href: 'graph.html', label: '题库图谱', icon: 'target', page: 'graph' },
+    { href: 'wrongbook.html', label: '错题本', icon: 'flag', page: 'wrongbook' },
+  ];
+
+  var SIDE_KEY = 'qf.side.open';
+
+  function sideOpen() {
+    return document.body.dataset.side !== 'closed';
+  }
+
+  function setSide(open) {
+    document.body.dataset.side = open ? 'open' : 'closed';
+    try { localStorage.setItem(SIDE_KEY, open ? '1' : '0'); } catch (e) { /* 无痕模式忽略 */ }
+    var btn = document.querySelector('#rail-nav .rail__btn[data-key="side"]');
+    if (btn) {
+      btn.classList.toggle('is-on', open);
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  }
+
+  function railButton(item, page) {
+    var node;
+    if (item.key === 'side') {
+      node = h('button.rail__btn', { type: 'button', 'data-key': 'side',
+        title: item.label + ' · ' + item.hint, 'aria-label': item.label });
+    } else {
+      // 当前页**高亮**而不是隐藏：图标条上少一个图标，比"点了没反应"更让人困惑
+      node = h('a.rail__btn' + (page === item.page ? '.is-active' : ''),
+        { href: item.href, title: item.label + (item.hint ? ' · ' + item.hint : ''), 'aria-label': item.label });
+    }
+    node.innerHTML = ui.icon(item.icon, 17);
+    return node;
+  }
+
+  function renderRail() {
+    var box = document.getElementById('rail-nav');
+    if (!box) return;
+    var page = document.body.dataset.page || '';
+    ui.clear(box);
+    RAIL.forEach(function (item) { box.appendChild(railButton(item, page)); });
+  }
+
+  /** 资源栏的状态：读回上次的选择，并把两个入口（图标条那颗、资源栏右上角那个箭头）接上 */
+  function bindSide() {
+    var saved = null;
+    try { saved = localStorage.getItem(SIDE_KEY); } catch (e) { /* 同上 */ }
+    setSide(saved !== '0');
+
+    var box = document.getElementById('rail-nav');
+    if (box && !box.dataset.sideBound) {
+      box.dataset.sideBound = '1';
+      box.addEventListener('click', function (ev) {
+        var btn = ev.target && ev.target.closest ? ev.target.closest('[data-key="side"]') : null;
+        if (!btn) return;
+        ev.preventDefault();
+        setSide(!sideOpen());
+      });
+    }
+    var fold = document.getElementById('side-fold');
+    if (fold) fold.addEventListener('click', function () { setSide(false); });
+    document.addEventListener('keydown', function (ev) {
+      if (!ev.altKey || ev.ctrlKey || ev.metaKey) return;
+      if (ev.key === 'b' || ev.key === 'B') { ev.preventDefault(); setSide(!sideOpen()); }
+    });
+  }
+
   function hrefFor(view) {
     // 离线单文件没有 router.js，退回不带 hash 的地址
     return 'quiz.html' + (QF.router && QF.router.hashFor ? QF.router.hashFor(view) : '');
@@ -65,6 +142,15 @@
     var nav = document.getElementById('mainnav');
     if (!nav) return;
     ui.clear(nav);
+    // 只有练习中心会给 `onPick`（它要原地切视图）。别的页面这一栏**留空** ——
+    // 那四个是练习中心**内部**的分段，不该出现在每页顶栏上：
+    // 顶栏曾经在八个页面里都摆着"工作台/练习/组卷/复习"，而活动栏上还有一个入口，
+    // 同一件事出现两遍就是这个毛病。
+    if (!opts || !opts.onPick) {
+      nav.hidden = true;
+      return;
+    }
+    nav.hidden = false;
     NAV.forEach(function (item) { nav.appendChild(navItem(item, opts)); });
   }
 
@@ -82,17 +168,6 @@
   function bindSettings() {
     var btn = document.getElementById('btn-settings');
     if (btn) btn.addEventListener('click', openSettings);
-  }
-
-  /* 当前页对应的图标指向自己，点了没反应会显得像坏了 —— 不显示。
-     页面名取自 body[data-page]（shell.html 注入），两套构建下都有值。 */
-  function hideSelfIcons() {
-    var page = document.body.dataset.page || '';
-    var self = { graph: 'btn-graph', wrongbook: 'btn-wrongbook', chat: 'btn-chat',
-      notes: 'btn-notes', library: 'btn-library' }[page];
-    if (!self) return;
-    var btn = document.getElementById(self);
-    if (btn) btn.hidden = true;
   }
 
   /* ======================================================== 设置面板
@@ -372,11 +447,14 @@
    */
   function mount(opts) {
     opts = opts || {};
+    renderRail();
     if (!bound) {
       bound = true;
       bindTheme();
       bindSettings();
-      hideSelfIcons();
+      bindSide();
+      // 工具挂载开关现在长在活动栏里，所以由外壳拉起（原来只有对话页调它）
+      if (QF.mounts && QF.mounts.load) QF.mounts.load();
     }
     renderNav(opts);
   }
