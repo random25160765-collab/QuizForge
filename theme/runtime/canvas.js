@@ -820,5 +820,8 @@
     return pad(now.getHours()) + ':' + pad(now.getMinutes());
   }
 
-  QF.canvas = { mount: mount, unmount: unmount, flush: flush };
+  // `svgEl` 与箭头 marker 借给别的 SVG 视图（思维导图就是）：
+  // 造 SVG 元素必须走 `createElementNS`（用 `h('svg…')` 造出来的是 HTML 命名空间、
+  // 浏览器根本不渲染 —— 这个坑踩过一次，别让第二处再踩），箭头也只该有一份定义。
+  QF.canvas = { mount: mount, unmount: unmount, flush: flush, svgEl: svgEl, arrowDefs: arrowDefs };
 })();
