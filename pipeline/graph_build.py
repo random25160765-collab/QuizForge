@@ -109,14 +109,43 @@ def load_points(conn) -> list[dict]:
 def mirror_keys(conn) -> tuple[set[str], set[str]]:
     """区分「人写的考纲节点」与「点的镜像叶子」。
 
-    判据是可计算的：key 等于某个知识点/候选点的 key 的，就是镜像 ——
-    实测 593 个主题里有 452 个是这么来的（tt-metal 下 443 片就是它们）。
+    判据是可计算的：key 等于某个知识点/候选点的 key、**并且它不是任何节点的父节点**
+    —— 就是镜像（实测 593 个主题里 452 个是这么来的，tt-metal 下 443 片就是它们）。
+
+    为什么必须加"并且不是父节点"这半句：`tt-arch` 既是人写的学科根（Tenstorrent），
+    又恰好有一个同名知识点 —— 只看前半句就会把**学科根**误判成镜像，
+    于是挂在它下面的概念全都推不出考纲（实测 14 个概念因此到不了根，2026-09-18 抓到的）。
+    人写的节点有下级，镜像叶子没有。
     """
     points = {row[0] for row in conn.execute(text("SELECT DISTINCT key FROM knowledge_points"))}
     candidates = {row[0] for row in conn.execute(text("SELECT DISTINCT key FROM point_candidates"))}
-    mirrors = points | candidates
+    parents = {
+        row[0]
+        for row in conn.execute(
+            text("SELECT DISTINCT parent_key FROM topics WHERE COALESCE(parent_key, '') <> ''")
+        )
+    }
+    mirrors = (points | candidates) - parents
     curated = {row[0] for row in conn.execute(text("SELECT key FROM topics"))} - mirrors
     return curated, mirrors
+
+
+def nearest_curated(key: str, curated: set[str], parent_of: dict[str, str]) -> str:
+    """从一个 topic key 往上找**最近的人写考纲节点**（找不到返回空串）。
+
+    为什么不能只看一层父节点：镜像叶子也可能挂在另一片镜像下面。实测有 21 个概念
+    挂不上考纲（于是它们在图上到不了根）—— 根因是"覆盖它的题的 topic 是镜像叶子，
+    而镜像不在人写清单里"。往上走到最近的人写节点，才是"443 片碎片收回几十个真主题"
+    这件事该有的完整形状。
+    """
+    seen: set[str] = set()
+    node = key
+    while node and node not in seen:
+        if node in curated:
+            return node
+        seen.add(node)
+        node = parent_of.get(node, "")
+    return ""
 
 
 # --------------------------------------------------------------------------- 归并
@@ -248,6 +277,11 @@ def merge_concepts() -> dict:
     with _engine().begin() as conn:
         points = load_points(conn)
         curated, _mirrors = mirror_keys(conn)
+        # 考纲树整个读进来（454 个节点）：挂靠要**往上走**，一层一层查库太笨
+        parent_of = {
+            row[0]: (row[1] or "")
+            for row in conn.execute(text("SELECT key, parent_key FROM topics")).all()
+        }
         clusters, reasons = cluster_points(points)
 
         # 概念 → 覆盖它的题（用来定 topic 与题量，也决定"这个考点练过没有"）
@@ -263,6 +297,11 @@ def merge_concepts() -> dict:
 
         live_keys: set[str] = set()
         created = merged = 0
+        # 材料 → 该材料里概念的考纲票（第二遍兜底用：见下面"借同材料的多数票"）
+        material_votes: dict[str, Counter[str]] = defaultdict(Counter)
+        # 这一遍**没挂上考纲**的：（概念 id，它来自哪些材料）
+        pending_topic: list[tuple[int, set[str]]] = []
+        filled_topic = 0
         for members in clusters.values():
             group = [points[i] for i in members]
             key = Counter(norm_key(p["key"]) for p in group).most_common(1)[0][0]
@@ -284,19 +323,16 @@ def merge_concepts() -> dict:
                     if topic:
                         topic_votes[topic] += 1
 
-            # topic 挂靠：概念 key 本身是人写的考纲节点就直接用；否则用镜像叶子的父节点。
-            # 这一步把"443 片碎片"收回到"几十个真主题"下面。
+            # topic 挂靠：概念 key 本身是人写的考纲节点就直接用；否则**往上走到最近的
+            # 人写节点**（概念自己可能是镜像，覆盖它的题的 topic 也可能还是镜像）。
+            # 这一步把"443 片碎片"收回到"几十个真主题"下面 —— 走到最近的人写节点才算走完。
             topic_key = key if key in curated else ""
             if not topic_key:
-                mirror = conn.execute(
-                    text("SELECT parent_key FROM topics WHERE key = :k"), {"k": key}
-                ).scalar()
-                if mirror and mirror in curated:
-                    topic_key = str(mirror)
+                topic_key = nearest_curated(parent_of.get(key, ""), curated, parent_of)
             if not topic_key and topic_votes:
                 for topic, _ in topic_votes.most_common():
-                    if topic in curated:
-                        topic_key = topic
+                    topic_key = nearest_curated(topic, curated, parent_of)
+                    if topic_key:
                         break
 
             confidence = 1.0 if key in {norm_key(p["key"]) for p in group} else 0.8
@@ -315,7 +351,12 @@ def merge_concepts() -> dict:
                             :points, :materials, :questions, 'auto', :confidence)
                     ON CONFLICT (key) DO UPDATE SET
                       name = EXCLUDED.name, kind = EXCLUDED.kind,
-                      definition = EXCLUDED.definition, topic_key = EXCLUDED.topic_key,
+                      definition = EXCLUDED.definition,
+                      -- 归并**不该把已经挂好的考纲抹掉**：这次算出来是空、库里已有值，就留着。
+                      -- 2026-09-18 实测踩过：直接 `topic_key = EXCLUDED.topic_key` 一把
+                      -- 冲掉了 456 个概念的挂靠（它们在图上当场变成到不了根）。
+                      topic_key = CASE WHEN EXCLUDED.topic_key <> '' THEN EXCLUDED.topic_key
+                                       ELSE concepts.topic_key END,
                       aliases = EXCLUDED.aliases, point_count = EXCLUDED.point_count,
                       material_count = EXCLUDED.material_count,
                       question_count = EXCLUDED.question_count,
@@ -342,8 +383,29 @@ def merge_concepts() -> dict:
                 text("UPDATE knowledge_points SET concept_id = :cid WHERE id = ANY(:ids)"),
                 {"cid": concept_id, "ids": [p["id"] for p in group]},
             )
+            if topic_key:
+                for slug in materials:
+                    material_votes[slug][topic_key] += 1
+            else:
+                pending_topic.append((int(concept_id), materials))
             created += 1
             merged += len(group) - 1
+
+        # 第二遍：还没挂上的，**借同一个材料里其它概念的多数票**。
+        # 依据很直白：一份材料通常属于一个考纲单元，同材料的点大多挂在同一个节点下面。
+        # 兜底而已 —— 首选项仍是"自己就是考纲 / 镜像往上走 / 覆盖它的题怎么说"。
+        # 实测（2026-09-18）：这一步把最后 6 个（既没题、也没镜像父节点）挂上了，
+        # 概念的挂靠从 906/912 补齐到 912/912。
+        for concept_id, slugs in pending_topic:
+            votes: Counter[str] = Counter()
+            for slug in slugs:
+                votes.update(material_votes.get(slug) or {})
+            if votes:
+                conn.execute(
+                    text("UPDATE concepts SET topic_key = :t WHERE id = :id"),
+                    {"t": votes.most_common(1)[0][0], "id": concept_id},
+                )
+                filled_topic += 1
 
         # 清掉上一轮自动归并、这一轮不再存在的概念（人确认过的留着）
         if live_keys:
@@ -365,6 +427,7 @@ def merge_concepts() -> dict:
             ),
             "questions_linked": linked["edges"],
             "concepts_covered": linked["covered"],
+            "topic_filled_by_material": filled_topic,
         }
     return stats
 
@@ -401,9 +464,18 @@ def build_edges() -> dict:
                     counts[(ordered[i], ordered[j])] += 1
 
         conn.execute(text("DELETE FROM concept_edges WHERE derived_by = 'code'"))
+        # 已经有语义关系的配对不再补共现边：共现边是"待判"的候选，判过了就该退出池子。
+        # 不排掉的话每次 `edges` 都把判过的配对捞回来，`relate` 下次再问一遍（白花钱）——
+        # 2026-09-18 实测：一次 `make graph` 复活了 1152 对。
+        known = {
+            (row[0], row[1])
+            for row in conn.execute(
+                text("SELECT from_concept_id, to_concept_id FROM concept_edges WHERE type <> 'co_occurs'")
+            )
+        }
         written = 0
         for (left, right), count in counts.items():
-            if count < 1:
+            if count < 1 or (left, right) in known:
                 continue
             conn.execute(
                 text(
@@ -425,50 +497,105 @@ def build_edges() -> dict:
 # --------------------------------------------------------------------------- 语义关系
 
 
+#: 判过"没有关系"的边打这个标记。
+#: 为什么要留痕：模型说 `none` 的边**不会改 type**，于是下次查询照样选中它 ——
+#: 重跑一遍就把同一批再问一遍，钱白花。判失败的（异常）**不打**标记，
+#: 那种本来就该重试（见 `relate_pairs` 的回写循环）。
+JUDGED_NONE = "llm_none"
+
+#: 两端说明都短于这个长度的对**不问模型**：说明太短多半是抽取时留下的噪声点
+#: （实测 83 个概念的说明不足 20 字），问它等于花钱买一个 `none`。
+MIN_DEFINITION_CHARS = 20
+
+
+def _relate_candidates(limit: int, min_weight: float) -> list[dict]:
+    """挑出这一批要判的共现对（顺序就是这个顺序，可复现）。
+
+    为什么排序不是单纯按 weight：补边的目标是**每个概念都能走到根**，
+    所以优先问「还没接进有序边」的概念 —— 一个孤点的第一条前置边才是把路径接起来的那条，
+    而两端都已经接进图里的对，判出来只是锦上添花。同档之内才按 weight 降序。
+    """
+    with _engine().connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                WITH ordered_degree AS (
+                    SELECT c.id AS id, COUNT(e.id) AS n
+                    FROM concepts c
+                    LEFT JOIN concept_edges e
+                      ON e.type IN ('requires', 'part_of')
+                     AND (e.from_concept_id = c.id OR e.to_concept_id = c.id)
+                    GROUP BY c.id
+                )
+                SELECT e.id AS edge_id, e.weight AS weight,
+                       a.key AS a_key, a.name AS a_name, a.definition AS a_def,
+                       b.key AS b_key, b.name AS b_name, b.definition AS b_def
+                FROM concept_edges e
+                JOIN concepts a ON a.id = e.from_concept_id
+                JOIN concepts b ON b.id = e.to_concept_id
+                LEFT JOIN ordered_degree da ON da.id = a.id
+                LEFT JOIN ordered_degree db ON db.id = b.id
+                WHERE e.type = 'co_occurs'
+                  AND e.derived_by <> :judged
+                  -- 这一对已经有语义关系了：答案已经买到，不再问
+                  AND NOT EXISTS (
+                      SELECT 1 FROM concept_edges x
+                      WHERE x.from_concept_id = e.from_concept_id
+                        AND x.to_concept_id = e.to_concept_id
+                        AND x.type <> 'co_occurs'
+                  )
+                  AND e.weight >= :w
+                  AND length(COALESCE(a.definition, '')) >= :min_def
+                  AND length(COALESCE(b.definition, '')) >= :min_def
+                ORDER BY (COALESCE(da.n, 0) + COALESCE(db.n, 0)), e.weight DESC, e.id
+                LIMIT :limit
+                """
+            ),
+            {
+                "w": min_weight,
+                "limit": limit,
+                "judged": JUDGED_NONE,
+                "min_def": MIN_DEFINITION_CHARS,
+            },
+        ).all()
+    return [dict(row._mapping) for row in rows]
+
+
 async def relate_pairs(limit: int = 40, min_weight: float = 2.0) -> dict:
     """让模型给"反复共现"的概念对判语义关系（requires / part_of / …）。
 
     为什么只喂**共现过**的对：没有共现证据的对有 O(n²) 个，而且大多是噪声；
     共现至少说明它们在同一段原文里被一起讲过 —— 那种"其实是一件事的两面"的关系，
     正是先修/组成关系的高发区。每条边都带 ``why``，人可以核、可以改。
+
+    **幂等可续跑**：判过"没有关系"的边会被标记（`JUDGED_NONE`），下次不再问；
+    判失败的不打标记，下次会重问。所以分批跑（`--limit`）是安全的，
+    中断了接着跑就行。
     """
     from . import config  # noqa: PLC0415
     from .llm import LLM, parse_json  # noqa: PLC0415
     from .worker import load_prompt, render  # noqa: PLC0415
 
-    with _engine().begin() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT e.id, e.weight, a.key, a.name, a.definition, b.key, b.name, b.definition
-                FROM concept_edges e
-                JOIN concepts a ON a.id = e.from_concept_id
-                JOIN concepts b ON b.id = e.to_concept_id
-                WHERE e.type = 'co_occurs' AND e.weight >= :w
-                ORDER BY e.weight DESC, e.id
-                LIMIT :limit
-                """
-            ),
-            {"w": min_weight, "limit": limit},
-        ).all()
-
+    rows = _relate_candidates(limit, min_weight)
     if not rows:
-        return {"checked": 0, "typed": 0}
+        return {"checked": 0, "typed": 0, "none": 0, "failed": 0}
 
     template = load_prompt("relate")
     typed = 0
+    none = 0
+    failed = 0
 
     async def ask(row, llm):
         prompt = render(
             template,
             {
-                "A_KEY": row[2],
-                "A_NAME": row[3] or row[2],
-                "A_DEF": (row[4] or "（无）")[:400],
-                "B_KEY": row[5],
-                "B_NAME": row[6] or row[5],
-                "B_DEF": (row[7] or "（无）")[:400],
-                "EVIDENCE": f"在 {int(row[1])} 个切片里同时出现",
+                "A_KEY": row["a_key"],
+                "A_NAME": row["a_name"] or row["a_key"],
+                "A_DEF": (row["a_def"] or "（无）")[:400],
+                "B_KEY": row["b_key"],
+                "B_NAME": row["b_name"] or row["b_key"],
+                "B_DEF": (row["b_def"] or "（无）")[:400],
+                "EVIDENCE": f"在 {int(row['weight'])} 个切片里同时出现",
             },
         )
         try:
@@ -483,23 +610,35 @@ async def relate_pairs(limit: int = 40, min_weight: float = 2.0) -> dict:
 
     with _engine().begin() as conn:
         for row, data in results:
-            relation = str(data.get("relation") or "none").strip()
-            if relation not in RELATION_TYPES or relation == "co_occurs":
+            # 这一条**判失败**（异常/解析不出）：什么都不写 —— 失败不该被记住，
+            # 下次重跑会再问一遍，这才是对的。
+            if not data:
+                failed += 1
                 continue
+
+            relation = str(data.get("relation") or "none").strip()
+            why = str(data.get("why") or "")[:500]
+            if relation in RELATION_TYPES and relation != "co_occurs":
+                conn.execute(
+                    text(
+                        "UPDATE concept_edges SET type = :type, why = :why, derived_by = 'llm',"
+                        " weight = :w WHERE id = :id"
+                    ),
+                    {"type": relation, "why": why, "w": float(row["weight"]), "id": row["edge_id"]},
+                )
+                typed += 1
+                continue
+
+            # 判成 `none`（或模型给了个词表外的词）：**留痕**，边仍然是 co_occurs。
+            # 不留痕的话下次查询照样选中它 —— 同一批会被反复问，钱白花。
             conn.execute(
                 text(
-                    "UPDATE concept_edges SET type = :type, why = :why, derived_by = 'llm',"
-                    " weight = :w WHERE id = :id"
+                    "UPDATE concept_edges SET derived_by = :judged, why = :why WHERE id = :id"
                 ),
-                {
-                    "type": relation,
-                    "why": str(data.get("why") or "")[:500],
-                    "w": float(row[1]),
-                    "id": row[0],
-                },
+                {"judged": JUDGED_NONE, "why": why or "判过：两者无明显关系", "id": row["edge_id"]},
             )
-            typed += 1
-    return {"checked": len(rows), "typed": typed}
+            none += 1
+    return {"checked": len(rows), "typed": typed, "none": none, "failed": failed}
 
 
 # --------------------------------------------------------------------------- 导出
@@ -615,6 +754,14 @@ def check(limit: int = 5) -> dict:
         rows = conn.execute(
             text("SELECT from_concept_id, to_concept_id, type FROM concept_edges")
         ).all()
+        topics = {
+            row[0]: (row[1] or "")
+            for row in conn.execute(text("SELECT key, parent_key FROM topics")).all()
+        }
+        concept_topics = {
+            row[0]: (row[1] or "")
+            for row in conn.execute(text("SELECT id, topic_key FROM concepts")).all()
+        }
 
     def label(concept_id: str) -> str:
         key, name = names.get(concept_id, ("", ""))
@@ -645,6 +792,13 @@ def check(limit: int = 5) -> dict:
     roots = [cid for cid in names if not prereqs.get(cid)]
     unrooted = [cid for cid in names if cid not in touched]
 
+    # 考纲挂靠：图上"走到根"的另一条路（belongs_to → child_of，见 app/graph.py）。
+    # 前置链断了只是"说不清先学哪个"；**没挂考纲则是在图上根本到不了根**。
+    no_topic = [cid for cid, topic in concept_topics.items() if not topic]
+    dangling = [
+        cid for cid, topic in concept_topics.items() if topic and topic not in topics
+    ]
+
     problems: list[dict] = []
 
     def flag(name: str, samples: list[str], hint: str) -> None:
@@ -673,6 +827,16 @@ def check(limit: int = 5) -> dict:
         [" ⇄ ".join(label(cid) for cid in sorted(pair)) for pair in kind_conflicts],
         "同一对概念既是前置又是组成 —— 留下一句更准的",
     )
+    flag(
+        "no_topic",
+        [label(cid) for cid in no_topic],
+        "没挂在任何考纲节点上 —— 图上到不了根（belongs_to → child_of 那条路是断的）",
+    )
+    flag(
+        "dangling_topic",
+        [f"{label(cid)} → {concept_topics[cid]}" for cid in dangling],
+        "挂的考纲 key 不在考纲表里 —— 挂错了，或那个考纲节点被删了",
+    )
 
     metrics = {
         "concepts": len(names),
@@ -680,6 +844,7 @@ def check(limit: int = 5) -> dict:
         "concepts_with_ordered_edge": len(names) - len(unrooted),
         "roots": len(roots),
         "unrooted": len(unrooted),
+        "concepts_with_topic": len(names) - len(no_topic),
         "max_chain": _longest_chain(prereqs),
         # 口径与 cc.md 一致：**边数 / 概念数**（686/912 ≈ 0.75），不是两端各算一次
         "ordered_per_concept": round(len(ordered) / len(names), 2) if names else 0.0,
@@ -780,7 +945,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("edges", help="派生共现边")
     rel = sub.add_parser("relate", help="模型判语义关系")
     rel.add_argument("--limit", type=int, default=40)
-    rel.add_argument("--min-weight", type=float, default=2.0)
+    # 默认从 2.0 降到 1.0：共现权重就是"一起出现在几个切片里"，现网 2288 条里
+    # 2271 条是 1 —— 只喂 weight>=2 等于只判 17 对，补不动那张图。
+    # 要"证据更硬"就显式传 --min-weight 2。
+    rel.add_argument("--min-weight", type=float, default=1.0)
     sub.add_parser("stats", help="看一眼图现在什么样")
     chk = sub.add_parser("check", help="图谱体检：无环 / 能走到根 / 闭包不矛盾")
     chk.add_argument("--json", action="store_true", help="输出 JSON（给脚本与流水线用）")

@@ -123,6 +123,10 @@ def test_a_clean_pair_is_not_flagged(db_session) -> None:  # noqa: ANN001
 
     report = check(limit=50)
     for problem in report["problems"]:
+        # 只关心**边**上的问题：`no_topic` / `dangling_topic` 说的是概念挂没挂考纲，
+        # 而这里造的概念本来就没挂（测试库里没有考纲树）。
+        if problem["name"] in ("no_topic", "dangling_topic"):
+            continue
         assert not any(tag in sample for sample in problem["samples"]), problem
 
 
