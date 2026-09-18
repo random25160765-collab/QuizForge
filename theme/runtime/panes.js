@@ -349,6 +349,27 @@
     return bar;
   }
 
+  /** 拖进来的是不是"一样资源"（资源树的叶子会带这个类型） */
+  function hasResource(ev) {
+    var types = (ev.dataTransfer && ev.dataTransfer.types) || [];
+    var list = Array.prototype.slice.call(types);
+    return list.indexOf('text/panes-resource') >= 0 || list.indexOf('text/plain') >= 0;
+  }
+
+  function readResource(ev) {
+    var dt = ev.dataTransfer;
+    if (!dt) return null;
+    var raw = dt.getData('text/panes-resource') || dt.getData('text/plain') || '';
+    if (!raw) return null;
+    try {
+      var got = JSON.parse(raw);
+      // 只认"有 kind 的结构"：随手拖一段文字进来不该被当成资源
+      return got && got.kind ? got : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   function paneEl(leaf) {
     var box = live[leaf.id];
     if (!box) box = live[leaf.id] = makePane(leaf);
@@ -372,6 +393,24 @@
     };
     fillActs(box, acts);
     el.addEventListener('pointerdown', function () { focus(leaf.id); }, true);
+    // 从资源树拖进来 = 在这一格里打开它（拖到哪格就落在哪格，不看当前活跃的是谁）
+    el.addEventListener('dragover', function (ev) {
+      if (!hasResource(ev)) return;
+      ev.preventDefault();
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'copy';
+      el.classList.add('is-drop');
+    });
+    el.addEventListener('dragleave', function (ev) {
+      if (ev.target === el) el.classList.remove('is-drop');
+    });
+    el.addEventListener('drop', function (ev) {
+      el.classList.remove('is-drop');
+      var payload = readResource(ev);
+      if (!payload) return;
+      ev.preventDefault();
+      state.active = leaf.id;
+      open(payload.kind, payload.ref, payload.title);
+    });
     return box;
   }
 

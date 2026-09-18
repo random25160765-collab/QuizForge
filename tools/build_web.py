@@ -79,7 +79,8 @@ RUNTIME_ORDER = [
     "sm2.js",
     "ai.js",
     "shell.js",
-    "panes.js",         # 可组合窗格（tmux 式）：布局树、拆分、拖拽比例、最大化；样式见 theme/pane.css
+    "panes.js",         # 可组合窗格（tmux 式）：布局树、标签、拆分、拖拽比例、最大化；样式见 theme/pane.css
+    "sidetree.js",      # 左栏资源树：对话 / 资料 / 文档三个根，点或拖都把东西送进右边的窗格
     "mounts.js",        # 顶栏的挂载开关：亮度＝AI 能调哪几块
     "qview.js",
     "router.js",
