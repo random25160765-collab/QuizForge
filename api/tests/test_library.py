@@ -329,3 +329,83 @@ def test_bibtex_has_the_fields_that_matter():
     assert text.startswith("@article{dao2022flashattention,")
     assert "author = {Tri Dao and Daniel Y. Fu}" in text
     assert "archivePrefix = {arXiv}" in text
+
+
+# ------------------------------------------------------------------ 本轮实测揪出的三处
+
+
+def test_media_never_becomes_an_item_of_its_own(root: Path):
+    """附属资源不单独成条目，但要数得出来，并且挂得住。
+
+    实测踩过：被正文引用的 `figs/fig-1.svg` 一边进了那条目的 `assets`，
+    一边又自己成了列表里的一条 —— 真实语料 424 张 png，列表会被淹掉。
+    """
+    (root / "figs").mkdir(parents=True, exist_ok=True)
+    (root / "figs" / "fig-1.svg").write_text("<svg/>", encoding="utf-8")
+    (root / "Review.md").write_text("# Review\n\n![fig](figs/fig-1.svg)\n", encoding="utf-8")
+
+    rels = [item.rel for item in lib.scan(root)]
+    assert "figs/fig-1.svg" not in rels, "图片不该自己成条目"
+    assert "Review.md" in rels
+    # 注意：共用的 fixture 里本来就有一张 `fig.png`，所以这里只断言"包含"
+    assert "fig-1.svg" in [path.name for path in lib.scan_media(root)], "但它得数得出来，不能悄悄消失"
+
+    review = [item for item in lib.scan(root) if item.rel == "Review.md"][0]
+    assert [path.name for path in lib.assets_of(review)] == ["fig-1.svg"], "而且要挂在引用它的那条目上"
+
+
+def test_index_extracts_text_even_when_metadata_was_hand_filled(tmp_path: Path, monkeypatch):
+    """**回归用例**：手工补过元数据的条目，照样要抽正文。
+
+    踩过的是判据：拿"元数据冻结没有"当"处理过没有"，于是人补过作者年份的那几份
+    永远抽不到正文 —— 搜不到、正文面板一直是空的，而且怎么点"建索引"都没用。
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.routers import library as route
+
+    doc_root = tmp_path / "docs"
+    doc_root.mkdir()
+    (doc_root / "Hand-Filled-Note.md").write_text(
+        "# Hand Filled Note\n\nThis one was touched by a human.\n", encoding="utf-8"
+    )
+    meta_dir = tmp_path / "library"
+    text_dir = meta_dir / ".text"
+    monkeypatch.setenv("QF_LIBRARY_ROOTS", str(doc_root))
+    monkeypatch.setattr(route, "_meta_dir", lambda: meta_dir)
+    monkeypatch.setattr(route, "_text_dir", lambda: text_dir)
+
+    client = TestClient(app)
+    listed = client.get("/api/library/items").json()["items"]
+    assert len(listed) == 1
+    key = listed[0]["citekey"]
+
+    # 人先补了作者（这一步会把元数据冻结成 manual）
+    assert client.post("/api/library/meta", json={"citekey": key, "meta": {"authors": ["A Human"]}}).status_code == 200
+
+    indexed = client.post("/api/library/index", json={"limit": 5}).json()
+    assert [one["citekey"] for one in indexed["done"]] == [key], "补过元数据的那份也必须进队列"
+    assert lib.text_state(text_dir, key).get("at"), "抽过之后要留 at 标记，否则下一轮会重抓"
+
+
+def test_detail_lists_primary_and_assets_with_roles(tmp_path: Path, monkeypatch):
+    """详情里的 `files`：主文件一条、附属资源一条，各带 `role`（契约里写明的形状）。"""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.routers import library as route
+
+    doc_root = tmp_path / "docs"
+    (doc_root / "figs").mkdir(parents=True)
+    (doc_root / "figs" / "fig-1.svg").write_text("<svg/>", encoding="utf-8")
+    (doc_root / "Review.md").write_text("# Review\n\n![fig](figs/fig-1.svg)\n", encoding="utf-8")
+    monkeypatch.setenv("QF_LIBRARY_ROOTS", str(doc_root))
+    monkeypatch.setattr(route, "_meta_dir", lambda: tmp_path / "library")
+    monkeypatch.setattr(route, "_text_dir", lambda: tmp_path / "library" / ".text")
+
+    client = TestClient(app)
+    key = client.get("/api/library/items").json()["items"][0]["citekey"]
+    detail = client.get("/api/library/item", params={"citekey": key}).json()
+    roles = [(Path(one["path"]).name, one["role"]) for one in detail["files"]]
+    assert roles == [("Review.md", "primary"), ("fig-1.svg", "asset")]

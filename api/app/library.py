@@ -47,6 +47,17 @@ SKIP_DIRS = frozenset({".git", ".svn", "__pycache__", ".obsidian", ".trash", ".t
 #: 不给当条目看的文件（中间产物）。
 SKIP_SUFFIXES = frozenset({".pyc", ".pyo", ".class", ".o", ".so", ".dll", ".dylib", ".lock", ".tmp", ".swp"})
 
+#: **附属资源**：图片、字体、音视频。它们不单独成条目 ——
+#: 一个条目 = 一个主文件 + 它引用的附属资源（计划里定死的粒度）。
+#: 实测踩过：不给这一层过滤，被正文引用的 `figs/fig-1.svg` 一边正确地进了那条目的
+#: `assets`，一边又自己成了列表里的一条；真实语料里 424 张 png 足以把列表淹掉。
+#: 刻意**不含** `.pdf` / `.zip`：前者本来就是主文件，后者是"一包东西"，得由人来定。
+ASSET_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tif", ".tiff", ".psd",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".mp4", ".mov", ".avi", ".webm", ".mkv",
+})
+
 #: 条目类别的**唯一出处**：提示词（`pipeline/prompts/doc_classify.md`）、
 #: 模型返回的校验（`pipeline/doc_classify.py`）与界面标签都从它来。
 #: 为什么必须只有一处：加了新类别却漏改一处，就会出现"模型选了但被判成非法"这种事，
@@ -253,27 +264,55 @@ class Entry:
 # ------------------------------------------------------------------ 扫描
 
 
-def scan(root: Path) -> list[Item]:
-    """扫一个根下的所有条目（主文件）。跳过隐藏/缓存目录与中间产物。"""
-    root = Path(root)
-    if not root.is_dir():
+def walk(root: Path) -> list[Path]:
+    """遍历一个根下**值得看的**文件（跳过隐藏/缓存目录与中间产物）。
+
+    `scan` 与 `scan_media` 共用这一个口径。两处各写一遍的话，"条目数 + 资源数"
+    就会时不时对不上，而那种对不上很难查。
+    """
+    base = Path(root)
+    if not base.is_dir():
         return []
-    out: list[Item] = []
-    for path in sorted(root.rglob("*")):
+    out: list[Path] = []
+    for path in sorted(base.rglob("*")):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS or part.startswith(".") for part in path.relative_to(root).parts[:-1]):
+        if any(part in SKIP_DIRS or part.startswith(".") for part in path.relative_to(base).parts[:-1]):
             continue
         if path.name.startswith(".") or path.suffix.lower() in SKIP_SUFFIXES:
+            continue
+        out.append(path)
+    return out
+
+
+def scan(root: Path) -> list[Item]:
+    """扫一个根下的所有条目（**主文件**）。
+
+    附属资源（图片/字体/媒体）**不算条目** —— 它们挂在引用它的那条目的 `assets` 上
+    （见 `ASSET_SUFFIXES` 那段注释）。想看资源文件自己有多少个，用 `scan_media`。
+    """
+    base = Path(root)
+    out: list[Item] = []
+    for path in walk(base):
+        if path.suffix.lower() in ASSET_SUFFIXES:
             continue
         try:
             stat = path.stat()
         except OSError:
             continue
         out.append(
-            Item(path=path, root=root, rel=path.relative_to(root).as_posix(), size=stat.st_size, mtime=stat.st_mtime)
+            Item(path=path, root=base, rel=path.relative_to(base).as_posix(), size=stat.st_size, mtime=stat.st_mtime)
         )
     return out
+
+
+def scan_media(root: Path) -> list[Path]:
+    """扫一个根下的**附属资源文件**（图片/字体/媒体）。
+
+    它们不单独成条目，但也不该**悄悄消失** —— 接口用这个数报一句"另有 N 个资源文件"，
+    用户才知道它们没被吞掉（未归拢的那些尤其该让人看见）。
+    """
+    return [path for path in walk(root) if path.suffix.lower() in ASSET_SUFFIXES]
 
 
 def assets_of(item: Item) -> list[Path]:

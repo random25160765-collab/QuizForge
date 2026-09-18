@@ -108,11 +108,14 @@ def roots(user: CurrentUser, db: DbSession) -> dict:
     row = _settings_row(db, user.id)
     active = roots_for(row)
     items = [item for root in active for item in lib.scan(root)]
+    media = [path for root in active for path in lib.scan_media(root)]
     return {
         "roots": [str(path) for path in active],
         "default": [str(path) for path in default_roots()],
         "fromSettings": bool(row and isinstance(row.data, dict) and ROOTS_KEY in row.data),
         "items": len(items),
+        # 附属资源不单独成条目，但要报个数：不然"图去哪儿了"没人答得上来
+        "media": len(media),
         "missing": [str(path) for path in active if not path.is_dir()],
     }
 
@@ -212,7 +215,7 @@ def classify_apply(body: dict) -> dict:
 
 @router.get("/item")
 def item(citekey: str, user: CurrentUser, db: DbSession, text: int = 0) -> dict:
-    """一个条目的详情：元数据 + 附属资源 + 正文质量 + **谁引用了它** + BibTeX。"""
+    """一个条目的详情：元数据 + 附属资源（`files` 带角色）+ 正文质量 + **谁引用了它** + BibTeX。"""
     roots = roots_for(_settings_row(db, user.id))
     found = [entry for entry in lib.entries(roots, _meta_dir(), _text_dir()) if entry.citekey == citekey]
     if not found:
@@ -232,6 +235,12 @@ def item(citekey: str, user: CurrentUser, db: DbSession, text: int = 0) -> dict:
     detail["bibtex"] = lib.bibtex(entry.meta)
     detail["citedBy"] = lib.referencing_notes(needles, notes)
     detail["assets"] = [str(path) for path in entry.assets]
+    # 契约里的 `files`：主文件 + 附属资源，各带 `role`。列表页只要数量，
+    # 详情页要"这一条到底包含哪几个文件"，所以这里给全。
+    detail["files"] = [
+        {"path": str(entry.item.path), "role": "primary"},
+        *({"path": str(path), "role": "asset"} for path in entry.assets),
+    ]
     if text:
         state = entry.text_state
         detail["text"] = {
@@ -272,6 +281,11 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
 
     分批是刻意的：全量抽取是这一层唯一的重 IO（实测 55 个 PDF、282MB），
     一次请求跑完会让界面一直转圈、也没法显示进度。前端按 `remaining` 循环调用。
+
+    跳过判据是"**这份正文抽过没有**"（文本缓存里的 `at` 标记），**不是**"元数据冻结没有"。
+    实测踩过：把两者当成一件事，于是手工补过作者年份的条目（`origin: manual`）
+    被判成"已处理"，**永远不抽正文** —— 症状是那几份搜不到、正文面板一直是空的，
+    而且怎么点"建索引"都没用。
     """
     limit = int(body.get("limit") or 8)
     force = bool(body.get("force"))
@@ -281,11 +295,13 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
     remaining = 0
     for entry in lib.entries(roots, _meta_dir(), _text_dir()):
         key = entry.citekey
-        # **判据是"这份有没有冻结元数据"**，不是"抽出来空不空"，也不是"键在不在已知表里"。
-        # 踩过两次：先是拿 `text_state != 'none'` 判，于是抽不出正文的 md / py 每批重抓；
-        # 后来拿 `key in known` 判，于是**撞键被改名的那一份**永远对不上、每轮重抓一次
-        # （"还剩 0"却永远抓不完）。`entry.frozen` 是列表那一步算好的、唯一可靠的判据。
-        if entry.frozen and not force:
+        # **判据是"这份正文抽过没有"**，不是"抽出来空不空"，也不是"键在不在已知表里"，
+        # 更不是"元数据冻结没有"。四次取材的教训：
+        # * 拿 `text_state != 'none'` 判 → 抽不出正文的 md / py 每批重抓；
+        # * 拿 `key in known` 判 → **撞键被改名的那一份**永远对不上、每轮重抓（"还剩 0"却抓不完）；
+        # * 拿 `entry.frozen`（元数据冻结）判 → 手工补过元数据的条目**永远不抽正文**（本轮实测）；
+        # * `at` 才是那个标记本身：它区分的是"没抓过"与"抓过但没有正文"（`brief()` 里也这么用）。
+        if entry.text_state.get("at") and not force:
             continue
         if len(done) >= max(1, min(limit, 50)):
             remaining += 1
