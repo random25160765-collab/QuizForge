@@ -224,12 +224,20 @@ def test_manual_edits_win_and_are_marked(tmp_path: Path):
 def test_entries_give_duplicate_keys_a_suffix(tmp_path: Path):
     """两个同名文件不能共用一个引用键 —— 否则"谁引用了它"会指向两个东西。"""
     base = tmp_path / "docs"
-    (base / "a").mkdir(parents=True)
-    (base / "b").mkdir(parents=True)
-    (base / "a" / "Trefethen-Bau.pdf").write_bytes(b"%PDF fake")
-    (base / "b" / "Trefethen-Bau.pdf").write_bytes(b"%PDF fake")
+    (base / "cuda").mkdir(parents=True)
+    (base / "nvidia").mkdir(parents=True)
+    (base / "cuda" / "Trefethen-Bau.pdf").write_bytes(b"%PDF fake")
+    (base / "nvidia" / "Trefethen-Bau.pdf").write_bytes(b"%PDF fake")
     keys = [entry.citekey for entry in lib.entries([base], tmp_path / "lib", tmp_path / "lib" / ".text")]
-    assert sorted(keys) == ["trefethenbau", "trefethenbau-2"]
+    # 后缀**来自路径**（目录名），不是流水号 —— 流水号随扫描顺序变，
+    # 于是冻结的元数据与正文缓存会对不上（这条规矩踩过两次，见 `lib.disambiguate`）。
+    # 目录名凑不出 ASCII 词时退到 8 位哈希，仍然稳定。
+    # 先扫到的那个保留裸键，后面的按**路径**加后缀（不是流水号）；
+    # 扫描顺序排过序，所以两遍跑出来结果一致 —— 这一点至关重要：
+    # 键会变的话，冻结的元数据与正文缓存就再也对不上了。
+    assert sorted(keys) == ["trefethenbau", "trefethenbau-nvidia"]
+    again = [entry.citekey for entry in lib.entries([base], tmp_path / "lib", tmp_path / "lib" / ".text")]
+    assert sorted(again) == sorted(keys), "重扫一遍键就变了"
 
 
 # ------------------------------------------------------------------ 检索与互引

@@ -184,6 +184,9 @@ class Entry:
                 "state": str(self.text_state.get("state") or "none"),
                 "chars": int(self.text_state.get("chars") or 0),
                 "ratio": float(self.text_state.get("ratio") or 0.0),
+                # **"没抓过" 与 "抓过没有正文" 是两件事**（md / py 这类本来就抽不出东西）。
+                # 不带这个标记的话，界面会把已经试过的条目一直显示成"未抓"。
+                "attempted": bool(self.text_state.get("at")),
             },
             "arxiv": str(self.meta.get("arxiv") or ""),
         }
@@ -515,6 +518,49 @@ def read_metadata(path: Path) -> dict[str, Any]:
     return out
 
 
+def disambiguate(key: str, rel: str, taken: set[str] | dict[str, Any]) -> str:
+    """键撞了怎么办：**用从路径派生的后缀**，不用流水号。
+
+    踩过两次，都写在这里：
+    1. 流水号随扫描顺序变 —— 同一个文件这次 `risc-2`、下次 `risc-4`，
+       冻结的元数据与正文缓存再也对不上，索引队列排不空；
+    2. 这条规则原先只写在列表（`entries`）里，**冻结时没走同一套**，
+       于是两个条目冻结成同一个键、后写的把前一份覆盖掉，前者下一轮又变成"没抓过"。
+
+    所以现在只有这一份实现，列表与冻结都走它。
+    """
+    if key not in taken:
+        return key
+    base = key
+    tag = _slug_words(str(Path(rel).parent), words=2, limit=10)
+    if not tag:
+        tag = hashlib.sha1(rel.encode("utf-8")).hexdigest()[:4]
+    key = f"{base}-{tag}"
+    series = 2
+    while key in taken:
+        key = f"{base}-{tag}-{series}"
+        series += 1
+    return key
+
+
+def freeze(meta_dir: Path, text_dir: Path, meta: dict[str, Any], rel: str, *, origin: str = "inferred") -> dict[str, Any]:
+    """冻结一份元数据（第一次给它定键）。
+
+    撞键走 `disambiguate`（与列表同一套规则），并把正文缓存跟着改名 ——
+    两件事都不做的话，索引队列会反复重抓同一批文件。
+    """
+    known = load_all_metadata(meta_dir)
+    key = str(meta.get("citekey") or "")
+    holder = known.get(key)
+    if holder is not None and str(holder.get("source") or "") not in ("", str(meta.get("source") or "")):
+        fixed = disambiguate(key, rel, known)
+        if fixed != key:
+            rename_text(text_dir, key, fixed)
+            meta = dict(meta)
+            meta["citekey"] = fixed
+    return save_metadata(meta_dir, meta, origin=origin)
+
+
 def metadata_index(meta_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     """元数据的两个入口：`(按引用键, 按源文件绝对路径)`。
 
@@ -584,6 +630,26 @@ def _yaml_scalar(value: Any) -> str:
 def _text_paths(text_dir: Path, citekey: str) -> tuple[Path, Path]:
     safe = _safe_key(citekey)
     return Path(text_dir) / f"{safe}.txt", Path(text_dir) / f"{safe}.meta.json"
+
+
+def rename_text(text_dir: Path, old: str, new: str) -> bool:
+    """把正文缓存从一个引用键挪到另一个。
+
+    **为什么必须有这个动作**：定键是"抽完正文才定"的（作者与年份在正文里），
+    所以抽取时用的那个键可能随后就改了（`arxiv220514135` → `dao2022flashattention`）。
+    缓存若按旧键留盘，新的键就永远找不到它 —— 表现为条目一直显示"没抓过"、
+    "抓正文"队列反复重抓同几份（实测 60 轮 219 份，全库只有 58 条）。
+    """
+    if not old or not new or old == new:
+        return False
+    moved = False
+    for suffix in (".txt", ".meta.json"):
+        source, target = _text_paths(text_dir, old)[0].with_suffix(suffix), _text_paths(text_dir, new)[0].with_suffix(suffix)
+        if source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(target)
+            moved = True
+    return moved
 
 
 def text_state(text_dir: Path, citekey: str) -> dict[str, Any]:
@@ -755,11 +821,9 @@ def entries(roots: list[Path], meta_dir: Path, text_dir: Path) -> list[Entry]:
             meta = by_source.get(str(item.path)) or by_key.get(citekey_for(infer(item), fallback=item.rel))
             entry = entry_for(item, meta_dir, text_dir, meta=meta)
             key = entry.meta["citekey"]
-            if key in taken:
-                base, series = key, 2
-                while f"{base}-{series}" in taken:
-                    series += 1
-                key = f"{base}-{series}"
+            fixed = disambiguate(key, item.rel, taken)
+            if fixed != key:
+                key = fixed
                 entry.meta["citekey"] = key
             taken.add(key)
             out.append(entry)
@@ -853,15 +917,18 @@ __all__ = [
     "assets_of",
     "bibtex",
     "citekey_for",
+    "disambiguate",
     "entries",
     "entry_for",
     "extract_text",
+    "freeze",
     "head_text_for",
     "infer",
     "judge_text",
     "load_all_metadata",
     "metadata_index",
     "read_metadata",
+    "rename_text",
     "referencing_notes",
     "save_metadata",
     "scan",

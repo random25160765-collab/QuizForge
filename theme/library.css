@@ -1,0 +1,533 @@
+/* 资料页样式。只在 body[data-page='library'] 下生效。
+ *
+ * 沿用既有令牌（`app.css` 的 `:root` 变量），不新造配色。
+ * 三栏：左列表（固定宽）· 中条目（自适应）· 右引用（固定宽）。
+ * 资料是**读**的地方：这里没有任何"编辑文件"的视觉入口，可编辑的只有元数据那几个输入框。
+ */
+
+body[data-page='library'] .view {
+  /* 这一页是应用面：取消 app.css 的居中容器约束，宽度交给浏览器 */
+  max-width: none;
+  padding: 0;
+}
+
+body[data-page='library'] {
+  overflow: hidden;                 /* 滚动交给各自的面板，别让整页跟着滚 */
+}
+
+.lib {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr) 300px;
+  height: calc(100vh - var(--topbar-h, 48px) - var(--statusbar-h, 26px));
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* ---- 左：列表 ---- */
+
+.lib__list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
+}
+
+.lib__head {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 8px 8px 4px;
+}
+
+.lib__root {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.lib__searchrow {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 6px;
+}
+
+.lib__search {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.lib__search:focus,
+.lib__field:focus {
+  border-color: var(--pri);
+  outline: none;
+}
+
+.lib__icon {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--fg2);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.lib__icon:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.lib__icon--mini {
+  width: 22px;
+  height: 26px;
+  border-color: transparent;
+}
+
+/* 计数与「待补」：它是面板的一部分，不放进滚动区 */
+.lib__bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--fg2);
+  border-bottom: 1px solid var(--line);
+}
+
+.lib__baritem--dim {
+  color: var(--fg3);
+}
+
+.lib__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-bottom: 6px;
+}
+
+.lib__row {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  font: inherit;
+  color: var(--fg);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+
+.lib__row:hover {
+  background: var(--bg3);
+}
+
+.lib__row.is-on {
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  border-left-color: var(--pri);
+}
+
+.lib__rowtop {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.lib__title {
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib__kind {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  color: var(--fg2);
+  background: var(--bg3);
+  border-radius: 999px;
+}
+
+.lib__kind--paper { color: #6aa6e0; background: color-mix(in srgb, #6aa6e0 16%, transparent); }
+.lib__kind--book { color: #c99a5b; background: color-mix(in srgb, #c99a5b 16%, transparent); }
+.lib__kind--manual { color: #7bc47f; background: color-mix(in srgb, #7bc47f 16%, transparent); }
+.lib__kind--report { color: #b48ae0; background: color-mix(in srgb, #b48ae0 16%, transparent); }
+.lib__kind--code { color: #d98f6a; background: color-mix(in srgb, #d98f6a 16%, transparent); }
+.lib__kind--webpage { color: #66c2c2; background: color-mix(in srgb, #66c2c2 16%, transparent); }
+
+.lib__rowbot {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.lib__meta {
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--fg3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib__marks {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.lib__mark {
+  padding: 0 5px;
+  font-size: 10px;
+  color: var(--fg3);
+  background: var(--bg3);
+  border-radius: 999px;
+}
+
+.lib__mark--manual { color: #7bc47f; }
+.lib__mark--llm { color: #b48ae0; }
+.lib__mark--bad { color: var(--bad); }
+.lib__mark--warn { color: #d9a441; }
+
+.lib__key {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--fg3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib__empty,
+.lib__hint {
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg3);
+}
+
+.lib__foot {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.lib__count {
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--fg3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib__btn {
+  flex: none;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--fg2);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.lib__btn:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.lib__btn.is-on {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+}
+
+.lib__btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.lib__btn--tiny {
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+/* ---- 中：条目详情 ---- */
+
+.lib__main {
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
+}
+
+.lib__welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+  text-align: center;
+}
+
+.lib__welcometitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+.lib__welcometext {
+  max-width: 420px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--fg3);
+}
+
+.lib__detailhead {
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.lib__detailtitle {
+  margin: 0 0 8px;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--fg);
+}
+
+.lib__detailline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.lib__citekey {
+  padding: 2px 7px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  color: var(--fg2);
+  background: var(--bg3);
+  border-radius: var(--r-sm, 6px);
+}
+
+.lib__detailtags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.lib__origin--manual { color: #7bc47f; }
+.lib__origin--llm { color: #b48ae0; }
+
+.lib__textstate--ok { color: #7bc47f; }
+.lib__textstate--warn { color: #d9a441; }
+.lib__textstate--bad { color: var(--bad); }
+
+.lib__path {
+  overflow: hidden;
+  max-width: 100%;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib__detailbody {
+  padding: 16px 22px 40px;
+}
+
+.lib__panel {
+  margin-bottom: 18px;
+}
+
+.lib__paneltitle {
+  margin-bottom: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg3);
+  letter-spacing: 0.04em;
+}
+
+.lib__meta {
+  display: grid;
+  gap: 6px;
+}
+
+.lib__metarow {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.lib__metakey {
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.lib__field {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.lib__notice {
+  margin-bottom: 14px;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  border-left: 2px solid var(--line);
+  border-radius: 0 var(--r-sm, 6px) var(--r-sm, 6px) 0;
+}
+
+.lib__notice--bad {
+  color: var(--fg2);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+  border-left-color: var(--bad);
+}
+
+.lib__notice--warn {
+  color: var(--fg2);
+  background: color-mix(in srgb, #d9a441 10%, transparent);
+  border-left-color: #d9a441;
+}
+
+.lib__file {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 12px;
+}
+
+.lib__filerole {
+  flex: none;
+  width: 52px;
+  color: var(--fg3);
+}
+
+.lib__filerole--asset {
+  color: var(--fg3);
+  opacity: 0.75;
+}
+
+.lib__filepath {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  color: var(--fg2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;               /* 路径太长时，露出来的该是文件名那一头 */
+  text-align: left;
+}
+
+.lib__filesize {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.lib__text {
+  max-height: 320px;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--fg2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.lib__text--bib {
+  max-height: 220px;
+}
+
+/* ---- 右：引用与出处 ---- */
+
+.lib__side {
+  min-height: 0;
+  padding: 14px 12px;
+  overflow: auto;
+  background: var(--bg2);
+  border-left: 1px solid var(--line);
+}
+
+.lib__cited {
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.lib__citedtitle {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+.lib__citedpath {
+  margin-top: 2px;
+  overflow: hidden;
+  font-size: 11px;
+  color: var(--fg3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 窄屏：右栏收起来（资料页以列表与条目为主） ---- */
+
+@media (max-width: 1180px) {
+  .lib {
+    grid-template-columns: 268px minmax(0, 1fr);
+  }
+
+  .lib__side {
+    display: none;
+  }
+}

@@ -88,7 +88,8 @@
      页面名取自 body[data-page]（shell.html 注入），两套构建下都有值。 */
   function hideSelfIcons() {
     var page = document.body.dataset.page || '';
-    var self = { graph: 'btn-graph', wrongbook: 'btn-wrongbook', chat: 'btn-chat', notes: 'btn-notes' }[page];
+    var self = { graph: 'btn-graph', wrongbook: 'btn-wrongbook', chat: 'btn-chat',
+      notes: 'btn-notes', library: 'btn-library' }[page];
     if (!self) return;
     var btn = document.getElementById(self);
     if (btn) btn.hidden = true;

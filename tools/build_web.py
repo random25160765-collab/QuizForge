@@ -91,6 +91,7 @@ PAGE_JS = {
     "graph": ["graph.js"],
     "chat": ["chat.js", "boot.js"],
     "notes": ["canvas.js", "notes.js"],  # canvas.js 要在 notes.js 前（后者用 QF.canvas）
+    "library": ["library.js"],           # 资料页也自己启动（数据来自 /api/library）
 }
 
 PAGE_TITLE = {
@@ -99,6 +100,7 @@ PAGE_TITLE = {
     "graph": "QuizForge · 知识图谱",
     "chat": "QuizForge · 对话",
     "notes": "QuizForge · 笔记",
+    "library": "QuizForge · 资料",
 }
 
 PAGE_BODY = {
@@ -107,10 +109,11 @@ PAGE_BODY = {
     "graph": "graph.body.html",
     "chat": "chat.body.html",
     "notes": "notes.body.html",
+    "library": "library.body.html",
 }
 
 # 页面专属样式：默认共用合并后的 app.css，只有图谱页、对话页与笔记页要再加一份
-PAGE_CSS = {"graph": ["graph.css"], "chat": ["chat.css"], "notes": ["notes.css"]}
+PAGE_CSS = {"graph": ["graph.css"], "chat": ["chat.css"], "notes": ["notes.css"], "library": ["library.css"]}
 
 # 应用样式合并成一份，避免每页重复下载
 APP_CSS = ["markdown.css", "app.css"]
