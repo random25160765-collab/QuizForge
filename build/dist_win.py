@@ -107,6 +107,21 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_copy:
         print("· 拷到桌面…")
         _powershell(f"Copy-Item -Force \"{artifact_rel}\" \"{DESKTOP_REL}\\{name}.exe\"")
+        # **拷完必须核对哈希**，别信"命令没报错"。
+        # 踩过：目标 exe 正在运行 → 文件被锁 → 复制被静默拒绝，
+        # 而脚本照样往下走、最后打印"完成"，于是桌面上一直躺着一个旧包，
+        # 用户双击看到的是旧行为，还得来回问"为什么没修"。
+        code, out = _powershell(
+            f"$a = (Get-FileHash \"{artifact_rel}\" -Algorithm SHA256).Hash; "
+            f"$b = (Get-FileHash \"{DESKTOP_REL}\\{name}.exe\" -Algorithm SHA256).Hash; "
+            f"if ($a -eq $b) {{ Write-Output 'SAME' }} else {{ Write-Output 'DIFFERENT' }}"
+        )
+        if "SAME" not in out:
+            print("桌面那份**没换成**（哈希不一致）—— 多半是它正在运行、文件被锁。")
+            print("把它关掉再重跑一次；构建产物本身是好的：")
+            print(f"  {windows_artifact}")
+            return 1
+        print("· 桌面已更新（哈希核对一致 ✓）")
         local_target = ROOT / "build" / "dist" / f"{name}.exe"
         local_target.parent.mkdir(parents=True, exist_ok=True)
         # 从 /mnt/c 拷回 WSL（走的是 drvfs，普通文件拷贝）
