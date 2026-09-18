@@ -197,7 +197,15 @@ def edit_meta(body: dict, user: CurrentUser, db: DbSession) -> dict:
         raise HTTPException(status_code=400, detail="得给 citekey 与 meta")
     known = lib.load_all_metadata(_meta_dir())
     merged = dict(known.get(citekey) or {})
-    merged.update({key: value for key, value in patch.items() if key != "citekey"})
+    for key, value in patch.items():
+        if key == "citekey":
+            continue
+        if value is None or (isinstance(value, str) and not value.strip()):
+            # `null` / 空串 = **把这个字段去掉**，而不是写一个空值进去。
+            # 实测踩过：清空年份之后元数据里留下 `year: 0`，列表里于是显示"0 年"。
+            merged.pop(key, None)
+            continue
+        merged[key] = value
     merged["citekey"] = citekey
     saved = _run(lib.save_metadata, _meta_dir(), merged, origin="manual")
     return {"citekey": saved["citekey"], "meta": saved}
@@ -218,10 +226,12 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
     remaining = 0
     for entry in lib.entries(roots, _meta_dir(), _text_dir()):
         key = entry.citekey
+        # **判据是"有没有冻结元数据"，不是"抽出来空不空"**。
+        # 踩过：原先还要求 `text_state != 'none'` 才算抓过，于是 md / py 这类
+        # 本来就抽不出正文的条目**每一批都被重抓一遍** —— 前端循环跑了一百多份还在转，
+        # 队列永远排不空（实测"已抓 150 份，还剩 19"）。
         if key in known and not force:
-            state = entry.text_state
-            if state.get("state") != "none":
-                continue
+            continue
         if len(done) >= max(1, min(limit, 50)):
             remaining += 1
             continue
@@ -236,7 +246,14 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
             fresh["citekey"] = key                      # 已冻结的键不动（它可能已经被引用）
         else:
             fresh["citekey"] = lib.citekey_for(fresh, fallback=entry.item.rel)
-            _run(lib.save_metadata, _meta_dir(), fresh, origin="inferred")
+            if fresh["citekey"] != key:
+                # 键定了就跟着挪缓存，别让"缓存键"和"条目键"分家
+                # （分家的表现是：条目一直显示"没抓过"，队列反复重抓同几份）
+                _run(lib.rename_text, _text_dir(), key, fresh["citekey"])
+            # 走 freeze 而不是直接 save：它会在**撞键时去重**，
+            # 否则两个条目会冻结成同一个键、后写的覆盖前一份，前者下一轮又变成"没抓过"
+            frozen_meta = _run(lib.freeze, _meta_dir(), _text_dir(), fresh, entry.item.rel, origin="inferred")
+            fresh = frozen_meta
         done.append(
             {
                 "citekey": fresh["citekey"],

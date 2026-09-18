@@ -1,0 +1,45 @@
+<!--
+  资料：只读的资料来源库（对标 Zotero 的那一层界面）。
+
+  为什么是独立一页而不是塞进笔记页：
+  * 笔记页是**写作台**（左树 / 中正文 / 右面板），资料页是**查资料**（左列表 / 中条目 / 右引用）；
+    两件事的操作方式不同，挤在一起会让两边都别扭。
+  * 三栏主界面（计划 A7）落地时，左栏复用这一页的列表模块（`runtime/library.js` 暴露 mount），
+    所以这里不是"做两个界面"，是同一块东西换宿主 —— 与画布（`canvas.js`）的做法一致。
+
+  这一页是应用面，宽度交给浏览器：`library.css` 里显式取消 `app.css` 的居中容器约束。
+  `data-page` 必须写：页面级样式与顶栏图标隐藏都靠它。
+-->
+<div id="app-root" data-page="library">
+  <div class="lib" id="library-root">
+    <!-- 左：资料根 → 条目列表 -->
+    <aside class="lib__list" aria-label="资料条目">
+      <header class="lib__head">
+        <select class="lib__root" id="library-root-pick" title="资料根" aria-label="资料根"></select>
+        <button class="lib__icon" id="library-addroot" type="button" title="添加一个资料目录"
+                aria-label="添加资料目录">＋</button>
+      </header>
+      <div class="lib__searchrow">
+        <input class="lib__search" id="library-search" type="search"
+               placeholder="搜索…（title: / authors: / kind: / -词）" autocomplete="off"
+               spellcheck="false" aria-label="检索资料">
+        <button class="lib__icon lib__icon--mini" id="library-clear" type="button" title="清空检索"
+                aria-label="清空检索" hidden>×</button>
+      </div>
+      <!-- 计数与「待补」固定成面板的一部分，不放进滚动区（滚动的行会从缝隙里透出来） -->
+      <div class="lib__bar" id="library-bar"></div>
+      <div class="lib__scroll" id="library-items" role="listbox" aria-label="资料条目列表"></div>
+      <footer class="lib__foot">
+        <span class="lib__count" id="library-count">—</span>
+        <button class="lib__btn" id="library-index" type="button"
+                title="抽正文（PDF 抽取较慢，分批推进，可随时停下）">抓正文</button>
+      </footer>
+    </aside>
+
+    <!-- 中：条目详情（元数据可补，正文只读） -->
+    <main class="lib__main" id="library-main"></main>
+
+    <!-- 右：引用与出处 -->
+    <aside class="lib__side" id="library-side" aria-label="引用与出处"></aside>
+  </div>
+</div>
