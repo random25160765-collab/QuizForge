@@ -104,7 +104,20 @@ def _seed_knowledge(db, question_id: str | None) -> tuple[int, str]:  # noqa: AN
 
 
 def _first_question_id(db) -> str:  # noqa: ANN001
-    return db.scalar(select(Question.id).where(Question.retired_at.is_(None)).limit(1))
+    """挑一道**推得动**的题（题卡支持的那几类），而且每次都挑同一道。
+
+    为什么不能只写 `limit(1)`：`push_question` 只推 `CARD_TYPES` 里的四种
+    （大题走另一条路径），而库里那 34 道大题照样会被 `limit(1)` 挑中 ——
+    挑中时卡片是空的，`test_push_question_*` 那两条于是"单独跑必过、
+    整套跑偶尔红"（查询计划一变，"第一道"就换人，像是产品在抖）。
+    把契约写死：排序确定 + 只要推得动的类型。
+    """
+    return db.scalar(
+        select(Question.id)
+        .where(Question.retired_at.is_(None), Question.type.in_(tools.CARD_TYPES))
+        .order_by(Question.id)
+        .limit(1)
+    )
 
 
 # ------------------------------------------------------------------ 工具
