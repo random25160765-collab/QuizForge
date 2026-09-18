@@ -12,16 +12,15 @@ PASSWORD = "password-1234"
 
 
 def _register(client) -> None:  # noqa: ANN001
-    client.cookies.clear()
-    resp = client.post(
-        "/api/auth/register",
-        json={"email": f"mine-{uuid.uuid4().hex[:10]}@example.com", "password": PASSWORD},
-    )
-    assert resp.status_code in (200, 201), resp.text
+    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
+    from conftest import local_user_id
+
+    local_user_id()
 
 
 def _csrf(client) -> dict:  # noqa: ANN001
-    return {"X-CSRF-Token": client.cookies.get("qf_csrf") or ""}
+    # CSRF 随账号面一起删掉了；留着是为了不动调用点
+    return {}
 
 
 def _draft(**over: object) -> dict:
@@ -99,21 +98,25 @@ def test_picks_can_draw_from_my_questions(client, imported_bank) -> None:  # noq
     assert len(both["items"]) >= len(mine["items"])
 
 
-def test_my_questions_belong_to_me_alone(client) -> None:  # noqa: ANN001
-    """题单是私有的：别人既看不到、也改不动、更删不掉。"""
+def test_a_question_in_my_bank_can_be_changed_and_dropped(client) -> None:  # noqa: ANN001
+    """题单里的题**随出随改、也能删**（这是它和公共题库最实际的区别）。
+
+    （原先这里测的是"别人看不到 / 改不动 / 删不掉" —— 单用户本地形态下没有
+      "别人"，那条随之删掉；见 `app/deps.py`。公共题库那套"只下架不删除"
+      的规矩仍然只针对 `questions`。）
+    """
     _register(client)
     mine = client.post(
         "/api/my/questions", json={"payload": _draft()}, headers=_csrf(client)
     ).json()["question"]
 
-    _register(client)  # 换个账号
-    assert client.get("/api/my/questions").json()["count"] == 0
-    assert (
-        client.patch(
-            f"/api/my/questions/{mine['id']}",
-            json={"payload": _draft(stem="我改")},
-            headers=_csrf(client),
-        ).status_code
-        == 404
+    changed = client.patch(
+        f"/api/my/questions/{mine['id']}",
+        json={"payload": _draft(stem="我改过的题干")},
+        headers=_csrf(client),
     )
-    assert client.delete(f"/api/my/questions/{mine['id']}", headers=_csrf(client)).status_code == 404
+    assert changed.status_code == 200, changed.text
+    assert "我改过的题干" in changed.json()["question"]["payload"]["stem"]
+
+    assert client.delete(f"/api/my/questions/{mine['id']}", headers=_csrf(client)).status_code == 200
+    assert client.get("/api/my/questions").json()["count"] == 0

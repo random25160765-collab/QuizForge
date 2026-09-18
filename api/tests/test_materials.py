@@ -20,8 +20,10 @@ PW = "password-1234"
 
 
 def _register(client) -> None:  # noqa: ANN001
-    email = "mat-" + uuid.uuid4().hex[:8] + "@example.com"
-    client.post("/api/auth/register", json={"email": email, "password": PW})
+    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
+    from conftest import local_user_id
+
+    local_user_id()
 
 
 def _material(db, path: Path, *, lines: int) -> Material:  # noqa: ANN001

@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import ai, auth, bank, chat, graph, health, knowledge, mybank, problem, progress
+from . import ai, bank, chat, graph, health, knowledge, mybank, problem, progress
 
 
 def all_routers() -> list[APIRouter]:
     return [
         health.router,
-        auth.router,
+        # 账号面（auth）已随"单用户本地"整块删除 —— 见 `app/deps.py` 的文件注释
         bank.router,
         knowledge.router,
         graph.router,

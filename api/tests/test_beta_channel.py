@@ -19,7 +19,6 @@ from pathlib import Path
 
 from app import ai_gateway
 from app.config import get_settings
-from app.deps import CSRF_COOKIE
 from app.routers import ai as ai_router
 from app.routers import health as health_router
 
@@ -28,16 +27,15 @@ DEAD = "http://127.0.0.1:9/v1"  # 必然连不上
 
 
 def _register(client) -> None:  # noqa: ANN001
-    client.cookies.clear()
-    resp = client.post(
-        "/api/auth/register",
-        json={"email": f"beta-{uuid.uuid4().hex[:10]}@example.com", "password": PASSWORD},
-    )
-    assert resp.status_code in (200, 201), resp.text
+    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
+    from conftest import local_user_id
+
+    local_user_id()
 
 
 def _headers(client) -> dict:  # noqa: ANN001
-    return {"X-CSRF-Token": client.cookies.get(CSRF_COOKIE) or ""}
+    # CSRF 随账号面一起删掉了；留着是为了不动调用点
+    return {}
 
 
 def _set_ai(client, **conf) -> None:  # noqa: ANN001

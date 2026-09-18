@@ -36,14 +36,15 @@ def test_health_reports_bank_scale(client, imported_bank) -> None:  # noqa: ANN0
     assert body["bank"]["versionHash"] == client.get("/api/bank").headers["etag"].strip('"')
 
 
-def _login(client, email: str) -> None:  # noqa: ANN001
-    """注册或登录 —— 读题库需要会话。"""
-    client.cookies.clear()
-    resp = client.post("/api/auth/register", json={"email": email, "password": "password-1234"})
-    if resp.status_code == 409:
-        client.cookies.clear()
-        resp = client.post("/api/auth/login", json={"email": email, "password": "password-1234"})
-    assert resp.status_code in (200, 201), resp.text
+def _login(client, email: str = "") -> None:  # noqa: ANN001
+    """本机用户就绪。
+
+    （`email` 参数留着是为了不动调用点；单用户本地形态既没有注册也没有登录，
+      见 `app/deps.py`。）
+    """
+    from conftest import local_user_id
+
+    local_user_id()
 
 
 def test_health_never_leaks_api_key(client) -> None:  # noqa: ANN001

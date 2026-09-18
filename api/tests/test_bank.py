@@ -165,9 +165,13 @@ def test_bank_payload_round_trips_through_db(imported_bank, db_session) -> None:
         assert _as_web(api["meta"][key]) == _as_web(scanned["meta"][key]), key
 
 
-def test_bank_requires_login(client) -> None:  # noqa: ANN001
+def test_bank_never_needs_login(client) -> None:  # noqa: ANN001
+    """本地单用户：不带任何凭据就能读题库。
+
+    （原先这条断言的是"没登录 → 401"；账号面删掉之后它反过来 —— 见 `app/deps.py`。）
+    """
     client.cookies.clear()
-    assert client.get("/api/bank").status_code == 401
+    assert client.get("/api/bank").status_code == 200
 
 
 def test_bank_returns_body_and_etag(client, imported_bank) -> None:  # noqa: ANN001
@@ -196,18 +200,15 @@ def test_bank_version_endpoint(client, imported_bank) -> None:  # noqa: ANN001
 # ------------------------------------------------------------------ 工具
 
 
-def _ensure_logged_in(client, email: str) -> None:  # noqa: ANN001
-    """注册或登录，保证这个 client 已持有会话。
+def _ensure_logged_in(client, email: str = "") -> None:  # noqa: ANN001
+    """本机用户就绪。
 
-    注册回 201、登录回 200，断言「已登录」比断言某一个状态码更贴近意图。
+    （原先这里是"注册或登录，保证这个 client 已持有会话"。单用户本地形态
+      既没有注册也没有登录 —— 见 `app/deps.py`；名字留着是为了不动调用点。）
     """
-    client.cookies.clear()
-    resp = client.post("/api/auth/register", json={"email": email, "password": "password-1234"})
-    if resp.status_code == 409:
-        client.cookies.clear()
-        resp = client.post("/api/auth/login", json={"email": email, "password": "password-1234"})
-    assert resp.status_code in (200, 201), resp.text
-    assert client.get("/api/auth/me").status_code == 200
+    from conftest import local_user_id
+
+    local_user_id()
 
 
 def _counts() -> tuple[int, int]:
