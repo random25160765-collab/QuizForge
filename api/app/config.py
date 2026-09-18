@@ -18,6 +18,21 @@ API_DIR = Path(__file__).resolve().parent.parent
 ROOT = API_DIR.parent
 
 
+def _default_data_dir() -> Path:
+    """应用数据目录（库文件、缓存，以后还有笔记与资料）：开发在仓库里，打包后进主目录。
+
+    **打包后绝不能沿用 `<根>/data`**：单文件模式里那个"根"是解包出来的临时目录
+    （`sys._MEIPASS` 的上一级，即 `%TEMP%`）—— 数据会攒在 `%TEMP%\\data` 下：
+    既不好找，又随时可能被清理工具当垃圾收走。用户的东西不该住在临时目录里。
+
+    所以打包后落在 `~/quizforge/`（Windows 是 `C:\\Users\\<你>\\quizforge`）。
+    启动器会把完整路径打印出来，用户要知道自己的东西在哪。
+    """
+    if getattr(sys, "frozen", False):
+        return Path.home() / "quizforge"
+    return ROOT / "data"
+
+
 def _default_tools_dir() -> Path:
     """`tools/` 在哪：开发时在仓库根下，打包后跟着包走（解包根下）。
 
@@ -51,7 +66,8 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------ 数据
     # **local-first**：应用自己的东西（数据库，以后还有笔记与资料的索引）都落在这个
     # 数据目录里，不依赖任何外部服务 —— 双击即用，没有"先把数据库起起来"这一步。
-    data_dir: Path = ROOT / "data"
+    # 打包后它指向用户主目录下的 `quizforge/`，见 `_default_data_dir`。
+    data_dir: Path = _default_data_dir()
 
     # ------------------------------------------------------------ 数据库
     # 留空 = 用 `data_dir` 下的 `quizforge.db`（SQLite，随应用分发）。

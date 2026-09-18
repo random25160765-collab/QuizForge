@@ -61,6 +61,15 @@ def _free_port(preferred: int) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Windows 控制台是 GBK：中文没问题，但遇到它编不出的符号会直接抛异常
+    # （`build/package.py` 的自检就这么崩过一次）
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (ValueError, OSError):
+                pass
+
     parser = argparse.ArgumentParser(prog="quizforge", description="本机起服务并打开界面")
     parser.add_argument("--port", type=int, default=8100, help="优先使用的端口（占了就自动换）")
     parser.add_argument("--no-browser", action="store_true", help="不自动开浏览器（自检用）")
