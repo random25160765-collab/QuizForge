@@ -932,7 +932,10 @@ def extract_text(item: Item, text_dir: Path, citekey: str, *, force: bool = Fals
     state = text_state(text_dir, citekey)
     if not force and path.is_file() and abs(float(state.get("mtime") or 0) - item.mtime) < 1:
         return state
-    kind = "pdf" if item.suffix == ".pdf" else ("text" if item.suffix in KIND_BY_SUFFIX else "other")
+    # kind 交给 `attachments.kind_of` 一处决定：pdf / docx / pptx / text / legacy ——
+    # 资料这边不再自己映射一遍（自己映射一遍的话，新加的格式会在这里被漏掉：
+    # 现象是"能看但搜不到"，比看不了更隐蔽）。
+    kind = attachments.kind_of(item.path.name, "")
     raw = attachments.extract(item.path, kind)[:TEXT_LIMIT]
     judged = judge_text(raw)
     judged.update({"mtime": item.mtime, "at": datetime.now().isoformat(timespec="seconds")})

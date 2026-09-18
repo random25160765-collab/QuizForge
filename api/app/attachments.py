@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -37,6 +38,60 @@ TEXT_SUFFIXES = {
 }
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
+#: 用 `pandoc` 能读的文档格式（docx 是 zip + XML，pandoc 直接吃）。
+DOC_SUFFIXES = {".docx", ".rtf", ".odt"}
+#: 演示文稿：**自己解**（pandoc 读不了 pptx，而它其实就是 zip + XML）。
+SLIDE_SUFFIXES = {".pptx"}
+#: 老式二进制格式：抽不出可用文字，照实说，别假装。
+LEGACY_SUFFIXES = {".doc", ".ppt", ".xls"}
+
+MIME_BY_SUFFIX = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".txt": "text/plain; charset=utf-8",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".doc": "application/msword",
+    ".ppt": "application/vnd.ms-powerpoint",
+}
+
+
+def mime_of(name: str) -> str:
+    """按后缀给一个 MIME。认不出就当二进制（浏览器会存下来，不会乱猜怎么渲染）。"""
+    return MIME_BY_SUFFIX.get(Path(name or "").suffix.lower(), "application/octet-stream")
+
+
+def view_kind(name: str) -> str:
+    """这份文件该怎么看：`pdf`（浏览器自带阅读器）/ `image` / `markdown` /
+    `docx`（pandoc 转 HTML）/ `pptx`（自己解成幻灯片）/ `text`（原样给）/ `legacy` / `binary`。
+
+    `html` **按源码看**：本地 HTML 里可能有脚本，直接渲染等于在我们的源里执行它。
+    """
+    suffix = Path(name or "").suffix.lower()
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in IMAGE_SUFFIXES:
+        return "image"
+    if suffix in (".md", ".markdown"):
+        return "markdown"
+    if suffix in DOC_SUFFIXES:
+        return "docx"
+    if suffix in SLIDE_SUFFIXES:
+        return "pptx"
+    if suffix in LEGACY_SUFFIXES:
+        return "legacy"
+    if suffix in TEXT_SUFFIXES:
+        return "text"
+    return "binary"
+
 
 def uploads_dir() -> Path:
     """附件根目录（相对 `api/`）—— 已在 `.gitignore` 里，绝不进版本库。"""
@@ -47,6 +102,12 @@ def kind_of(name: str, mime: str) -> str:
     suffix = Path(name or "").suffix.lower()
     if suffix == ".pdf" or "pdf" in (mime or ""):
         return "pdf"
+    if suffix in DOC_SUFFIXES:
+        return "docx"
+    if suffix in SLIDE_SUFFIXES:
+        return "pptx"
+    if suffix in LEGACY_SUFFIXES:
+        return "legacy"
     if suffix in IMAGE_SUFFIXES or (mime or "").startswith("image/"):
         return "image"
     if suffix in TEXT_SUFFIXES or (mime or "").startswith("text/"):
@@ -71,10 +132,77 @@ def _extract_pdf(path: Path) -> str:
     return done.stdout.decode("utf-8", errors="replace")[:TEXT_LIMIT]
 
 
+#: pandoc 的**输入格式必须显式给**：实测这台机器上的 pandoc 不认 `-f auto`
+#: （那是新版才有的），报的是 `Unknown input format auto` —— 于是转出来全空，
+#: 而现象是"文档能打开但一个字都没有"，很难往"版本差"上想。
+PANDOC_FROM = {".docx": "docx", ".rtf": "rtf", ".odt": "odt", ".md": "markdown"}
+
+
+def _run_pandoc(path: Path, to: str) -> str:
+    """让 pandoc 把一份文档转成 `to`（`plain` / `html`）。没有它就返回空串。"""
+    from_fmt = PANDOC_FROM.get(Path(path).suffix.lower(), "markdown")
+    try:
+        done = subprocess.run(
+            ["pandoc", "-f", from_fmt, "-t", to, "--wrap=none", str(path)],
+            capture_output=True,
+            timeout=PDF_TIMEOUT * 3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    return done.stdout.decode("utf-8", errors="replace")
+
+
+def slides_of(path: Path) -> list[dict]:
+    """把 `.pptx` 解成幻灯片列表：`[{index, title, lines}]`。
+
+    pptx 就是个 zip：幻灯片在 `ppt/slides/slideN.xml`，正文在 `<a:t>` 里。
+    **自己解而不是等一个库**：这段是确定性的 XML 遍历，引一个包来读自己机器上
+    的一堆 XML 不划算（与资料模块不引 YAML 库是同一条取舍）。
+    页面顺序按数字排（`slide2` 要排在 `slide10` 前面 —— 按字符串排会乱）。
+    """
+    import re as _re
+    import zipfile as _zip
+
+    try:
+        with _zip.ZipFile(path) as box:
+            names = [n for n in box.namelist() if _re.match(r"^ppt/slides/slide\d+\.xml$", n)]
+            names.sort(key=lambda n: int(_re.findall(r"\d+", n)[-1]))
+            out: list[dict] = []
+            for order, name in enumerate(names, start=1):
+                xml = box.read(name).decode("utf-8", errors="replace")
+                lines = [
+                    _re.sub(r"\s+", " ", chunk).strip()
+                    for chunk in _re.findall(r"<a:t>(.*?)</a:t>", xml, flags=_re.S)
+                ]
+                lines = [line for line in lines if line]
+                out.append(
+                    {
+                        "index": order,
+                        "title": (lines[0] if lines else f"第 {order} 页")[:120],
+                        "lines": lines[1:] if lines else [],
+                    }
+                )
+            return out
+    except (OSError, _zip.BadZipFile, KeyError):
+        return []
+
+
 def extract(path: Path, kind: str) -> str:
     """抽正文。抽不出来就返回空串 —— 调用方要接受这一点，不要当成错误。"""
     if kind == "pdf":
         return _extract_pdf(path)
+    if kind == "docx":
+        return _run_pandoc(path, "plain")[:TEXT_LIMIT]
+    if kind == "pptx":
+        # 幻灯片之间留个分隔，检索时"这一页"与"那一页"不至于粘成一段
+        return "\n\n".join(
+            "\n".join([one["title"], *one["lines"]]) for one in slides_of(path)
+        )[:TEXT_LIMIT]
+    if kind == "legacy":
+        return ""      # 老式二进制：照实说抽不到，不硬凑
     if kind != "text":
         return ""
     try:
@@ -85,6 +213,30 @@ def extract(path: Path, kind: str) -> str:
     if "\x00" in text[:2000]:
         return ""  # 二进制被当成文本传上来了
     return text[:TEXT_LIMIT]
+
+
+#: 从文档里带出来的可执行东西：脚本、事件属性、`javascript:` 地址。
+#: 本地文档里嵌一段 `<script>` 是**合法的**（Office 文档允许内嵌 HTML），
+#: 但把它注进我们的页面等于让别人的文件在我们的源里跑。
+_SCRIPT_TAG = re.compile(r"<\s*script\b.*?</\s*script\s*>", re.IGNORECASE | re.DOTALL)
+_ANY_EVENT = re.compile(r"\son[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
+_JS_URL = re.compile(r"(href|src)\s*=\s*(\"|')\s*javascript:[^\"']*\2", re.IGNORECASE)
+
+
+def sanitize_html(html: str) -> str:
+    """把转出来的 HTML 里**能执行的东西**去掉，其余原样留着。
+
+    只做减法、不改结构：脚注、表格、图片、样式都留 —— 它们的价值正是"能读"，
+    而去掉的这三类东西与"读懂这份文档"无关。
+    """
+    out = _SCRIPT_TAG.sub("", html or "")
+    out = _ANY_EVENT.sub("", out)
+    return _JS_URL.sub("", out)
+
+
+def to_html(path: Path) -> str:
+    """把一份文档转成 HTML（目前只有 docx 这条路走 pandoc）。失败给空串。"""
+    return sanitize_html(_run_pandoc(path, "html"))[:TEXT_LIMIT]
 
 
 def save(db, user, name: str, mime: str, data: bytes) -> dict:  # noqa: ANN001

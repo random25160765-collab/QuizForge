@@ -324,7 +324,7 @@ def solve(
                 max_turns=6,
             ):
                 kind = event.get("kind")
-                if kind == "text":
+                if kind in ("text", "docx", "pptx"):
                     graded.append(str(event.get("text") or ""))
                     yield _sse("delta", {"text": event["text"]})
                 elif kind == "think":

@@ -55,6 +55,8 @@
   };
 
   var state = {
+    view: null,        // 正在看的那份文件（/library/view 的返回）
+    viewing: false,
     roots: [],
     items: [],
     query: '',
@@ -318,6 +320,10 @@
   }
 
   function selectItem(citekey) {
+    // **换条目要退出查看态**：不然点另一个条目时，面板还显示着上一份文件，
+    // 而且看不出是"没换"还是"换了但内容一样"（实测就是这么卡住的）。
+    state.view = null;
+    state.viewing = false;
     if (state.citekey === citekey && state.detail) return;
     state.citekey = citekey;
     renderList();
@@ -328,6 +334,11 @@
 
   function renderMain() {
     ui.clear(el.main);
+    if (state.view || state.viewing) {
+      el.main.appendChild(viewPanel());
+      if (!state.viewing) renderSide();
+      return;
+    }
     if (!state.citekey || !state.detail) {
       el.main.appendChild(
         h(
@@ -487,24 +498,27 @@
 
   function filesPanel(one) {
     var panel = h('section.lib__panel', null, h('div.lib__paneltitle', { text: '文件' }));
-    panel.appendChild(
-      h(
+    function fileRow(role, path, size, index, asset) {
+      return h(
         'div.lib__file',
         null,
-        h('span.lib__filerole', { text: '主文件' }),
-        h('span.lib__filepath', { text: one.path, title: one.path }),
-        h('span.lib__filesize', { text: ui.fmtBytes ? ui.fmtBytes(one.bytes) : one.bytes + ' B' })
-      )
-    );
-    (one.assets || []).forEach(function (path) {
-      panel.appendChild(
-        h(
-          'div.lib__file',
-          null,
-          h('span.lib__filerole.lib__filerole--asset', { text: '附属' }),
-          h('span.lib__filepath', { text: path, title: path })
-        )
+        h('span.lib__filerole' + (asset ? '.lib__filerole--asset' : ''), { text: role }),
+        h('span.lib__filepath', { text: path, title: path }),
+        size ? h('span.lib__filesize', { text: ui.fmtBytes ? ui.fmtBytes(size) : size + ' B' }) : null,
+        h('button.lib__open', {
+          type: 'button',
+          text: '查看',
+          title: '在这一页里打开它（PDF 用浏览器自带阅读器；md / docx / pptx 换成能读的样子）',
+          onClick: function () {
+            openViewer(index);
+          }
+        })
       );
+    }
+
+    panel.appendChild(fileRow('主文件', one.path, one.bytes, -1, false));
+    (one.assets || []).forEach(function (path, index) {
+      panel.appendChild(fileRow('附属', path, 0, index, true));
     });
     if (!(one.assets || []).length) {
       panel.appendChild(h('div.lib__hint', { text: '这一份没有外部附属资源（PDF 里嵌的图不算）。' }));
@@ -536,6 +550,115 @@
     }
     return panel;
   }
+
+  /** 打开一份文件：先去问后端"它该怎么看"，再换到查看面板。 */
+  function openViewer(index) {
+    if (!state.citekey) return;
+    state.viewing = true;
+    state.view = null;
+    renderMain();
+    api
+      .get('/library/view?citekey=' + encodeURIComponent(state.citekey) + '&index=' + index)
+      .then(function (data) {
+        state.viewing = false;
+        state.view = data;
+        renderMain();
+      })
+      .catch(function (err) {
+        state.viewing = false;
+        state.view = { kind: 'error', name: '', note: (err && err.message) || '打不开这份文件' };
+        renderMain();
+      });
+  }
+
+  /** 查看面板：PDF 用 iframe（浏览器自带的阅读器最省事也最好用），
+   * 图片用 img，md 用与笔记页**同一个**渲染器，docx 用后端转好的 HTML，
+   * pptx 铺成一页页，其余照实说看不了并给个下载。 */
+  function viewPanel() {
+    var one = state.view || {};
+    var pane = h('div.lib__viewer');
+
+    pane.appendChild(
+      h(
+        'div.lib__viewbar',
+        null,
+        h('button.lib__back', {
+          type: 'button',
+          text: '← 返回条目',
+          onClick: function () {
+            state.view = null;
+            renderMain();
+          }
+        }),
+        h('span.lib__viewname', { text: one.name || '' , title: one.path || '' }),
+        h('span.lib__viewkind', { text: VIEW_LABEL[one.kind] || one.kind || '' }),
+        one.raw
+          ? h('a.lib__download', { href: one.raw, download: one.name || '', text: '下载' })
+          : null
+      )
+    );
+
+    var body = h('div.lib__viewbody');
+    if (state.viewing) {
+      body.appendChild(h('div.lib__hint', { text: '正在打开…' }));
+    } else if (one.kind === 'pdf') {
+      body.appendChild(h('iframe.lib__frame', { src: one.raw, title: one.name || 'PDF' }));
+    } else if (one.kind === 'image') {
+      body.appendChild(h('img.lib__image', { src: one.raw, alt: one.name || '' }));
+    } else if (one.kind === 'markdown') {
+      var host = h('div.lib__prose');
+      if (QF.md && QF.md.renderInto) QF.md.renderInto(host, one.text || '');
+      else host.textContent = one.text || '';
+      body.appendChild(host);
+    } else if (one.kind === 'docx') {
+      if (one.html) {
+        var doc = h('div.lib__prose.lib__prose--docx');
+        doc.innerHTML = one.html;          // 后端已经洗过脚本与事件属性
+        body.appendChild(doc);
+      } else {
+        body.appendChild(h('div.lib__hint', { text: one.note || '没转出内容。' }));
+      }
+    } else if (one.kind === 'pptx') {
+      (one.slides || []).forEach(function (slide) {
+        body.appendChild(
+          h(
+            'div.lib__slide',
+            null,
+            h('div.lib__slideno', { text: '第 ' + slide.index + ' 页' }),
+            h('div.lib__slidetitle', { text: slide.title }),
+            h(
+              'ul.lib__slidebody',
+              null,
+              (slide.lines || []).map(function (line) {
+                return h('li', { text: line });
+              })
+            )
+          )
+        );
+      });
+      if (!(one.slides || []).length) body.appendChild(h('div.lib__hint', { text: one.note || '没解出幻灯片。' }));
+    } else if (one.kind === 'text') {
+      body.appendChild(h('pre.lib__text.lib__text--raw', { text: one.text || '' }));
+    } else {
+      body.appendChild(
+        h('div.lib__hint', { text: one.note || '这个格式没有内建查看器，用上面的「下载」看吧。' })
+      );
+    }
+    pane.appendChild(body);
+    return pane;
+  }
+
+  var VIEW_LABEL = {
+    pdf: 'PDF',
+    image: '图片',
+    markdown: 'Markdown',
+    docx: 'Word 文档',
+    pptx: '幻灯片',
+    text: '纯文本',
+    legacy: '老式二进制（看不了）',
+    binary: '二进制',
+    error: '打不开'
+  };
 
   function renderSide() {
     ui.clear(el.side);
