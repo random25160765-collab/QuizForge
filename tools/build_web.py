@@ -93,10 +93,10 @@ PAGE_JS = {
 }
 
 PAGE_TITLE = {
-    "quiz": "quizforge · 刷题",
-    "wrongbook": "quizforge · 错题本",
-    "graph": "quizforge · 知识图谱",
-    "chat": "quizforge · 对话",
+    "quiz": "QuizForge · 刷题",
+    "wrongbook": "QuizForge · 错题本",
+    "graph": "QuizForge · 知识图谱",
+    "chat": "QuizForge · 对话",
 }
 
 PAGE_BODY = {
@@ -306,6 +306,26 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
         )
         (out_dir / f"{page}.html").write_text(html, encoding="utf-8")
         pages_written.append(page)
+
+    # -------------------------------------------------- 独立页
+    # 启动页要在"什么都还没准备好"的时候就能显示，所以它**不走 shell**、
+    # 也不 import app.css —— 由 theme/ 直接拷过去（不是渲染出来的那一类）。
+    for name in ("starting.html", "starting.css"):
+        source = THEME_DIR / name
+        if source.is_file():
+            shutil.copy2(source, out_dir / name)
+
+    # -------------------------------------------------- 图标
+    # favicon 与触屏图标放到 **web 根下**：页面都在根下，`<link href="icon.svg">`
+    # 这类相对路径才解析得到（顶栏与对话头像用的是同一个字形的线条版，
+    # 见 `theme/shell.html` 与 `chat.js` 的 `logoMark()`）。
+    # 源文件由 `python3 tools/make_icons.py` 生成（纯标准库画的，没有图像库依赖）。
+    icon_count = 0
+    for name in ("icon.svg", "icon-256.png"):
+        source = THEME_DIR / "assets" / name
+        if source.is_file():
+            shutil.copy2(source, out_dir / name)
+            icon_count += 1
 
     # -------------------------------------------------- 首页
     # 原先这里构建两页：`login.html`（登录 / 注册）与 `index.html`（着陆页，由它决定

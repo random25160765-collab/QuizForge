@@ -70,7 +70,10 @@ def main(argv: list[str] | None = None) -> int:
     # 直接打出来人读着像没解析（实测被自己绊了一次）
     print(f"要对这个包做烟测：{exe_wsl}")
 
-    # 起包（让它自己挑端口：8100 常被占），从它的输出里读真实地址
+    # 起包（让它自己挑端口：8100 常被占），再找出它到底在哪个地址。
+    #
+    # **不能只看 stdout**：Windows 的包是 `--noconsole`（没有终端，也就没有 stdout），
+    # 而启动器会把"已启动：http://…"同时写进**数据目录的日志**里 —— 那里才是权威。
     log = Path("/tmp/qf-smoke-run.log")
     with log.open("wb") as handle:
         process = subprocess.Popen(  # noqa: S603
@@ -79,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+    # 注意 `_powershell` 返回的是 (退出码, 输出) 二元组
+    _, profile_out = _powershell("Write-Output \"$env:USERPROFILE\\quizforge-beta\\quizforge.log\"")
+    profile_line = profile_out.strip().splitlines()[-1].strip() if profile_out.strip() else ""
+    app_log = sync_win._to_wsl_path(profile_line) if profile_line else ""  # noqa: SLF001
     url = ""
     deadline = time.time() + 90
     try:
@@ -88,13 +95,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(log.read_text(encoding="utf-8", errors="replace")[-2000:])
                 return 1
             text = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
-            match = re.search(r"(http://127\.0\.0\.1:\d+/)", text)
+            if app_log and Path(app_log).is_file():
+                text += Path(app_log).read_text(encoding="utf-8", errors="replace")[-4000:]
+            match = re.findall(r"(http://127\.0\.0\.1:\d+/)", text)
             if match:
-                url = match.group(1).rstrip("/")
+                url = match[-1].rstrip("/")
                 break
             time.sleep(1)
         if not url:
-            print("包起来了但没打印地址（看日志 /tmp/qf-smoke-run.log）")
+            print("包起来了但没找到地址（看 /tmp/qf-smoke-run.log，以及数据目录里的 quizforge.log）")
             return 1
         print(f"它自己挑的地址：{url}")
 

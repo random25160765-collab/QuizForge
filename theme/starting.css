@@ -1,0 +1,165 @@
+/* 启动页：双击 exe 之后第一眼看到的东西。
+ *
+ * 它**刻意不依赖 app.css**：这一页要在"什么都还没准备好"的时候就能显示出来，
+ * 依赖越少越稳（令牌是照抄的，不是 import 的）。
+ * 深浅色跟着 localStorage 里那份设置走（与 shell.html 同源）。
+ */
+
+:root {
+  --pri: #2DD4BF;
+  --pri-2: #14B8A6;
+  --bg: #0B1016;
+  --bg2: #131A22;
+  --fg: #E6EDF3;
+  --fg2: #9AA7B4;
+  --fg3: #75838F;
+  --ok: #34D399;
+  --bad: #F87171;
+  --amber: #FBBF24;
+  --line: #38495A;
+  --font-sans: 'Source Han Sans SC', 'Noto Sans CJK SC', '思源黑体', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+html[data-theme='light'] {
+  --bg: #F9FAFB;
+  --bg2: #FFFFFF;
+  --fg: #0F1A24;
+  --fg2: #5A6672;
+  --fg3: #7A8794;
+  --line: #D9DFE5;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 13px/1.6 var(--font-sans);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 32px 28px 24px;
+  text-align: center;
+}
+
+.mark {
+  width: 72px;
+  height: 72px;
+  border-radius: 18px;
+  /* 图标本身就是圆角方砖，这里只做一点点浮起来的感觉 */
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--pri) 22%, transparent);
+}
+
+.wordmark {
+  margin: 16px 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.lede {
+  margin: 0 0 20px;
+  color: var(--fg2);
+  font-size: 13px;
+  min-height: 20px;
+}
+
+/* ---------------------------------------------------------------- 进度条 */
+
+.bar {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg3) 24%, transparent);
+  overflow: hidden;
+}
+
+.bar__fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--pri), var(--pri-2));
+  transition: width 240ms ease-out;
+}
+
+/* ------------------------------------------------------------ 检查清单 */
+
+.steps {
+  list-style: none;
+  margin: 20px 0 0;
+  padding: 0;
+  text-align: left;
+  display: grid;
+  gap: 8px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 10px auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.step__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg3);
+  align-self: center;
+}
+
+.step--ok .step__dot { background: var(--ok); }
+.step--warn .step__dot { background: var(--amber); }
+.step--fail .step__dot { background: var(--bad); }
+
+.step__label { color: var(--fg); }
+
+.step__detail {
+  color: var(--fg3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* -------------------------------------------------------------- 失败提示 */
+
+.note {
+  margin-top: 18px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+  color: var(--fg2);
+  font-size: 12px;
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.note button {
+  font: inherit;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.note button:hover { background: color-mix(in srgb, var(--fg) 14%, transparent); }

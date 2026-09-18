@@ -112,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     base = args.url.rstrip("/")
+    print("等它起来…（`--noconsole` 的包里没有终端，日志在数据目录的 quizforge.log）")
     health = _wait_ready(base, args.ready)
     bank = health.get("bank") or {}
     ai = health.get("ai") or {}

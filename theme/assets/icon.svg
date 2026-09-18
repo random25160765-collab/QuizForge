@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img"
+     aria-label="QuizForge">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#14B8A6"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#tile)"/>
+  <circle cx="128" cy="128"
+          r="63" fill="none" stroke="#FFFFFF"
+          stroke-width="31"/>
+  <path d="M154 154
+           L205 205" stroke="#FFFFFF"
+        stroke-width="29" stroke-linecap="round"/>
+</svg>

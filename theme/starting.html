@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="generator" content="QuizForge">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="stylesheet" href="starting.css">
+  <script>
+    // 跟着用户上次选的深浅色走（与 shell.html 读同一份设置）
+    try {
+      var saved = JSON.parse(localStorage.getItem('quizforge.v1.settings') || '{}');
+      if (saved && saved.theme) document.documentElement.dataset.theme = saved.theme;
+    } catch (err) { /* 读不出来就用默认（深色） */ }
+  </script>
+  <title>QuizForge · 正在启动</title>
+</head>
+<body>
+  <main class="stage" role="main">
+    <img class="mark" src="icon.svg" width="72" height="72" alt="QuizForge">
+    <h1 class="wordmark">QuizForge</h1>
+    <p class="lede" id="lede">正在准备…</p>
+
+    <div class="bar" role="progressbar" aria-labelledby="lede" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar">
+      <div class="bar__fill" id="fill"></div>
+    </div>
+
+    <ul class="steps" id="steps"></ul>
+
+    <div class="note" id="note" hidden>
+      <span id="note-text"></span>
+      <button type="button" id="enter">仍然进入</button>
+    </div>
+  </main>
+
+  <script>
+    (function () {
+      var fill = document.getElementById('fill');
+      var bar = document.getElementById('bar');
+      var lede = document.getElementById('lede');
+      var stepsBox = document.getElementById('steps');
+      var note = document.getElementById('note');
+      var noteText = document.getElementById('note-text');
+      var enter = document.getElementById('enter');
+      var settled = false;
+
+      function paint(payload) {
+        var percent = Math.round((payload.progress || 0) * 100);
+        fill.style.width = percent + '%';
+        bar.setAttribute('aria-valuenow', String(percent));
+        lede.textContent = percent >= 100 ? '就绪，正在进入…' : '正在准备… ' + percent + '%';
+
+        stepsBox.textContent = '';
+        (payload.steps || []).forEach(function (step) {
+          var li = document.createElement('li');
+          li.className = 'step step--' + (step.status || 'ok');
+          var dot = document.createElement('span');
+          dot.className = 'step__dot';
+          var label = document.createElement('span');
+          label.className = 'step__label';
+          label.textContent = step.label;
+          li.appendChild(dot);
+          li.appendChild(label);
+          if (step.detail) {
+            var detail = document.createElement('span');
+            detail.className = 'step__detail';
+            detail.textContent = step.detail;
+            li.appendChild(detail);
+          }
+          stepsBox.appendChild(li);
+        });
+
+        var failures = (payload.steps || []).filter(function (s) { return s.status === 'fail'; });
+        if (failures.length) {
+          note.hidden = false;
+          noteText.textContent = failures.map(function (s) { return s.label + '：' + (s.detail || '没通过'); }).join('；');
+        } else {
+          note.hidden = true;
+        }
+        return payload.ok && percent >= 100;
+      }
+
+      // `?stay=1` 停在启动页不跳 —— 想看检查结果、或截图留证时用（默认会自动进入）
+      var stay = new URLSearchParams(location.search).has('stay');
+
+      function tick() {
+        // 服务可能还没起来（启动页会比服务先出现，尤其是首次运行时）——
+        // 拿不到就继续问，别把"稍等一下"显示成"出错了"
+        fetch('api/startup', { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (payload) {
+            if (paint(payload)) {
+              if (!stay) {
+                settled = true;
+                location.replace('chat.html');
+              }
+              return;
+            }
+          })
+          .catch(function () { /* 继续轮询 */ })
+          .then(function () {
+            if (!settled) setTimeout(tick, 400);
+          });
+      }
+
+      // 有 fail 时也让人进 —— 少一个能力不该把人拦在门外（按钮点了就照样进）
+      enter.addEventListener('click', function () { location.replace('chat.html'); });
+      tick();
+    })();
+  </script>
+</body>
+</html>

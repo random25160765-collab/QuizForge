@@ -46,6 +46,8 @@ VENDOR_PYODIDE = ROOT / "vendor" / "pyodide"
 MANIFEST_FILE = BUILD_DIR / "pyodide-manifest.json"
 WEB_DIR = ROOT / "api" / "web"
 LAUNCHER = BUILD_DIR / "launcher.py"
+#: 桌面图标（Windows 的 exe 用它）。没有就以默认图标出包，不阻断。
+ICON_FILE = BUILD_DIR / "icon.ico"
 
 #: uvicorn 是**按字符串**装配协议/循环实现的，PyInstaller 的静态分析看不到它们
 HIDDEN_IMPORTS = (
@@ -240,13 +242,20 @@ def build(
         # 而 A 段的"资料即入库口"会让桌面应用去跑那条流水线
         "--add-data",
         f"{ROOT / 'tools'}{separator}tools",
-        "--console",  # 留个窗口：URL、数据目录、日志都在那儿（关掉窗口就是退出）
+        # Windows 上**不要终端窗口**（用户原话："双击之后会跳出来一个终端"）：
+        # 启动进度改由启动页显示，日志落在数据目录的 `quizforge.log`，
+        # 起不来的话弹一个系统对话框（见 build/launcher.py 的 `_ensure_streams` / `_fatal`）。
+        "--noconsole" if os.name == "nt" else "--console",
     ]
     # 循环变量**别叫 name**：上面那个 `name` 是产物名（quizforge-beta / quizforge），
     # 被覆盖之后"找产物"这一步会去找 `app.routers.exe`（实测：打包明明成功，
     # 却报"没找到产物"，而报出来的名字是最后一个 hidden import）
     for hidden in HIDDEN_IMPORTS:
         args += ["--hidden-import", hidden]
+    # 桌面图标（Windows 才认；Linux 上 PyInstaller 会忽略它，传了反而多一条警告）。
+    # 由 `python3 tools/make_icons.py` 生成 —— 纯标准库画的，没有图像库依赖。
+    if os.name == "nt" and ICON_FILE.is_file():
+        args += ["--icon", str(ICON_FILE)]
     args.append(str(LAUNCHER))
 
     print("打包中（这一步要一分多钟）…")
@@ -397,6 +406,8 @@ def verify(
     base = f"http://127.0.0.1:{port}"
     health: dict | None = None
     page_ok = False
+    splash_ok = False
+    startup_report: dict | None = None
     write_ok = False
     write_detail = ""
     deadline = time.time() + timeout_s
@@ -412,6 +423,16 @@ def verify(
                 # 静态前端：拿一个真页面（不是在测 404 页）
                 with urllib.request.urlopen(f"{base}/quiz.html", timeout=5) as response:
                     page_ok = response.status == 200 and b"<html" in response.read(4096).lower()
+                # 启动页与图标：双击之后**先看到它们**，所以它们也是分发包的一部分
+                # （启动页没进包 = 浏览器打开一个 404，而接口一切正常）
+                splash_ok = False
+                with urllib.request.urlopen(f"{base}/starting.html", timeout=5) as response:
+                    splash_ok = response.status == 200 and b"QuizForge" in response.read(4096)
+                with urllib.request.urlopen(f"{base}/icon.svg", timeout=5) as response:
+                    splash_ok = splash_ok and response.status == 200
+                # 启动检查接口本身也要能答（启动页靠它画进度）
+                with urllib.request.urlopen(f"{base}/api/startup", timeout=5) as response:
+                    startup_report = json.loads(response.read().decode("utf-8"))
                 break
             except (urllib.error.URLError, TimeoutError, OSError, ValueError):
                 time.sleep(0.5)
@@ -450,6 +471,7 @@ def verify(
     channel = str((health or {}).get("channel") or "")
     schema_problems = _schema_problems(db_file)
     print(f"  接口：{'通了' if health else '没通'} · 静态页面：{'在' if page_ok else '没拿到'}")
+    print(f"  启动页与图标：{'在' if splash_ok else '没拿到'} · 启动检查：{'有 %d 条' % len((startup_report or {}).get('steps') or []) if startup_report else '没应答'}")
     print(f"  题库：{questions} 题 · 主题 {bank.get('topics', 0)}")
     print(f"  通道：{channel or '（没报）'} · 内测额度：{'可用' if ai.get('betaEnabled') else '不可用'}"
           f"（密钥{'已带' if ai.get('betaConfigured') else '未带'}）")
@@ -465,6 +487,10 @@ def verify(
         problems.append("接口没应答")
     if not page_ok:
         problems.append("静态页面拿不到（前端没进包）")
+    if not splash_ok:
+        problems.append("启动页或图标拿不到（双击之后第一眼看到的就是它们）")
+    if not startup_report:
+        problems.append("/api/startup 没应答（启动页画不出进度）")
     if seed.is_file() and questions < 100:
         problems.append(f"题库没读出来（样本里应当有上千道，实际 {questions} 道）")
     if not write_ok:

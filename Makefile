@@ -25,8 +25,8 @@ VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
 .PHONY: vendor check test new web web-full package pyodide-manifest \
-        win-setup win-sync dist dist-release smoke \
-        api-venv api-dev api-test \
+        win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
+        api-venv api-dev api-test dev \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
         graph-export skills-link \
@@ -96,6 +96,16 @@ dist-release:
 	@$(MAKE) --no-print-directory web
 	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/dist_win.py --channel release
 
+# Linux 的包：在**本机**就能出（开发机就是 Linux），不用绕 Windows。
+# 产物是 `build/dist/quizforge-beta`（内测）或 `quizforge`（正式），自检自动跑。
+dist-linux:
+	@$(MAKE) --no-print-directory web
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/package.py build --channel beta
+
+dist-linux-release:
+	@$(MAKE) --no-print-directory web
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/package.py build --channel release
+
 # 从 vendor/pyodide 生成首启下载时用的哈希清单（`make vendor` 之后跑，产物要提交）
 pyodide-manifest:
 	@$(VENV)/bin/python build/package.py manifest
@@ -118,6 +128,10 @@ db-down:
 api-dev:
 	@echo "→ http://127.0.0.1:$(API_PORT)/  （前端请先 make web）"
 	@cd api && .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port $(API_PORT)
+
+# 开发通道：本机起 web 服务（**不是**分发形态）。
+# 它用的是仓库里的 `data/`（不是 exe 那两份 `~/quizforge*`），改代码即时生效。
+dev: web api-dev
 
 api-test:
 	@cd api && .venv/bin/python -m pytest

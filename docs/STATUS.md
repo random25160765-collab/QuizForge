@@ -89,12 +89,32 @@
 `PRAGMA foreign_key_check` 无悬空引用；17 个账号收敛成 **1 个**（留下真正在用的那个，
 删掉 16 个历次验证的残留）。搬运**不动源库**，删错也还在。
 
-**分发**（完整流程与踩过的坑见 `docs/分发工作流.md`）：
+**三个上下文**（别混 —— `make dev` 是开发通道，两个包是给人下载的）：
+
+| 上下文 | 怎么起 | 数据在哪 | 给谁 |
+|---|---|---|---|
+| 开发 | `make dev`（本机 uvicorn，热重载） | 仓库 `data/` | 只有开发者 |
+| 内测包 | `make dist`（Win）· `make dist-linux`（Linux） | `~/quizforge-beta/` | 试用的人（带站长的额度） |
+| 正式包 | `make dist-release` · `make dist-linux-release` | `~/quizforge/` | 正式用户（自填密钥） |
+
+**双击之后看到什么**：Windows 的包是 `--noconsole`（**不弹终端**），浏览器打开
+**启动页**（`starting.html`：品牌标记 + 进度条 + 6 条启动检查 —— 数据目录 / 库与表 /
+前端产物会**挡住进入**，题库空、密钥没配、运行时没取只提示）。就绪后自动跳进主界面。
+没有终端之后，"出错去哪儿看"有三个落点：启动页红条目 · 数据目录的 `quizforge.log` ·
+Windows 的系统错误对话框。
+
+**品牌与图标**：图标由 `python3 tools/make_icons.py` 生成（纯标准库：手写 PNG 与 ICO），
+顶栏与对话头像用**同一个字形的线条版**（`theme/shell.html` 与 `chat.js` 的 `logoMark()`，
+改要一起改）；名字统一 **QuizForge**（不再全小写）。
+
+**分发命令**（完整流程与踩过的坑见 `docs/分发工作流.md`）：
 
 ```bash
 make win-setup     # 首次（一次）：在 Windows 上装 Python + venv + 依赖，幂等
 make dist          # 出**内测**包（默认通道）
 make dist-release  # 出正式包
+make dist-linux    # 出 Linux 的包（开发机就是 Linux，不用绕 Windows）
+make smoke         # 发版前：对**真 exe** 跑一次真实对话（会走一次模型）
 ```
 
 **唯一事实是 WSL 侧这份仓库**；Windows 侧 `%USERPROFILE%\qf-build\src` 只是构建镜像
