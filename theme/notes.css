@@ -2308,3 +2308,149 @@ body[data-page='notes'] .callout.is-folded .callout__content {
   text-align: center;
   pointer-events: none;
 }
+
+/* ---- 大纲（幕布那半边）：块要"能点、能拖、能一眼看出层级" ---- */
+
+body[data-page='notes'] .outline {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 0 40vh;          /* 底部留白：最后一条也能滚到屏幕中间来编辑 */
+  min-height: 100%;
+}
+
+.oline {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 3px 8px 3px 2px;
+  border-radius: 4px;
+  cursor: default;
+}
+
+.oline:hover {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.oline.is-on {
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+}
+
+.oline__fold {
+  flex: none;
+  width: 16px;
+  height: 20px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 20px;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.oline__fold--none {
+  cursor: default;
+}
+
+/* ⋯ 把手：悬停才显形 —— 平时不占视线，鼠标到这一条上就出来 */
+.oline__grip {
+  flex: none;
+  width: 16px;
+  height: 20px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  border-radius: 3px;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.oline:hover .oline__grip,
+.oline.is-on .oline__grip {
+  opacity: 1;
+}
+
+.oline__grip:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.oline__bullet {
+  flex: none;
+  width: 14px;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--fg3);
+  text-align: center;
+}
+
+.oline__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.oline__input {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 6px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--pri);
+  border-radius: 4px;
+  outline: none;
+}
+
+.oline__placeholder {
+  color: var(--fg3);
+}
+
+/* 拖拽：整条跟着走，落点分三种（前 / 后 / 进入它） */
+.oline.is-dragging {
+  opacity: 0.45;
+}
+
+.oline.is-drop-before::before,
+.oline.is-drop-after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--pri);
+  border-radius: 2px;
+}
+
+.oline.is-drop-before::before { top: -1px; }
+.oline.is-drop-after::after { bottom: -1px; }
+
+.oline.is-drop-into {
+  background: color-mix(in srgb, var(--pri) 16%, transparent);
+  box-shadow: inset 0 0 0 1px var(--pri);
+}
+
+.outline__hint {
+  margin-top: 14px;
+  padding: 6px 10px;
+  font-size: 11.5px;
+  line-height: 1.8;
+  color: var(--fg3);
+  border-top: 1px dashed var(--line);
+}
+
+.outline__hint kbd {
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: 11px;
+  background: var(--bg3);
+  border-radius: 3px;
+}

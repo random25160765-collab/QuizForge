@@ -84,7 +84,7 @@ def line(body: dict) -> dict:
     """行级编辑 —— 幕布那半边的动作都在这里。
 
     `op` 取 `insert`（回车同级）/ `replace` / `replace_range`（块级替换，配 `count`）/
-    `delete` / `indent` / `outdent` / `move`。
+    `delete` / `indent` / `outdent` / `move` / `move_sibling`（拖拽搬整块，配 `target`）。
     """
     lib = _lib(_text(body, "lib"))
     return _run(
@@ -98,6 +98,8 @@ def line(body: dict) -> dict:
         delta=int(body.get("delta") or 0),
         # `count` 只给 `replace_range` 用：要替换掉几行（默认视图按块改）
         count=int(body.get("count") or 0),
+        # `target` 只给 `move_sibling` 用：拖拽时落在了哪一行（子树边界由后端算）
+        target=int(body.get("target") if body.get("target") is not None else -1),
     )
 
 
@@ -124,9 +126,16 @@ def set_meta(body: dict) -> dict:
 
 @router.post("/create")
 def create(body: dict) -> dict:
-    """新建一篇笔记。「未解析链接」的一键补齐也走这里。"""
+    """新建一篇笔记或一份大纲。「未解析链接」的一键补齐也走这里。
+
+    `kind` 取 `note`（默认）或 `outline` —— 两者是**不同的文件**（`.md` / `.outline`），
+    建的时候就得说清，不能事后靠改名猜。
+    """
     lib = _lib(_text(body, "lib"))
-    return _run(notelib.create_note, lib, _text(body, "folder"), _text(body, "title"))
+    kind = _text(body, "kind") or "note"
+    if kind not in ("note", "outline"):
+        raise HTTPException(status_code=400, detail=f"不认识的 kind：{kind}")
+    return _run(notelib.create_note, lib, _text(body, "folder"), _text(body, "title"), kind=kind)
 
 
 @router.post("/rename")

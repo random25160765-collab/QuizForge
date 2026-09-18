@@ -120,8 +120,15 @@
     return pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
+  /** "这是一份**可编辑的文本笔记**" —— 笔记与大纲都算。
+   *
+   * 原先写的是 `kind === 'note'`，于是新加的大纲**两头都不沾**：主区走进空状态、
+   * 自动保存不生效、大纲键位不响应（实测就是这么一片空白且不报错的）。
+   * 判据散在各处时，新增一种文件类型就会漏 —— 所以这里一次说清，各处都问它。
+   * 例外只有一处：`Alt+L` 加标签写的是 YAML 头，而大纲**没有头**，那里单独判 `note`。
+   */
   function isNote() {
-    return state.note && state.note.kind === 'note';
+    return !!state.note && (state.note.kind === 'note' || state.note.kind === 'outline');
   }
 
   /* ------------------------------------------------------------ 起手 */
@@ -162,9 +169,13 @@
       loadTree();
     });
 
-    // 新建是最高频动作：按钮点一下就在根目录建一篇，随即在树里改标题（不弹层）
-    el.newBtn.addEventListener('click', function () {
-      createNote('', '');
+    // 新建是最高频动作。原先点一下就建笔记 —— 现在多一种文件（大纲），
+    // 所以点一下**先问建哪种**（幕布也是先选模板/类型），选完仍在树里就地改标题（不弹层）。
+    el.newBtn.addEventListener('click', function (ev) {
+      showMenu(ev, [
+        { label: '新建笔记', run: function () { createNote('', '', 'note'); } },
+        { label: '新建大纲', run: function () { createNote('', '', 'outline'); } }
+      ]);
     });
 
     el.clear.addEventListener('click', function () {
@@ -362,7 +373,10 @@
         }
       },
       indentGuides(depth),
-      h('span.ntree__caret', { text: file.kind === 'canvas' ? '◇' : '' }),
+      // 画布与大纲各给一个记号：三种文件在树里一眼分得出
+      h('span.ntree__caret', {
+        text: file.kind === 'canvas' ? '◇' : file.kind === 'outline' ? '≡' : ''
+      }),
       file.color ? h('span.ntree__color', { style: { background: file.color } }) : null,
       file.icon ? h('span.ntree__icon', { text: file.icon }) : null,
       h('span.ntree__label', { text: label }),
@@ -535,7 +549,7 @@
         folded = {};
         // 打开一篇进**默认**视图：它既能读又能写，是最常用的那一档。
         // 想纯读就按「阅读」，想改原始 markdown 就按「源码」（⌘E 在默认与阅读之间切）。
-        state.mode = 'live';
+        state.mode = state.note.kind === 'outline' ? 'outline' : 'live';
         renderMain();
         renderSide();
         loadTree();
@@ -760,7 +774,11 @@
         // 一个笔记三个视图：源码 / 默认 / 阅读。源码与默认都能改 —— 默认就是
         // "块级实时渲染 + 就地编辑"，把原先"分栏"那两栏并成了一块。
         // 画布没有"阅读/默认/源码"这回事（它是一块平面），不给它摆这排按钮。
-        (state.note.kind === 'canvas' ? [] : [['source', '源码'], ['live', '默认'], ['read', '阅读']]).map(function (pair) {
+        (state.note.kind === 'canvas'
+          ? []
+          : state.note.kind === 'outline'
+            ? [['outline', '大纲']]
+            : [['source', '源码'], ['live', '默认'], ['read', '阅读']]).map(function (pair) {
           return h(
             'button.seg__item' + (state.mode === pair[0] ? '.is-on' : ''),
             {
@@ -889,7 +907,11 @@
         })
       )
     );
-    // 「默认」走块级实时渲染；「源码」是全宽文本框；「阅读」在上面就 return 了
+    // 大纲走幕布那半边（块上编辑）；「默认」走块级实时渲染；「源码」是全宽文本框
+    if (state.mode === 'outline') {
+      wrap.appendChild(renderOutline());
+      return wrap;
+    }
     wrap.appendChild(state.mode === 'live' ? renderLive() : renderEditor(false));
     return wrap;
   }
@@ -1824,26 +1846,34 @@
 
   var BULLET = { bullet: '•', heading: '', blank: '', code: '', quote: '❯', rule: '', math: '' };
 
+  /** 大纲视图（幕布那半边）。**编辑发生在块上**，不是一整篇的文本框。 */
   function renderOutline() {
     var pane = h('div.note__pane');
     var box = h('div.outline');
     var rows = state.note.outline || [];
     var hidden = foldedLines(rows);
+    var dragging = -1;
+    var dropping = '';
+
+    function clearDrop() {
+      Array.prototype.forEach.call(box.querySelectorAll('.oline'), function (one) {
+        one.classList.remove('is-drop-before', 'is-drop-after', 'is-drop-into');
+      });
+    }
+
     rows.forEach(function (row, idx) {
       if (hidden[idx]) return;
       var rowEl = h('div.oline' + (idx === state.selected ? '.is-on' : ''), {
         dataset: { index: String(idx), kind: row.kind },
-        style: { paddingLeft: 4 + row.level * 16 + 'px' },
-        onClick: function () {
-          state.selected = idx;
-          renderMain();
-        }
+        style: { paddingLeft: 2 + row.level * 18 + 'px' }
       });
+
+      // ── 折叠三角（幕布：点小三角收起）
       if (row.foldable) {
         rowEl.appendChild(
           h('button.oline__fold' + (folded[idx] ? '.is-folded' : ''), {
             type: 'button',
-            title: folded[idx] ? '展开' : '折叠',
+            title: folded[idx] ? '展开' : '收起',
             text: folded[idx] ? '▸' : '▾',
             onClick: function (ev) {
               ev.stopPropagation();
@@ -1855,42 +1885,135 @@
       } else {
         rowEl.appendChild(h('span.oline__fold.oline__fold--none'));
       }
-      rowEl.appendChild(h('span.oline__bullet', { text: BULLET[row.kind] !== undefined ? BULLET[row.kind] : '•' }));
+
+      // ── ⋯ 把手：幕布"点文本前面的三个点"就是它。悬停才显形，平时不占视线。
+      rowEl.appendChild(
+        h('button.oline__grip', {
+          type: 'button',
+          text: '⋯',
+          title: '这一条的操作（改文字 / 加粗 / 高亮 / 缩进 / 删除）',
+          onClick: function (ev) {
+            ev.stopPropagation();
+            showMenu(ev, nodeMenu(idx));
+          }
+        })
+      );
+
+      rowEl.appendChild(
+        h('span.oline__bullet', { text: BULLET[row.kind] !== undefined ? BULLET[row.kind] : '•' })
+      );
+
+      // ── 文本：点一下就地改（与幕布一致：点文本就能编辑）
       rowEl.appendChild(
         h('div.oline__text', {
           html: row.text
             ? QF.md && QF.md.renderInline
               ? QF.md.renderInline(row.text)
               : esc(row.text)
-            : '<span class="oline__placeholder">（空行）</span>'
+            : '<span class="oline__placeholder">（空）</span>'
         })
       );
-      rowEl.appendChild(
-        h('button.oline__edit', {
-          type: 'button',
-          text: '改',
-          title: '编辑这一行（双击行也行）',
-          onClick: function (ev) {
-            ev.stopPropagation();
-            editLine(idx);
-          }
-        })
-      );
-      rowEl.addEventListener('dblclick', function () {
+
+      // ── 拖拽：幕布"拖拽主题可调整位置"。整块（含子级）跟着走，落点分三种：
+      //    上四分之一 = 插到它**前面**、下四分之一 = 插到它**后面**、中间 = **进入它**。
+      rowEl.setAttribute('draggable', 'true');
+      rowEl.addEventListener('dragstart', function (ev) {
+        dragging = idx;
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = 'move';
+          ev.dataTransfer.setData('text/plain', String(idx));   // Firefox 不设就不肯拖
+        }
+        rowEl.classList.add('is-dragging');
+      });
+      rowEl.addEventListener('dragend', function () {
+        dragging = -1;
+        rowEl.classList.remove('is-dragging');
+        clearDrop();
+      });
+      rowEl.addEventListener('dragover', function (ev) {
+        if (dragging < 0 || dragging === idx) return;
+        ev.preventDefault();
+        var rect = rowEl.getBoundingClientRect();
+        var at = (ev.clientY - rect.top) / Math.max(1, rect.height);
+        dropping = at < 0.25 ? 'before' : at > 0.75 ? 'after' : 'into';
+        clearDrop();
+        rowEl.classList.add('is-drop-' + dropping);
+      });
+      rowEl.addEventListener('drop', function (ev) {
+        ev.preventDefault();
+        var from = dragging;
+        var where = dropping;
+        dragging = -1;
+        dropping = '';
+        clearDrop();
+        if (from < 0 || from === idx) return;
+        // 行号边界由后端算（`block_extent`）—— 前端只说"放到谁的哪一边"
+        if (where === 'into') lineOp('move_into', from, { target: idx });
+        else lineOp('move_sibling', from, { target: idx, delta: where === 'after' ? 1 : -1 });
+      });
+
+      rowEl.addEventListener('click', function () {
+        state.selected = idx;
+        renderMain();
+      });
+      rowEl.addEventListener('dblclick', function (ev) {
+        ev.stopPropagation();
         editLine(idx);
       });
       box.appendChild(rowEl);
     });
+
     box.appendChild(
       h('div.outline__hint', {
         html:
-          '<kbd>回车</kbd> 同级新建 · <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> 缩进 · ' +
-          '<kbd>Alt+↑</kbd> / <kbd>Alt+↓</kbd> 挪动整块 · <kbd>双击</kbd> 改这一行 · ' +
-          '<kbd>退格</kbd> 清掉空行'
+          '<kbd>回车</kbd> 同级 · <kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> 缩进 · ' +
+          '<kbd>Alt+↑</kbd> / <kbd>Alt+↓</kbd> 挪块 · <kbd>双击</kbd> 或 <kbd>⋯</kbd> 改这一条 · ' +
+          '<kbd>拖拽</kbd> 换位置（拖到行中间 = 成为它的子级）'
       })
     );
     pane.appendChild(box);
     return pane;
+  }
+
+  /** 一条节点的操作菜单（幕布那七个动作 + 我们用得上的几个）。 */
+  function nodeMenu(idx) {
+    var row = (state.note.outline || [])[idx];
+    if (!row) return [];
+    return [
+      { label: '改这一条的文字', run: function () { editLine(idx); } },
+      { label: '加粗 / 取消加粗', run: function () { wrapNode(idx, '**', '**'); } },
+      { label: '斜体 / 取消斜体', run: function () { wrapNode(idx, '*', '*'); } },
+      { label: '高亮 / 取消高亮', run: function () { wrapNode(idx, '==', '=='); } },
+      { label: '行内代码', run: function () { wrapNode(idx, '`', '`'); } },
+      '-',
+      { label: '在下面加一条（同级）', run: function () { lineOp('insert', idx, {}); } },
+      { label: '作为子条目', run: function () { lineOp('indent', idx, {}); } },
+      { label: '提升一级', run: function () { lineOp('outdent', idx, {}); } },
+      { label: '复制这一条的源码', run: function () { copyText(row.raw, '这一条'); } },
+      '-',
+      {
+        label: '删掉这一条（含子级）',
+        danger: true,
+        run: function () {
+          ui.confirm('删掉这一条？它下面的子条目会一起删掉。', { okLabel: '删掉' }).then(function (yes) {
+            if (yes) lineOp('delete', idx, {});
+          });
+        }
+      }
+    ];
+  }
+
+  /** 给这一条的**文字**加/去一层行内格式（缩进与项目符号原样留住）。 */
+  function wrapNode(idx, before, after) {
+    var row = (state.note.outline || [])[idx];
+    if (!row) return;
+    var raw = row.raw || '';
+    var head = raw.match(/^([ \t]*(?:[-*+]|\d+[.)])\s+)?/)[1] || '';
+    var text = raw.slice(head.length);
+    var already =
+      text.slice(0, before.length) === before && text.slice(-after.length) === after;
+    var next = already ? text.slice(before.length, text.length - after.length) : before + text + after;
+    lineOp('replace', idx, { raw: head + next });
   }
 
   function foldedLines(rows) {
@@ -1911,7 +2034,13 @@
     return hidden;
   }
 
-  function editLine(idx) {
+  /** 就地编辑第 `idx` 条。`next` 说"存完接着干什么"：`sibling` / `indent` / `outdent`。
+   *
+   * 为什么要有 `next`：幕布的三个键（回车同级、Tab 缩进、Shift+Tab 提升）都是
+   * "改完这一条、顺手把结构动了，光标还在这一条上"——分成两步做（先存、再点别处）
+   * 就失去了连着往下写的手感，而那正是大纲好用的一半。
+   */
+  function editLine(idx, next) {
     var row = (state.note.outline || [])[idx];
     var rowEl = el.main.querySelector('.oline[data-index="' + idx + '"]');
     if (!row || !rowEl) return;
@@ -1926,14 +2055,23 @@
       if (done) return;
       done = true;
       state.editing = false;
-      if (save && input.value !== row.raw) lineOp('replace', idx, { raw: input.value });
-      else renderMain();
+      var follow = function () { afterEdit(idx, next); };
+      if (save && input.value !== row.raw) lineOp('replace', idx, { raw: input.value }, follow);
+      else {
+        renderMain();
+        follow();
+      }
     }
     input.addEventListener('keydown', function (ev) {
       ev.stopPropagation();
       if (ev.key === 'Enter') {
+        // 幕布第一条：回车 = 在当前主题之后添一个**同级**主题，并接着编辑它
         ev.preventDefault();
-        finish(true);
+        finish(true, ev.altKey || ev.metaKey || ev.ctrlKey ? '' : 'sibling');
+      } else if (ev.key === 'Tab') {
+        // 幕布第二、三条：Tab 缩进成子级、Shift+Tab 提升一级
+        ev.preventDefault();
+        finish(true, ev.shiftKey ? 'outdent' : 'indent');
       } else if (ev.key === 'Escape') {
         ev.preventDefault();
         finish(false);
@@ -1942,6 +2080,23 @@
     input.addEventListener('blur', function () {
       finish(true);
     });
+  }
+
+  /** 编辑收尾之后接着做的事（见 `editLine` 的 `next`）。 */
+  function afterEdit(idx, next) {
+    if (!next) return;
+    if (next === 'sibling') {
+      lineOp('insert', idx, {}, function () {
+        // 新那一条在第 idx+1 行；渲染完直接进编辑态
+        setTimeout(function () { editLine(idx + 1); }, 0);
+      });
+      return;
+    }
+    if (next === 'indent' || next === 'outdent') {
+      lineOp(next, idx, {}, function () {
+        setTimeout(function () { editLine(idx); }, 0);
+      });
+    }
   }
 
   function onKey(ev) {
@@ -1980,7 +2135,8 @@
         insertText(now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()));
         return;
       }
-      if (letter === 'l' && isNote()) {
+      // 加标签写的是 YAML 头 —— 大纲没有头，所以这里只认普通笔记
+      if (letter === 'l' && state.note && state.note.kind === 'note') {
         // Alt+L 加标签（写进 YAML 头）
         ev.preventDefault();
         addLabelPrompt();
@@ -2017,7 +2173,8 @@
     }
   }
 
-  function lineOp(op, index, extra) {
+  /** `then` 是"这一步落盘之后接着做的事"（比如回车建完同级就继续编辑新那一条）。 */
+  function lineOp(op, index, extra, then) {
     var payload = { lib: state.lib, path: state.note.path, op: op, index: index };
     Object.keys(extra || {}).forEach(function (key) {
       payload[key] = extra[key];
@@ -2030,6 +2187,7 @@
         if (op === 'delete') state.selected = Math.max(0, index - 1);
         renderMain();
         renderSide();
+        if (typeof then === 'function') then(note);
         if (op === 'insert') {
           var fresh = state.selected;
           setTimeout(function () {
@@ -3025,15 +3183,21 @@
    * 而"新建"是这一页最高频的动作，高频动作不该有仪式感。
    * 名字留空也能建（标题就叫"未命名"，你马上就能改），所以 `Ctrl+O` 是**一步**动作。
    */
-  function createNote(folder, title) {
+  function createNote(folder, title, kind) {
     api
-      .post('/notes/create', { lib: state.lib, folder: folder || '', title: title || '' })
+      .post('/notes/create', {
+        lib: state.lib,
+        folder: folder || '',
+        title: title || '',
+        kind: kind || 'note'
+      })
       .then(function (note) {
         state.note = note;
         // 与打开一篇同一个默认：宽屏**分栏**（右边就是即时渲染的那一半）。
         // 新建完只给一块空白编辑区，等于把"边写边看"这个最该有的东西藏起来了。
         // 新建的是一张白纸，没什么可读 —— 直接给编辑态，省一次切换
-        state.mode = note.kind === 'canvas' ? 'read' : 'live';
+        // 新建的是大纲就直接进大纲视图（建完即写，与幕布新建即一条空主题一样）
+        state.mode = note.kind === 'canvas' ? 'read' : note.kind === 'outline' ? 'outline' : 'live';
         state.selected = 0;
         state.dirty = false;
         state.savedAt = nowHM();
