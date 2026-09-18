@@ -143,8 +143,8 @@
   function load() {
     var box = host();
     if (!box || !QF.api) return;
-    // 只在对话页出现（它是唯一的调度枢纽）
-    if ((document.body.dataset || {}).page !== 'chat') return;
+    // 挂在活动栏上之后就是**全站可见**的：它管的是"AI 能碰到哪几块"，
+    // 与当前在看哪个页面无关（原来那句"只在对话页出现"随顶栏一起撤了）
     QF.api
       .get('/chat/mounts')
       .then(function (data) {
