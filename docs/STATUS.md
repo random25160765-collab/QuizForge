@@ -63,19 +63,39 @@
 - 其余弱边：`co_occurs` 2288 · `implements` 12
 - 边的方向约定：`from` 是主动那头 —— `A →(requires) B` 读作「A 是 B 的前置」
 
-## 五、运行环境（最后核实 2026-09-18）
+## 五、运行环境（**local-first**，最后核实 2026-09-18）
 
 | 组件 | 状态 |
 |---|---|
-| PostgreSQL 容器 `quizforge-db-1` | Up，`127.0.0.1:5432` |
-| 后端 uvicorn `127.0.0.1:8100`（宿主 venv，热重载） | **当前没在跑** —— `make api-dev` |
+| 数据库 | **本机一个文件**：`data/quizforge.db`（SQLite，WAL）。不依赖任何外部服务 |
+| 建表 | 第一次运行时由 `app.db.ensure_schema`（`create_all`）自动建好；**alembic 已退役** |
+| 后端 uvicorn `127.0.0.1:8100`（宿主 venv，热重载） | `make api-dev` |
 | 前端产物 | `api/web/`（由 `make web` 从 `theme/` 构建，后端直接托管） |
-| 数据快照 | `db/quizforge.sql.gz` —— `make db-dump` 导出 / `make db-restore` 恢复 |
 
-**起手顺序**：先让 **Docker Desktop 跑起来**（它的 WSL 集成掉了的话，`docker` 不在 PATH、
-`5432` 直接拒连 —— 2026-09-18 踩过）→ `make db-up` → `make api-dev`（+ `make web`）。
+**起手顺序**：`make api-dev`（+ `make web`）。**没有"先把数据库起起来"这一步** ——
+实测：把 Postgres 容器停掉之后，`/api/health` 仍然 `database.ok=true`、
+`/api/bank` 给出 1623 道题、浏览器里前端内存中 1624 条（含 1 道我的题单）。
 只改了 `theme/` 时 `make web` 后刷新即可，不用重启。
-测试：`make api-test`（后端 185 项）· `make test`（前端 3170 断言 + `node --check` 语法门禁）。
+
+测试：`make api-test`（后端 **183 项**，跑在临时 SQLite 文件上，**不需要数据库服务**）·
+`make test`（题库校验 + 前端 3170 断言 + `node --check` 语法门禁）。
+
+老路径（只剩"搬历史数据"时用）：Docker Desktop + `make db-up` 起 Postgres 容器当**源库**，
+`tools/migrate_to_local.py` 搬运；`db/quizforge.sql.gz` 是换引擎之前的快照。
+
+**换引擎这一刀的账**（`tools/migrate_to_local.py` 的输出，可复跑）：
+26 张表 23831 行搬到 `data/quizforge.db`，**逐表行数 + 12 项关键计数全部一致**
+（已发布题 1640 / 现行题 1623 / 概念 912 / 边 3992 / 题↔概念 1644 / 记录 21 …），
+`PRAGMA foreign_key_check` 无悬空引用；17 个账号收敛成 **1 个**（留下真正在用的那个，
+删掉 16 个历次验证的残留）。搬运**不动源库**，删错也还在。
+
+SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都留了注释）：
+① `= ANY(…)` → `IN :x` + `expanding`；② 裸 SQL 读 JSON 列拿到的是**字符串**（PG 给 dict）
+→ 统一走 `app.db.as_json`；③ `least/greatest/FILTER (WHERE …)/bool_or/now()` 都是 PG 专有
+→ `case` / `COUNT(DISTINCT CASE …)` / `MAX` / `CURRENT_TIMESTAMP`；
+④ `BigInteger` 主键在 SQLite 上**不自增**（只认 `INTEGER PRIMARY KEY`）→ `BigAutoId`；
+⑤ SQLite **没有时区类型**，读回来是 naive，`timestamp()` 按本地时区算 → `UtcDateTime`；
+⑥ `DISTINCT ON` 在 SQLite 上被**静默忽略**（比报错更糟）→ 窗口函数。
 
 ## 六、材料来源（只读）
 
@@ -91,7 +111,7 @@
 | 段 | 要做什么 | 为什么排这个位置 |
 |---|---|---|
 | **C 内容债** | 图谱体检可执行（无环 / 可达根 / 闭包）→ 分批补有序边 → 86 道游离题补挂接并把「游离题 = 0」固化成断言 → `/graph/diagnose` 补成「考点 + 前置链 + 顺序 + 步数」并接进错题本 → 迁移层出题（人审） | 它决定「教得对不对」，是后面所有形态的地基 |
-| **B 本地化与分发** | 去账号（**已完成 2026-09-18**：注册 / 登录 / 会话 / CSRF 全清，前端启动直进）→ 换内置引擎（清 `pg_advisory_xact_lock` / `pg_insert` / jsonb 原生 SQL，出搬运与逐项对账）→ 打包单文件应用（**重型依赖首启下载到本地缓存**） | 先把「跑在别人机器上」这件事解决，A 段的界面才有人用 |
+| **B 本地化与分发** | 去账号（**已完成 2026-09-18**：注册 / 登录 / 会话 / CSRF 全清，前端启动直进）→ 换内置引擎（**已完成 2026-09-18**：SQLite 为默认、183 项用例跑在它上面、`tools/migrate_to_local.py` 搬完并逐项对账、方言写法清干净、alembic 退役）→ 打包（**保持轻量：不带 Electron**；重型运行组件首启下载到本地缓存并校验哈希） | 先把「跑在别人机器上」这件事解决，A 段的界面才有人用 |
 | **A 新形态** | 笔记模块（导入 4 个 vault、原生复刻 Obsidian 核心功能、**原生 Canvas**）· 资料模块（多根、条目=一个文件及其附属资源、模型辅助归类、引用键、全文检索、**兼作新学科入库口**）· 两边互引 · 工具挂载开关（空集即极简模式）· 三栏主界面 | 界面风格这一版**只求能用**，视觉统一留到最后 |
 
 完整计划（含取舍与文件清单）在计划里；`draft/c.md` 是方向决策，`draft/cc.md` 是内容债报告。
