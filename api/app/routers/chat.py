@@ -1186,7 +1186,7 @@ def _stream(  # noqa: ANN001
         ):
             kind = event["kind"]
 
-            if kind == "text":
+            if kind in ("text", "docx", "pptx"):
                 _push_text(parts, event["text"])
                 yield _sse("delta", {"text": event["text"]})
             elif kind == "think":

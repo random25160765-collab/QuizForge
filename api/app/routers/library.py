@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 
+from .. import attachments as attach
 from .. import library as lib
 from .. import notelib
 from ..deps import CurrentUser, DbSession
@@ -250,6 +252,88 @@ def item(citekey: str, user: CurrentUser, db: DbSession, text: int = 0) -> dict:
             "head": lib.text_of(_text_dir(), citekey, limit=max(200, min(text, 20000))),
         }
     return detail
+
+
+def _entry_file(citekey: str, index: int, user, db):  # noqa: ANN001, ANN202
+    """按引用键 + 序号取一个**条目里的文件**。
+
+    序号 `-1` 是主文件，`>=0` 是第几个附属资源。**路径来自扫描结果，不来自请求参数** ——
+    所以这里不存在"用户拼一个路径来读机器上任意文件"这回事（资料目录是只读的，
+    但"只读"不等于"随便读"）。
+    """
+    roots = roots_for(_settings_row(db, user.id))
+    entry = next((one for one in lib.entries(roots, _meta_dir(), _text_dir()) if one.citekey == citekey), None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"没有这个条目：{citekey}")
+    if index < 0:
+        path = entry.item.path
+    elif 0 <= index < len(entry.assets):
+        path = entry.assets[index]
+    else:
+        raise HTTPException(status_code=404, detail=f"这个条目没有第 {index} 个文件")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"文件不在了：{path.name}")
+    return entry, Path(path)
+
+
+@router.get("/file")
+def file_raw(citekey: str, user: CurrentUser, db: DbSession, index: int = -1):
+    """把条目里的一个文件原样给出去（PDF 与图片靠它显示）。
+
+    `inline` 而不是 `attachment`：PDF 要在浏览器自带的阅读器里翻页，
+    不该点一下就变成"下载"。字节流的 Range 由 `FileResponse` 处理 ——
+    几百 MB 的规范书能直接跳到第 300 页，靠的就是它。
+    """
+    _entry, path = _entry_file(citekey, index, user, db)
+    return FileResponse(
+        path,
+        media_type=attach.mime_of(path.name),
+        filename=path.name,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/view")
+def file_view(citekey: str, user: CurrentUser, db: DbSession, index: int = -1) -> dict:
+    """这份文件该怎么看。
+
+    返回 `kind` 与对应的内容：
+
+    * `pdf` / `image` → 只给 `raw`（那个地址），前端用 iframe / img 显示；
+    * `markdown` / `text` → 给 `text`，前端自己渲染（与笔记页同一套渲染器）；
+    * `docx` → 给 `html`（pandoc 转的，带结构）；
+    * `pptx` → 给 `slides`（每页的标题与要点）；
+    * `legacy` / `binary` → 什么都不给，界面照实说看不了、给个下载。
+    """
+    entry, path = _entry_file(citekey, index, user, db)
+    kind = attach.view_kind(path.name)
+    out: dict = {
+        "kind": kind,
+        "name": path.name,
+        "path": str(path),
+        "bytes": path.stat().st_size,
+        "citekey": entry.citekey,
+        "index": index,
+        "raw": f"/api/library/file?citekey={entry.citekey}&index={index}",
+    }
+    if kind in ("markdown", "text"):
+        try:
+            out["text"] = path.read_text(encoding="utf-8", errors="replace")[:200_000]
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=f"读不动这个文件：{exc}") from exc
+    elif kind == "docx":
+        out["html"] = attach.to_html(path)
+        if not out["html"]:
+            out["note"] = "没转出内容：这台机器上没有 pandoc（或者这份文档是空的）。"
+    elif kind == "pptx":
+        out["slides"] = attach.slides_of(path)
+        if not out["slides"]:
+            out["note"] = "没解出幻灯片：这份 pptx 可能不是常规结构（或者它就是空的）。"
+    elif kind == "legacy":
+        out["note"] = "老式二进制格式（.doc / .ppt / .xls）抽不出文字，这个版本看不了。"
+    elif kind == "binary":
+        out["note"] = "这个格式没有内建查看器。"
+    return out
 
 
 @router.post("/meta")

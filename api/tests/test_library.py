@@ -19,6 +19,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from app import attachments as att  # noqa: E402
 from app import library as lib  # noqa: E402
 
 
@@ -461,3 +462,118 @@ def test_title_cleaning_keeps_leading_numbers():
     assert lib.clean_title("1364.1 TM") == "1364.1 TM"
     assert lib.clean_title("3D Graphics") == "3D Graphics"
     assert lib.clean_title("1. Introduction") == "1. Introduction"
+
+
+# ------------------------------------------------------------------ 查看资料
+
+
+def test_view_kind_covers_the_formats_the_user_asked_for():
+    """pdf / docx / ppt / md 都有去处；老式二进制照实说看不了；html 按**源码**看。"""
+    assert att.view_kind("规范.pdf") == "pdf"
+    assert att.view_kind("手册.docx") == "docx"
+    assert att.view_kind("讲义.pptx") == "pptx"
+    assert att.view_kind("笔记.md") == "markdown"
+    assert att.view_kind("说明.txt") == "text"
+    assert att.view_kind("图.png") == "image"
+    assert att.view_kind("老手册.doc") == "legacy"
+    assert att.view_kind("老幻灯片.ppt") == "legacy"
+    assert att.view_kind("页面.html") == "text", "本地 HTML 可能有脚本，不给它执行的机会"
+    assert att.view_kind("包.zip") == "binary"
+    assert att.mime_of("a.pdf") == "application/pdf"
+    assert att.mime_of("a.zip") == "application/octet-stream"
+
+
+def test_pptx_is_parsed_from_the_zip(tmp_path: Path):
+    """pptx = zip + XML：自己解，页面按**数字**排序（slide2 要在 slide10 前）。"""
+    import zipfile
+
+    deck = tmp_path / "讲义.pptx"
+    order = [10, 2, 1]
+    with zipfile.ZipFile(deck, "w") as box:
+        for number in order:
+            body = "".join(
+                f"<a:p><a:r><a:t>{text}</a:t></a:r></a:p>"
+                for text in (f"第 {number} 页标题", f"第 {number} 页要点")
+            )
+            box.writestr(f"ppt/slides/slide{number}.xml", f"<p:sld><p:spTree>{body}</p:spTree></p:sld>")
+
+    slides = att.slides_of(deck)
+    assert [one["index"] for one in slides] == [1, 2, 3], "按数字排，不按字符串"
+    assert [one["title"] for one in slides] == ["第 1 页标题", "第 2 页标题", "第 10 页标题"]
+    assert slides[0]["lines"] == ["第 1 页要点"]
+    assert "第 10 页要点" in att.extract(deck, "pptx")
+
+
+def test_docx_goes_through_pandoc(tmp_path: Path):
+    """docx 交给 pandoc：正文能抽出来，转 HTML 也带结构。
+
+    pandoc 不在就当跳过 —— 但**先确认它在**，不然"没有 docx 支持"会被静默放过。
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("pandoc") is None:
+        pytest.skip("这台机器上没有 pandoc（docx 的抽取与查看都靠它）")
+
+    source = tmp_path / "src.md"
+    source.write_text("# 第一章 卷积\n\n卷积是滑动加权求和。\n\n| 项 | 值 |\n|---|---|\n| 核 | 3x3 |\n", encoding="utf-8")
+    deck = tmp_path / "真文档.docx"
+    subprocess.run(["pandoc", "-t", "docx", "-o", str(deck), str(source)], check=True, timeout=60)
+
+    text = att.extract(deck, "docx")
+    assert "第一章 卷积" in text and "滑动加权求和" in text
+    html = att.to_html(deck)
+    assert "第一章 卷积" in html
+    assert "<table" in html, "表格结构要留住"
+
+
+def test_old_binary_formats_say_so_instead_of_guessing(tmp_path: Path):
+    """`.doc` / `.ppt` 抽不出文字 —— 返回空串，让界面如实说，别凑一堆乱码。"""
+    legacy = tmp_path / "老手册.doc"
+    legacy.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+    assert att.extract(legacy, "legacy") == ""
+
+
+def test_view_and_file_endpoints(tmp_path: Path, monkeypatch):
+    """走一遍真接口：md 的查看与原样取文件（含 Range）。"""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.routers import library as route
+
+    doc_root = tmp_path / "docs"
+    doc_root.mkdir()
+    (doc_root / "笔记.md").write_text("# 标题\n\n正文在这里。\n", encoding="utf-8")
+    (doc_root / "封面.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+    (doc_root / "笔记.md").write_text(
+        "# 标题\n\n正文在这里。\n\n![封面](封面.png)\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("QF_LIBRARY_ROOTS", str(doc_root))
+    monkeypatch.setattr(route, "_meta_dir", lambda: tmp_path / "library")
+    monkeypatch.setattr(route, "_text_dir", lambda: tmp_path / "library" / ".text")
+
+    client = TestClient(app)
+    key = [one for one in client.get("/api/library/items").json()["items"] if one["rel"] == "笔记.md"][0]["citekey"]
+
+    view = client.get("/api/library/view", params={"citekey": key}).json()
+    assert view["kind"] == "markdown"
+    assert "正文在这里" in view["text"]
+    assert view["raw"].endswith("index=-1")
+
+    raw = client.get("/api/library/file", params={"citekey": key})
+    assert raw.status_code == 200
+    assert raw.headers["content-type"].startswith("text/markdown")
+    assert "inline" in raw.headers.get("content-disposition", "")
+    assert "正文在这里" in raw.text
+
+    # 附属资源（第 0 个）：图片按自己的 MIME 出去
+    asset = client.get("/api/library/file", params={"citekey": key, "index": 0})
+    assert asset.status_code == 200
+    assert asset.headers["content-type"] == "image/png"
+
+    # Range：大 PDF 靠它跳页
+    part = client.get("/api/library/file", params={"citekey": key}, headers={"Range": "bytes=0-9"})
+    assert part.status_code == 206, "要支持 Range（不然几百 MB 的规范书翻不动）"
+
+    assert client.get("/api/library/file", params={"citekey": key, "index": 9}).status_code == 404
+    assert client.get("/api/library/file", params={"citekey": "没这个"}).status_code == 404
