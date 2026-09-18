@@ -169,6 +169,26 @@ def test_create_note_then_rename_updates_incoming_links(lib: notelib.Library):
     assert notelib.read_note(lib, "B 新名.md")["backlinks"][0]["path"] == "A.md"
 
 
+def test_create_accepts_an_empty_title(lib: notelib.Library):
+    """空标题也能建（界面是"先建再起名"），重名往后编号。"""
+    first = notelib.create_note(lib, "", "")
+    second = notelib.create_note(lib, "", "")
+    assert first["path"] == "未命名.md"
+    assert second["path"] == "未命名 2.md"
+    assert notelib.read_note(lib, "未命名.md")["body"].strip() == ""
+
+
+def test_rename_keeps_title_and_file_name_in_step(lib: notelib.Library):
+    """标题就是文件名：改名之后 front-matter 的 `title` 也要跟上。
+
+    不跟的话会出现"树里叫新名字、打开却还是旧标题" —— 实测在浏览器里就是这么对不上的。
+    """
+    result = notelib.rename_note(lib, "B.md", "卷积定理.md")
+    assert result["note"]["title"] == "卷积定理"
+    text = (lib.root / "卷积定理.md").read_text(encoding="utf-8")
+    assert "title: 卷积定理" in text or "title: '卷积定理'" in text
+
+
 def test_path_traversal_is_refused(lib: notelib.Library):
     with pytest.raises(notelib.NoteError):
         notelib.read_note(lib, "../../etc/passwd")
@@ -189,6 +209,63 @@ def test_broken_header_is_refused_instead_of_being_rewritten(lib: notelib.Librar
     notelib.reset_index()
     with pytest.raises(notelib.NoteError, match="没有闭合"):
         notelib.line_op(lib, "坏头.md", op="insert", index=0, raw="新行")
+
+
+def test_delete_goes_to_trash_and_comes_back(lib: notelib.Library):
+    """删除是**移到回收站**：文件还在、能捞回来，树里不再出现。"""
+    notelib.delete_note(lib, "B.md")
+    assert not (lib.root / "B.md").exists()
+    trashed = notelib.trash_list(lib)
+    assert len(trashed) == 1 and "B.md" in trashed[0]["title"] + ".md"
+    assert "B.md" not in [entry.rel for entry in notelib.index(lib).entries()]
+
+    restored = notelib.restore_from_trash(lib, trashed[0]["name"], "asset")
+    assert restored["path"] == "asset/B.md"
+    assert (lib.root / "asset" / "B.md").is_file()
+
+
+def test_delete_prunes_the_empty_folder(lib: notelib.Library):
+    (lib.root / "深" / "更深").mkdir(parents=True)
+    (lib.root / "深" / "更深" / "孤.md").write_text("孤\n", encoding="utf-8")
+    notelib.reset_index()
+    notelib.delete_note(lib, "深/更深/孤.md")
+    assert not (lib.root / "深").exists()   # 空壳不留
+
+
+def test_move_rewrites_path_style_links(lib: notelib.Library):
+    """移动会改路径，所以"按路径写的引用"要跟着改（与改名同一套）。"""
+    (lib.root / "子").mkdir()
+    (lib.root / "子" / "乙.md").write_text("---\ntitle: 乙\n---\n\n乙\n", encoding="utf-8")
+    (lib.root / "A.md").write_text("---\ntitle: A\n---\n\n见 [[子/乙]] 与 [[原始写法]]\n", encoding="utf-8")
+    notelib.reset_index()
+    notelib.move_note(lib, "子/乙.md", "丙")
+    body = notelib.read_note(lib, "A.md")["body"]
+    assert "[[丙/乙]]" in body          # 按路径写的 → 跟着改
+    assert "[[原始写法]]" in body        # 找不到的那种不动
+    assert not (lib.root / "子").exists()
+
+
+def test_named_snapshot_is_outside_the_undo_cursor(lib: notelib.Library):
+    """命名快照不参与撤销游标、也不被轮转清理（Trilium 的 revisionIgnoreNamedSnapshots）。"""
+    notelib.line_op(lib, "A.md", op="replace", index=0, raw="# 改过")
+    before = notelib.history_state(lib, "A.md")
+    assert before["named"] == 0
+    notelib.snapshot_named(lib, "A.md", "定稿")
+    after = notelib.history_state(lib, "A.md")
+    assert after["named"] == 1
+    assert after["can_undo"] == before["can_undo"]     # "存一版"不该让可撤销状态变化
+    named = [item for item in notelib.snapshots(lib, "A.md") if item["named"]]
+    assert named and named[0]["why"] == "定稿"
+
+
+def test_diff_reports_added_and_removed_lines(lib: notelib.Library):
+    notelib.snapshot_named(lib, "A.md", "起手")
+    name = [item for item in notelib.snapshots(lib, "A.md") if item["named"]][0]["name"]
+    notelib.line_op(lib, "A.md", op="replace", index=0, raw="# 换掉标题")
+    diff = notelib.diff_version(lib, "A.md", name)
+    assert diff["added"] == 1 and diff["removed"] == 1
+    assert any(line.startswith("-") for line in diff["lines"])
+    assert any(line.startswith("+") for line in diff["lines"])
 
 
 def test_canvas_is_a_first_class_entry_and_counts_its_cards(lib: notelib.Library):
