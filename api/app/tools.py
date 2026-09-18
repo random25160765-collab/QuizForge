@@ -1713,6 +1713,7 @@ def attach_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     一个条目 = 主文件 + 它引用的附属资源）。正文没抽过就顺手抽一次；
     抽出来是乱码也照实说 —— 那种情况（实测 `Trefethen-Bau.pdf`）让模型别硬引。
     """
+    from . import attachments as attachments_mod  # noqa: PLC0415
     from . import library as lib  # noqa: PLC0415
     from .routers.library import _meta_dir, _text_dir, roots_for  # noqa: PLC0415
 
@@ -1747,6 +1748,16 @@ def attach_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         "source": str(hit.item.path),
         "textState": str(state.get("state") or "none"),
         "text": lib.text_of(text_dir, key, limit=chars),
+        # 抽不出文字时说清缺哪个组件 —— 不然用户只会觉得"这份文件坏了"
+        "capabilities": (
+            [
+                {"缺失": one["binary"], "用途": one["why"]}
+                for one in attachments_mod.capabilities()["components"]
+                if not one["available"]
+            ]
+            if not text
+            else []
+        ),
         "note": "text 是这份资料的正文节选。引用时请说清是**哪一份的哪一段**；"
         "textState 不是 ok 时（garbled）说明这份抽不出可用文字，别拿它当依据。",
     }

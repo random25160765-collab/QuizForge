@@ -19,6 +19,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from . import toolchain
 from .models import Attachment
 
 # 一个附件最大 12MB：够一份 PDF 或一张截图，又不至于让一次上传把服务打住
@@ -117,10 +118,17 @@ def kind_of(name: str, mime: str) -> str:
 
 
 def _extract_pdf(path: Path) -> str:
-    """`pdftotext` 抽 PDF 正文。系统里没有它就直接放弃（不报错）。"""
+    """`pdftotext` 抽 PDF 正文。
+
+    命令从 `toolchain` 拿（系统 → 仓库自带 → 本机缓存 → 首启下载），
+    **不是**直接写个名字让 PATH 去猜 —— 猜不到的后果是"文档能打开但一个字都没有"。
+    """
+    found, _why = toolchain.ensure("pdftotext")
+    if found is None:
+        return ""
     try:
         done = subprocess.run(
-            ["pdftotext", "-layout", "-q", str(path), "-"],
+            [str(found), "-layout", "-q", str(path), "-"],
             capture_output=True,
             timeout=PDF_TIMEOUT,
             check=False,
@@ -141,9 +149,12 @@ PANDOC_FROM = {".docx": "docx", ".rtf": "rtf", ".odt": "odt", ".md": "markdown"}
 def _run_pandoc(path: Path, to: str) -> str:
     """让 pandoc 把一份文档转成 `to`（`plain` / `html`）。没有它就返回空串。"""
     from_fmt = PANDOC_FROM.get(Path(path).suffix.lower(), "markdown")
+    found, _why = toolchain.ensure("pandoc")
+    if found is None:
+        return ""
     try:
         done = subprocess.run(
-            ["pandoc", "-f", from_fmt, "-t", to, "--wrap=none", str(path)],
+            [str(found), "-f", from_fmt, "-t", to, "--wrap=none", str(path)],
             capture_output=True,
             timeout=PDF_TIMEOUT * 3,
             check=False,
@@ -232,6 +243,15 @@ def sanitize_html(html: str) -> str:
     out = _SCRIPT_TAG.sub("", html or "")
     out = _ANY_EVENT.sub("", out)
     return _JS_URL.sub("", out)
+
+
+def capabilities() -> dict:
+    """文件处理这一层现在能干什么、缺什么。
+
+    界面与模型都读它：一份文档抽不出文字时，要说得出是**缺哪个组件**，
+    而不是让用户面对一片空白猜"是不是这份文件有问题"。
+    """
+    return toolchain.status()
 
 
 def to_html(path: Path) -> str:

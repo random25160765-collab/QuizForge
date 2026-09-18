@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -155,6 +156,15 @@ def create_app() -> FastAPI:
         # 重型运行时（Pyodide，76M）**第一次打开时取一次**：后台线程去取，
         # 不挡启动、不挡任何请求。已经在缓存里就什么也不做。
         # 测试里关掉（`QF_HEAVY_PREFETCH=false`）—— 用例不该因为跑一次就去联网。
+        # 文件处理的外部工具也走"首启取一次"（只在清单里钉过哈希时才动手）
+        try:
+            from . import toolchain  # noqa: PLC0415
+
+            threading.Thread(
+                target=toolchain.prefetch, kwargs={"log": logger.info}, daemon=True
+            ).start()
+        except Exception as exc:  # noqa: BLE001 - 取不动不该拦住启动
+            logger.info("[工具] 预取没起来：%s", exc)
         if heavy_deps.start_prefetch(log=logger.info):
             logger.info("重型运行时不在本机，已在后台开始取（跑 Python 那一项就绪后可用）")
 
