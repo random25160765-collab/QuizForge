@@ -218,6 +218,34 @@ def build(verify_after: bool = True, dist: Path | None = None, work: Path | None
 # -------------------------------------------------------------------- verify
 
 
+def _terminate(proc: subprocess.Popen) -> None:
+    """结束自检起的那份应用 —— **要连子孙一起**。
+
+    PyInstaller 的单文件模式是"引导进程再起一个真身"，只 `terminate()` 外层，
+    内层会继续跑。实测后果很难看：两次自检漏下两个 90MB 的 `quizforge.exe` 没退，
+    它们把 exe 文件锁住，**下一次打包直接 PermissionError**（看起来像打包坏了，
+    其实是上一次没收拾干净）。
+
+    * Windows：`taskkill /T`（带整棵树）；
+    * 其它：起进程时开了新会话组，直接对整组发信号。
+    """
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        import signal
+
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            proc.terminate()
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -266,6 +294,8 @@ def verify(artifact: Path, timeout_s: float = 60.0) -> int:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        # 自成一组：退出时能整组带走（见 `_terminate`）
+        start_new_session=os.name != "nt",
     )
 
     base = f"http://127.0.0.1:{port}"
@@ -288,11 +318,7 @@ def verify(artifact: Path, timeout_s: float = 60.0) -> int:
             except (urllib.error.URLError, TimeoutError, OSError, ValueError):
                 time.sleep(0.5)
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        _terminate(proc)
 
     db_file = data_dir / "quizforge.db"
     bank = (health or {}).get("bank") or {}
