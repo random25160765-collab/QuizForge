@@ -42,12 +42,8 @@ class Settings(BaseSettings):
     db_pool_size: int = 5
     db_max_overflow: int = 10
 
-    # -------------------------------------------------------------- 会话
-    cookie_name: str = "qf_session"
-    cookie_secure: bool = False          # 上 HTTPS 后置 True
-    session_ttl_days: int = 30
-    # 会话令牌只存哈希，这里控制哈希前的随机字节数
-    session_token_bytes: int = 32
+    # 会话相关的配置项（cookie 名、有效期、令牌字节数）随账号面一起删掉了 ——
+    # 单用户本地形态没有会话，见 `app/deps.py`。
 
     # ------------------------------------------------------------ 静态资源
     # 由 tools/build.py --web 输出，FastAPI 直接挂载。

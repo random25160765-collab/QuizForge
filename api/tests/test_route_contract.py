@@ -7,6 +7,9 @@ CSRF 头的 `GET` 时直接 403，而且只有真跑起来才发现。
 
 与其为每个 `GET` 手写一遍断言，不如遍历路由表一次性兜住，
 新增接口自动纳入检查范围。
+
+单用户本地形态（2026-09-18）之后，这一层的重点变成了**反向的**：
+账号面已经整块删掉，谁也不许把那些守卫挂回来。
 """
 
 from __future__ import annotations
@@ -15,8 +18,20 @@ from fastapi.routing import APIRoute
 
 from app.main import create_app
 
-CSRF_DEPENDENCIES = {"require_csrf", "get_authenticated_writer"}
 READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+#: 账号面删掉的依赖名。挂回任何一个，"要登录 / 要 CSRF / 跳登录页"就会跟着回来 ——
+#: 而那正是这一版要拆掉的东西（见 `app/deps.py` 的文件注释）。
+REMOVED_GUARDS = {
+    "require_csrf",
+    "get_authenticated_writer",
+    "guard_write",
+    "verify_same_origin",
+    "get_optional_user",
+    "resolve_session",
+    "set_session_cookie",
+    "set_csrf_cookie",
+}
 
 
 def _dependant_names(dependant) -> set[str]:  # noqa: ANN001
@@ -30,35 +45,24 @@ def _api_routes() -> list[APIRoute]:
     return [route for route in create_app().routes if isinstance(route, APIRoute)]
 
 
-def test_read_routes_do_not_require_csrf() -> None:
-    """读接口不能挂 CSRF 依赖 —— 浏览器不会给 GET 带 CSRF 头。"""
+def test_no_route_depends_on_the_removed_account_layer() -> None:
+    """账号面的守卫不许挂回来 —— 这是"去账号"的护栏。"""
     offenders = []
     for route in _api_routes():
-        if not route.methods or route.methods - READ_METHODS:
-            continue
-        # /api/auth/* 的读接口不需要登录，也不该校验 CSRF
-        if "csrf" in route.path.lower():
-            continue
-        if _dependant_names(route.dependant) & CSRF_DEPENDENCIES:
-            offenders.append(f"{sorted(route.methods)} {route.path}")
-    assert not offenders, "这些读接口挂了 CSRF 依赖，浏览器会拿到 403：" + "；".join(offenders)
+        hit = _dependant_names(route.dependant) & REMOVED_GUARDS
+        if hit:
+            offenders.append(f"{sorted(route.methods or [])} {route.path} → {sorted(hit)}")
+    assert not offenders, "这些路由挂回了已删除的账号依赖：" + "；".join(offenders)
 
 
-def test_write_routes_require_csrf_or_same_origin() -> None:
-    """写接口要么走带 CSRF 的依赖，要么显式做同源校验。
-
-    登录/注册这类「尚未持有 CSRF 令牌」的请求以前者之外的方式防护，
-    但绝不能两者都没有。
-    """
-    unprotected = []
-    for route in _api_routes():
-        if not route.methods or not (route.methods - READ_METHODS):
-            continue
-        names = _dependant_names(route.dependant)
-        if names & CSRF_DEPENDENCIES or "verify_same_origin" in names:
-            continue
-        unprotected.append(f"{sorted(route.methods)} {route.path}")
-    assert not unprotected, "这些写接口既没有 CSRF 也没有同源校验：" + "；".join(unprotected)
+def test_the_auth_endpoints_are_gone() -> None:
+    """`/api/auth/*` 整块删掉了：本地单用户没有注册、登录、退出、改密。"""
+    stray = [
+        f"{sorted(route.methods or [])} {route.path}"
+        for route in _api_routes()
+        if route.path.startswith("/api/auth")
+    ]
+    assert not stray, f"账号面的路由又出现了：{stray}"
 
 
 def test_every_api_route_is_under_api_prefix() -> None:

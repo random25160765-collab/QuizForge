@@ -10,8 +10,7 @@
 产物布局（与 app/config.py 的 web_dir、main.py 的挂载点对应）::
 
     api/web/
-    ├── index.html      首页（入口指向登录/刷题）
-    ├── login.html      登录 / 注册
+    ├── index.html      首页（直接送进应用；单用户本地形态没有登录页）
     ├── quiz.html       刷题应用
     ├── wrongbook.html  错题本
     └── assets/
@@ -137,6 +136,28 @@ def _config_script(api_base: str, page: str) -> str:
     return f"<script>window.QF_CONFIG={json.dumps(payload, separators=(',', ':'))};</script>"
 
 
+def _index_redirect() -> str:
+    """首页：直接送进应用。
+
+    单用户本地形态下没有登录页、也没有"去登录还是去刷题"的岔路，
+    所以首页只需要一件事：把浏览器送到应用里。
+    用 `meta refresh` 而不是 JS 跳转 —— 不依赖脚本能不能跑起来。
+    """
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="zh-CN">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        '<meta http-equiv="refresh" content="0; url=./quiz.html">\n'
+        "<title>QuizForge</title>\n"
+        "</head>\n"
+        "<body>\n"
+        '<p>正在进入 <a href="./quiz.html">QuizForge</a>…</p>\n'
+        "</body>\n"
+        "</html>\n"
+    )
+
+
 def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
     """输出在线模式的前端产物，返回统计信息。"""
     assets = out_dir / "assets"
@@ -144,6 +165,12 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
     fonts_out = assets / "fonts"
     for directory in (out_dir, assets, runtime_out, fonts_out):
         directory.mkdir(parents=True, exist_ok=True)
+
+    # 先清掉上一轮写下的页面：页面是**顶层 html**，删掉一个模板（比如随"去账号"
+    # 一起删的 login.html）之后，旧产物会留在 out_dir 里继续被访问到 ——
+    # 实测踩过：`/login.html` 还能打开，而后端已经没有登录这回事了。
+    for stale in out_dir.glob("*.html"):
+        stale.unlink()
 
     # ---------------------------------------------------------- KaTeX
     katex_css_raw = _read(VENDOR_KATEX / "katex.css")
@@ -268,21 +295,12 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         (out_dir / f"{page}.html").write_text(html, encoding="utf-8")
         pages_written.append(page)
 
-    # -------------------------------------------------- 登录页 / 首页
-    login_html = _read(THEME_DIR / "login.html").replace(
-        "</head>", f"{_config_script(api_base, 'auth')}\n</head>", 1
-    )
-    (out_dir / "login.html").write_text(login_html, encoding="utf-8")
-    pages_written.append("login")
-
-    # 首页除标题外不再有构建期注入的占位符：规模数字与覆盖范围都由页面自己去
-    # /api/health 取 —— 「上次构建时的题数」是过期信息，静态写死会误导
-    landing_html = (
-        _read(THEME_DIR / "landing.html")
-        .replace("__LANDING_TITLE__", "QuizForge")
-        .replace("</head>", f"{_config_script(api_base, 'landing')}\n</head>", 1)
-    )
-    (out_dir / "index.html").write_text(landing_html, encoding="utf-8")
+    # -------------------------------------------------- 首页
+    # 原先这里构建两页：`login.html`（登录 / 注册）与 `index.html`（着陆页，由它决定
+    # "去登录还是去刷题"）。单用户本地形态下两页都没有存在的理由 —— 没有账号要登，
+    # 也没有岔路要选。首页现在只做一件事：把浏览器送进应用。
+    # （真正的"首页"是三栏工作台，见 A 段。）
+    (out_dir / "index.html").write_text(_index_redirect(), encoding="utf-8")
     pages_written.append("index")
 
     info = {

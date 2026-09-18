@@ -43,14 +43,17 @@ PASSWORD = "password-1234"
 
 
 def _register(client) -> None:  # noqa: ANN001
-    email = f"tool-{uuid.uuid4().hex[:10]}@example.com"
-    client.cookies.clear()
-    resp = client.post("/api/auth/register", json={"email": email, "password": PASSWORD})
-    assert resp.status_code in (200, 201), resp.text
+    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
+    from conftest import local_user_id
+
+    local_user_id()
 
 
 def _me_id(client) -> str:  # noqa: ANN001
-    return client.get("/api/auth/me").json()["user"]["id"]
+    """本机用户的 id。"""
+    from conftest import local_user_id
+
+    return local_user_id()
 
 
 def _seed_knowledge(db, question_id: str | None) -> tuple[int, str]:  # noqa: ANN001

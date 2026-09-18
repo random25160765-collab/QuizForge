@@ -4,8 +4,8 @@
 多设备下按 last-write-wins 合并 —— 一台设备离线作答后回传，若 rev 已被
 另一台超过，这次作答就被**静默丢弃**。改成流水增量后，这里逐条把它钉住。
 
-「两台设备」在测试里的表示：两个独立的 `TestClient`（各自一份 Cookie，
-即同一个账号的两个会话）。
+「两台设备」在测试里的表示：两个独立的 `TestClient`（各自一份 Cookie jar，
+数据本来就属于同一个本机用户）。
 """
 
 from __future__ import annotations
@@ -13,8 +13,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
-from app.deps import CSRF_COOKIE
 
 PASSWORD = "password-1234"
 DAY = "2026-09-15"
@@ -26,18 +24,14 @@ T0 = 1789459200000  # 固定时间基准，避免用例之间互相影响
 
 @pytest.fixture()
 def devices(engine, imported_bank):  # noqa: ANN001, ANN201
-    """同一账号的两台设备（两个独立会话）。"""
+    """两台"设备"：两个独立客户端。"""
     from fastapi.testclient import TestClient
 
     from app.main import create_app
 
     app = create_app()
+    # 单用户本地形态：没有注册 / 登录，两个客户端直连同一个本机用户即可
     phone, laptop = TestClient(app), TestClient(app)
-    email = f"xd-{uuid.uuid4().hex[:10]}@example.com"
-
-    registered = phone.post("/api/auth/register", json={"email": email, "password": PASSWORD})
-    assert registered.status_code in (200, 201), registered.text
-    assert laptop.post("/api/auth/login", json={"email": email, "password": PASSWORD}).status_code == 200
 
     # 换个真实存在的知识点，好验证每日统计里的学科归属
     topic = imported_bank.questions[0]["topic"]
@@ -45,7 +39,8 @@ def devices(engine, imported_bank):  # noqa: ANN001, ANN201
 
 
 def _headers(client) -> dict:  # noqa: ANN001
-    return {"X-CSRF-Token": client.cookies.get(CSRF_COOKIE) or ""}
+    # CSRF 随账号面一起删掉了；留着是为了不动调用点
+    return {}
 
 
 def _sync(client, **payload):  # noqa: ANN001, ANN202
@@ -370,17 +365,5 @@ def test_snapshot_rev_lets_client_raise_its_clock(devices) -> None:  # noqa: ANN
     assert _snapshot(phone)["rev"] >= 7
 
 
-# ------------------------------------------------------------------ 隔离
-
-
-def test_attempts_are_isolated_between_users(client, devices) -> None:  # noqa: ANN001
-    """另一台设备换的是**另一个账号**时，绝不能看到前一个账号的流水聚合。"""
-    phone, topic = devices["phone"], devices["topic"]
-    _sync(phone, attempts=[_attempt("c-0001", at=T0, topic=topic)])
-
-    other = f"other-{uuid.uuid4().hex[:8]}@example.com"
-    client.cookies.clear()
-    client.post("/api/auth/register", json={"email": other, "password": PASSWORD})
-
-    assert _snapshot(client)["records"] == {}
-    assert _snapshot(client)["days"] == {}
+# 这里原先还有一节「隔离」：换一个**账号**的客户端看不到前一个账号的流水。
+# 单用户本地形态下没有第二个账号可换（见 `app/deps.py`），这一节随之删掉。

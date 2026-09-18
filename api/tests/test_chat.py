@@ -17,7 +17,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from app import agent_loop, ai_gateway, parts
-from app.deps import CSRF_COOKIE
 from app.models import Material
 
 PASSWORD = "password-1234"
@@ -27,14 +26,15 @@ PASSWORD = "password-1234"
 
 
 def _register(client) -> None:  # noqa: ANN001
-    email = f"chat-{uuid.uuid4().hex[:10]}@example.com"
-    client.cookies.clear()
-    resp = client.post("/api/auth/register", json={"email": email, "password": PASSWORD})
-    assert resp.status_code in (200, 201), resp.text
+    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
+    from conftest import local_user_id
+
+    local_user_id()
 
 
 def _headers(client) -> dict:  # noqa: ANN001
-    return {"X-CSRF-Token": client.cookies.get(CSRF_COOKIE) or ""}
+    # CSRF 随账号面一起删掉了；留着是为了不动调用点
+    return {}
 
 
 def _set_ai(client, **conf) -> None:  # noqa: ANN001
@@ -117,8 +117,10 @@ def _broken_stream():
 # ------------------------------------------------------------------ 门禁
 
 
-def test_requires_login(client) -> None:  # noqa: ANN001
-    assert client.get("/api/chat/conversations").status_code == 401
+def test_chat_never_needs_login(client) -> None:  # noqa: ANN001
+    """本地单用户：不带凭据就能列会话（原先这里是断言 401）。"""
+    client.cookies.clear()
+    assert client.get("/api/chat/conversations").status_code == 200
 
 
 def test_missing_key_is_rejected_before_streaming(client) -> None:
@@ -575,17 +577,6 @@ def test_search_needs_at_least_two_characters(client, monkeypatch) -> None:  # n
 
     body = client.get("/api/chat/search", params={"q": "的"}).json()
     assert body["items"] == [] and "两个字" in body["note"]
-
-
-def test_search_never_leaks_other_users_messages(client, monkeypatch) -> None:  # noqa: ANN001
-    _ready(client)
-    _stub(monkeypatch, _happy_stream())
-    cid = _new_conversation(client)
-    _send(client, cid, content="这是一句只该我自己看见的话")
-
-    _register(client)  # 换一个账号
-    body = client.get("/api/chat/search", params={"q": "只该我自己"}).json()
-    assert body["items"] == [], "别人的消息一条都不该搜得到"
 
 
 def test_the_last_turn_answers_without_tools(client, monkeypatch, imported_bank) -> None:  # noqa: ANN001
@@ -1098,8 +1089,12 @@ def test_an_unsupported_image_format_is_not_sent_but_is_explained(client, monkey
     assert "转成 png 或 jpg" in user["content"]
 
 
-def test_an_attachment_belongs_to_its_owner(client, monkeypatch) -> None:  # noqa: ANN001
-    """别人的附件按 404 处理 —— 与「别人的会话」同一条规矩。"""
+def test_an_attachment_can_be_read_back(client, monkeypatch) -> None:  # noqa: ANN001
+    """附件上传后读得回来。
+
+    （原先这里测的是"别人的附件按 404"。单用户本地形态下没有"别人" ——
+      见 `app/deps.py`；`attachments.user_id` 那一列仍在，只是恒为同一个值。）
+    """
     _ready(client)
     up = client.post(
         "/api/chat/attachments",
@@ -1108,9 +1103,6 @@ def test_an_attachment_belongs_to_its_owner(client, monkeypatch) -> None:  # noq
     )
     aid = up.json()["id"]
     assert client.get(f"/api/chat/attachments/{aid}").status_code == 200
-
-    _register(client)  # 换一个账号
-    assert client.get(f"/api/chat/attachments/{aid}").status_code == 404
 
 
 # ------------------------------------------------------------------ 导出
@@ -1249,25 +1241,8 @@ def test_a_broken_message_sequence_is_not_read_as_unsupported_tools() -> None:
     assert agent_loop._tools_unsupported(really) is True
 
 
-# ------------------------------------------------------------------ 归属
-
-
-def test_another_user_gets_404_not_403(client, monkeypatch) -> None:  # noqa: ANN001
-    """别人的会话：404。
-
-    403 会告诉攻击者「这个 id 是存在的，只是不归你」——
-    多租户下这种确认本身就是泄露。
-    """
-    _ready(client)
-    _stub(monkeypatch, _happy_stream())
-    cid = _new_conversation(client)
-    _send(client, cid, content="私有内容")
-
-    _register(client)  # 换一个账号
-    assert client.get(f"/api/chat/conversations/{cid}").status_code == 404
-    assert client.post(f"/api/chat/conversations/{cid}/messages", json={"content": "偷看"}, headers=_headers(client)).status_code == 404
-    assert client.delete(f"/api/chat/conversations/{cid}", headers=_headers(client)).status_code == 404
-    assert client.get("/api/chat/conversations").json()["conversations"] == [], "列表里也不该出现"
+# 这里原先还有一节「归属」：另一个账号拿别人的会话应当 404 而不是 403。
+# 单用户本地形态下没有"别人的会话"（见 `app/deps.py`），这一节随之删掉。
 
 
 def test_rename_and_delete(client, monkeypatch) -> None:  # noqa: ANN001

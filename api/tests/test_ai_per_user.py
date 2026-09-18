@@ -9,20 +9,22 @@ from __future__ import annotations
 
 import uuid
 
-from app.deps import CSRF_COOKIE
-
 PASSWORD = "password-1234"
 
 
 def _register(client) -> str:  # noqa: ANN001
-    email = f"ai-{uuid.uuid4().hex[:10]}@example.com"
-    client.cookies.clear()
-    assert client.post("/api/auth/register", json={"email": email, "password": PASSWORD}).status_code in (200, 201)
-    return email
+    """本机用户就绪（单用户本地形态没有"注册"这回事），返回它的 id。
+
+    名字与签名留着，是为了不动几十个调用点 —— 见 `app/deps.py`。
+    """
+    from conftest import local_user_id
+
+    return local_user_id()
 
 
 def _headers(client) -> dict:  # noqa: ANN001
-    return {"X-CSRF-Token": client.cookies.get(CSRF_COOKIE) or ""}
+    # CSRF 随账号面一起删掉了；这个函数留着同样是为了不动调用点
+    return {}
 
 
 def _set_ai(client, **conf) -> None:  # noqa: ANN001
@@ -115,19 +117,7 @@ def test_usage_tells_whether_the_user_has_a_key(client) -> None:  # noqa: ANN001
     assert body["today"] == 0
 
 
-# ------------------------------------------------------------------ 隔离
-
-
-def test_one_users_key_does_not_leak_to_another(client) -> None:  # noqa: ANN001
-    """A 配了密钥，B 没配 —— B 仍然要被拦住，不能借用 A 的。"""
-    _register(client)
-    _set_ai(client, enabled=True, apiKey="sk-user-a", baseUrl="http://127.0.0.1:9/v1")
-    assert _grade(client).status_code in (502, 504)
-
-    _register(client)  # 换一个账号
-    resp = _grade(client)
-    assert resp.status_code == 503, "B 不该因为 A 配过就被放行"
-    assert "密钥" in resp.json()["detail"]
+# ------------------------------------------------------------------ 不泄露
 
 
 def test_health_does_not_expose_any_credentials(client) -> None:  # noqa: ANN001

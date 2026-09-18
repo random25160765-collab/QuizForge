@@ -52,10 +52,16 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
 class User(Base):
+    """本机用户 —— 单用户本地形态下**只会有一行**。
+
+    账号面（注册 / 登录 / 会话 / CSRF）已整体删除（见 `app/deps.py`）。
+    `email` 与 `password_hash` 是历史遗留的列：留着它们，是为了将来真要做
+    "多设备同步"时不必再动一次数据模型 —— 那时它们会重新有用。
+    """
+
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # 统一小写存储；登录时也做小写归一化，避免大小写不同的重复账号
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)
@@ -63,35 +69,11 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    sessions: Mapped[list["Session"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"<User {self.email}>"
 
-
-class Session(Base):
-    """服务端会话。
-
-    选服务端会话而不是 JWT：数据隔离要求每个查询强制带 user_id，
-    而服务端会话可以一键失效（改密码、封禁、登出全部设备），
-    前端也不需要任何 token 存储与续期逻辑。
-    表里只存令牌的哈希，即使库被读走也无法直接冒充登录。
-    """
-
-    __tablename__ = "sessions"
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    user_agent: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    ip: Mapped[str] = mapped_column(String(64), default="", nullable=False)
-
-    user: Mapped[User] = relationship(back_populates="sessions")
+    # `sessions` 表与它的模型随账号面一起删掉了（服务端会话没有存在意义了：
+    # 本地没有"登录"这个动作可失效，也没有第二个人可以冒充）。
 
 
 class BankVersion(Base):

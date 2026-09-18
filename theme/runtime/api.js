@@ -4,8 +4,11 @@
  * 数据全部来自 /api，会话靠 HttpOnly Cookie；基址由构建期注入的
  * window.QF_CONFIG.apiBase 给出（默认 /api）。
  *
- * 统一在这里做三件事：拼基址、带 CSRF 头、把各种失败归一成
- * 带 status 的 Error —— 调用方只需要 try/catch，不用关心响应形态。
+ * 统一在这里做两件事：拼基址、把各种失败归一成带 status 的 Error ——
+ * 调用方只需要 try/catch，不用关心响应形态。
+ *
+ * （原先还要带 CSRF 双提交令牌、401 统一跳登录页 —— 单用户本地形态下这两件事
+ *   都不存在了，见 `api/app/deps.py`。）
  * ========================================================================= */
 (function () {
   'use strict';
@@ -17,17 +20,9 @@
 
   QF.config = config;
 
-  /** 未授权时的回调（由 boot.js 注入，默认跳登录页） */
-  var unauthorizedHandler = null;
-
-  function onUnauthorized(handler) {
-    unauthorizedHandler = handler;
-  }
-
-  function csrfToken() {
-    var match = document.cookie.match(/(?:^|;\s*)qf_csrf=([^;]+)/);
-    return match ? decodeURIComponent(match[1]) : '';
-  }
+  // 这里原先有 `unauthorizedHandler`（401 时跳登录页）与 `csrfToken()`（读 qf_csrf
+  // Cookie 放进请求头）。单用户本地形态下两者都没有意义：没有登录页可跳，
+  // 也没有跨站表单要防。删掉，别让后来人以为还有这套东西。
 
   function parseBody(response) {
     var type = response.headers.get('content-type') || '';
@@ -65,8 +60,6 @@
     var opts = options || {};
     var headers = {};
     if (opts.body !== undefined && !opts.form) headers['Content-Type'] = 'application/json';
-    // 写请求必须带双提交令牌，服务端会与 Cookie 比对
-    if (method !== 'GET' && method !== 'HEAD') headers['X-CSRF-Token'] = csrfToken();
 
     var init = {
       method: method,
@@ -88,15 +81,12 @@
         if (response.status === 204) return null;
         return parseBody(response).then(function (data) {
           if (response.ok) return data;
-          if (response.status === 401 && !opts.allow401) {
-            if (unauthorizedHandler) unauthorizedHandler();
-          }
           throw buildError(response, data);
         });
       },
       function (cause) {
         // fetch 只在网络层失败时 reject（断网、被拦截、DNS 等）
-        var err = new Error('网络不可用，请检查连接后重试');
+        var err = new Error('本地服务连不上，检查它是否在运行');
         err.status = 0;
         err.cause = cause;
         throw err;
@@ -161,23 +151,23 @@
   /**
    * 流式请求：读 SSE 并把每个事件交给 handlers。
    *
-   * 为什么不用 `EventSource`：它发不了 POST、带不了 CSRF 头、也带不了自定义头。
+   * 为什么不用 `EventSource`：它发不了 POST、也带不了自定义头。
    * 用 fetch + ReadableStream 自己拆帧，图的是「可取消」与「可带凭据」。
    *
    * 与 `request()` 的差别只在成功路径上：那一个要的是整个 JSON，
-   * 这一个要的是过程中陆续来的事件。失败路径完全一致（错误对象、401 回调）。
+   * 这一个要的是过程中陆续来的事件。失败路径完全一致（同一个错误对象）。
    *
    * @param {string} path      以 / 开头的接口路径
    * @param {object} body
    * @param {object} handlers  { user, start, delta, usage, done, error }
-   * @param {object} [options] { signal, allow401 }
+   * @param {object} [options] { signal }
    * @returns {Promise<void>}  流结束（或被 abort）时 resolve；被 abort 不算失败
    */
   function stream(path, body, handlers, options) {
     var opts = options || {};
     var init = {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken() },
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
       body: JSON.stringify(body || {}),
     };
@@ -189,9 +179,6 @@
           // 开流之前的失败（没填密钥、超配额、不是你的会话）仍然带着正常的状态码，
           // 所以按普通请求处理：把 detail 拿出来抛给调用方去 toast
           return parseBody(response).then(function (data) {
-            if (response.status === 401 && !opts.allow401) {
-              if (unauthorizedHandler) unauthorizedHandler();
-            }
             throw buildError(response, data);
           });
         }
@@ -206,7 +193,7 @@
       },
       function (cause) {
         if (cause && cause.name === 'AbortError') return;
-        var err = new Error('网络不可用，请检查连接后重试');
+        var err = new Error('本地服务连不上，检查它是否在运行');
         err.status = 0;
         err.cause = cause;
         throw err;
@@ -233,8 +220,6 @@
     del: function (path, options) {
       return request('DELETE', path, options);
     },
-    onUnauthorized: onUnauthorized,
-    csrfToken: csrfToken,
     /** 上传一个文件：走 multipart（附件接口用） */
     upload: function (path, file) {
       var form = new FormData();
@@ -245,39 +230,8 @@
 
   /* ------------------------------------------------------ 具名接口 */
 
-  api.auth = {
-    /**
-     * 探测当前登录状态。
-     * 401 在这个接口上是**正常语义**（就是没登录），所以转成 null 返回，
-     * 而不是抛异常 —— 否则每个调用点都要写一遍「401 不算错」。
-     */
-    me: function () {
-      return request('GET', '/auth/me', { allow401: true }).catch(function (err) {
-        if (err.status === 401) return null;
-        throw err;
-      });
-    },
-    login: function (email, password) {
-      return request('POST', '/auth/login', {
-        body: { email: email, password: password },
-        allow401: true,
-      });
-    },
-    register: function (email, password, displayName) {
-      return request('POST', '/auth/register', {
-        body: { email: email, password: password, displayName: displayName || '' },
-        allow401: true,
-      });
-    },
-    logout: function () {
-      return request('POST', '/auth/logout', { allow401: true });
-    },
-    changePassword: function (currentPassword, newPassword) {
-      return request('POST', '/auth/password', {
-        body: { currentPassword: currentPassword, newPassword: newPassword },
-      });
-    },
-  };
+  // 这里原先有一整块 `api.auth`（me / login / register / logout / changePassword）。
+  // 单用户本地形态下没有账号，整块删掉 —— 见 `api/app/deps.py`。
 
   api.health = function () {
     return request('GET', '/health', { allow401: true });

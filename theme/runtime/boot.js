@@ -3,12 +3,14 @@
  *
  * 顺序是有讲究的，每一步失败都得让用户看懂发生了什么：
  *
- *   1. GET /api/auth/me      未登录 → 带 next 跳登录页
- *   2. GET /api/bank         题库为空 → 明确告诉用户去跑导入命令
- *   3. 进度装载              本地先灌快照，之后跟着流水增量收敛
- *   4. 启动页面应用 + hash 路由
+ *   1. GET /api/bank         题库为空 → 明确告诉用户去跑导入命令
+ *   2. 进度装载              本地先灌快照，之后跟着流水增量收敛
+ *   3. 启动页面应用 + hash 路由
  *
- * 页面脚本自己**不**启动：必须等这里走完，否则会出现"还没鉴权就开始渲染"。
+ * 页面脚本自己**不**启动：必须等这里走完，否则会出现"还没拿到数据就开始渲染"。
+ *
+ * （原先第一步是 `GET /api/auth/me`、未登录就跳登录页 —— 单用户本地形态下
+ *   登录这件事整个没了，见 `api/app/deps.py`。）
  * ========================================================================= */
 (function () {
   'use strict';
@@ -102,16 +104,11 @@
     showState(options);
   }
 
-  /* -------------------------------------------------------------- 跳登录 */
+  /* ------------------------------------------------------- 单用户：没有登录 */
 
-  function loginUrl() {
-    var next = location.pathname + location.search + location.hash;
-    return '/login.html?next=' + encodeURIComponent(next);
-  }
-
-  function toLogin() {
-    location.replace(loginUrl());
-  }
+  // 原先这里有两个函数：`loginUrl()` 拼带 next 的登录页地址，`toLogin()` 跳过去。
+  // 单用户本地形态下没有登录页，401 也不再是「该登录了」的意思（本地不会有 401）。
+  // 留着这两个函数只会让人以为还有登录这回事，所以删掉。
 
   /* ---------------------------------------------------------------- 装载 */
 
@@ -210,24 +207,13 @@
   /* ---------------------------------------------------------------- 启动 */
 
   function start() {
-    showState({ title: '正在载入…', message: '校验登录状态并读取题库' });
+    showState({ title: '正在载入…', message: '读取题库与进度' });
 
-    // 任何请求遇到 401 都直接回登录页，避免用户在半个页面上继续操作
-    api.onUnauthorized(toLogin);
-
-    api.auth
-      .me()
-      .then(function (me) {
-        if (!me || !me.user) {
-          toLogin();
-          return false;
-        }
-        QF.user = me.user;
-        return loadBank().then(function (ok) {
-          if (!ok) return false;
-          return loadProgress().then(function () {
-            return true;
-          });
+    loadBank()
+      .then(function (ok) {
+        if (!ok) return false;
+        return loadProgress().then(function () {
+          return true;
         });
       })
       .then(function (ready) {
@@ -239,14 +225,11 @@
         replaceState({
           tone: 'bad',
           icon: 'warn',
-          title: isNetwork ? '连不上服务器' : '启动失败',
+          title: isNetwork ? '连不上服务' : '启动失败',
           message: isNetwork
-            ? '网络不可用，或后端没有在运行。检查服务后重试。'
+            ? '本地服务没有在运行（或端口被占）。把它起起来再刷新本页。'
             : err.message || '未知错误',
-          actions: [
-            { label: '重试', onClick: function () { location.reload(); } },
-            { label: '回到登录页', onClick: toLogin },
-          ],
+          actions: [{ label: '重试', onClick: function () { location.reload(); } }],
         });
       });
   }
