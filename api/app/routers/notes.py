@@ -83,7 +83,8 @@ def tags(lib: str = "") -> dict:
 def line(body: dict) -> dict:
     """行级编辑 —— 幕布那半边的动作都在这里。
 
-    `op` 取 `insert`（回车同级）/ `replace` / `delete` / `indent` / `outdent` / `move`。
+    `op` 取 `insert`（回车同级）/ `replace` / `replace_range`（块级替换，配 `count`）/
+    `delete` / `indent` / `outdent` / `move`。
     """
     lib = _lib(_text(body, "lib"))
     return _run(
@@ -95,6 +96,8 @@ def line(body: dict) -> dict:
         raw=_text(body, "raw"),
         # `delta` 只给 `move` 用：+1 往下挪一块、-1 往上（Alt+↓ / Alt+↑）
         delta=int(body.get("delta") or 0),
+        # `count` 只给 `replace_range` 用：要替换掉几行（默认视图按块改）
+        count=int(body.get("count") or 0),
     )
 
 

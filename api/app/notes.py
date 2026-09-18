@@ -479,6 +479,25 @@ def replace_line(body: str, index: int, raw: str) -> str:
     return join_lines(lines, trailing)
 
 
+def replace_range(body: str, start: int, count: int, raw: str) -> str:
+    """把 `[start, start + count)` 这几行换成 `raw`（可以是一段多行文本）。
+
+    **为什么需要它**：行级接口原先一次只能改一行，而"默认视图"（块级实时渲染）里
+    一个段落、一个代码块、一张表格都是**好几行** —— 按块改就需要范围替换。
+    做成一个原子操作，而不是"删一批 + 插一批"：后者在两个请求之间会把文件留在半坏的状态。
+    """
+    lines, trailing = split_lines(body)
+    # 错误类型跟邻居对齐（`replace_line` / `delete_line` 都抛 `IndexError`）：
+    # 路由那边统一把这类翻成 400，用别的类型会冒出一个 500。
+    if count < 0:
+        raise IndexError("count 不能是负数")
+    if not 0 <= start <= len(lines):
+        raise IndexError(f"第 {start} 行不存在（共 {len(lines)} 行）")
+    end = min(len(lines), start + count)
+    block = raw.splitlines() if raw else []
+    return join_lines(lines[:start] + block + lines[end:], trailing)
+
+
 def delete_line(body: str, index: int) -> str:
     lines, trailing = split_lines(body)
     if not 0 <= index < len(lines):
@@ -947,6 +966,7 @@ __all__ = [
     "block_extent",
     "build_index",
     "delete_line",
+    "replace_range",
     "detect_indent_unit",
     "head_block",
     "insert_line",

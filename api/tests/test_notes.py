@@ -29,6 +29,7 @@ from app.notes import (
     render,
     search_row,
     replace_line,
+    replace_range,
     resolve,
     rewrite_links,
     sha256_bytes,
@@ -223,6 +224,27 @@ def test_query_tolerates_malformed_input():
     for text in ("((极限", '极限"', "title:", "#", "orderby 不存在的字段 极限"):
         query = parse_query(text)
         assert isinstance(query.match, type(lambda: None))
+
+
+def test_replace_range_swaps_a_whole_block():
+    """块级替换：把几行换成一段（块级实时编辑的地基）。
+
+    为什么要它：行级接口一次只能改一行，而"默认视图"里一个段落、一个代码块、
+    一张表格都是好几行。做成原子的一个操作，而不是"删一批 + 插一批" ——
+    后者在两个请求之间会把文件留在半坏的状态。
+    """
+    body = "# 标题\n\n第一段第一行\n第一段第二行\n\n- 列表\n"
+    assert replace_range(body, 2, 2, "改过的段落\n（两行）") == "# 标题\n\n改过的段落\n（两行）\n\n- 列表\n"
+    # 空 raw = 删掉这几行（下面第 4 行是那个空行）
+    assert replace_range(body, 4, 1, "") == "# 标题\n\n第一段第一行\n第一段第二行\n- 列表\n"
+    assert replace_range(body, 0, 1, "") == "\n第一段第一行\n第一段第二行\n\n- 列表\n"
+    assert replace_range(body, 5, 1, "- 换掉这一条\n- 又加一条") == (
+        "# 标题\n\n第一段第一行\n第一段第二行\n\n- 换掉这一条\n- 又加一条\n"
+    )
+    with pytest.raises(IndexError):
+        replace_range(body, 99, 1, "x")
+    with pytest.raises(IndexError):
+        replace_range(body, 0, -1, "x")
 
 
 def test_outline_nests_bullets_under_headings():
