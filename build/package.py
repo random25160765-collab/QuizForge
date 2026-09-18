@@ -301,6 +301,41 @@ def _terminate(proc: subprocess.Popen) -> None:
         proc.kill()
 
 
+def _http_json(url: str, payload: dict | None = None, timeout: float = 10.0) -> dict | None:
+    """打一次 JSON 接口。写探针要用它（POST）。"""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(  # noqa: S310
+        url,
+        data=data,
+        method="POST" if data is not None else "GET",
+        headers={"Content-Type": "application/json"} if data is not None else {},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+
+def _schema_problems(db_path: Path) -> list[str]:
+    """对**包跑出来的那个库**做一次结构体检（规则与应用里同一份）。
+
+    这一条是拿一次真实翻车补上的：内测包 chat 一发消息就
+    `NOT NULL constraint failed: messages.id`（`messages.id` 是 `BIGINT`，
+    SQLite 上不自增）。当时自检只看"接口能不能应答、题库读没读出来" ——
+    于是"能启动、能读、**不能写**"的包照样发了出去。
+    """
+    if not db_path.is_file():
+        return []
+    if str(ROOT / "api") not in sys.path:
+        sys.path.insert(0, str(ROOT / "api"))
+    try:
+        from app.db import sqlite_rowid_pk_problems  # noqa: PLC0415
+    except ImportError as exc:  # 镜像里缺东西时别把它当成"结构没问题"
+        return [f"体检规则导入不了：{exc}"]
+    return sqlite_rowid_pk_problems(db_path)
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -362,6 +397,8 @@ def verify(
     base = f"http://127.0.0.1:{port}"
     health: dict | None = None
     page_ok = False
+    write_ok = False
+    write_detail = ""
     deadline = time.time() + timeout_s
     try:
         while time.time() < deadline:
@@ -378,6 +415,31 @@ def verify(
                 break
             except (urllib.error.URLError, TimeoutError, OSError, ValueError):
                 time.sleep(0.5)
+
+        # **写入探针**：在真包上写一次库（走 progress sync，不碰 AI 那条路）。
+        # "能启动、能读"不等于"能写" —— 这个包就是死在写上（见 `_schema_problems`）。
+        if health:
+            import uuid
+
+            probe = _http_json(
+                f"{base}/api/progress/sync",
+                {
+                    "attempts": [
+                        {
+                            "id": str(uuid.uuid4()),
+                            "questionId": "probe-0001",
+                            "at": int(time.time() * 1000),
+                            "status": "correct",
+                            "score": 1,
+                            "response": "写入探针",
+                            "topicKey": "",
+                        }
+                    ]
+                },
+            )
+            write_ok = bool(probe and probe.get("attemptsAccepted") == 1)
+            if not write_ok:
+                write_detail = str(probe)[:200] if probe is not None else "接口没响应"
     finally:
         _terminate(proc)
 
@@ -386,11 +448,16 @@ def verify(
     ai = (health or {}).get("ai") or {}
     questions = int(bank.get("questions") or 0)
     channel = str((health or {}).get("channel") or "")
+    schema_problems = _schema_problems(db_file)
     print(f"  接口：{'通了' if health else '没通'} · 静态页面：{'在' if page_ok else '没拿到'}")
     print(f"  题库：{questions} 题 · 主题 {bank.get('topics', 0)}")
     print(f"  通道：{channel or '（没报）'} · 内测额度：{'可用' if ai.get('betaEnabled') else '不可用'}"
           f"（密钥{'已带' if ai.get('betaConfigured') else '未带'}）")
     print(f"  库文件：{'在' if db_file.is_file() else '不在（有问题）'}（{db_file.name}）")
+    print(f"  写一次库：{'成功' if write_ok else '失败 —— ' + (write_detail or '没试成')}")
+    print(f"  库结构体检：{'没问题' if not schema_problems else '**有问题**'}")
+    for item in schema_problems:
+        print(f"      {item}")
     shutil.rmtree(data_dir, ignore_errors=True)
 
     problems: list[str] = []
@@ -400,6 +467,10 @@ def verify(
         problems.append("静态页面拿不到（前端没进包）")
     if seed.is_file() and questions < 100:
         problems.append(f"题库没读出来（样本里应当有上千道，实际 {questions} 道）")
+    if not write_ok:
+        problems.append(f"写库失败（能启动能读、但写不进去）：{write_detail}")
+    if schema_problems:
+        problems.append("库结构体检没过：" + "；".join(schema_problems))
     if expected_channel and channel != expected_channel:
         problems.append(f"通道不对：期望 {expected_channel}，包自称 {channel or '（空）'}")
     if expected_channel == "beta":

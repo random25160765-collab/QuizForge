@@ -25,7 +25,7 @@ VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
 .PHONY: vendor check test new web web-full package pyodide-manifest \
-        win-setup win-sync dist dist-release \
+        win-setup win-sync dist dist-release smoke \
         api-venv api-dev api-test \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
@@ -80,6 +80,12 @@ win-setup:
 
 win-sync:
 	@$(VENV)/bin/python build/sync_win.py
+
+# 发版前跑一次：对**真 exe** 做一次真实对话烟测（起包 → 发一句 → 关掉）。
+# 会走一次模型（花钱），所以不挂进 dist —— 但它抓的是"能启动、能读、不能写"这类
+# 只在真跑时才暴露的问题（内测包第一版就死在 messages.id 上）。
+smoke: win-sync
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/smoke_win.py
 
 dist:
 	@$(MAKE) --no-print-directory web

@@ -28,38 +28,16 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from sync_win import _decode, _powershell  # noqa: E402  （共用：GBK 解码与 PowerShell 调用）
 VENV_DIR = "qf-build/.venv"          # 相对 Windows 的 %USERPROFILE%
 PYTHON_VERSION = "3.12"
 WINGET_ID = f"Python.Python.{PYTHON_VERSION}"
 
 
-def _decode(raw: bytes) -> str:
-    """Windows 的输出按 **GBK** 先试，再退到 UTF-8。
 
-    别用 `text=True`：那等于告诉 Python"这是 UTF-8"，而中文区 Windows 控制台
-    输出的是 GBK —— 解不动会抛 `UnicodeDecodeError`，且抛在 subprocess 内部，
-    看起来像脚本自己崩了（`build/dist_win.py` 上实测撞过）。
-    """
-    for encoding in ("utf-8", "gbk", "cp936"):
-        try:
-            return raw.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return raw.decode("utf-8", "replace")
-
-
-def _powershell(script: str) -> tuple[int, str]:
-    """在 Windows 上跑一段 PowerShell（从 `/mnt/c` 起，免得它抱怨 UNC 路径）。"""
-    try:
-        proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", script],
-            capture_output=True,
-            cwd="/mnt/c",
-            timeout=1800,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return 1, f"{type(exc).__name__}: {exc}"
-    return proc.returncode, _decode((proc.stdout or b"") + (proc.stderr or b""))
 
 
 def _windows_venv_python() -> str:
