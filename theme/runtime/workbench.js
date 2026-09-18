@@ -261,6 +261,15 @@
     var wrap = h('div.wkb');
     root.appendChild(wrap);
     QF.panes.mount(wrap, { default: DEFAULT_LAYOUT });
+
+    // 在别的页面点资源树时会留下一件"要开什么"，这里消费掉 ——
+    // 用户的心智是"我要看这个"，不该因为当时不在工作台就失效
+    var pending = null;
+    try { pending = JSON.parse(localStorage.getItem('qf.panes.pending') || 'null'); } catch (e) { pending = null; }
+    if (pending && pending.kind) {
+      try { localStorage.removeItem('qf.panes.pending'); } catch (e) { /* 忽略 */ }
+      QF.panes.open(pending.kind, pending.ref, pending.title);
+    }
   }
 
   QF.workbench = {

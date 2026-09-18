@@ -454,3 +454,67 @@ body[data-page='workbench'] .view {
 }
 
 .panes__muted { color: var(--fg3); font-size: 12px; line-height: 1.75; }
+
+/* ---------------- 资源树（左栏） ---------------- */
+
+.stree { padding: 2px 0 6px; }
+
+.stree__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 8px 2px 0;
+  color: var(--fg2);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.stree__row:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+
+.stree__row.is-dim { color: var(--fg3); }
+
+.stree__caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--fg3);
+  transition: transform var(--dur, 160ms) var(--ease, ease-out);
+}
+
+.stree__caret--none { width: 14px; }
+
+.stree__icon { display: inline-flex; flex: none; color: var(--fg3); }
+
+.stree__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stree__row--head .stree__label { font-weight: 500; color: var(--fg); }
+
+.stree__count { flex: none; font-size: 11px; color: var(--fg3); }
+
+.stree__body { min-width: 0; }
+
+.stree__hint {
+  margin: 2px 12px 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg3);
+}
+
+/* 拖到窗格上时，那一格给个明确回应 */
+.panes__pane.is-drop {
+  background: color-mix(in srgb, var(--pri) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pri) 55%, transparent);
+}
+
+.panes__pane.is-drop::before { background: var(--pri); }
