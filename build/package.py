@@ -64,6 +64,25 @@ HIDDEN_IMPORTS = (
 )
 
 
+def _tolerant_stdout() -> None:
+    """别让**控制台编码**把脚本搞崩。
+
+    Windows 的控制台是 GBK（中文区默认），而这份输出里有 `✓` / `✗` ——
+    直接打印会 `UnicodeEncodeError: 'gbk' codec can't encode character '\\u2713'`，
+    而且它会在**自检跑到一半**的时候炸掉（实测撞过：exe 出来了、自检没跑完，
+    看起来像"打包失败了"，其实是打印挂了）。
+
+    只放宽 errors，不改编码：中文在 GBK 下本来就打得出来，编不出的那几个符号
+    降级成 `?` 就够了。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except (ValueError, OSError):  # 被重定向到奇怪的东西时别硬来
+                pass
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -113,7 +132,15 @@ def make_manifest() -> int:
 # --------------------------------------------------------------------- build
 
 
-def build(verify_after: bool = True) -> int:
+def build(verify_after: bool = True, dist: Path | None = None, work: Path | None = None) -> int:
+    """出包。`dist` / `work` 可换到别处。
+
+    为什么需要换：仓库如果在 WSL 里，Windows 侧看到的是 UNC 路径
+    （`\\\\wsl.localhost\\…`），而 PyInstaller 在 UNC 上写工作目录不稳。
+    把工作目录与产物落到本机盘上、源码仍从 UNC 读，就绕开了这件事。
+    """
+    dist_dir = dist or DIST_DIR
+    work_dir = work or WORK_DIR
     if not LAUNCHER.is_file():
         print(f"找不到入口 {LAUNCHER}")
         return 2
@@ -139,11 +166,11 @@ def build(verify_after: bool = True) -> int:
         "--name",
         "quizforge",
         "--distpath",
-        str(DIST_DIR),
+        str(dist_dir),
         "--workpath",
-        str(WORK_DIR),
+        str(work_dir),
         "--specpath",
-        str(WORK_DIR),
+        str(work_dir),
         # **关键**：让静态分析找得到 `app` 包 —— 它在 `api/` 下，而分析时的工作目录
         # 是仓库根，不指这条路它会静默地收不进去（`--hidden-import app.main`
         # 也跟着失效），表现是跑起来才报 `No module named 'app'`（实测撞过）
@@ -174,7 +201,7 @@ def build(verify_after: bool = True) -> int:
         return proc.returncode
 
     suffix = ".exe" if os.name == "nt" else ""
-    artifact = DIST_DIR / f"quizforge{suffix}"
+    artifact = dist_dir / f"quizforge{suffix}"
     if not artifact.is_file():
         print(f"打包命令成功了，但没找到产物 {artifact}")
         return 1
@@ -295,12 +322,15 @@ def verify(artifact: Path, timeout_s: float = 60.0) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _tolerant_stdout()
     parser = argparse.ArgumentParser(prog="build/package.py", description="单文件打包（不含重型组件）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("manifest", help="从 vendor/pyodide 生成哈希清单")
     build_parser = sub.add_parser("build", help="出单文件可执行程序")
     build_parser.add_argument("--no-verify", action="store_true", help="不出包后自检")
+    build_parser.add_argument("--dist", help="产物目录（默认 build/dist）")
+    build_parser.add_argument("--work", help="PyInstaller 工作目录（默认 build/.pyinstaller）")
     verify_parser = sub.add_parser("verify", help="把产物跑起来自检")
     verify_parser.add_argument("artifact", help="可执行文件路径")
 
@@ -308,7 +338,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "manifest":
         return make_manifest()
     if args.cmd == "build":
-        return build(verify_after=not args.no_verify)
+        return build(
+            verify_after=not args.no_verify,
+            dist=Path(args.dist) if args.dist else None,
+            work=Path(args.work) if args.work else None,
+        )
     if args.cmd == "verify":
         return verify(Path(args.artifact))
     return 2

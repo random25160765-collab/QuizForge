@@ -88,3 +88,21 @@ def test_manifest_file_is_valid_json() -> None:
     payload = json.loads(heavy_deps.MANIFEST_FILE.read_text(encoding="utf-8"))
     assert payload["files"]
     assert payload["bytes"] > 0
+
+
+def test_data_dir_moves_out_of_the_bundle_when_frozen(monkeypatch) -> None:  # noqa: ANN001
+    """打包后数据目录必须在**用户主目录**下，不能在解包出来的临时目录里。
+
+    单文件模式里 `ROOT` 是 `%TEMP%\\_MEIxxxx` 的上一级，沿用 `<根>/data` 就会把
+    用户的库放进 `%TEMP%\\data` —— 既不好找，也可能被清理工具收走。
+    这条用例把它钉住（打包出来才发现的话，用户的数据已经在那儿了）。
+    """
+    from pathlib import Path
+
+    from app import config
+
+    monkeypatch.setattr(config.sys, "frozen", True, raising=False)
+    assert config._default_data_dir() == Path.home() / "quizforge"  # noqa: SLF001
+
+    monkeypatch.delattr(config.sys, "frozen", raising=False)
+    assert config._default_data_dir() == config.ROOT / "data"  # noqa: SLF001
