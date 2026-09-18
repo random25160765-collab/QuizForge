@@ -30,6 +30,7 @@
     search: document.getElementById('notes-search'),
     clear: document.getElementById('notes-clear'),
     tree: document.getElementById('notes-tree'),
+    treebar: document.getElementById('notes-treebar'),
     main: document.getElementById('notes-main'),
     side: document.getElementById('notes-side'),
     ribbon: document.getElementById('notes-ribbon'),
@@ -66,6 +67,7 @@
     links: svgIcon('<path d="M9.5 14.5 14.5 9.5"/><path d="M11 6.5 12.6 5a4 4 0 0 1 5.7 5.7L16.7 12"/><path d="M13 17.5 11.4 19a4 4 0 0 1-5.7-5.7L7.3 12"/>'),
     props: svgIcon('<path d="M4 7h16M4 12h16M4 17h10"/>'),
     history: svgIcon('<path d="M12 7v5l3 2"/><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5V10H9"/>'),
+    tidy: svgIcon('<path d="M5 4v4M3 6h4"/><path d="M17 16v5M14.5 18.5h5"/><path d="M13 4.5 9.5 11h3L9 17.5"/>'),
     type: svgIcon('<path d="M5 19h6M11 19h8"/><path d="M12 4v15"/>'),
     side: svgIcon('<path d="M4 5h16v14H4z"/><path d="M15 5v14"/>')
   };
@@ -228,7 +230,8 @@
       .then(function (tree) {
         state.tree = tree;
         ui.clear(el.tree);
-        el.tree.appendChild(
+        ui.clear(el.treebar);
+        el.treebar.appendChild(
           h(
             'div.ntree__head',
             null,
@@ -515,6 +518,7 @@
   function openNote(path, line) {
     if (!path) return;
     if (state.note && state.note.path === path) return;
+    if (QF.canvas && QF.canvas.unmount) QF.canvas.unmount();   // 换篇之前先收掉旧画布（它挂着 window 上的监听）
     if (state.dirty) saveNow(true);
     if (window.innerWidth <= 1180) {
       el.side.classList.add('is-open');
@@ -551,17 +555,32 @@
     }
     el.main.appendChild(renderBar());
     if (state.note.kind === 'canvas') {
-      var pane = h('div.note__pane');
-      pane.appendChild(
-        h(
-          'div.nempty',
-          null,
-          h('div', { html: EMPTY_MARK }),
-          h('div.nempty__title', { text: state.note.title }),
-          h('div.nempty__text', { text: state.note.message || '画布的渲染在下一步做。' })
-        )
-      );
-      el.main.appendChild(pane);
+      // 画布**自己管视口与保存**（它有自己的坐标系、工具条与攒批策略）——
+      // 塞进编辑器那一套会两头打架：一个想管滚动、一个想管 transform。
+      var host = h('div.note__pane.note__pane--canvas', { id: 'notes-canvas' });
+      el.main.appendChild(host);
+      el.main.appendChild(renderStatusBar());
+      QF.canvas.mount(host, {
+        lib: state.lib,
+        path: state.note.path,
+        onOpenNote: function (target) {
+          // `file` 节点里存的是**相对库根**的路径（与树里的 path 同一套），直接打开。
+          // 也容忍写成 `[[…]]` 或 `./x` 的老习惯。
+          var rel = String(target || '')
+            .replace(/^\[\[|\]\]$/g, '')
+            .replace(/^\.\//, '')
+            .trim();
+          if (rel) openNote(rel);
+        },
+        onStatus: function (text) {
+          state.canvasStatus = text;
+          renderStatusOnly();
+        },
+        onDirty: function (flag) {
+          state.dirty = flag;
+          renderStatusOnly();
+        }
+      });
       return;
     }
     el.main.appendChild(renderBody());
@@ -666,6 +685,13 @@
     renderSide();
   }
 
+  /** 当前这份前端产物的构建戳：从自己的 script 标签上取（打包脚本给每个产物带了内容哈希）。 */
+  function buildStamp() {
+    var tag = document.querySelector('script[src*="runtime/notes.js"]');
+    var found = tag && (tag.getAttribute('src') || '').match(/v=([0-9a-f]{8})/);
+    return found ? found[1] : '';
+  }
+
   /** 底部状态栏：与 Obsidian 一样把"这篇有多少东西"摆在脚边，不占正文。 */
   function renderStatusBar() {
     var note = state.note;
@@ -683,6 +709,10 @@
       })
     );
     bar.appendChild(h('span', { text: note.path }));
+    // 这版前端的构建戳（打包时每个产物带着内容哈希）—— 用来一眼核对
+    // "我看到的是不是刚改的那份"，省得靠猜缓存。
+    var hash = buildStamp();
+    if (hash) bar.appendChild(h('span.notes__stamp', { text: hash, title: '前端构建戳（改 theme/ 会自动重建）' }));
     return bar;
   }
 
@@ -727,7 +757,8 @@
       h(
         'div.seg',
         null,
-        [['read', '阅读'], ['split', '分栏'], ['edit', '编辑'], ['outline', '大纲']].map(function (pair) {
+        // 画布没有"阅读/分栏/编辑/大纲"这回事（它就是一块平面），不给它摆这排按钮
+        (state.note.kind === 'canvas' ? [] : [['read', '阅读'], ['split', '分栏'], ['edit', '编辑'], ['outline', '大纲']]).map(function (pair) {
           return h(
             'button.seg__item' + (state.mode === pair[0] ? '.is-on' : ''),
             {
@@ -774,6 +805,11 @@
   }
 
   function statusText() {
+    // 画布的状态由它自己报（卡片数 / 连线数 / 保存进度）—— "0 行 · 0 字"对它没有意义
+    if (state.note && state.note.kind === 'canvas') {
+      if (state.saving) return '保存中…';
+      return state.canvasStatus || '画布';
+    }
     if (!isNote()) return '';
     var body = currentText();
     var lines = body ? body.split('\n').length : 0;
@@ -1004,6 +1040,11 @@
       // 一是折叠时"只藏正文、留住标题"才有东西可藏，二是标题行与正文的间距好控。
       var content = h('div.callout__content');
       while (quote.firstChild) content.appendChild(quote.firstChild);
+      // 去掉正文首尾的 <br>：源里「> [!tip] 标题」后面那行空引用会渲染成一个 <br>，
+      // 于是标题与正文之间凭空多出一整行空档（实测就是这个「距离太宽」）。
+      // 只动首尾，正文内部用来分段的 <br> 留着。
+      while (content.firstChild && content.firstChild.nodeName === 'BR') content.removeChild(content.firstChild);
+      while (content.lastChild && content.lastChild.nodeName === 'BR') content.removeChild(content.lastChild);
       quote.appendChild(head);
       quote.appendChild(content);
     });
@@ -1681,7 +1722,8 @@
     ['links', '连接'],
     ['props', '属性'],
     ['history', '历史'],
-    ['tags', '标签']
+    ['tags', '标签'],
+    ['tidy', '整理']
   ];
 
   var sideTargetEl = null;
@@ -1745,6 +1787,7 @@
     else if (state.panel === 'links') sideLinks(scroll);
     else if (state.panel === 'history') sideHistory(scroll);
     else if (state.panel === 'tags') sideTags(scroll);
+    else if (state.panel === 'tidy') sideTidy(scroll);
     else sideOutline(scroll);
     // 不把它置空：历史和标签是**稍后**才填进来的，置空之后它们会挂到侧栏根上、
     // 跑到滚动区外面去。下次 renderSide 会重新赋值并清空，多挂一次也不会留下东西。
@@ -1841,6 +1884,217 @@
     loadTags();
   }
 
+  /* ------------------------------------------------------------ 整理（模型建议标签与双链）
+
+   * 为什么做成「建议、逐条接受」而不是自动写：四个库一千多篇里多数没有元数据，
+   * 全自动加没人敢信，一条条手加不现实 —— 中间那条路才走得通。
+   * 建议**只在内存里**，点了「接受」才落盘（落盘前照例留快照，能撤销）。
+   */
+  var tidy = { candidates: null, picked: {}, items: null, busy: false, error: '' };
+
+  function sideTidy(target) {
+    var panel = h('section.npanel', null, h('div.npanel__title', { text: '整理 · 模型建议标签与双链' }));
+    panel.appendChild(
+      h('div.npanel__hint', {
+        text: '先把「没有标签也没有链接」的找出来；模型只出建议，你点接受它才写进文件（写前留快照，可撤销）。'
+      })
+    );
+    if (tidy.error) panel.appendChild(h('div.npanel__warn', { text: tidy.error }));
+
+    panel.appendChild(
+      h('button.nbtn' + (tidy.candidates ? '' : '.nbtn--primary'), {
+        type: 'button',
+        text: tidy.candidates ? '重新找一遍' : '找出最该整理的几篇',
+        disabled: tidy.busy ? 'disabled' : null,
+        onClick: function () {
+          tidy.error = '';
+          tidy.busy = true;
+          tidy.items = null;
+          renderSide();
+          api
+            .get('/notes/suggest/candidates?' + q({ lib: state.lib, limit: 8 }))
+            .then(function (res) {
+              tidy.candidates = res.items || [];
+              tidy.picked = {};
+              tidy.candidates.slice(0, 6).forEach(function (row) {
+                tidy.picked[row.path] = true;
+              });
+              tidy.busy = false;
+              renderSide();
+            })
+            .catch(function (err) {
+              tidy.busy = false;
+              tidy.error = (err && err.message) || '取清单失败';
+              renderSide();
+            });
+        }
+      })
+    );
+
+    if (tidy.candidates) {
+      var picked = tidy.candidates.filter(function (row) {
+        return tidy.picked[row.path];
+      }).length;
+      tidy.candidates.forEach(function (row) {
+        panel.appendChild(
+          h(
+            'label.npick',
+            null,
+            h('input', {
+              type: 'checkbox',
+              checked: tidy.picked[row.path] ? 'checked' : null,
+              onChange: function (ev) {
+                tidy.picked[row.path] = ev.target.checked;
+              }
+            }),
+            h('span.npick__title', { text: row.title || row.path }),
+            h('span.npick__meta', {
+              text: (row.tags.length ? '' : '无标签') + (row.tags.length || row.links ? '' : ' · ') + (row.links ? '' : '无链接')
+            })
+          )
+        );
+      });
+      panel.appendChild(
+        h('button.nbtn.nbtn--primary', {
+          type: 'button',
+          text: tidy.busy ? '正在问模型…' : '让模型建议（' + picked + ' 篇）',
+          disabled: tidy.busy || !picked ? 'disabled' : null,
+          onClick: runTidy
+        })
+      );
+    }
+
+    if (tidy.items) panel.appendChild(tidyReview());
+    target.appendChild(panel);
+  }
+
+  function runTidy() {
+    var paths = Object.keys(tidy.picked).filter(function (path) {
+      return tidy.picked[path];
+    });
+    if (!paths.length) return;
+    tidy.busy = true;
+    tidy.error = '';
+    tidy.items = null;
+    renderSide();
+    api
+      .post('/notes/suggest', { lib: state.lib, paths: paths })
+      .then(function (res) {
+        tidy.busy = false;
+        tidy.items = res.items || [];
+        tidy.items.forEach(function (row) {
+          row.__tags = (row.tags || []).slice();
+          row.__links = (row.links || []).slice();
+        });
+        if (res.dropped) {
+          // 模型编标题是常事：丢掉了要说出来，别让它悄悄消失
+          toast('模型写了 ' + res.dropped + ' 个库里没有的标题，已经丢掉', 'ok');
+        }
+        if ((res.failed || []).length) {
+          tidy.error = (res.failed[0].error || '有笔记没问出来') + '（' + res.failed.length + ' 篇）';
+        }
+        renderSide();
+      })
+      .catch(function (err) {
+        tidy.busy = false;
+        tidy.error = (err && err.message) || '问模型失败';
+        renderSide();
+      });
+  }
+
+  /** 逐条复核：默认全勾 —— 人要的是「删掉不对的」，不是「挑出对的」。 */
+  function tidyReview() {
+    var box = h('div.ntidy');
+    var count = 0;
+    tidy.items.forEach(function (row, index) {
+      if (!row.__tags.length && !row.__links.length) return;
+      var card = h('div.ntidy__card', null, h('div.ntidy__who', { text: row.title || row.path }));
+      row.__tags.forEach(function (tag, tagIndex) {
+        count += 1;
+        card.appendChild(
+          h(
+            'label.ntidy__row',
+            null,
+            h('input', {
+              type: 'checkbox',
+              checked: 'checked',
+              dataset: { kind: 'tag', row: String(index), index: String(tagIndex) }
+            }),
+            h('span.ntag', { text: '#' + tag })
+          )
+        );
+      });
+      row.__links.forEach(function (link, linkIndex) {
+        count += 1;
+        card.appendChild(
+          h(
+            'label.ntidy__row',
+            null,
+            h('input', {
+              type: 'checkbox',
+              checked: 'checked',
+              dataset: { kind: 'link', row: String(index), index: String(linkIndex) }
+            }),
+            h('span.ntidy__link', { text: '[[' + link.target + ']]' }),
+            h('span.ntidy__why', { text: link.why || '' })
+          )
+        );
+      });
+      box.appendChild(card);
+    });
+    if (!count) {
+      box.appendChild(h('div.npanel__hint', { text: '模型这几篇都说不出什么 —— 「暂时不用整理」也是答案。' }));
+      return box;
+    }
+    box.appendChild(
+      h('button.nbtn.nbtn--primary', {
+        type: 'button',
+        text: '接受选中的（写进文件，可撤销）',
+        onClick: acceptTidy
+      })
+    );
+    return box;
+  }
+
+  function acceptTidy() {
+    var picked = [];
+    var boxes = el.side.querySelectorAll('.ntidy input[type=checkbox]');
+    Array.prototype.forEach.call(boxes, function (node) {
+      if (!node.checked) return;
+      var row = tidy.items[Number(node.dataset.row)];
+      if (!row) return;
+      var index = Number(node.dataset.index);
+      var bucket = picked.filter(function (item) {
+        return item.path === row.path;
+      })[0];
+      if (!bucket) {
+        bucket = { path: row.path, tags: [], links: [] };
+        picked.push(bucket);
+      }
+      if (node.dataset.kind === 'tag') bucket.tags.push(row.__tags[index]);
+      else bucket.links.push(row.__links[index]);
+    });
+    if (!picked.length) {
+      toast('一条都没选', 'bad');
+      return;
+    }
+    api
+      .post('/notes/suggest/apply', { lib: state.lib, items: picked })
+      .then(function (res) {
+        toast('补了 ' + (res.applied || []).length + ' 篇', 'ok');
+        tidy.items = null;
+        tidy.candidates = null;
+        var current = state.note && state.note.path;
+        renderSide();
+        loadTree();
+        if (current) {
+          state.note = null;
+          openNote(current);
+        }
+      })
+      .catch(fail);
+  }
+
   /** 图标栏（最左边那一条）：点一个切到那个面板，再点一下收起侧栏。 */
   function renderRibbon() {
     ui.clear(el.ribbon);
@@ -1849,7 +2103,8 @@
       ['links', 'links', '连接 · 反链与出链'],
       ['props', 'props', '属性与排版'],
       ['history', 'history', '改动历史与版本'],
-      ['tags', 'props', '标签']
+      ['tags', 'props', '标签'],
+      ['tidy', 'tidy', '整理：让模型建议标签与双链（逐条接受）']
     ].forEach(function (row) {
       var on = state.side === 'open' && state.panel === row[0];
       el.ribbon.appendChild(

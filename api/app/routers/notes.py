@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
+from .. import canvas as canvaslib
 from .. import notelib
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
@@ -130,6 +131,78 @@ def rename(body: dict) -> dict:
     """改名，并**把引用它的地方一起改**（旧编辑器 `alwaysUpdateLinks` 那条）。"""
     lib = _lib(_text(body, "lib"))
     return _run(notelib.rename_note, lib, _text(body, "path"), _text(body, "to"))
+
+
+def _suggester():
+    """拿 `pipeline.note_suggest`。
+
+    API 进程的 cwd 是 `api/`，而 `pipeline/` 是仓库根下的脚本目录（不在包里）—— 所以首次
+    引用时把仓库根插进路径。**延迟导入**：这个模块会拖起模型客户端，
+    不该让"打开笔记页"为它付启动成本（这是仓库对重依赖的一贯做法）。
+    """
+    import sys  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    root = Path(__file__).resolve().parents[3]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from pipeline import note_suggest  # noqa: PLC0415
+
+    return note_suggest
+
+
+@router.get("/suggest/candidates")
+def suggest_candidates(lib: str, limit: int = 12) -> dict:
+    """哪些笔记最该整理（没标签的排前面）。只读清单，不调模型。"""
+    module = _suggester()
+    return {"items": module.pick_candidates(_lib(lib), limit=limit)}
+
+
+@router.post("/suggest")
+async def suggest(body: dict) -> dict:
+    """对指定的几篇跑一遍建议。**只调模型、不落盘** —— 落盘要人点「接受」。"""
+    module = _suggester()
+    lib = _lib(_text(body, "lib"))
+    paths = [str(item) for item in (body.get("paths") or []) if str(item).strip()]
+    if not paths:
+        return {"items": [], "failed": [], "dropped": 0, "note": "没有指定要整理的笔记"}
+    try:
+        return await module.suggest(lib, paths)
+    except Exception as exc:  # noqa: BLE001 - 模型侧什么都可能抛（没配密钥、超时、额度）
+        raise HTTPException(status_code=502, detail=f"模型没能给出建议：{str(exc)[:200]}") from exc
+
+
+@router.post("/suggest/apply")
+def suggest_apply(body: dict) -> dict:
+    """把**被接受的那几条**写进文件（写之前照例留快照，可撤销）。"""
+    module = _suggester()
+    lib = _lib(_text(body, "lib"))
+    items = body.get("items") or []
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items 得是个列表")
+    result = module.apply(lib, items)
+    # 索引是派生的缓存：写完要让它下次重读（不然树里看不到刚补的标签）
+    notelib.index(lib).invalidate()
+    return result
+
+
+@router.get("/canvas")
+def canvas_read(lib: str, path: str) -> dict:
+    """读一块画布：节点 / 边 / 内容包围盒。坏 JSON 与空对象都降级成空画布，不抛给用户。"""
+    return _run(canvaslib.read, _lib(lib), path)
+
+
+@router.post("/canvas")
+def canvas_apply(body: dict) -> dict:
+    """把**一批**改动一次落盘（一次快照）。
+
+    拖一张卡片前端会攒几十次位移 —— 逐个落盘会把快照轮转冲干净、"撤销"随即失效。
+    """
+    lib = _lib(_text(body, "lib"))
+    ops = body.get("ops")
+    if not isinstance(ops, list):
+        raise HTTPException(status_code=400, detail="ops 得是个列表")
+    return _run(canvaslib.apply, lib, _text(body, "path"), ops)
 
 
 @router.post("/delete")

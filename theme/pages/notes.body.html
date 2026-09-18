@@ -29,6 +29,9 @@
         <button class="nicon nicon--mini" id="notes-clear" type="button" title="清空检索"
                 aria-label="清空检索" hidden>×</button>
       </div>
+      <!-- 条目数与「全部展开」固定在这里：它是**面板的一部分**，不是列表的第一行。
+           放在滚动区里做粘性元素时，滚动的行会从它缝隙里透出来（实测能看到半行文字） -->
+      <div class="nfiles__bar" id="notes-treebar"></div>
       <div class="nfiles__scroll" id="notes-tree" role="tree"></div>
       <footer class="nfiles__foot">
         <span class="nfiles__vault" id="notes-vault">—</span>

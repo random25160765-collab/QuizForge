@@ -579,6 +579,19 @@ def _save(lib: Library, rel: str, path: Path, text: str, *, why: str) -> None:
     _write_cursor(folder, cursor + 1)
 
 
+def save_raw(lib: Library, rel: str, text: str, *, why: str = "编辑") -> None:
+    """写一份**非 Markdown** 的正文（画布用）。
+
+    与 `write_body` 共用快照与轮转，只是**不走 YAML 头那套拼装** —— 画布是 JSON，
+    拼个头会把文件写坏。所以这里是"原样写 + 照例留版本"。
+    """
+    path = safe_path(lib, rel)
+    if not path.is_file():
+        raise NoteNotFound(f"没有这篇：{rel}")
+    _save(lib, rel, path, text, why=why)
+    _invalidate(lib)
+
+
 def snapshots(lib: Library, rel: str) -> list[dict[str, Any]]:
     """改动历史（新→旧），并标出"哪一版是当前这一版"。"""
     folder = _snapshot_dir(lib, rel)
@@ -1252,6 +1265,7 @@ __all__ = [
     "reset_index",
     "restore",
     "restore_from_trash",
+    "save_raw",
     "safe_path",
     "search",
     "set_meta",

@@ -24,7 +24,7 @@ API_PORT ?= 8100
 VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
-.PHONY: vendor check test new web web-full package pyodide-manifest notes-import \
+.PHONY: vendor check test new web web-watch web-full package pyodide-manifest notes-import \
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
@@ -47,6 +47,10 @@ new:
 
 web:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT)
+
+# 单独挂 watcher（`make dev` 已经带了；只想盯前端时用这个）
+web-watch:
+	@$(VENV)/bin/python tools/watch_theme.py
 
 # 把 76M 的 Pyodide 也拷进前端产物：**离线自包含**用（产物从 ~5M 变 ~81M）。
 # 分发包不要这个 —— 运行时改由首启取进本机缓存（见 build/package.py）。
@@ -142,9 +146,14 @@ db-down:
 # 起开发服务前**必构建前端**：前端是静态产物，不构建看到的就是上一次的样子 ——
 # 实测踩过（"开发端找不到笔记入口"，其实是产物还是旧的）。构建戳会打出来，
 # 和 exe 上的对一下就知道是不是同一份（见 `make dist-check`）。
+# 监听 0.0.0.0 而不是 127.0.0.1：仓库在 WSL 里、浏览器在 Windows 上，
+# 而 WSL2 的 localhost 转发在这台机器上不通（实测：从 Windows 取 127.0.0.1:8100 连不上）。
+# 0.0.0.0 在 WSL 里只是 vNIC（NAT），只有 Windows 宿主机够得到，不会挂到局域网上。
 api-dev: web
-	@echo "→ http://127.0.0.1:$(API_PORT)/"
-	@cd api && .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port $(API_PORT)
+	@echo "→ 开发环境：本机(WSL) http://127.0.0.1:$(API_PORT)/notes.html"
+	@ip=$$(hostname -I 2>/dev/null | tr " " "\n" | grep -E "^[0-9]" | head -1); \
+	 if [ -n "$$ip" ]; then echo "→ 开发环境：Windows 浏览器 http://$$ip:$(API_PORT)/notes.html"; fi
+	@cd api && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port $(API_PORT)
 
 # 桌面那个包是不是**当前这份代码**打的：比对它随附的构建戳与现在 `api/web` 的戳。
 # 这条是给"开发端改了、exe 还是老的"这种情况准备的 —— 一句话就能问清楚。
@@ -153,7 +162,12 @@ dist-check:
 
 # 开发通道：本机起 web 服务（**不是**分发形态）。
 # 它用的是仓库里的 `data/`（不是 exe 那两份 `~/quizforge*`），改代码即时生效。
-dev: web api-dev
+#
+# 前端是静态产物：**改 `theme/` 不重建，浏览器看到的还是上一版**（为此踩过不止一次）。
+# 所以这里把 `web-watch` 挂在后台 —— 改一下就自动重建，不需要多一步 `make web`。
+dev: web
+	@$(VENV)/bin/python tools/watch_theme.py &
+	@$(MAKE) api-dev
 
 api-test:
 	@cd api && .venv/bin/python -m pytest
