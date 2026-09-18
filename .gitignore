@@ -62,3 +62,7 @@ maps/_attic/
 
 # 应用数据目录（local-first）：库文件、以后的笔记与资料索引都在本机，不进版本库
 data/
+
+# 打包产物：单文件可执行程序与 PyInstaller 的工作目录
+build/dist/
+build/.pyinstaller/

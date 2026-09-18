@@ -1,0 +1,9 @@
+# 打包用的**构建期**依赖 —— 不进运行时 requirements。
+#
+# PyInstaller 必须在"装着运行时依赖的那个解释器"里跑（它要把 fastapi / uvicorn /
+# sqlalchemy 一起冻进产物），所以安装命令是：
+#
+#   api/.venv/bin/python -m pip install -r build/requirements-build.txt
+#
+# 它**不能交叉编译**：Windows 的 exe 要在 Windows 上跑一遍 `make package`。
+pyinstaller>=6.10

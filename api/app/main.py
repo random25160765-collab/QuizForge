@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__
+from . import __version__, heavy_deps
 from .config import get_settings
 from .logging_setup import RequestLogMiddleware, setup_logging
 from .routers import all_routers
@@ -109,6 +109,26 @@ def create_app() -> FastAPI:
             response.headers["Access-Control-Allow-Origin"] = "*"
         return response
 
+    # -------------------------------------------------------- 重型组件（Pyodide）
+    # 不走 `/assets` 的静态挂载：那份运行时在**用户数据目录**的缓存里
+    # （`data/cache/pyodide/`），而且它可能在应用起来**之后**才出现
+    # （首次使用或首启下载）—— 挂载点是启动时定死的，跟不上。
+    # 所以按文件名逐次取，而且**只认清单里有的名字**（顺带挡住路径穿越）。
+    @app.get("/assets/pyodide/{name}", include_in_schema=False)
+    def pyodide_asset(name: str) -> FileResponse:
+        path = heavy_deps.file_path(name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="运行时还没准备好")
+        return FileResponse(
+            path,
+            headers={
+                # 沙箱是独立文档：模块脚本与 fetch 都要 CORS
+                "Access-Control-Allow-Origin": "*",
+                # 内容按版本钉死、按哈希校验过，可以放心长缓存
+                "Cache-Control": "public, max-age=31536000, immutable",
+            },
+        )
+
     # ------------------------------------------------------------ 静态前端
     # 由 `python3 tools/build.py --web` 输出（容器里由 Dockerfile 的多阶段构建生成）。
     # 挂载在最后：FastAPI 按注册顺序匹配，/api/* 必须排在 "/" 之前。
@@ -130,6 +150,14 @@ def create_app() -> FastAPI:
         settings.ai_daily_quota or "不限",
         web_dir,
     )
+
+    if settings.heavy_prefetch:
+        # 重型运行时（Pyodide，76M）**第一次打开时取一次**：后台线程去取，
+        # 不挡启动、不挡任何请求。已经在缓存里就什么也不做。
+        # 测试里关掉（`QF_HEAVY_PREFETCH=false`）—— 用例不该因为跑一次就去联网。
+        if heavy_deps.start_prefetch(log=logger.info):
+            logger.info("重型运行时不在本机，已在后台开始取（跑 Python 那一项就绪后可用）")
+
     return app
 
 

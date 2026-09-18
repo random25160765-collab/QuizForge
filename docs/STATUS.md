@@ -89,6 +89,22 @@
 `PRAGMA foreign_key_check` 无悬空引用；17 个账号收敛成 **1 个**（留下真正在用的那个，
 删掉 16 个历次验证的残留）。搬运**不动源库**，删错也还在。
 
+**打包**（`make release` = 构建前端 + 出包；`make package` 只出包）：
+
+| 项 | 数值 |
+|---|---|
+| 单文件产物 | **38.2 MB**（`build/dist/quizforge`，PyInstaller onefile） |
+| 前端产物 `api/web/` | **5.2 MB**（默认**不**拷 Pyodide；要自包含用 `make web-full`） |
+| 包外 | Pyodide 运行时 **76M** —— 首启取一次进 `data/cache/pyodide/`，逐个校验 sha256 |
+| 出包后自检 | 接口通 · 静态页在 · **读出真实题库 1623 题 / 454 主题** · 首启建库 ✓ |
+
+* **不用 Electron**（用户明确要求保持轻量）：前端本来就是网页，服务在本机同一个进程里 ——
+  套一层 Chromium 只会让包从 ~38M 变成 150M+；
+* **必须在本平台构建**：PyInstaller 不能交叉编译，Windows 的 exe 要在 Windows 上跑
+  `make package`（当前 Windows 侧**还没装 Python**）；
+* 哈希清单 `build/pyodide-manifest.json` 由 `python3 build/package.py manifest` 生成并**提交** ——
+  它让"下到的东西对不对"在离线时也判断得了。
+
 SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都留了注释）：
 ① `= ANY(…)` → `IN :x` + `expanding`；② 裸 SQL 读 JSON 列拿到的是**字符串**（PG 给 dict）
 → 统一走 `app.db.as_json`；③ `least/greatest/FILTER (WHERE …)/bool_or/now()` 都是 PG 专有

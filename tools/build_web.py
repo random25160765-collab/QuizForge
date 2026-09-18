@@ -158,7 +158,7 @@ def _index_redirect() -> str:
     )
 
 
-def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
+def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = False) -> dict:
     """输出在线模式的前端产物，返回统计信息。"""
     assets = out_dir / "assets"
     runtime_out = assets / "runtime"
@@ -197,11 +197,23 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
         shutil.copy2(VENDOR_HLJS / "highlight.min.js", hljs_out)
 
     # ---------------------------------------------------------- Pyodide
-    # 对话里「跑 Python」用的运行时。**可选**：没同步过就跳过（那种情况下
-    # run_python 生成的页面会回退到 CDN）。放到 /assets/pyodide/ 下，
-    # 沙箱 iframe 从我们自己这个源加载 —— 不必为了跑一段脚本去联网。
+    # 对话里「跑 Python」用的运行时（**76M**）。**默认不拷**：
+    #
+    #   它不进安装包，改由 `app/heavy_deps.py` 在第一次打开时取一次进本机缓存
+    #   （`data/cache/pyodide/`），之后离线可用。这样分发包只有 ~5M 静态资源，
+    #   而不是每次都背上 76M —— 用户明确要求"保持轻量"。
+    #
+    # `--with-pyodide` 是给**离线开发/自包含部署**留的：那种情况下把运行时装进
+    # 产物里，`heavy_deps` 会优先用本机副本、一次网都不联。
     pyodide_count = 0
-    if VENDOR_PYODIDE.is_dir():
+    stale_pyodide = assets / "pyodide"
+    if not with_pyodide and stale_pyodide.is_dir():
+        # 上一次用 --with-pyodide 构建留下的 76M，这次不拷就得**删掉** ——
+        # 否则产物看着是"轻量构建"，体积却一直是 81M（实测踩过：
+        # 日志写着「无 Pyodide」，`du -sh api/web` 还是 81M）
+        shutil.rmtree(stale_pyodide, ignore_errors=True)
+        log.info("清掉上次留下的 assets/pyodide/（这次不打包运行时）")
+    if with_pyodide and VENDOR_PYODIDE.is_dir():
         pyodide_out = assets / "pyodide"
         pyodide_out.mkdir(parents=True, exist_ok=True)
         for src in sorted(VENDOR_PYODIDE.iterdir()):
@@ -314,7 +326,11 @@ def build(out_dir: Path, log, *, api_base: str = "/api") -> dict:
     log.step(
         f"在线前端：{len(pages_written)} 个页面 · {len(RUNTIME_ORDER)} 个运行时脚本 · "
         f"{font_count} 个字体"
-        + (f" · Pyodide {pyodide_count} 个文件" if pyodide_count else " · 无 Pyodide（跑 Python 会退回 CDN）")
+        + (
+            f" · Pyodide {pyodide_count} 个文件（自包含）"
+            if pyodide_count
+            else " · 不含 Pyodide（运行时首启取进本机缓存，见 app/heavy_deps.py）"
+        )
         + (f" · 演示套件 {kit_count} 个文件" if kit_count else "")
         + f" -> {out_dir}"
     )
@@ -331,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=str(ROOT / "api" / "web"), help="输出目录，默认 api/web/")
     parser.add_argument("--api-base", default="/api", help="前端请求的接口前缀")
     parser.add_argument("--quiet", "-q", action="store_true", help="安静模式")
+    parser.add_argument(
+        "--with-pyodide",
+        action="store_true",
+        help="把 76M 的 Pyodide 运行时也拷进产物（离线自包含用；默认不拷，运行时首启取进缓存）",
+    )
     args = parser.parse_args(argv)
 
     started = time.time()
@@ -342,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("vendor/katex 未就绪，请先运行：make vendor")
         return 2
 
-    info = build(out_dir, log, api_base=args.api_base)
+    info = build(out_dir, log, api_base=args.api_base, with_pyodide=args.with_pyodide)
     log.info(f"构建完成：{len(info['pages'])} 个页面 -> {out_dir}（{time.time() - started:.2f}s）")
     return 0
 
