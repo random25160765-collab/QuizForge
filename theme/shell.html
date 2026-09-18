@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<meta name="generator" content="quizforge">
+<meta name="generator" content="QuizForge">
 <!--
   主题必须在**样式之前**定下来。
   否则首帧会先用 shell 里写死的 data-theme="dark" 画一屏深色，再被脚本改成
@@ -22,7 +22,9 @@
   })();
 </script>
 <!--@INJECT:BASE@-->
-<title>__QUIZFORGE_TITLE__</title>
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="apple-touch-icon" href="icon-256.png">
+  <title>__QUIZFORGE_TITLE__</title>
 <!--
   样式注入点。
   离线构建塞 <style> 内联，在线构建塞 <link rel=stylesheet>。
@@ -40,10 +42,8 @@
       <span class="brand-mark" aria-hidden="true">
         <svg viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"
              stroke-linecap="round" stroke-linejoin="round">
-          <path d="M5 21 L12 8 L19 21"></path>
-          <path d="M8.2 16.4 h7.6"></path>
-          <path d="M22.5 10.5 v11"></path>
-          <path d="M22.5 21.5 c3.2 0 4.6-1.6 5-4.6"></path>
+          <circle cx="14.4" cy="14.4" r="8.4"></circle>
+          <path d="M20.6 20.6 L26.4 26.4"></path>
         </svg>
       </span>
     </a>

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from .. import __version__
 from .. import ai_gateway as gateway
+from .. import startup as startup_checks
 from ..config import get_settings
 from ..db import get_db
 from ..models import BankVersion, Question, Topic
@@ -87,6 +88,17 @@ def health(db: Session = Depends(get_db)) -> dict:
             ),
         },
     }
+
+
+@router.get("/startup")
+def startup() -> dict:
+    """启动检查（给启动页轮询用）。
+
+    为什么单独一条而不是塞进 `/api/health`：health 是"服务活着吗"（给监控与前端探活），
+    这一条是"**能不能开始用**"（给启动页画进度条与清单）。两者的读者与节奏都不一样：
+    启动页 400 毫秒问一次，health 由前端在启动时问一次。
+    """
+    return startup_checks.report()
 
 
 def _subject_list(db: Session) -> list[dict]:

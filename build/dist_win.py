@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -87,7 +88,12 @@ def main(argv: list[str] | None = None) -> int:
         print(out.strip())
         print(f"打包失败（退出码 {code}）")
         return code
-    print(out.strip()[-3000:])
+
+    # 成功时只留要紧的行：PyInstaller 会打几百行 INFO，而**自检的结论**夹在中间，
+    # 直接 tail 出来的全是它的噪声、"到底过没过"反而看不见（实测撞过好几次）
+    noise = re.compile(r"^\s*\d+\s+(INFO|WARNING|DEBUG):")
+    keep = [line for line in out.splitlines() if line.strip() and not noise.match(line)]
+    print("\n".join(keep))
 
     # ③ 产物归位（桌面 + 仓库的 build/dist/）
     artifact_rel = f"{WIN_HOME}\\dist\\{name}.exe"

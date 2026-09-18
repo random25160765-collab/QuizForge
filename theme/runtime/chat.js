@@ -685,12 +685,11 @@
    * 只取图形、不带那个渐变方块 —— 每条消息旁边都挂一块彩色方块太重了。
    */
   function logoMark() {
-    var box = h('span.chatmsg__logo', { 'aria-label': 'AI', title: 'AI' });
+    var box = h('span.chatmsg__logo', { 'aria-label': 'QuizForge', title: 'QuizForge' });
     box.innerHTML =
       '<svg viewBox="0 0 32 32" width="15" height="15" fill="none" stroke="currentColor" ' +
-      'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">' +
-      '<path d="M5 21 L12 8 L19 21"/><path d="M8.2 16.4 h7.6"/>' +
-      '<path d="M22.5 10.5 v11"/><path d="M22.5 21.5 c3.2 0 4.6-1.6 5-4.6"/></svg>';
+      'stroke-width="2.8" stroke-linecap="round">' +
+      '<circle cx="14.4" cy="14.4" r="8.4"/><path d="M20.6 20.6 L26.4 26.4"/></svg>';
     return box;
   }
 
