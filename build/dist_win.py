@@ -34,38 +34,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import sync_win  # noqa: E402  （同目录的兄弟脚本，复用它的镜像定位与同步）
+from sync_win import _decode, _powershell  # noqa: E402  （共用：GBK 解码与 PowerShell 调用）
 
 ROOT = Path(__file__).resolve().parent.parent
 WIN_HOME = "$env:USERPROFILE\\qf-build"
 DESKTOP_REL = "$env:USERPROFILE\\Desktop"
 
 
-def _decode(raw: bytes) -> str:
-    """Windows 的输出按 **GBK** 先试，再退到 UTF-8。
 
-    别用 `text=True`：那等于告诉 Python"这是 UTF-8" —— 中文区的 Windows 控制台
-    输出的是 GBK，解不动就抛 `UnicodeDecodeError`，而且抛在 `subprocess` 内部，
-    看起来像"打包脚本自己崩了"（实测撞过）。抓字节、自己解，才控制得住。
-    """
-    for encoding in ("utf-8", "gbk", "cp936"):
-        try:
-            return raw.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return raw.decode("utf-8", "replace")
-
-
-def _powershell(script: str, timeout: int = 1800) -> tuple[int, str]:
-    try:
-        proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", script],
-            capture_output=True,
-            cwd="/mnt/c",
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return 1, f"{type(exc).__name__}: {exc}"
-    return proc.returncode, _decode((proc.stdout or b"") + (proc.stderr or b""))
 
 
 def main(argv: list[str] | None = None) -> int:

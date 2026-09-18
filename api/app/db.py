@@ -10,6 +10,8 @@ local-first（2026-09-18 起）：默认是**本机数据目录下的一个 SQLi
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -79,18 +81,89 @@ def _configure_sqlite(engine: Engine) -> None:
         cursor.close()
 
 
+def _run(conn, sql: str):  # noqa: ANN001, ANN202
+    """同一句 SQL 在**两种连接**上都能跑。
+
+    这里有个来回踩的坑，值得写下来：
+
+    * 走 SQLAlchemy 引擎时，`conn.execute("裸字符串")` 在 2.x 上会抛
+      `ObjectNotExecutableError`（要 `text(...)` 或 `exec_driver_sql(...)`）——
+      这个错只在**走引擎**那条路上出现，而它跑在**应用启动**时，
+      于是打包出来的 exe 连界面都起不来（实测撞过）；
+    * 改成 `text(...)` 之后，**文件**那条路（原生 sqlite3 连接）又跑不了了：
+      它不认 TextClause，报 TypeError。
+
+    两种连接唯一的交集是**裸字符串**：SQLAlchemy 用 `exec_driver_sql` 收字符串，
+    原生 sqlite3 用 `execute` 收字符串。所以统一走字符串。
+    """
+    runner = getattr(conn, "exec_driver_sql", None)
+    return (runner or conn.execute)(sql)
+
+
+def _rowid_pk_problems(conn) -> list[str]:  # noqa: ANN001
+    """SQLite 的自增主键体检：**必须是 `INTEGER PRIMARY KEY`**。
+
+    ## 为什么要专门盯这一条
+
+    SQLite 把 `INTEGER PRIMARY KEY` 当作 rowid 别名，插入时自动给值；
+    `BIGINT PRIMARY KEY` 建得出来、也能存，但**不会自增** —— 插入时不给 id 就报
+    `NOT NULL constraint failed: <表>.id`。
+
+    我们踩过这个坑，而且踩得很隐蔽：`messages.id` 原先是 `BigInteger`
+    （从 Postgres 那边沿袭的），改成 `BigInteger().with_variant(Integer, "sqlite")`
+    之后，**新建的库**是对的、**已有的库**还是旧的 —— 而 `create_all` 不会改已有表，
+    测试又每次建新库，于是"用例全绿、发出去的包一用就炸"。
+
+    所以这里只做**只读体检**，把话说在前面：真出问题时一眼看得出来。
+    （修法是重建库：`python3 tools/migrate_to_local.py`。SQLite 改不了列类型。）
+    """
+    problems: list[str] = []
+    tables = [
+        row[0]
+        for row in _run(conn, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    ]
+    for table in tables:
+        primary = [row for row in _run(conn, f'PRAGMA table_info("{table}")') if row[5]]
+        if len(primary) != 1:
+            continue  # 复合主键 / 没有主键：不适用这条规则
+        name, declared = str(primary[0][1]), str(primary[0][2] or "").upper()
+        # 只管**整数**主键；文本主键（questions.id 这类）本来就不该自增
+        if "INT" in declared and declared != "INTEGER":
+            problems.append(f"{table}.{name} 声明成 {declared}（只有 INTEGER 才能在 SQLite 上自增）")
+    return problems
+
+
+def sqlite_rowid_pk_problems(db_path: Path) -> list[str]:
+    """对**库文件**做同一次体检（给打包自检用：它不启动应用，只看文件）。"""
+    if not db_path.is_file():
+        return []
+    with sqlite3.connect(str(db_path)) as conn:
+        return _rowid_pk_problems(conn)
+
+
 def ensure_schema(engine: Engine) -> None:
-    """把表建出来（幂等）。
+    """把表建出来（幂等），并**当场**报告库结构问题。
 
     **local-first 之后不再有迁移链**：库就是本机一个文件，第一次运行时它还不存在，
     按模型建表即可 —— 这才是"双击即用"，不该让用户先跑一遍 `alembic upgrade head`。
 
-    真要改结构时（比如给已有用户的库加一列），在这里补一段按版本号判断的逻辑，
-    版本号写在 `meta_documents`（`schema_version`）里 —— 表不用新加。
+    建完顺手体检一次（只读）：`create_all` **不会**改已有的表，
+    所以"库里是旧结构"这件事必须现在说 —— 否则表现是"过一会儿某个写操作
+    报 IntegrityError"（`messages.id` 那次就是这么炸的）。
     """
     from . import models  # noqa: F401, PLC0415 —— 必须先导入模型，metadata 里才有表
 
     Base.metadata.create_all(engine)
+
+    if engine.dialect.name == "sqlite":
+        with engine.connect() as conn:
+            problems = _rowid_pk_problems(conn)
+        if problems:
+            logging.getLogger("quizforge").warning(
+                "库结构是旧的：%s。这意味着写过会失败 —— 重建一份："
+                "python3 tools/migrate_to_local.py（SQLite 改不了列类型）",
+                "；".join(problems),
+            )
 
 
 def get_engine() -> Engine:
