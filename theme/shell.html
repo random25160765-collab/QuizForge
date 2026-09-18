@@ -50,6 +50,11 @@
 
     <nav class="mainnav" id="mainnav" aria-label="主导航"></nav>
 
+    <!-- 工具挂载：亮起＝AI 能调这一块，熄灭＝两边各自独立，全部熄灭＝极简聊天模式。
+         它管的是"AI 能碰到什么"，与上面那排页面导航是两回事，所以单独一组。
+         内容由运行时脚本 mounts.js 填充（新增脚本已登记 RUNTIME_ORDER）。 -->
+    <div class="hubs" id="tool-hubs" role="group" aria-label="工具挂载"></div>
+
     <div class="topbar-actions">
       <!-- 同步异常提示。正常同步时整块不渲染 ——
            跨设备场景下用户需要知道的只有「出问题了」，不是「正在同步」。 -->
