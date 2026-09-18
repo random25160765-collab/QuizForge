@@ -6,11 +6,429 @@
  *  3. 层级靠"留白 + 发丝线 + 次级文字色"表达，不靠色块与阴影堆叠。
  */
 
+/* 铺满：这一页是**应用面**，不是一篇文章。
+ *
+ * 上一版被 `app.css` 的 `.view { max-width: 1280px }` 套住，两边各留一条空白、
+ * 中间还是空的 —— 看着就像坏了。这里显式取消那条约束（`.view` 不在这一页也算无事）。 */
+body[data-page='notes'] .view {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: calc(100vh - var(--topbar-h, 58px));
+}
+
 .notes {
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr) 304px;
-  height: calc(100vh - var(--topbar-h, 48px) - var(--statusbar-h, 26px));
+  /* 图标栏 / 文件面板 / 正文 / 侧栏 —— 与 Obsidian 同一套骨架 */
+  grid-template-columns: 46px 252px minmax(0, 1fr) 304px;
+  height: calc(100vh - var(--topbar-h, 58px));
   min-height: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.notes[data-side='closed'] {
+  grid-template-columns: 46px 252px minmax(0, 1fr) 0;
+}
+
+.notes[data-side='closed'] .nside {
+  display: none;
+}
+
+/* ============================================================ 外框
+ *
+ * 图标栏 / 文件面板 / 标签页 / 面包屑 / 状态栏 / 侧栏 —— 照 Obsidian 的骨架，
+ * 颜色与圆角一律走 app.css 的令牌，不新造配色。
+ * 密度按"一天要在这里读几百行"来定：行高 26，字号 12.5，留白靠间距不靠边框。
+ */
+
+.nribbon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
+}
+
+.nribbon__btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.nribbon__btn:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.nribbon__btn.is-on {
+  color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+}
+
+.nribbon__btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.nribbon__sp {
+  flex: 1;
+}
+
+.nicon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  color: var(--fg2);
+  background: var(--bg3);
+  border: 0;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.nicon:hover {
+  color: var(--fg);
+  filter: brightness(1.15);
+}
+
+.nicon--mini {
+  width: 24px;
+  height: 24px;
+  font-size: 13px;
+}
+
+/* ---- 文件面板 ---- */
+
+.nfiles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg2);
+  border-right: 1px solid var(--line);
+}
+
+.nfiles__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 6px;
+}
+
+.nfiles__lib {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  color: var(--fg);
+  background: var(--bg3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.nfiles__lib:focus {
+  outline: none;
+  border-color: var(--pri);
+}
+
+.nfiles__searchrow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 8px;
+}
+
+.nfiles__search {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  color: var(--fg);
+  background: var(--bg3);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 12px;
+}
+
+.nfiles__search:focus {
+  outline: none;
+  border-color: var(--pri);
+}
+
+.nfiles__search::placeholder {
+  color: var(--fg3);
+}
+
+.nfiles__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 6px 12px;
+}
+
+.nfiles__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.nfiles__vault {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--fg3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 主区：标签页 / 面包屑 / 正文 / 状态栏 ---- */
+
+.nmain {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.ntabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 6px 8px 0;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+}
+
+.ntab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 6px 6px 6px 10px;
+  color: var(--fg2);
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ntab:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.ntab.is-on {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+.ntab__label {
+  max-width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ntab__x {
+  color: var(--fg3);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.ntab__x:hover {
+  color: var(--bad);
+}
+
+.ntabs__sp {
+  flex: 1;
+  min-width: 8px;
+  align-self: stretch;
+}
+
+.ntabs__tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-bottom: 6px;
+}
+
+.ncrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  min-height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.ncrumb__path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* 编辑态那行标题：它只是"我在写哪篇"，不要跟正文抢高度 */
+.nbody__slim .note__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.nbody__tags,
+.nread__inner .nbody__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: -14px 0 20px;
+}
+
+/* 树的头部（条目数 + 展开/收起）跟着滚动走会找不到，钉住 */
+.ntree__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg2);
+}
+
+.ncrumb__seg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ncrumb__seg--last {
+  color: var(--fg);
+}
+
+.ncrumb__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex: none;
+}
+
+.nbody {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 编辑态用的细标题行：只占一行，正文那半边全部留给写 */
+.nbody__slim {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex: none;
+  padding: 14px 18px 0;
+}
+
+.nstatus {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+  min-height: 28px;
+  padding: 0 14px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+.nstatus__sp {
+  flex: 1;
+}
+
+/* ---- 侧栏：一次一个面板（与 Obsidian 的右侧栏一致）---- */
+
+.nside {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--bg2);
+  border-left: 1px solid var(--line);
+}
+
+.nside__head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.nside__tabs {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.nside__tab {
+  padding: 5px 9px;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.nside__tab:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.nside__tab.is-on {
+  color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+}
+
+.nside__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
 }
 
 /* ============================================================ 通用小件 */
@@ -990,6 +1408,364 @@
   .nsplit__half--src {
     display: none;
   }
+}
+
+/* ============================================================ 六条修正
+ *
+ * 1. **底栏钉在屏幕下沿**：整页不再滚，滚的只有正文那一块。
+ *    上一版没显式关掉页面滚动，于是状态栏跟着内容走，要拉到最底才看得见。
+ * 2. 阅读列宽默认 92 字（原先 72 太窄，长句要折两次）。
+ * 3. 树的每一层一条发丝竖线 —— 只靠留白，深目录里会糊成一片。
+ * 4. 编辑工具图标化（原文案十三个词横排，抢的正是正文最上面那一行）。
+ * 5. callout 按类型上色（渲染器只认成普通引用，形状在这里补）。
+ */
+
+body[data-page='notes'] {
+  overflow: hidden;
+}
+
+.notes,
+.nmain {
+  overflow: hidden;
+}
+
+.nfiles,
+.nmain,
+.nbody,
+.note__pane,
+.nsplit__half,
+.nread,
+.nside {
+  min-height: 0;
+}
+
+.note__pane {
+  flex: 1 1 auto;
+}
+
+.nread__inner {
+  max-width: var(--notes-width, 92ch);
+}
+
+/* ---- 树的分层竖线 ---- */
+
+.ntree__dir,
+.ntree__file {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ntree__indents {
+  display: flex;
+  align-self: stretch;
+  flex: none;
+}
+
+.ntree__indent {
+  width: 13px;
+  flex: none;
+  border-left: 1px solid var(--line);
+}
+
+/* ---- 编辑工具：图标 ---- */
+
+.nedit__btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  color: var(--fg2);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.nedit__btn:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.nedit__btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.nedit__sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 5px;
+  background: var(--line);
+}
+
+/* ---- 提示框：照 Obsidian 的默认主题 ----
+ *
+ * 规格来自参考页（"Callouts - Obsidian Help"）与实际主题：
+ * 底色 = 类型色 10%、边框 = 类型色 25%、圆角 4px、内边距 12px、标题用类型色。
+ * 图标取参考页里的 Lucide 内联 SVG（描边 2、1em 大小）。
+ * 关键在于**每类一个颜色** —— note 蓝、tip 青、warning 黄、danger 红、example 紫、quote 灰，
+ * 一眼就能分出是哪一类；上一版全是一个色系，等于没有类型。
+ */
+
+.callout {
+  --accent: #086ddd;
+
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 4px;
+}
+
+/* 各类的主色（Obsidian 默认主题的 --callout-*） */
+.callout--note { --accent: #086ddd; }
+.callout--abstract { --accent: #00bfbc; }
+.callout--info { --accent: #086ddd; }
+.callout--todo { --accent: #086ddd; }
+.callout--tip { --accent: #00bfbc; }
+.callout--success { --accent: #08b94e; }
+.callout--question { --accent: #ec7500; }
+.callout--warning { --accent: #e0ac00; }
+.callout--failure { --accent: #e93147; }
+.callout--danger { --accent: #e93147; }
+.callout--bug { --accent: #e93147; }
+.callout--example { --accent: #7852ee; }
+.callout--quote { --accent: #9e9e9e; }
+
+.callout__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 0.95em;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--accent);
+}
+
+.callout__content {
+  margin-top: 8px;
+}
+
+.callout__content > *:last-child {
+  margin-bottom: 0;
+}
+
+.callout__icon {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.callout__icon svg {
+  width: 1em;
+  height: 1em;
+}
+
+/* 可折叠：`[!note]-` 默认收起、`[!note]+` 默认展开，点标题切 */
+.callout--foldable .callout__title {
+  cursor: pointer;
+}
+
+.callout--foldable .callout__title::after {
+  content: '▸';
+  margin-left: 2px;
+  color: var(--fg3);
+  font-weight: 400;
+  transition: transform var(--dur) var(--ease);
+}
+
+.callout--foldable:not(.is-folded) .callout__title::after {
+  transform: rotate(90deg);
+}
+
+.callout.is-folded .callout__content {
+  display: none;
+}
+
+/* ============================================================ 正文排版
+ *
+ * 这一半是"读"的地方。上一版失败在两点：**没有列宽**（一行铺满 900px，眼睛回不到下行）
+ * 与**没有标题层级**（H1 与正文一样大，扫不出结构）。这里按 Obsidian 的处理：
+ * 居中一列、上下留足、标题分三级、行内代码与标签有形状。
+ * 字号/行距/行宽仍走 `--notes-*` 那四个变量（右栏「排版」面板可调）。
+ */
+
+.nread {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.nread__inner {
+  max-width: var(--notes-width, 74ch);
+  margin: 0 auto;
+  padding: 34px 30px 96px;
+  color: var(--fg);
+}
+
+.nread__inner > *:first-child {
+  margin-top: 0;
+}
+
+/* 文档第一个标题就是"这篇叫什么"：给到跟 Obsidian 一样的体量 */
+.nread__inner h1 {
+  margin: 0 0 20px;
+  font-size: 1.75em;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.nread__inner h2 {
+  margin: 34px 0 12px;
+  font-size: 1.34em;
+  font-weight: 620;
+  line-height: 1.4;
+}
+
+.nread__inner h3 {
+  margin: 26px 0 8px;
+  font-size: 1.12em;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.nread__inner h4,
+.nread__inner h5,
+.nread__inner h6 {
+  margin: 20px 0 6px;
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--fg2);
+}
+
+.nread__inner p {
+  margin: 0 0 14px;
+}
+
+.nread__inner ul,
+.nread__inner ol {
+  margin: 0 0 14px;
+  padding-left: 1.5em;
+}
+
+.nread__inner li {
+  margin: 4px 0;
+}
+
+.nread__inner li::marker {
+  color: var(--fg3);
+}
+
+.nread__inner blockquote {
+  margin: 0 0 14px;
+  padding: 2px 0 2px 14px;
+  color: var(--fg2);
+  border-left: 2px solid var(--line-strong);
+}
+
+.nread__inner code {
+  padding: 0.12em 0.36em;
+  font-family: var(--notes-mono, var(--font-mono, monospace));
+  font-size: 0.9em;
+  background: var(--bg3);
+  border-radius: 5px;
+}
+
+.nread__inner pre {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  overflow: auto;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+.nread__inner pre code {
+  padding: 0;
+  background: none;
+}
+
+.nread__inner table {
+  width: 100%;
+  margin: 0 0 16px;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.nread__inner th,
+.nread__inner td {
+  padding: 7px 10px;
+  text-align: left;
+  border: 1px solid var(--line);
+}
+
+.nread__inner th {
+  background: var(--bg2);
+  font-weight: 600;
+}
+
+.nread__inner hr {
+  margin: 26px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.nread__inner img {
+  max-width: 100%;
+  border-radius: var(--r-sm);
+}
+
+/* 公式：给它自己的空间与呼吸，别跟正文挤在一起 */
+.nread__inner .math,
+.nread__inner .katex-display,
+.nread__inner mjx-container[display='true'] {
+  margin: 18px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* 提示框（Obsidian 的 callout）：源里写 `> [!note]`，渲染后落成这个形状 */
+.nread__inner .callout {
+  margin: 16px 0;
+  padding: 12px 16px;
+  background: color-mix(in srgb, var(--pri) 9%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pri) 26%, transparent);
+  border-radius: var(--r-md);
+}
+
+.nread__inner .callout > *:last-child {
+  margin-bottom: 0;
+}
+
+/* 标签与双链：药丸与小圆点，扫一眼就分得清"这是引用"还是"这是分类" */
+.ntag {
+  display: inline-block;
+  padding: 0.06em 0.5em;
+  margin: 0 2px;
+  font-size: 0.86em;
+  color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.ntag:hover {
+  background: color-mix(in srgb, var(--pri) 20%, transparent);
+}
+
+/* 空态与画布占位：居中一块，别贴左上角 */
+.nempty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100%;
+  padding: 40px;
+  text-align: center;
 }
 
 /* ============================================================ 与 Trilium 对齐的那几件

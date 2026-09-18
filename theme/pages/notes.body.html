@@ -1,33 +1,46 @@
 <!--
-  笔记：三栏写作台 —— 左是树与检索，中是**能写的地方**（阅读 / 分栏 / 编辑 / 大纲），
-  右是属性、大纲导航、反链与改动历史。
+  笔记：写作台。布局照 Obsidian —— **左边一条图标栏，然后文件面板，右边是正文，最右是可选侧栏**；
+  正文有自己的标签页栏与面包屑，底部一条状态栏。
 
-  为什么另开一页：这一页是"笔记"，与刷题页那几个 hash 视图不是一回事；和 graph / chat
-  一样走独立页，顶栏由 shell.js 统一接线。
+  为什么不是"三栏 + 文章容器"：
+  * 这一页是**应用面**，不是一篇文档 —— 浏览器多宽它就该多宽。上一版被页面的居中容器
+    （`app.css` 的 `.view { max-width: 1280px }`）套住，两边各留一大条空白，
+    中间还空着，看着像坏了。`notes.css` 里显式取消了那条约束。
+  * 标签页与面包屑是这个体量下**必须**的东西：库里 91 篇、目录四五层，
+    没有"我开过哪几篇、现在这篇在哪一层"，来回找文件会把人磨死。
 
   `data-page` 必须写：页面级样式与顶栏图标隐藏都靠它（见 app.css 的 body[data-page] 规则）。
 -->
 <div id="app-root" data-page="notes">
-  <div class="notes" id="notes-root">
-    <aside class="notes__aside">
-      <div class="notes__asidehead">
-        <div class="notes__librow">
-          <select class="notes__lib" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
-          <button class="nbtn nbtn--primary" id="notes-new" type="button" title="新建笔记（⌘N）"
-                  aria-label="新建笔记">＋</button>
-        </div>
-        <div class="notes__searchrow">
-          <input class="notes__search" id="notes-search" type="search" placeholder="搜索全文…"
-                 autocomplete="off" spellcheck="false" aria-label="搜索全文">
-          <button class="nbtn" id="notes-clear" type="button" title="清空检索" aria-label="清空检索"
-                  hidden>×</button>
-        </div>
+  <div class="notes" id="notes-root" data-side="open">
+    <!-- 图标栏：窄，只放图标；由 notes.js 填充（大纲 / 反链 / 属性 / 历史 / 排版） -->
+    <nav class="nribbon" id="notes-ribbon" aria-label="笔记工具"></nav>
+
+    <!-- 文件面板：库 → 搜索 → 树 → 页脚（库名与设置） -->
+    <aside class="nfiles" id="notes-files" aria-label="笔记列表">
+      <header class="nfiles__head">
+        <select class="nfiles__lib" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
+        <button class="nicon" id="notes-new" type="button" title="新建笔记（⌘O 同级 / ⌘P 子级）"
+                aria-label="新建笔记">＋</button>
+      </header>
+      <div class="nfiles__searchrow">
+        <input class="nfiles__search" id="notes-search" type="search" placeholder="搜索…（支持 #标签 / title: / -词）"
+               autocomplete="off" spellcheck="false" aria-label="搜索笔记">
+        <button class="nicon nicon--mini" id="notes-clear" type="button" title="清空检索"
+                aria-label="清空检索" hidden>×</button>
       </div>
-      <div class="notes__scroll" id="notes-tree" role="tree"></div>
+      <div class="nfiles__scroll" id="notes-tree" role="tree"></div>
+      <footer class="nfiles__foot">
+        <span class="nfiles__vault" id="notes-vault">—</span>
+        <button class="nicon nicon--mini" id="notes-collapse" type="button" title="全部展开 / 收起"
+                aria-label="全部展开或收起">⇅</button>
+      </footer>
     </aside>
 
-    <main class="notes__main" id="notes-main"></main>
+    <!-- 主区：标签页 / 面包屑 / 正文 / 状态栏，全部由 notes.js 渲染 -->
+    <main class="nmain" id="notes-main"></main>
 
-    <aside class="notes__side" id="notes-side"></aside>
+    <!-- 右侧栏：一次显示一个面板（大纲 / 反链 / 属性 / 历史 / 排版） -->
+    <aside class="nside" id="notes-side" aria-label="笔记侧栏"></aside>
   </div>
 </div>
