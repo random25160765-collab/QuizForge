@@ -72,6 +72,17 @@
        可整体收起（body[data-side] 控制宽度，见 pane.css 的外壳一节）。 -->
   <aside class="side" aria-label="资源">
     <div class="side__head">
+      <!-- 品牌放在资源栏顶上（参考图里的 VS Code 也是这样）：
+           顶栏于是从内容左边缘开始，练习中心那排按钮能与下面对齐 -->
+      <a class="brand side__brand" href="index.html" aria-label="QuizForge 首页" title="返回首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"
+               stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="14.4" cy="14.4" r="8.4"></circle>
+            <path d="M20.6 20.6 L26.4 26.4"></path>
+          </svg>
+        </span>
+      </a>
       <span class="side__title" id="side-title">资源</span>
       <button class="side__fold" id="side-fold" type="button" title="收起资源栏（Alt+B）" aria-label="收起资源栏">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"
@@ -92,16 +103,6 @@
          登录/退出的跳转随"单用户本地"一起没了，这里也不再有那排页面按钮。 -->
     <header class="topbar" role="banner">
       <div class="topbar-inner">
-        <a class="brand" href="index.html" aria-label="QuizForge 首页" title="返回首页">
-          <span class="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 32 32" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"
-                 stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="14.4" cy="14.4" r="8.4"></circle>
-              <path d="M20.6 20.6 L26.4 26.4"></path>
-            </svg>
-          </span>
-        </a>
-
         <nav class="mainnav" id="mainnav" aria-label="主导航"></nav>
 
         <div class="topbar-actions">

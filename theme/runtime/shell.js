@@ -32,6 +32,9 @@
     { view: 'practice', label: '练习', icon: 'play' },
     { view: 'paper', label: '组卷', icon: 'list' },
     { view: 'review', label: '复习', icon: 'refresh', badge: true },
+    // 题库图谱归练习中心：它不是一个独立去处，而是"练什么"的一部分。
+    // 带 href 的项渲染成链接（图谱有自己的页面），其余三项是原地切视图。
+    { view: 'graph', label: '图谱', icon: 'target', href: 'graph.html' },
   ];
 
   /* ------------------------------------------------------------ 活动栏 */
@@ -40,12 +43,11 @@
      顶栏于是能瘦下来，把位置让给"打开的标签"。 */
   var RAIL = [
     { key: 'side', label: '资源', icon: 'grip', hint: '收起 / 展开资源栏（Alt+B）' },
-    { href: 'quiz.html', label: '练习中心', icon: 'play', page: 'quiz',
-      hint: '练习 · 组卷 · 复习 · 题库图谱' },
+    { href: 'quiz.html', label: '练习中心', icon: 'play', pages: ['quiz', 'graph'],
+      hint: '练习 · 组卷 · 复习 · 图谱' },
     { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
     { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
     { href: 'notes.html', label: '文档', icon: 'list', page: 'notes' },
-    { href: 'graph.html', label: '题库图谱', icon: 'target', page: 'graph' },
     { href: 'wrongbook.html', label: '错题本', icon: 'flag', page: 'wrongbook' },
   ];
 
@@ -72,7 +74,9 @@
         title: item.label + ' · ' + item.hint, 'aria-label': item.label });
     } else {
       // 当前页**高亮**而不是隐藏：图标条上少一个图标，比"点了没反应"更让人困惑
-      node = h('a.rail__btn' + (page === item.page ? '.is-active' : ''),
+      // 一个条目可以对应多个页面（练习中心就兼着图谱页）
+      var on = item.pages ? item.pages.indexOf(page) >= 0 : page === item.page;
+      node = h('a.rail__btn' + (on ? '.is-active' : ''),
         { href: item.href, title: item.label + (item.hint ? ' · ' + item.hint : ''), 'aria-label': item.label });
     }
     node.innerHTML = ui.icon(item.icon, 17);
@@ -124,7 +128,8 @@
       var due = store && store.dueIds ? store.dueIds().length : 0;
       if (due) nodes.push(h('span.nav-item__badge', { text: String(due) }));
     }
-    if (opts.onPick) {
+    // 带 href 的项一律是链接（如"图谱"另有一页）；其余按调用方给不给 onPick 决定
+    if (opts.onPick && !item.href) {
       return h('button', {
         type: 'button',
         class: 'nav-item' + (active ? ' is-active' : ''),
@@ -133,8 +138,9 @@
       }, nodes);
     }
     return h('a', {
-      class: 'nav-item' + (active ? ' is-active' : ''),
-      href: hrefFor(item.view),
+      class: 'nav-item' + (active ? ' is-active' : '') + (item.href ? ' nav-item--link' : ''),
+      href: item.href || hrefFor(item.view),
+      'aria-current': active ? 'page' : null,
     }, nodes);
   }
 
@@ -142,11 +148,11 @@
     var nav = document.getElementById('mainnav');
     if (!nav) return;
     ui.clear(nav);
-    // 只有练习中心会给 `onPick`（它要原地切视图）。别的页面这一栏**留空** ——
-    // 那四个是练习中心**内部**的分段，不该出现在每页顶栏上：
+    // 只有练习中心那一族会给出 `view`（刷题页给 view + onPick，图谱页只给 view）。
+    // 别的页面这一栏**留空** —— 这几个是练习中心**内部**的分段，不该出现在每页顶栏上：
     // 顶栏曾经在八个页面里都摆着"工作台/练习/组卷/复习"，而活动栏上还有一个入口，
     // 同一件事出现两遍就是这个毛病。
-    if (!opts || !opts.onPick) {
+    if (!opts || !opts.view) {
       nav.hidden = true;
       return;
     }
