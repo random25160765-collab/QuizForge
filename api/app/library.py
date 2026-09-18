@@ -47,9 +47,61 @@ SKIP_DIRS = frozenset({".git", ".svn", "__pycache__", ".obsidian", ".trash", ".t
 #: 不给当条目看的文件（中间产物）。
 SKIP_SUFFIXES = frozenset({".pyc", ".pyo", ".class", ".o", ".so", ".dll", ".dylib", ".lock", ".tmp", ".swp"})
 
-#: 主文件类型 → 条目类别。其余一律 `other`（不丢，只是没话好说）。
+#: 条目类别的**唯一出处**：提示词（`pipeline/prompts/doc_classify.md`）、
+#: 模型返回的校验（`pipeline/doc_classify.py`）与界面标签都从它来。
+#: 为什么必须只有一处：加了新类别却漏改一处，就会出现"模型选了但被判成非法"这种事，
+#: 而且现象很难查（模型没错、校验说错）。
+KINDS = (
+    "paper",     # 学术论文、预印本
+    "manual",    # 手册与指南：编程指南、最佳实践、用户手册
+    "spec",      # 规范与标准：IEEE / IEC / 厂商官方规范
+    "report",    # 报告与白皮书
+    "book",      # 书与教材
+    "slides",    # 幻灯片与课件
+    "webpage",   # 网页文档
+    "blog",      # 博客与随笔
+    "code",      # 代码与脚本
+    "note",      # 笔记
+    "other",     # 以上都不是
+)
+
+#: 类别的中文名（界面用）。
+KIND_LABEL = {
+    "paper": "论文",
+    "manual": "手册",
+    "spec": "规范",
+    "report": "报告",
+    "book": "书",
+    "slides": "幻灯片",
+    "webpage": "网页",
+    "blog": "博客",
+    "code": "代码",
+    "note": "笔记",
+    "other": "其他",
+}
+
+#: 文件名的类别线索（确定性、零成本）。**实测这个库里最管用的一步**：
+#: `cuda-programming-guide.pdf`、`ptx_isa_9.3.pdf`、`IEEE.1364-2005.pdf` 这类名字
+#: 已经把类型写在脸上了，先按它判一道，模型只需处理剩下的。
+#: 顺序有讲究：越具体的放前面（`whitepaper` 先于 `report`）。
+KIND_HINTS: tuple[tuple[str, str], ...] = (
+    (r"specification|\bspec\b|standard|\bieee\b|\biec\b|\bisa\b|\bstd\b|指令集|规范|标准", "spec"),
+    (r"whitepaper|white[_-]?paper|白皮书", "report"),
+    (r"programming[_-]?guide|best[_-]?practices|user[_-]?guide|\bmanual\b|\bguide\b|tutorial|handbook|手册|指南|入门", "manual"),
+    # 注意：探测串里的 `-` `_` `.` 已被归一成空格，所以这里写 `eecs\s*\d` 而不是 `eecs-\d`
+    (r"\breport\b|eecs\s*\d|报告", "report"),
+    (r"slides|lecture|课件|讲义|ppt", "slides"),
+    (r"\bbook\b|textbook|教材|专著|教程", "book"),
+    (r"\bblog\b|博客", "blog"),
+)
+
+#: 主文件类型 → 条目类别（**只按后缀能确定的那些**）。其余一律 `other`。
+#:
+#: 注意 `.pdf` 落在这里的 `other` 而不是 `paper` —— 这是用户点出来的一处错：
+#: 实测这个库里大量是技术文档（芯片手册、指令集规范、编程指南），一律标"论文"是错的。
+#: 类型交给"文件名线索 → 模型判 → 人复核"三步，而不是靠后缀赌一个。
 KIND_BY_SUFFIX = {
-    ".pdf": "paper",
+    ".pdf": "other",
     ".md": "note",
     ".markdown": "note",
     ".txt": "note",
@@ -160,6 +212,10 @@ class Entry:
     meta: dict[str, Any] = field(default_factory=dict)
     assets: list[Path] = field(default_factory=list)
     text_state: dict[str, Any] = field(default_factory=dict)
+    #: 这份条目有没有**冻结过的元数据**（`data/library/*.yaml` 里认得到它）。
+    #: 索引要不要跳过它，看的是这个，而不是"键在不在已知表里" —— 两者会分家：
+    #: 撞键被改名的那一份，键不在表里、但元数据确实冻结过（实测因此反复重抓）。
+    frozen: bool = False
 
     @property
     def citekey(self) -> str:
@@ -187,6 +243,8 @@ class Entry:
                 # **"没抓过" 与 "抓过没有正文" 是两件事**（md / py 这类本来就抽不出东西）。
                 # 不带这个标记的话，界面会把已经试过的条目一直显示成"未抓"。
                 "attempted": bool(self.text_state.get("at")),
+                "words": float(self.text_state.get("words") or 0.0),
+                "odd": float(self.text_state.get("odd") or 0.0),
             },
             "arxiv": str(self.meta.get("arxiv") or ""),
         }
@@ -325,6 +383,19 @@ def _looks_like_a_person(piece: str) -> bool:
 # ------------------------------------------------------------------ 元数据推断
 
 
+def _kind_hint(stem: str) -> str:
+    """文件名能不能看出类别。看不出返回空串（**不要瞎猜一个**）。
+
+    匹配前把 `_` `-` `.` 归一成空格：正则里 `_` 算词字符，`ptx_isa_9.3` 里的 `isa`
+    因此匹配不上 `\bisa\b` —— 实测就是这么漏判了一份规范。
+    """
+    probe = re.sub(r"[_\-.]+", " ", stem)
+    for pattern, kind in KIND_HINTS:
+        if re.search(pattern, probe, re.IGNORECASE):
+            return kind
+    return ""
+
+
 def _pretty(stem: str) -> str:
     """文件名 → 能读的标题：去掉版本尾巴、把连字符与下划线换成空格。"""
     text = re.sub(r"[_-]+", " ", stem)
@@ -339,7 +410,7 @@ def infer(item: Item, *, head_text: str = "") -> dict[str, Any]:
 
     调用方只在该文件正文抽取可用时才传 `head_text`（见 `head_text_for`）。
     """
-    meta: dict[str, Any] = {"kind": item.kind, "origin": "inferred"}
+    meta: dict[str, Any] = {"kind": _kind_hint(item.stem) or item.kind, "origin": "inferred"}
     title = ""
     authors: list[str] = []
 
@@ -383,13 +454,15 @@ def infer(item: Item, *, head_text: str = "") -> dict[str, Any]:
                     break
                 pieces.insert(0, re.sub(r"\s+", " ", lines[index]))
                 index -= 1
-            title = " ".join(pieces)[:180]
+            title = re.sub(r"\s+", " ", " ".join(pieces)).lstrip("#>*-").strip()[:180]
         if not title:
             for line in lines[:14]:
                 if line.startswith(("http", "arXiv:", "doi:")):
                     continue
                 if _looks_like_prose(line) and not _looks_like_authors(line):
-                    title = re.sub(r"\s+", " ", line)[:180]
+                    # 剥掉行首的 Markdown 记号：实测 md 文件被当成"首页正文"喂进来时，
+                    # 标题取成了 `# Layout polynomials`（那个 `#` 不该进标题）
+                    title = re.sub(r"\s+", " ", line.lstrip("#>*-").strip())[:180]
                     break
 
     if title:
@@ -813,20 +886,30 @@ def entry_for(item: Item, meta_dir: Path, text_dir: Path, meta: dict[str, Any] |
 def entries(roots: list[Path], meta_dir: Path, text_dir: Path) -> list[Entry]:
     """所有根下的所有条目。引用键冲突时加后缀（`-2`），不让两个条目共用一个键。"""
     by_key, by_source = metadata_index(meta_dir)
-    taken: set[str] = set()
     out: list[Entry] = []
     for root in roots:
         for item in scan(Path(root)):
             # 先按**路径**认（键是冻结的，跟临时猜的未必一样）；认不到再按键认一次。
             meta = by_source.get(str(item.path)) or by_key.get(citekey_for(infer(item), fallback=item.rel))
             entry = entry_for(item, meta_dir, text_dir, meta=meta)
-            key = entry.meta["citekey"]
-            fixed = disambiguate(key, item.rel, taken)
-            if fixed != key:
-                key = fixed
-                entry.meta["citekey"] = key
-            taken.add(key)
+            entry.frozen = meta is not None
             out.append(entry)
+
+    # **冻结过的键先占位**：它是"有主"的，不能被后来的条目挤掉。
+    # 踩过：一份手册的键先被旁边的中文版占了，于是它每轮都被改名一次 ——
+    # 改完的键在已知表里找不到，索引就一遍遍重抓它（"还剩 0"却永远抓不完）。
+    taken: dict[str, Entry] = {}
+    for entry in out:
+        if entry.frozen:
+            taken.setdefault(entry.citekey, entry)
+    for entry in out:
+        if taken.get(entry.citekey) is entry:
+            continue
+        key = str(entry.meta["citekey"])
+        fixed = disambiguate(key, entry.item.rel, taken)
+        if fixed != key:
+            entry.meta["citekey"] = fixed
+        taken.setdefault(fixed, entry)
     return out
 
 
@@ -910,6 +993,9 @@ __all__ = [
     "Entry",
     "Item",
     "KIND_BY_SUFFIX",
+    "KIND_HINTS",
+    "KIND_LABEL",
+    "KINDS",
     "LibraryError",
     "SKIP_DIRS",
     "TEXT_DIR",

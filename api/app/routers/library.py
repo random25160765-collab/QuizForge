@@ -155,6 +155,61 @@ def items(user: CurrentUser, db: DbSession, q: str = "", limit: int = 200) -> di
     return {"items": listed[: max(1, min(limit, 1000))], "count": len(listed)}
 
 
+def _classifier():
+    """拿 `pipeline.doc_classify`。
+
+    惰性导入（与笔记那套建议 `_suggester` 一样）：这一层依赖模型客户端，
+    而 `/roots`、`/items` 这些纯本地读的接口不该因为它而变慢或者起不来。
+    """
+    from pipeline import doc_classify  # noqa: PLC0415
+
+    return doc_classify
+
+
+@router.get("/kinds")
+def kinds() -> dict:
+    """类别表。**界面标签从这里取**，别在前端再抄一份 —— 抄一份就会有一天对不上。"""
+    return {"kinds": [{"key": key, "label": lib.KIND_LABEL.get(key, key)} for key in lib.KINDS]}
+
+
+@router.get("/classify/candidates")
+def classify_candidates(user: CurrentUser, db: DbSession, limit: int = 24) -> dict:
+    """哪些条目该归类（人定过、模型定过的不在里面）。只读清单，不调模型。"""
+    roots = roots_for(_settings_row(db, user.id))
+    module = _classifier()
+    picked = module.pick_candidates(roots, _meta_dir(), _text_dir(), limit=max(1, min(limit, 100)))
+    return {
+        "items": [
+            {k: one[k] for k in ("citekey", "rel", "title", "kind", "topics", "year")} for one in picked
+        ],
+        "count": len(picked),
+    }
+
+
+@router.post("/classify")
+async def classify(body: dict, user: CurrentUser, db: DbSession) -> dict:
+    """让模型判类型与主题。**只调模型、不落盘** —— 落盘要人点「接受」。"""
+    roots = roots_for(_settings_row(db, user.id))
+    citekeys = [str(item) for item in (body.get("citekeys") or []) if str(item).strip()]
+    module = _classifier()
+    try:
+        return await module.classify(roots, _meta_dir(), _text_dir(), citekeys)
+    except Exception as exc:  # noqa: BLE001 - 模型侧什么都可能抛（没配密钥、超时、额度）
+        raise HTTPException(status_code=502, detail=f"模型没能给出归类：{str(exc)[:200]}") from exc
+
+
+@router.post("/classify/apply")
+def classify_apply(body: dict) -> dict:
+    """把**被接受的那几条**写进元数据（记为 `origin: llm`）。
+
+    人定过的（`manual`）在这里会被再挡一次 —— 一次模型调用不该冲掉人手填的东西。
+    """
+    items = body.get("items") or []
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="items 得是个列表")
+    return _run(_classifier().apply, _meta_dir(), items)
+
+
 @router.get("/item")
 def item(citekey: str, user: CurrentUser, db: DbSession, text: int = 0) -> dict:
     """一个条目的详情：元数据 + 附属资源 + 正文质量 + **谁引用了它** + BibTeX。"""
@@ -226,11 +281,11 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
     remaining = 0
     for entry in lib.entries(roots, _meta_dir(), _text_dir()):
         key = entry.citekey
-        # **判据是"有没有冻结元数据"，不是"抽出来空不空"**。
-        # 踩过：原先还要求 `text_state != 'none'` 才算抓过，于是 md / py 这类
-        # 本来就抽不出正文的条目**每一批都被重抓一遍** —— 前端循环跑了一百多份还在转，
-        # 队列永远排不空（实测"已抓 150 份，还剩 19"）。
-        if key in known and not force:
+        # **判据是"这份有没有冻结元数据"**，不是"抽出来空不空"，也不是"键在不在已知表里"。
+        # 踩过两次：先是拿 `text_state != 'none'` 判，于是抽不出正文的 md / py 每批重抓；
+        # 后来拿 `key in known` 判，于是**撞键被改名的那一份**永远对不上、每轮重抓一次
+        # （"还剩 0"却永远抓不完）。`entry.frozen` 是列表那一步算好的、唯一可靠的判据。
+        if entry.frozen and not force:
             continue
         if len(done) >= max(1, min(limit, 50)):
             remaining += 1

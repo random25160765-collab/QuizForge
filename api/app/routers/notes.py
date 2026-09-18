@@ -136,16 +136,10 @@ def rename(body: dict) -> dict:
 def _suggester():
     """拿 `pipeline.note_suggest`。
 
-    API 进程的 cwd 是 `api/`，而 `pipeline/` 是仓库根下的脚本目录（不在包里）—— 所以首次
-    引用时把仓库根插进路径。**延迟导入**：这个模块会拖起模型客户端，
+    路径引导已经统一在 `app/__init__.py`（原先这里自己补过一次，资料路由漏补就 500 了）。
+    这里保留**延迟导入**：这个模块会拖起模型客户端，
     不该让"打开笔记页"为它付启动成本（这是仓库对重依赖的一贯做法）。
     """
-    import sys  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
-
-    root = Path(__file__).resolve().parents[3]
-    if str(root) not in sys.path:
-        sys.path.insert(0, str(root))
     from pipeline import note_suggest  # noqa: PLC0415
 
     return note_suggest

@@ -531,3 +531,65 @@ body[data-page='library'] {
     display: none;
   }
 }
+
+/* ---- 归类复核（模型给建议、人勾选） ---- */
+
+.lib__footbtns {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.lib__kind--spec { color: #9db4e0; background: color-mix(in srgb, #9db4e0 16%, transparent); }
+.lib__kind--other { color: var(--fg3); }
+.lib__kind--blog,
+.lib__kind--slides { color: #d991b4; background: color-mix(in srgb, #d991b4 16%, transparent); }
+
+.lib__review {
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.lib__reviewrow {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 8px 4px;
+  border-bottom: 1px dashed var(--line);
+  cursor: pointer;
+}
+
+.lib__reviewmain {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.lib__reviewtitle {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lib__reviewkind {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.lib__reviewarrow {
+  color: var(--fg3);
+}
+
+.lib__reviewtopics {
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.lib__reviewwhy {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
