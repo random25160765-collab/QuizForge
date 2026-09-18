@@ -1401,34 +1401,7 @@
 
     // 题源：公共题库 / 我的题单 / 都要。
     // 它不是"哪些题合适"，而是"从哪一批里挑" —— 所以比筛选条件更靠前。
-    panel.appendChild(
-      h(
-        'div.filterbar',
-        null,
-        h('span.filterbar__label', { text: '题源' }),
-        h(
-          'div.filterbar__group',
-          null,
-          [
-            ['all', '都要'],
-            ['public', '公共题库'],
-            ['mine', '我的题单'],
-          ].map(function (pair) {
-            return h(
-              'button.btn.btn--sm' + ((state.qsource || 'all') === pair[0] ? '.is-on' : ''),
-              {
-                type: 'button',
-                onClick: function () {
-                  state.qsource = pair[0];
-                  render();
-                },
-              },
-              h('span', { text: pair[1] })
-            );
-          })
-        )
-      )
-    );
+    panel.appendChild(sourceRow());
 
     // 快捷范围：不是筛选条件，而是直接换一批题开始，所以放在筛选条件之前。
     // 间距用 .filterbar 的默认值，和下面每一行筛选器保持一致：这里原来是 4px，
@@ -1742,6 +1715,51 @@
         container[field] = list;
       },
     };
+  }
+
+  /**
+   * 题源行：公共题库 / 我的题单 / 都要 —— **单选**，练习与组卷共用这一个。
+   *
+   * 为什么不用 `chipRow`：那是**多选**（点一下加进列表、再点一下移除），而题源问的是
+   * 「从哪一批里挑」，只能是一批。组卷页原先借它表达单选，于是点「我的题单」得到的是
+   * `['all', 'mine']`、而取值只取第一项 —— **点了没反应**（2026-09-18 浏览器实测发现的：
+   * 选完仍然组出 20 道公共题）。所以两边都用单选写法，判据也只剩 `inSource` 一处。
+   *
+   * @param {object} [options]
+   *   counts        是否显示各档数量（组卷页要，练习页不要 —— 那边上面已有主题数量）
+   *   hideWhenEmpty 题单为空时整行不渲染（组卷页如此：只剩一个档位的行没意义）
+   */
+  function sourceRow(options) {
+    var opts = options || {};
+    var mineCount = Object.keys(D.myIds || {}).length;
+    if (opts.hideWhenEmpty && !mineCount) return null;
+
+    var items = [
+      ['all', '都要', D.questions.length],
+      ['public', '公共题库', D.questions.length - mineCount],
+      ['mine', '我的题单', mineCount],
+    ];
+    var row = h('div.filterbar');
+    row.appendChild(h('span.filterbar__label', { text: '题源' }));
+    var group = h('div.filterbar__group');
+    items.forEach(function (item) {
+      group.appendChild(
+        h(
+          'button.btn.btn--sm' + ((state.qsource || 'all') === item[0] ? '.is-on' : ''),
+          {
+            type: 'button',
+            onClick: function () {
+              state.qsource = item[0];
+              render();
+            },
+          },
+          h('span', { text: item[1] }),
+          opts.counts ? h('span.chip__count', { text: String(item[2]) }) : null
+        )
+      );
+    });
+    row.appendChild(group);
+    return row;
   }
 
   function chipRow(label, items, accessor) {
@@ -2187,30 +2205,9 @@
     panel.appendChild(h('div.panel__head', null, h('h2.panel__title', { text: '试卷设置' })));
     panel.appendChild(buildTopicSelector(configAccessor(paperConfig, 'topics')));
     // 题源：与练习页同一个判据（`state.qsource` + `QF.data.myIds`），
-    // 组卷的题库池在 `paperPool()` 里按它分层。
-    // 题单为空时不加这一行 —— `chipRow` 会把数量为 0 的档位剪掉，剩下一个空行没意义。
-    var mineCount = Object.keys(D.myIds || {}).length;
-    if (mineCount) {
-      addRow(
-        panel,
-        chipRow(
-          '题源',
-          [
-            { key: 'all', label: '都要', count: D.questions.length },
-            { key: 'public', label: '公共题库', count: D.questions.length - mineCount },
-            { key: 'mine', label: '我的题单', count: mineCount },
-          ],
-          {
-            get: function () {
-              return [state.qsource || 'all'];
-            },
-            set: function (keys) {
-              state.qsource = (keys && keys[0]) || 'all';
-            },
-          }
-        )
-      );
-    }
+    // 组卷的题库池在 `paperPool()` 里按它分层。题单为空时不加这一行。
+    var srcRow = sourceRow({ counts: true, hideWhenEmpty: true });
+    if (srcRow) addRow(panel, srcRow);
     addRow(panel, chipRow('题型', typeChipItems(), configAccessor(paperConfig, 'types')));
     addRow(panel, chipRow('难度', difficultyChipItems(), configAccessor(paperConfig, 'difficulty')));
 
