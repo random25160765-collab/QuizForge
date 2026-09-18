@@ -94,6 +94,15 @@ MIN_TIMEOUT_MS = 5000
 # 低于这个预算就装不下"系统提示 + 一轮问答"，设更小没有意义
 MIN_CONTEXT_TOKENS = 1000
 
+# 流式的读超时（秒）。它是**两次读之间**的上限，不是总时长 —— 一直吐就一直等。
+# 于是一个值同时管两件事：等首字节要等多久才判「通道没响应」，以及中途多久没吐字算断流。
+# 不设 1 秒：首 token 之前模型在推理、工具分片之间也有空隙（实测能到十几秒），
+# 误杀比漏杀难查得多。也不能拿整份预算当读超时 —— 那等于让用户干等满 90 秒。
+STREAM_READ_TIMEOUT_S = 20.0
+STREAM_CONNECT_TIMEOUT_S = 10.0
+STREAM_WRITE_TIMEOUT_S = 30.0
+STREAM_POOL_TIMEOUT_S = 10.0
+
 
 class UpstreamError(Exception):
     """上游（模型供应商）出错。
@@ -354,7 +363,9 @@ def stream_completion(
     所以要按 `index` 攒起来，攒完再一次性交出去 —— 这是 OpenAI 兼容协议
     最容易写错的一处，测试里专门钉了一条。
 
-    超时用**读超时**：一秒钟没吐字就断，但一直吐就一直等 ——
+    超时用**读超时**（`STREAM_READ_TIMEOUT_S`）：若干秒没吐字就断，但一直吐就一直等。
+    读超时是「两次读之间」的上限而不是总时长，所以它天然就是首字节超时 ——
+    2026-09-17 实测：把整份预算（90 秒）当读超时用，通道无响应时界面要转满一分半才报错。
     这才是"生成慢"与"服务挂了"的正确区分方式。
 
     上游的非 2xx 一律抛 `UpstreamError`（带响应体截断原文）。
@@ -373,8 +384,18 @@ def stream_completion(
         "Accept": "text/event-stream",
     }
 
+    budget = max(1.0, conf["timeoutMs"] / 1000)
+    timeout = httpx.Timeout(
+        connect=min(STREAM_CONNECT_TIMEOUT_S, budget),
+        read=min(STREAM_READ_TIMEOUT_S, budget),
+        write=min(STREAM_WRITE_TIMEOUT_S, budget),
+        pool=min(STREAM_POOL_TIMEOUT_S, budget),
+    )
+    received = 0  # 已吐出的正文字符数：用来区分「从没响应」与「吐到一半断了」
+    started = time.perf_counter()
+
     try:
-        with httpx.Client(timeout=conf["timeoutMs"] / 1000) as client:
+        with httpx.Client(timeout=timeout) as client:
             with client.stream(
                 "POST", completion_endpoint(conf["baseUrl"]), json=body, headers=headers
             ) as response:
@@ -418,6 +439,7 @@ def stream_completion(
                         delta = choice.get("delta") or {}
                         text = delta.get("content")
                         if text:
+                            received += len(text)
                             yield ("delta", text)
 
                         # 推理增量：DeepSeek 系给 reasoning_content，另一些给 reasoning
@@ -445,7 +467,25 @@ def stream_completion(
 
                 if calls:
                     yield ("tool_calls", [calls[index] for index in sorted(calls)])
-    except httpx.TimeoutException:
-        raise UpstreamError("AI 服务响应超时", kind="timeout") from None
+    except httpx.TimeoutException as exc:
+        # 两种超时的下一步动作不同：一个字都没收到 → 该去查通道/网络；
+        # 吐到一半断了 → 直接重试即可。文案混在一起会让排查从「看一眼」变成「猜」。
+        #
+        # 异常类名留在**文案里**而不是 detail 里：detail 的约定是「上游说的话」，
+        # 而超时这件事上游一个字都没说（把 httpx 的 ConnectTimeout 塞进 detail 会在界面上
+        # 显示成英文原文 —— 2026-09-18 实测踩过）。类名仍要留着：ConnectTimeout 是连不上、
+        # ReadTimeout 是连上了不回，两者的下一步动作不同。
+        waited = time.perf_counter() - started
+        why = exc.__class__.__name__
+        if received:
+            raise UpstreamError(
+                f"上游在 {STREAM_READ_TIMEOUT_S:.0f} 秒内没有继续返回"
+                f"（已收到 {received} 字，{why}）",
+                kind="timeout",
+            ) from None
+        raise UpstreamError(
+            f"上游 {waited:.0f} 秒内没有任何响应（{why}）",
+            kind="timeout",
+        ) from None
     except httpx.HTTPError as exc:
         raise UpstreamError(str(exc)[:200], kind="connect") from None
