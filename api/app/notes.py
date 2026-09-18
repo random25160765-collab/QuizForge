@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -267,6 +267,406 @@ def note_id(vault: str, rel: str) -> str:
     return f"{vault}/{Path(rel).as_posix()}"
 
 
+# ------------------------------------------------------------------ 大纲
+
+#: 缩进单位。库里用制表符就按制表符算、用空格就按检测出来的那个数算（见 `detect_indent_unit`）
+DEFAULT_INDENT = "\t"
+TAB_STOP = 4
+
+_HEADING = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<text>.*)$")
+_BULLET = re.compile(r"^(?P<indent>[ \t]*)(?P<marker>[-*+]|\d+[.)])(?P<space>\s+)(?P<text>.*)$")
+_QUOTE = re.compile(r"^\s*>")
+_HRULE = re.compile(r"^\s*([-*_])\1{2,}\s*$")
+_MATH = re.compile(r"^\s*\$\$")
+
+
+@dataclass
+class OutlineLine:
+    """大纲里的一行（幕布那边叫一个"节点"）。
+
+    组件返回的是**扁平表**（每行带 `level`），不是嵌套结构。原因是编辑是按行的：
+    插一行、改一行、删一行、把这一行连同子树挪走 —— 扁平表让"行号"始终是那把唯一的尺子；
+    嵌套结构一改就得整体重算，行号也跟着漂，然后你按错了行。
+    """
+
+    index: int
+    level: int
+    kind: str           # heading | bullet | text | quote | math | blank | code | rule
+    raw: str
+    text: str           # 去掉标记之后的内容（展示用；写回一律用 raw）
+    foldable: bool = False   # 紧跟其后有更深的行（可以折叠）
+
+
+def _column(indent: str) -> int:
+    """把缩进折算成列号（制表符按 4 的倍数展开，与编辑器的制表位一致）。"""
+    column = 0
+    for char in indent:
+        column = column + TAB_STOP - column % TAB_STOP if char == "\t" else column + 1
+    return column
+
+
+def outline(body: str) -> list[OutlineLine]:
+    """把正文切成大纲行。
+
+    幕布那半边的地基：**每一行都是一个节点**。层级怎么算：
+
+    * 标题（`#`…`######`）自带层级，并把它后面的一组整体压到下一层 —— 于是
+      "先分节、节里再列条目"这种最常见的写法天然成树；
+    * 项目符号的层级**不看绝对缩进、只看相对位置**（一个缩进列栈）：用制表符、
+      用两个空格、用四个空格的库都能算对 —— 实测那个库用的是制表符，
+      但没理由把别人的两个空格当成同级；
+    * 空行跟着它**下面**那一行的层级（否则折叠时会在空行处断开，看起来像 bug）；
+    * 代码块里的行不参与解析（`kind="code"`）—— 与 `iter_links` 同一个讲究。
+    """
+    lines, _ = split_lines(body)
+    out: list[OutlineLine] = []
+    heading_level = -1                      # 最近一个标题的层级（-1 = 还没遇到标题）
+    stack: list[tuple[int, int]] = []       # 打开着的路径：(缩进列, 层级)
+    fence: str | None = None
+
+    def level_for(indent: str) -> int:
+        """按缩进算层级 —— 大纲算法里最经典的那套。
+
+        退回到已有某一列 = 同级；比它更深 = 下一级；栈空了就从**本次的基准**
+        （最近的标题 + 1）起。只看**相对**位置，于是制表符、两个空格、四个空格的
+        库都能算对。
+
+        符号与普通文字一视同仁：实测那个库里的 MENU 笔记就是"文字 + 制表符顶出条目"，
+        只认项目符号的话整篇 MENU 会摊平成一层，幕布那半边就白做了。
+        """
+        column = _column(indent)
+        while stack and column < stack[-1][0]:
+            stack.pop()
+        if stack and column == stack[-1][0]:
+            return stack[-1][1]
+        level = stack[-1][1] + 1 if stack else heading_level + 1
+        stack.append((column, level))
+        return level
+
+    for index, raw in enumerate(lines):
+        marker = _FENCE_LINE.match(raw)
+        if fence is not None:
+            if raw.strip().startswith(fence):
+                fence = None
+            current = stack[-1][1] if stack else heading_level + 1
+            out.append(OutlineLine(index, current, "code", raw, raw))
+            continue
+        if marker:
+            fence = marker.group("fence")[0] * 3
+            current = stack[-1][1] if stack else heading_level + 1
+            out.append(OutlineLine(index, current, "code", raw, raw))
+            continue
+        if not raw.strip():
+            out.append(OutlineLine(index, 0, "blank", raw, ""))
+            continue
+        if match := _HEADING.match(raw):
+            heading_level = len(match.group("hashes")) - 1
+            # 标题另起一节：路径清空，于是这一节里的第一层从 `标题层级 + 1` 开始
+            stack.clear()
+            out.append(OutlineLine(index, heading_level, "heading", raw, match.group("text").strip()))
+            continue
+        if match := _BULLET.match(raw):
+            out.append(
+                OutlineLine(
+                    index,
+                    level_for(match.group("indent")),
+                    "bullet",
+                    raw,
+                    match.group("text").strip(),
+                )
+            )
+            continue
+        if _HRULE.match(raw):
+            current = stack[-1][1] if stack else heading_level + 1
+            out.append(OutlineLine(index, current, "rule", raw, ""))
+            continue
+        indent = raw[: len(raw) - len(raw.lstrip(" \t"))]
+        level = level_for(indent)
+        if _QUOTE.match(raw):
+            out.append(OutlineLine(index, level, "quote", raw, raw.strip()))
+        elif _MATH.match(raw):
+            out.append(OutlineLine(index, level, "math", raw, raw.strip()))
+        else:
+            out.append(OutlineLine(index, level, "text", raw, raw.strip()))
+
+    # 空行跟着下面那一行：先倒着扫一遍补层级，再定"能不能折叠"
+    for pos in range(len(out) - 1, -1, -1):
+        if out[pos].kind == "blank":
+            if pos + 1 < len(out):
+                out[pos].level = out[pos + 1].level
+            elif pos > 0:
+                out[pos].level = out[pos - 1].level
+    for pos, item in enumerate(out):
+        item.foldable = pos + 1 < len(out) and out[pos + 1].level > item.level
+    return out
+
+
+def detect_indent_unit(body: str) -> str:
+    """这个库（这份笔记）用制表符还是空格缩进 —— 缩进操作要跟着它，别混用两种。"""
+    tabs = spaces = 0
+    for raw in split_lines(body)[0]:
+        match = _BULLET.match(raw)
+        if not match:
+            continue
+        if "\t" in match.group("indent"):
+            tabs += 1
+        elif match.group("indent"):
+            spaces += 1
+    return DEFAULT_INDENT if tabs >= spaces else "  "
+
+
+def split_lines(body: str) -> tuple[list[str], bool]:
+    """切成行，并记住**是否以换行结尾**。
+
+    写回时照原样恢复：凭空多一个或少一个结尾换行，会让"每编辑一次文件尾部就多一行"，
+    或者更糟 —— 让最后一次改动看起来像改了两行（diff 里全是噪音）。
+    """
+    if body == "":
+        return [], False
+    trailing = body.endswith("\n")
+    text = body[:-1] if trailing else body
+    return text.split("\n"), trailing
+
+
+def join_lines(lines: list[str], trailing: bool) -> str:
+    text = "\n".join(lines)
+    return text + "\n" if trailing and text != "" else text
+
+
+# ------------------------------------------------------------------ 行级操作
+#
+# 幕布那半边的核心：一切编辑都是**对某一行的操作**。全部是纯函数（进正文、出正文），
+# 不碰文件 —— 写入与快照在 `notelib` 里，出错能整体回滚。
+
+
+def line_at(body: str, index: int) -> str:
+    lines, _ = split_lines(body)
+    if 0 <= index < len(lines):
+        return lines[index]
+    raise IndexError(f"第 {index} 行不存在（共 {len(lines)} 行）")
+
+
+def insert_line(body: str, after: int, raw: str) -> str:
+    """在第 `after` 行**之后**插一行（`after = -1` 插到最前）。
+
+    幕布里回车是"新建同级节点"，这件事由调用方决定插什么（`notelib` 会照着目标行的
+    标记与缩进生成一个空条目），这里只负责插对位置。
+    """
+    lines, trailing = split_lines(body)
+    position = max(0, min(after + 1, len(lines)))
+    lines.insert(position, raw)
+    return join_lines(lines, trailing or body == "")
+
+
+def replace_line(body: str, index: int, raw: str) -> str:
+    lines, trailing = split_lines(body)
+    if not 0 <= index < len(lines):
+        raise IndexError(f"第 {index} 行不存在（共 {len(lines)} 行）")
+    lines[index] = raw
+    return join_lines(lines, trailing)
+
+
+def delete_line(body: str, index: int) -> str:
+    lines, trailing = split_lines(body)
+    if not 0 <= index < len(lines):
+        raise IndexError(f"第 {index} 行不存在（共 {len(lines)} 行）")
+    lines.pop(index)
+    return join_lines(lines, trailing)
+
+
+def shift_line(body: str, index: int, delta: int, unit: str = DEFAULT_INDENT) -> str:
+    """缩进 / 反缩进一行（幕布的 Tab / Shift+Tab）。
+
+    `delta > 0` 加一级；`delta < 0` 减一级（减到没有为止，不会吃掉正文）。
+    """
+    lines, trailing = split_lines(body)
+    if not 0 <= index < len(lines):
+        raise IndexError(f"第 {index} 行不存在（共 {len(lines)} 行）")
+    raw = lines[index]
+    indent_len = len(raw) - len(raw.lstrip(" \t"))
+    indent, rest = raw[:indent_len], raw[indent_len:]
+    if delta > 0:
+        indent += unit * delta
+    else:
+        for _ in range(-delta):
+            if indent.startswith(unit):
+                indent = indent[len(unit) :]
+            elif indent.startswith("\t"):
+                indent = indent[1:]
+            elif indent.startswith(" "):
+                # 空格缩进的库：退一级 —— 不足一级就把这段空格去光（别退到负数）
+                stripped = indent.lstrip(" ")
+                indent = (
+                    stripped
+                    if len(indent) - len(stripped) <= len(unit)
+                    else " " * (len(indent) - len(unit))
+                )
+            else:
+                break
+    lines[index] = indent + rest
+    return join_lines(lines, trailing)
+
+
+def block_extent(body: str, index: int) -> tuple[int, int]:
+    """一行的"子树"范围（含自己）：后面紧跟的、缩进更深的行，以及其中的空行。
+
+    空行算在块里 —— 否则每次挪动都会把段落间的空行留在原地，越挪越乱。
+    """
+    lines, _ = split_lines(body)
+    if not 0 <= index < len(lines):
+        raise IndexError(f"第 {index} 行不存在（共 {len(lines)} 行）")
+    base = len(lines[index]) - len(lines[index].lstrip(" \t"))
+    end = index + 1
+    while end < len(lines):
+        raw = lines[end]
+        if not raw.strip():
+            end += 1
+            continue
+        if len(raw) - len(raw.lstrip(" \t")) > base:
+            end += 1
+            continue
+        break
+    # 尾部的空行不跟着走（它们属于下一块）
+    while end - 1 > index and not lines[end - 1].strip():
+        end -= 1
+    return index, end
+
+
+def move_block(body: str, index: int, to: int) -> str:
+    """把第 `index` 行的整棵子树挪到第 `to` 行**之前**（幕布的 Alt+↑/↓）。"""
+    lines, trailing = split_lines(body)
+    start, end = block_extent(body, index)
+    # 只要不是**挪进自己内部**就都合法：`to == start` / `to == end` 是原地不动（无害），
+    # 挪到紧跟自己后面（`to == end`）就是"放到下一块之前"，是最常用的那个动作。
+    # 早先写成 `to in range(start, end + 1)` 把这三种全拦了 —— 实测第一个用例就撞上。
+    if start < to < end:
+        raise ValueError("不能把一块挪进它自己里面")
+    block = lines[start:end]
+    rest = lines[:start] + lines[end:]
+    # `to` 是"按**移动前**的行号，插到第 to 行之前"。块被抽走之后，它后面的行号要往前挪
+    # `end - start` —— 只对 `to < end` 不调整。写成 `to > end` 就差一格：
+    # `to == end`（= 原地不动）会被算成往后挪过一整块（实测就是这条用例挂的）。
+    target = to - (end - start) if to >= end else to
+    target = max(0, min(target, len(rest)))
+    return join_lines(rest[:target] + block + rest[target:], trailing)
+
+
+# ------------------------------------------------------------------ 改名
+
+
+def _mask_inline_code(line: str) -> str:
+    """把行内代码段换成**等长的空格**。
+
+    这样匹配到的下标仍然能直接用在原行上（长度没变），而"代码里举的例子"不会被误改 ——
+    比自己重算一遍索引简单，也不会算错。
+    """
+    return _INLINE_CODE.sub(lambda match: " " * len(match.group(0)), line)
+
+
+def rewrite_links(text: str, replace_target: Callable[[str], str | None]) -> tuple[str, int]:
+    """把引用改成新目标，**保留别名与锚点**（`[[目标#锚点|别名]]`）。
+
+    只动**正文行**：围栏代码块整段跳过、行内代码段先掩掉 —— 与 `iter_links` 同一套判据。
+    改名时最怕的就是把"文档里举的例子"也改了（实测第一版就是这么错的：三处全改了）。
+
+    `replace_target` 收到解析出来的目标，返回新目标（`None` = 这条不动）。
+    """
+    out: list[str] = []
+    changed = 0
+    fence: str | None = None
+    for line in text.splitlines(keepends=True):
+        marker = _FENCE_LINE.match(line)
+        if fence is not None:
+            out.append(line)
+            if line.strip().startswith(fence):
+                fence = None
+            continue
+        if marker:
+            fence = marker.group("fence")[0] * 3
+            out.append(line)
+            continue
+
+        masked = _mask_inline_code(line)
+        rebuilt = line
+        # 倒着改：后面的替换不会让前面的下标失效
+        for pattern in (_WIKILINK, _MDLINK):
+            for match in reversed(list(pattern.finditer(masked))):
+                if pattern is _WIKILINK:
+                    target, alias_sep, alias = match.group("inner").partition("|")
+                    target, anchor_sep, anchor = target.partition("#")
+                    new = replace_target(target.strip())
+                    if new is None:
+                        continue
+                    piece = (
+                        f"{match.group('embed') or ''}"
+                        f"[[{new}{anchor_sep}{anchor}{alias_sep}{alias}]]"
+                    )
+                else:
+                    target, anchor_sep, anchor = match.group("href").partition("#")
+                    new = replace_target(target.strip())
+                    if new is None:
+                        continue
+                    piece = (
+                        f"{match.group('embed') or ''}[{match.group('text')}]"
+                        f"({new}{anchor_sep}{anchor})"
+                    )
+                rebuilt = rebuilt[: match.start()] + piece + rebuilt[match.end() :]
+                changed += 1
+        out.append(rebuilt)
+    return "".join(out), changed
+
+# ------------------------------------------------------------------ 正文写回
+
+
+def head_block(text: str) -> str:
+    """原文里元数据头那一段（含两行 `---`）。没有头就是空串。"""
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != FENCE:
+        return ""
+    for index in range(1, min(len(lines), MAX_HEAD_LINES)):
+        if lines[index].strip() == FENCE:
+            return "".join(lines[: index + 1])
+    return ""
+
+
+def splice_body(text: str, body: str) -> str:
+    """只换正文、**原样保留元数据头**。
+
+    为什么不重新 dump 一遍 YAML：那会把作者写下的引号风格、注释、键序全改掉 ——
+    明明只动了正文，diff 里整个头都变了。而且那个头往往不是我们写的（源笔记自带的）。
+    """
+    head = head_block(text).rstrip("\n")
+    if not head:
+        return body
+    # head 自己带着结尾换行，再拼 `\n\n` 会多出一个空行 —— 每存一次文件就长一行空，
+    # diff 里看得见（实测确实多了一个，这条注释就是为它写的）
+    return f"{head}\n\n{body.lstrip(chr(10))}"
+
+
+# ------------------------------------------------------------------ 行内标签
+
+
+#: 正文里的 `#标签`（Obsidian 的写法）。
+#:
+#: 这条正则刻意收得很紧，因为**放宽会立刻误报**：实测在一个真实数学库里，
+#: 宽松版本把 LaTeX 的 `#\{i|\dim` 和整句中文（"井号代表集合内元素的个数%%"）都当成了标签。
+#: 于是：`#` 后必须紧跟字母 / 下划线 / 汉字（标题的 `# 空格` 天然出局），
+#: 之后只允许字母数字、汉字、`-`、`/`、`.`，且总长有上限 —— 标签是短的。
+_INLINE_TAG = re.compile(r"(?<![\w/#\\])#([A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff/.\-]{0,63})")
+#: 落在标签尾巴上的标点不算标签的一部分（`见 #微积分。` → `微积分`）
+_TAG_TAIL = ".-/"
+
+
+def iter_inline_tags(text: str) -> Iterator[str]:
+    """正文里的行内标签（去重前的原样，按出现顺序）。
+
+    只扫正文行：代码块里的 `#include` 之类不是标签 —— 与 `iter_links` 同一个讲究。
+    """
+    for line in _prose_lines(text):
+        for found in _INLINE_TAG.findall(line):
+            yield found.rstrip(_TAG_TAIL)
+
+
 # ------------------------------------------------------------------ 指纹
 
 
@@ -284,22 +684,39 @@ def sha256_file(path: Path) -> str:
 
 __all__ = [
     "CANVAS_SUFFIX",
+    "DEFAULT_INDENT",
     "FENCE",
     "GENERATED_KEY",
     "MD_SUFFIX",
     "NOTE_SUFFIXES",
     "Link",
     "Note",
+    "OutlineLine",
     "Resolved",
+    "block_extent",
     "build_index",
+    "delete_line",
+    "detect_indent_unit",
+    "head_block",
+    "insert_line",
+    "iter_inline_tags",
     "iter_links",
+    "join_lines",
+    "line_at",
     "minimal_meta",
+    "move_block",
     "note_id",
+    "outline",
     "read_note",
     "read_text",
     "render",
+    "replace_line",
     "resolve",
+    "rewrite_links",
     "sha256_bytes",
     "sha256_file",
+    "shift_line",
+    "splice_body",
+    "split_lines",
     "split_text",
 ]
