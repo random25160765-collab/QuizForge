@@ -90,7 +90,7 @@ PAGE_JS = {
     "wrongbook": ["wrongbook.js", "boot.js"],
     "graph": ["graph.js"],
     "chat": ["chat.js", "boot.js"],
-    "notes": ["notes.js"],              # 笔记页也自己启动（数据来自 /api/notes，不吃 boot.js）
+    "notes": ["canvas.js", "notes.js"],  # canvas.js 要在 notes.js 前（后者用 QF.canvas）
 }
 
 PAGE_TITLE = {
