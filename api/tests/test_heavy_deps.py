@@ -90,19 +90,64 @@ def test_manifest_file_is_valid_json() -> None:
     assert payload["bytes"] > 0
 
 
-def test_data_dir_moves_out_of_the_bundle_when_frozen(monkeypatch) -> None:  # noqa: ANN001
-    """打包后数据目录必须在**用户主目录**下，不能在解包出来的临时目录里。
+def test_data_dir_is_out_of_the_bundle_and_per_channel() -> None:
+    """打包后数据目录：在**用户主目录**下，且**按通道分开**。
 
-    单文件模式里 `ROOT` 是 `%TEMP%\\_MEIxxxx` 的上一级，沿用 `<根>/data` 就会把
-    用户的库放进 `%TEMP%\\data` —— 既不好找，也可能被清理工具收走。
-    这条用例把它钉住（打包出来才发现的话，用户的数据已经在那儿了）。
+    两条都是定下来的取舍：
+
+    ① 不能用 `<根>/data` —— 单文件模式里那个"根"是 `%TEMP%`，用户的库会住在
+       临时目录里（既不好找，也可能被清理工具收走）；
+    ② 内测与正式必须分开（用户原话"内测和正式要分开"）—— 同一台机器上跑两个包，
+       库、作答记录、以后的笔记与资料互不干扰。
     """
     from pathlib import Path
 
     from app import config
 
-    monkeypatch.setattr(config.sys, "frozen", True, raising=False)
-    assert config._default_data_dir() == Path.home() / "quizforge"  # noqa: SLF001
+    assert config.frozen_data_dir("beta") == Path.home() / "quizforge-beta"
+    assert config.frozen_data_dir("release") == Path.home() / "quizforge"
+    assert config.frozen_data_dir("beta") != config.frozen_data_dir("release")
 
-    monkeypatch.delattr(config.sys, "frozen", raising=False)
-    assert config._default_data_dir() == config.ROOT / "data"  # noqa: SLF001
+
+def test_release_channel_never_uses_the_beta_quota() -> None:
+    """正式通道**连内测配置文件都不看** —— "内测和正式分开"的落点在这里。
+
+    不靠"配置写对"，靠结构：通道不是 beta 就没有内测额度可用。
+    于是正式包不可能悄悄用站长的钱。
+    """
+    from app.config import Settings
+
+    assert Settings(channel="beta", ai_beta_enabled=True).beta_active is True
+    assert Settings(channel="beta", ai_beta_enabled=False).beta_active is False
+    # 关键的一条：正式通道下，开关开着也不生效
+    assert Settings(channel="release", ai_beta_enabled=True).beta_active is False
+    assert Settings(channel="release").is_beta is False
+    assert Settings(channel="beta").is_beta is True
+
+
+def test_beta_config_is_looked_up_in_the_bundle_not_in_temp() -> None:
+    """内测配置按**只读资源根**找：开发时在仓库里，打包后在解包里。
+
+    用 `ROOT` 会怎样：单文件模式下它是解包目录的上一级（`%TEMP%`），
+    于是"内测配置在不在"被问到一个临时目录里去 —— 内测包因此拿不到额度，
+    而报错的地方离原因很远（`heavy_deps` 里同样的坑刚踩过）。
+    """
+    from app import config
+
+    settings = config.get_settings()
+    assert settings.ai_beta_config_file == config.RESOURCE_ROOT / "config" / "ai.local.json"
+    assert settings.ai_beta_config_file.parent.parent == config.RESOURCE_ROOT
+
+
+def test_channel_comes_from_env_then_bundle(monkeypatch) -> None:  # noqa: ANN001
+    """通道的来源顺序：环境变量 > 包里带的 `channel.json` > 默认。
+
+    冻结之后没有环境变量可读，所以打包时会把通道写进包里 —— 这条用例验的是
+    "包里的声明能被读到"这条路径。
+    """
+    from app import config
+
+    monkeypatch.setenv("QF_CHANNEL", "release")
+    assert config._default_channel() == "release"  # noqa: SLF001
+    monkeypatch.setenv("QF_CHANNEL", "whatever")  # 不认识的取值不该被当真
+    assert config._default_channel() == "beta"  # noqa: SLF001

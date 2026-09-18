@@ -93,8 +93,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from app.main import app as application
 
-    print(f"quizforge 已启动：{url}")
+    tag = "内测版" if settings.is_beta else "正式版"
+    print(f"quizforge 已启动：{url}（{tag}）")
     print(f"数据目录：{settings.data_dir}（库文件 {settings.database_url.rsplit('/', 1)[-1]}）")
+    if settings.is_beta:
+        print("内测版走站长的额度；想用自己的密钥，在设置里填。")
     print("关掉这个窗口（或按 Ctrl-C）就停。")
 
     # 4) 浏览器（等一拍再开，免得抢在服务就绪之前）

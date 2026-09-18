@@ -126,14 +126,17 @@ class UpstreamError(Exception):
 def beta_config() -> dict | None:
     """读内测通道那份实例级配置（与用户设置里的 `ai` 同形）。
 
-    * 关掉通道（`QF_AI_BETA_ENABLED=false`）或文件不在 → None
+    * **通道不是 beta**（正式包）／被显式关掉（`QF_AI_BETA_ENABLED=false`）／文件不在 → None
     * 文件按 **mtime** 缓存：改完立刻生效，不必重启
     * 坏文件当成"没有"而不是抛异常 —— 一个手写的 JSON 不该让整站 AI 全挂
 
     密钥只在这里落地，**不进 Settings**：那个对象会被 repr、被日志打印。
+
+    判据是 `settings.beta_active` 而不是单个开关：**正式通道连文件都不看**，
+    这样"内测和正式分开"是结构上的保证，而不是靠配置写对。
     """
     settings = get_settings()
-    if not settings.ai_beta_enabled:
+    if not settings.beta_active:
         return None
 
     path = Path(settings.ai_beta_config_file)

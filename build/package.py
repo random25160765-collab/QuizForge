@@ -132,15 +132,37 @@ def make_manifest() -> int:
 # --------------------------------------------------------------------- build
 
 
-def build(verify_after: bool = True, dist: Path | None = None, work: Path | None = None) -> int:
-    """出包。`dist` / `work` 可换到别处。
+#: 内测配置（**不进版本库**，见 .gitignore）：beta 通道的包把它带进去，
+#: 于是"没有自带密钥的人也能聊"。正式通道**不带**。
+BETA_CONFIG = ROOT / "config" / "ai.local.json"
 
-    为什么需要换：仓库如果在 WSL 里，Windows 侧看到的是 UNC 路径
+
+def build(
+    verify_after: bool = True,
+    dist: Path | None = None,
+    work: Path | None = None,
+    channel: str = "beta",
+) -> int:
+    """出包。`dist` / `work` 可换到别处，`channel` 决定通道（默认内测）。
+
+    为什么 `dist` / `work` 需要能换：仓库如果在 WSL 里，Windows 侧看到的是 UNC 路径
     （`\\\\wsl.localhost\\…`），而 PyInstaller 在 UNC 上写工作目录不稳。
     把工作目录与产物落到本机盘上、源码仍从 UNC 读，就绕开了这件事。
+
+    ## 通道怎么进包（内测和正式要分开）
+
+    冻结之后读不到环境变量，所以把通道**写进包**：
+
+    * `channel.json`（包根）—— 应用启动时靠它认自己是哪条通道（见 `config._default_channel`）；
+    * `config/ai.local.json`（内测配置）—— **只有 beta 包带**，正式包连文件都没有，
+      所以正式包不可能用到站长的额度；
+    * 产物名字也分开：`quizforge-beta` / `quizforge`。
     """
     dist_dir = dist or DIST_DIR
     work_dir = work or WORK_DIR
+    if channel not in ("beta", "release"):
+        print(f"通道只认识 beta / release，收到的是 {channel!r}")
+        return 2
     if not LAUNCHER.is_file():
         print(f"找不到入口 {LAUNCHER}")
         return 2
@@ -155,6 +177,31 @@ def build(verify_after: bool = True, dist: Path | None = None, work: Path | None
         print(f"  {sys.executable} -m pip install -r build/requirements-build.txt")
         return 2
 
+    # 这次要带进包的只读资源先摆到一个临时目录里，`--add-data` 只认现成的路径
+    staging = work_dir / "bundle"
+    if staging.is_dir():
+        shutil.rmtree(staging, ignore_errors=True)
+    (staging / "config").mkdir(parents=True, exist_ok=True)
+    (staging / "channel.json").write_text(
+        json.dumps(
+            {"channel": channel, "builtAt": time.strftime("%Y-%m-%dT%H:%M:%S")},
+            ensure_ascii=False,
+            indent=1,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    if channel == "beta":
+        if not BETA_CONFIG.is_file():
+            print(f"beta 通道要带内测配置，但 {BETA_CONFIG} 不在 —— 先把它放好再打内测包")
+            return 2
+        shutil.copy2(BETA_CONFIG, staging / "config" / "ai.local.json")
+        print("通道：beta（内测）—— 带上内测配置，试用的人不用自带密钥")
+    else:
+        print("通道：release（正式）—— **不带**内测配置，用各人自己的密钥")
+
+    name = "quizforge-beta" if channel == "beta" else "quizforge"
     separator = os.pathsep  # Windows 是 ';'，POSIX 是 ':' —— 别写死
     args = [
         sys.executable,
@@ -164,7 +211,7 @@ def build(verify_after: bool = True, dist: Path | None = None, work: Path | None
         "--clean",
         "--onefile",
         "--name",
-        "quizforge",
+        name,
         "--distpath",
         str(dist_dir),
         "--workpath",
@@ -183,6 +230,11 @@ def build(verify_after: bool = True, dist: Path | None = None, work: Path | None
         # 哈希清单要跟着包走，否则打包后校验不了（会退化成"每次都下"）
         "--add-data",
         f"{MANIFEST_FILE}{separator}build",
+        # 通道声明与内测配置：冻结后读不到环境变量，通道只能靠包里的文件认
+        "--add-data",
+        f"{staging / 'channel.json'}{separator}.",
+        "--add-data",
+        f"{staging / 'config'}{separator}config",
         # 题库解析器与校验器（352K）。**不能省**：出题流水线用它
         # （`app/toolkit.py` → `tools/question_parser` / `check`），
         # 而 A 段的"资料即入库口"会让桌面应用去跑那条流水线
@@ -190,8 +242,11 @@ def build(verify_after: bool = True, dist: Path | None = None, work: Path | None
         f"{ROOT / 'tools'}{separator}tools",
         "--console",  # 留个窗口：URL、数据目录、日志都在那儿（关掉窗口就是退出）
     ]
-    for name in HIDDEN_IMPORTS:
-        args += ["--hidden-import", name]
+    # 循环变量**别叫 name**：上面那个 `name` 是产物名（quizforge-beta / quizforge），
+    # 被覆盖之后"找产物"这一步会去找 `app.routers.exe`（实测：打包明明成功，
+    # 却报"没找到产物"，而报出来的名字是最后一个 hidden import）
+    for hidden in HIDDEN_IMPORTS:
+        args += ["--hidden-import", hidden]
     args.append(str(LAUNCHER))
 
     print("打包中（这一步要一分多钟）…")
@@ -201,17 +256,17 @@ def build(verify_after: bool = True, dist: Path | None = None, work: Path | None
         return proc.returncode
 
     suffix = ".exe" if os.name == "nt" else ""
-    artifact = dist_dir / f"quizforge{suffix}"
+    artifact = dist_dir / f"{name}{suffix}"
     if not artifact.is_file():
         print(f"打包命令成功了，但没找到产物 {artifact}")
         return 1
 
     size_mb = artifact.stat().st_size / 1024 / 1024
-    print(f"\n产物：{artifact}（{size_mb:.1f} MB）")
+    print(f"\n产物：{artifact}（{size_mb:.1f} MB）· 通道 {channel}")
     print("  包外的东西：Pyodide 运行时（76M）—— 第一次打开时取一次进本机缓存")
 
     if verify_after:
-        return verify(artifact)
+        return verify(artifact, expected_channel=channel)
     return 0
 
 
@@ -252,7 +307,9 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def verify(artifact: Path, timeout_s: float = 60.0) -> int:
+def verify(
+    artifact: Path, timeout_s: float = 120.0, expected_channel: str | None = None
+) -> int:
     """把产物**真的跑起来**，看它能不能读出一个真实题库。
 
     这一步验的是打包最容易坏、又最晚才被发现的三件事：
@@ -264,6 +321,10 @@ def verify(artifact: Path, timeout_s: float = 60.0) -> int:
 
     刻意用一个临时数据目录（`QF_DATA_DIR`）：**不碰用户真实的库**。
     也关掉重型组件的预取（`QF_HEAVY_PREFETCH=false`）—— 自检不该下载 76M。
+
+    超时给 120 秒而不是 60：**刚写出来的 exe 会被 Windows 先扫一遍**
+    （Defender / 索引），首次启动能拖到一分多钟，于是"接口没应答"看起来像打包坏了 ——
+    实测就撞过（同一份 exe 隔一会儿单独跑，20 秒就起来了）。
     """
     import tempfile
 
@@ -322,9 +383,13 @@ def verify(artifact: Path, timeout_s: float = 60.0) -> int:
 
     db_file = data_dir / "quizforge.db"
     bank = (health or {}).get("bank") or {}
+    ai = (health or {}).get("ai") or {}
     questions = int(bank.get("questions") or 0)
+    channel = str((health or {}).get("channel") or "")
     print(f"  接口：{'通了' if health else '没通'} · 静态页面：{'在' if page_ok else '没拿到'}")
     print(f"  题库：{questions} 题 · 主题 {bank.get('topics', 0)}")
+    print(f"  通道：{channel or '（没报）'} · 内测额度：{'可用' if ai.get('betaEnabled') else '不可用'}"
+          f"（密钥{'已带' if ai.get('betaConfigured') else '未带'}）")
     print(f"  库文件：{'在' if db_file.is_file() else '不在（有问题）'}（{db_file.name}）")
     shutil.rmtree(data_dir, ignore_errors=True)
 
@@ -335,6 +400,16 @@ def verify(artifact: Path, timeout_s: float = 60.0) -> int:
         problems.append("静态页面拿不到（前端没进包）")
     if seed.is_file() and questions < 100:
         problems.append(f"题库没读出来（样本里应当有上千道，实际 {questions} 道）")
+    if expected_channel and channel != expected_channel:
+        problems.append(f"通道不对：期望 {expected_channel}，包自称 {channel or '（空）'}")
+    if expected_channel == "beta":
+        # 内测包的立身之本：**不带密钥也能聊**。密钥没进包 = 这个包是废的
+        if not ai.get("betaEnabled"):
+            problems.append("内测包里内测额度不可用（通道没认成 beta？）")
+        if not ai.get("betaConfigured"):
+            problems.append("内测包里没有内测密钥（config/ai.local.json 没打进去？）")
+    if expected_channel == "release" and ai.get("betaEnabled"):
+        problems.append("正式包里内测额度却是可用的 —— 内测和正式没分开")
     if problems:
         print("自检没过：")
         for item in problems:
@@ -357,8 +432,15 @@ def main(argv: list[str] | None = None) -> int:
     build_parser.add_argument("--no-verify", action="store_true", help="不出包后自检")
     build_parser.add_argument("--dist", help="产物目录（默认 build/dist）")
     build_parser.add_argument("--work", help="PyInstaller 工作目录（默认 build/.pyinstaller）")
+    build_parser.add_argument(
+        "--channel",
+        choices=("beta", "release"),
+        default="beta",
+        help="通道：beta（内测，带走内测配置，默认）/ release（正式，不带）",
+    )
     verify_parser = sub.add_parser("verify", help="把产物跑起来自检")
     verify_parser.add_argument("artifact", help="可执行文件路径")
+    verify_parser.add_argument("--channel", choices=("beta", "release"), help="期望的通道")
 
     args = parser.parse_args(argv)
     if args.cmd == "manifest":
@@ -368,9 +450,10 @@ def main(argv: list[str] | None = None) -> int:
             verify_after=not args.no_verify,
             dist=Path(args.dist) if args.dist else None,
             work=Path(args.work) if args.work else None,
+            channel=args.channel,
         )
     if args.cmd == "verify":
-        return verify(Path(args.artifact))
+        return verify(Path(args.artifact), expected_channel=args.channel)
     return 2
 
 
