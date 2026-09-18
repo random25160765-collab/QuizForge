@@ -79,6 +79,7 @@ RUNTIME_ORDER = [
     "sm2.js",
     "ai.js",
     "shell.js",
+    "panes.js",         # 可组合窗格（tmux 式）：布局树、拆分、拖拽比例、最大化；样式见 theme/pane.css
     "mounts.js",        # 顶栏的挂载开关：亮度＝AI 能调哪几块
     "qview.js",
     "router.js",
@@ -93,6 +94,7 @@ PAGE_JS = {
     "chat": ["chat.js", "boot.js"],
     "notes": ["canvas.js", "notes.js"],  # canvas.js 要在 notes.js 前（后者用 QF.canvas）
     "library": ["library.js"],           # 资料页也自己启动（数据来自 /api/library）
+    "workbench": ["canvas.js", "workbench.js"],  # 工作台：窗格引擎 + 视图注册（canvas 先于 workbench，后者用 QF.canvas）
 }
 
 PAGE_TITLE = {
@@ -102,6 +104,7 @@ PAGE_TITLE = {
     "chat": "QuizForge · 对话",
     "notes": "QuizForge · 笔记",
     "library": "QuizForge · 资料",
+    "workbench": "QuizForge · 工作台",
 }
 
 PAGE_BODY = {
@@ -111,10 +114,19 @@ PAGE_BODY = {
     "chat": "chat.body.html",
     "notes": "notes.body.html",
     "library": "library.body.html",
+    "workbench": "workbench.body.html",
 }
 
 # 页面专属样式：默认共用合并后的 app.css，只有图谱页、对话页与笔记页要再加一份
-PAGE_CSS = {"graph": ["graph.css"], "chat": ["chat.css"], "notes": ["notes.css"], "library": ["library.css"]}
+# 工作台暂时带上 notes.css：画布那棵 DOM（`.ncanvas*`）的样式写在里面，
+# 等画布样式从 notes.css 里拆出来之后，这一行就该瘦回去
+PAGE_CSS = {
+    "graph": ["graph.css"],
+    "chat": ["chat.css"],
+    "notes": ["notes.css"],
+    "library": ["library.css"],
+    "workbench": ["notes.css", "pane.css"],
+}
 
 # 应用样式合并成一份，避免每页重复下载
 APP_CSS = ["markdown.css", "app.css"]

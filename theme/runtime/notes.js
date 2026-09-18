@@ -777,7 +777,7 @@
         (state.note.kind === 'canvas'
           ? []
           : state.note.kind === 'outline'
-            ? [['outline', '大纲']]
+            ? [['outline', '大纲'], ['mindmap', '思维导图']]
             : [['source', '源码'], ['live', '默认'], ['read', '阅读']]).map(function (pair) {
           return h(
             'button.seg__item' + (state.mode === pair[0] ? '.is-on' : ''),
@@ -907,9 +907,14 @@
         })
       )
     );
-    // 大纲走幕布那半边（块上编辑）；「默认」走块级实时渲染；「源码」是全宽文本框
+    // 大纲走幕布那半边（块上编辑）；思维导图是**同一份数据的另一种渲染**；
+    // 「默认」走块级实时渲染；「源码」是全宽文本框
     if (state.mode === 'outline') {
       wrap.appendChild(renderOutline());
+      return wrap;
+    }
+    if (state.mode === 'mindmap') {
+      wrap.appendChild(renderMindmap());
       return wrap;
     }
     wrap.appendChild(state.mode === 'live' ? renderLive() : renderEditor(false));
@@ -1975,6 +1980,343 @@
     return pane;
   }
 
+  /* -------------------------------------------------- 思维导图（大纲的另一种渲染） */
+
+  var MIND = { w: 200, h: 30, gapX: 66, gapY: 12 };
+  var mindView = { scale: 1, x: 0, y: 0, fitted: false, path: '' };
+  var mindDrag = { move: null, up: null };
+
+  /** 把大纲行拼成一棵树。
+   *
+   * 层级已经在行上（`level`），所以只需要一个栈：比栈顶浅就弹到该层，再挂上去。
+   * 三处刻意的取舍：
+   * * **被折叠挡住的行直接不出现**（`foldedLines` 已经把"谁被挡住了"算好，复用同一份口径）；
+   * * **空行不当节点** —— 它是排版上的留白，不是主题（放大纲里也一样是留白）；
+   * * **顶上补一个虚根**（文档标题）—— 大纲常有多个一级条目，没有根就画不成导图。
+   */
+  function mindTree(rows) {
+    var root = { index: -1, text: state.note.title || '大纲', level: -1, children: [], roots: true };
+    var stack = [root];
+    rows.forEach(function (row, idx) {
+      // **不在这里跳过被折支的行**：跳过了，折叠节点就成了叶子，
+      // 折起按钮（有子节点才给）跟着消失 —— 折起来就再也展不开了。
+      // 藏不藏是渲染那一步的事（见 `mindPrune`）。
+      if (!row.text || row.kind === 'blank') return;
+      var node = { index: idx, text: row.text, level: row.level, kind: row.kind, children: [] };
+      while (stack.length > 1 && stack[stack.length - 1].level >= row.level) stack.pop();
+      // 父节点记在节点上：画连线要用它（别到渲染那一步再遍历一遍找爹）。
+      // 第一版忘了这一句，现象是"节点都在、一条连线都没有"。
+      node.parent = stack[stack.length - 1];
+      node.parent.children.push(node);
+      stack.push(node);
+    });
+    return root;
+  }
+
+  /** 数一棵子树里有多少个节点（折叠时要报"还有几支"）。 */
+  function mindCount(node) {
+    return (node.children || []).reduce(function (sum, kid) {
+      return sum + 1 + mindCount(kid);
+    }, 0);
+  }
+
+  /** 按折叠状态剪枝：折起来的那一支整支收走，只记下"收走了几个"。
+   *
+   * 剪枝（看得见什么）与统计（收了多少）在这里一起做完，渲染那一步就只管画。
+   */
+  function mindPrune(node) {
+    var out = { index: node.index, text: node.text, level: node.level, children: [], hidden: 0 };
+    (node.children || []).forEach(function (kid) {
+      if (node.index >= 0 && folded[node.index]) {
+        out.hidden += 1 + mindCount(kid);
+        return;
+      }
+      var kept = mindPrune(kid);
+      // 剪枝是**复制**节点，所以连线要用的 `parent` 得在这里重新接上 ——
+      // 漏了这一句的症状是"节点都在、一条连线都没有"（这一版实测就是这么变成 0 条的）。
+      kept.parent = out;
+      out.hidden += kept.hidden;
+      out.children.push(kept);
+    });
+    return out;
+  }
+
+  /** 摆位置：深度定 x，中序定 y，父节点落在子节点的中间（最经典的那套）。 */
+  function mindLayout(tree) {
+    var cursor = 0;
+    (function place(node, depth) {
+      node.depth = depth;
+      node.x = depth * (MIND.w + MIND.gapX);
+      var kids = node.children;
+      if (!kids.length) {
+        node.y = cursor;
+        cursor += MIND.h + MIND.gapY;
+        return;
+      }
+      kids.forEach(function (kid) {
+        place(kid, depth + 1);
+      });
+      node.y = (kids[0].y + kids[kids.length - 1].y) / 2;
+    })(tree, 0);
+    return tree;
+  }
+
+  function mindNodes(tree) {
+    var out = [];
+    (function walk(node) {
+      out.push(node);
+      node.children.forEach(walk);
+    })(tree);
+    return out;
+  }
+
+  function mindApply(plane) {
+    plane.style.transform =
+      'translate(' + mindView.x + 'px,' + mindView.y + 'px) scale(' + mindView.scale + ')';
+  }
+
+  function renderMindmap() {
+    var pane = h('div.note__pane.note__pane--mind');
+    var rows = state.note.outline || [];
+    var tree = mindLayout(mindPrune(mindTree(rows)));
+    var nodes = mindNodes(tree);
+    var svg = QF.canvas && QF.canvas.svgEl;
+    var arrowDefs = QF.canvas && QF.canvas.arrowDefs;
+
+    // 点阵底与平面：**同一套类名**（画布那副长相），所以这里只加自己的两处
+    var surface = h('div.ncanvas__surface.nmind');
+    var plane = h('div.ncanvas__plane');
+    var edges = svg
+      ? svg('svg', { class: 'ncanvas__edges', style: 'overflow: visible', width: '1', height: '1' })
+      : null;
+    var defs = svg && arrowDefs ? svg('svg', { class: 'ncanvas__defs', width: '0', height: '0' }) : null;
+    if (defs) defs.appendChild(arrowDefs());
+
+    // 连线：父右缘中点 → 子左缘中点，一条横向的贝塞尔（与画布同一种走法）
+    if (edges) {
+      nodes.forEach(function (node) {
+        var parent = node.parent;
+        if (!parent) return;
+        var x1 = parent.x + MIND.w;
+        var y1 = parent.y + MIND.h / 2;
+        var x2 = node.x;
+        var y2 = node.y + MIND.h / 2;
+        var mid = (x1 + x2) / 2;
+        edges.appendChild(
+          svg('path', {
+            class: 'ncanvas__edge',
+            d: 'M' + x1 + ',' + y1 + ' C' + mid + ',' + y1 + ' ' + mid + ',' + y2 + ' ' + x2 + ',' + y2,
+            'marker-end': 'url(#ncanvas-arrow)'
+          })
+        );
+      });
+    }
+
+    var layer = h('div.nmind__nodes');
+    nodes.forEach(function (node) {
+      var isRoot = node.index < 0;
+      var box = h(
+        'div.ncanvas__node.nmind__node' + (isRoot ? '.is-root' : '') + (node.index === state.selected ? '.is-on' : ''),
+        {
+          style: {
+            left: node.x + 'px',
+            top: node.y + 'px',
+            width: MIND.w + 'px',
+            height: MIND.h + 'px'
+          },
+          dataset: { index: String(node.index) },
+          title: isRoot ? '这份大纲的根' : '双击回到大纲里去改这一条'
+        }
+      );
+      box.appendChild(
+        h('div.nmind__text', {
+          // 只给 html：同时给 text 与 html 会互相覆盖（后者赢），不如一次说清
+          html: QF.md && QF.md.renderInline ? QF.md.renderInline(node.text) : esc(node.text)
+        })
+      );
+      // 收起/展开：**有可见子节点、或者有被收走的**，才给这个按钮。
+      // （只判 `children.length` 是先前那个洞：折起来之后它就是 0，按钮消失、展不开。）
+      var hasKids = node.children.length || node.hidden;
+      if (hasKids) {
+        var isFolded = node.index >= 0 && !!folded[node.index];
+        var foldBtn = h('button.nmind__fold', {
+          type: 'button',
+          text: isFolded ? String(node.hidden) : '−',
+          title: isFolded ? '展开这一支（下面还有 ' + node.hidden + ' 支）' : '收起这一支',
+          onClick: function (ev) {
+            ev.stopPropagation();
+            folded[node.index] = !folded[node.index];
+            renderMain();
+          }
+        });
+        if (isFolded) foldBtn.classList.add('is-folded');
+        foldBtn.dataset.level = String(node.level);
+        box.appendChild(foldBtn);
+      }
+      box.addEventListener('click', function () {
+        if (isRoot) return;
+        state.selected = node.index;
+        renderMain();
+      });
+      box.addEventListener('dblclick', function (ev) {
+        ev.stopPropagation();
+        if (isRoot) return;
+        // 回到大纲去改这一条：导图适合看结构，改字还是块上顺手
+        state.mode = 'outline';
+        renderMain();
+        setTimeout(function () {
+          editLine(node.index);
+        }, 0);
+      });
+      layer.appendChild(box);
+    });
+
+    plane.appendChild(layer);
+    if (defs) plane.appendChild(defs);
+    if (edges) plane.appendChild(edges);
+    surface.appendChild(plane);
+    pane.appendChild(surface);
+
+    // 栏上那排：适应窗口 / 放大 / 缩小 / 全收起 / 全展开
+    var rail = h('div.nmind__rail');
+    rail.appendChild(
+      h('button.nmind__tool', {
+        type: 'button',
+        text: '适应',
+        title: '把整棵树放回窗口里（Ctrl+0）',
+        onClick: function () {
+          mindView.fitted = false;
+          renderMain();
+        }
+      })
+    );
+    rail.appendChild(
+      h('button.nmind__tool', {
+        type: 'button',
+        text: '＋',
+        title: '放大',
+        onClick: function () {
+          mindView.scale = Math.min(2.4, mindView.scale * 1.2);
+          mindApply(plane);
+        }
+      })
+    );
+    rail.appendChild(
+      h('button.nmind__tool', {
+        type: 'button',
+        text: '－',
+        title: '缩小',
+        onClick: function () {
+          mindView.scale = Math.max(0.3, mindView.scale / 1.2);
+          mindApply(plane);
+        }
+      })
+    );
+    rail.appendChild(
+      h('button.nmind__tool', {
+        type: 'button',
+        text: '全收',
+        title: '把所有能收的支都收起来（只看一级）',
+        onClick: function () {
+          rows.forEach(function (row, idx) {
+            if (row.foldable) folded[idx] = true;
+          });
+          renderMain();
+        }
+      })
+    );
+    rail.appendChild(
+      h('button.nmind__tool', {
+        type: 'button',
+        text: '全展',
+        title: '全部展开',
+        onClick: function () {
+          folded = {};
+          renderMain();
+        }
+      })
+    );
+    pane.appendChild(rail);
+
+    // 适应窗口 + 滚轮缩放 + 拖动平移（与画布同一套手势）
+    setTimeout(function () {
+      // 换了一篇笔记就重新适配一次；`fitted` 只挡住"同一篇反复重绘又跳一次"
+      if (mindView.path === state.note.path && mindView.fitted) return;
+      var box = surface.getBoundingClientRect();
+      var wide =
+        Math.max.apply(
+          null,
+          nodes.map(function (one) {
+            return one.x;
+          })
+        ) + MIND.w;
+      // 总高度按**实际排到多少行**算 —— 先前按深度算，树一宽就撑出窗口
+      var tall =
+        Math.max.apply(
+          null,
+          nodes.map(function (one) {
+            return one.y;
+          })
+        ) + MIND.h;
+      var scale = Math.min(1, (box.width - 60) / Math.max(1, wide), (box.height - 60) / Math.max(1, tall));
+      mindView.scale = Math.max(0.35, scale || 1);
+      mindView.x = 24;
+      mindView.y = Math.max(12, (box.height - tall * mindView.scale) / 2);
+      mindView.fitted = true;
+      mindView.path = state.note.path;
+      mindApply(plane);
+    }, 0);
+
+    surface.addEventListener('wheel', function (ev) {
+      ev.preventDefault();
+      if (ev.ctrlKey || ev.metaKey) {
+        var next = Math.min(2.4, Math.max(0.3, mindView.scale * (ev.deltaY < 0 ? 1.1 : 0.9)));
+        var box = surface.getBoundingClientRect();
+        var cx = ev.clientX - box.left;
+        var cy = ev.clientY - box.top;
+        // 以光标为锚缩放：不然一放大就不知道跑哪儿去了
+        mindView.x = cx - ((cx - mindView.x) / mindView.scale) * next;
+        mindView.y = cy - ((cy - mindView.y) / mindView.scale) * next;
+        mindView.scale = next;
+      } else {
+        mindView.x -= ev.deltaX;
+        mindView.y -= ev.deltaY;
+      }
+      mindApply(plane);
+    });
+
+    // 拖动：监听挂在 window 上（鼠标移出面板也要跟着走），但**每次重绘只留一份** ——
+    // 否则重绘几次就叠几层，而且旧的还抓着已经拆掉的 plane（现象是"拖两下就跳"）。
+    if (mindDrag.move) {
+      window.removeEventListener('mousemove', mindDrag.move);
+      window.removeEventListener('mouseup', mindDrag.up);
+      mindDrag.move = null;
+      mindDrag.up = null;
+    }
+    var dragging = null;
+    mindDrag.move = function (ev) {
+      if (!dragging) return;
+      mindView.x = ev.clientX - dragging.x;
+      mindView.y = ev.clientY - dragging.y;
+      mindApply(plane);
+    };
+    mindDrag.up = function () {
+      if (!dragging) return;
+      dragging = null;
+      surface.classList.remove('is-panning');
+    };
+    surface.addEventListener('mousedown', function (ev) {
+      var onNode = ev.target.closest && ev.target.closest('.ncanvas__node');
+      if (ev.button !== 0 || onNode) return;
+      dragging = { x: ev.clientX - mindView.x, y: ev.clientY - mindView.y };
+      surface.classList.add('is-panning');
+    });
+    window.addEventListener('mousemove', mindDrag.move);
+    window.addEventListener('mouseup', mindDrag.up);
+
+    return pane;
+  }
+
   /** 一条节点的操作菜单（幕布那七个动作 + 我们用得上的几个）。 */
   function nodeMenu(idx) {
     var row = (state.note.outline || [])[idx];
@@ -2065,7 +2407,10 @@
       var follow = function () { afterEdit(idx, action || next); };
       if (save && input.value !== row.raw) lineOp('replace', idx, { raw: input.value }, follow);
       else {
-        renderMain();
+        // **异步重绘**：这个 finish 常常是从 `blur` 里进来的，而 blur 又常常发生在
+        // `renderMain` 正拆 DOM 的时候（切视图、切笔记）—— 同步再拆一次就是
+        // "removeChild: node is no longer a child"（实测就是这么报的）。
+        setTimeout(renderMain, 0);
         follow();
       }
     }

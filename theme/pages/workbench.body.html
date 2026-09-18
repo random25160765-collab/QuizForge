@@ -1,0 +1,16 @@
+<!--
+  工作台：可组合窗格（tmux 式）。
+
+  与其它页面的差别只有一句：**它自己不排版**。这一页只是给 `QF.panes` 一个宿主，
+  里面装什么、怎么分，全由窗格引擎与用户的拖动决定 ——
+  所以这里没有固定的列，也不写死任何宽度。
+
+  首屏给一个骨架态：`boot.js` 走完之前页面脚本不启动（与其它页一致）。
+-->
+<div id="workbench-root" data-page="workbench">
+  <div class="bootstate">
+    <div class="bootstate__icon"><span class="bootstate__spinner"></span></div>
+    <h1 class="bootstate__title">正在装配工作台…</h1>
+    <p class="bootstate__text">读出上次的窗格布局，再把各个模块挂进来</p>
+  </div>
+</div>
