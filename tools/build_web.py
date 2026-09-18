@@ -70,6 +70,7 @@ VENDOR_HLJS = ROOT / "vendor" / "hljs"
 RUNTIME_ORDER = [
     "ui.js",
     "api.js",
+    "docview.js",       # 一份文件怎么看（PDF / 图片 / Markdown / Word / 幻灯片）：资料页与窗格共用
     "data.js",
     "md.js",
     "highlight.js",
@@ -130,7 +131,8 @@ PAGE_CSS = {
 }
 
 # 应用样式合并成一份，避免每页重复下载
-APP_CSS = ["markdown.css", "app.css"]
+# 文件查看器的样式：资料页与工作台都要用，所以进共用那一份
+APP_CSS = ["markdown.css", "app.css", "docview.css"]
 
 
 def _read(path: Path) -> str:

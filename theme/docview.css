@@ -1,0 +1,125 @@
+/* docview.css —— 一份文件怎么看（资料页与窗格共用）。
+ *
+ * 从 library.css 里那份 `.lib__view*` 搬过来，类名换成 `docv__`：
+ * 同一份渲染现在两处都在用，样式也就不能再挂在资料页那一套前缀上。
+ * 颜色一律走令牌，浅色深色共用。
+ */
+
+.docv {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.docv__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.docv__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docv__kind { flex: none; font-size: 11.5px; color: var(--fg3); }
+
+.docv__download {
+  flex: none;
+  font-size: 12px;
+  color: var(--fg2);
+  text-decoration: none;
+}
+
+.docv__download:hover { color: var(--pri); }
+
+.docv__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+/* PDF 与图片：铺满，不留内边距（缩放交给浏览器自带阅读器） */
+.docv__body:has(> .docv__frame),
+.docv__body:has(> .docv__image) { padding: 0; }
+
+.docv__frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg2);
+}
+
+.docv__image {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto;
+  border-radius: var(--r-sm, 6px);
+}
+
+.docv__prose { max-width: 76ch; margin: 0 auto; }
+
+.docv__prose--docx table { border-collapse: collapse; margin: 10px 0; }
+
+.docv__prose--docx th,
+.docv__prose--docx td {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.docv__text {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--fg2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.docv__slide {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 8px);
+}
+
+.docv__slideno { font-size: 11px; color: var(--fg3); }
+
+.docv__slidetitle {
+  margin: 2px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.docv__slidebody {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--fg2);
+}
+
+.docv__hint {
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg3);
+}
+
+/* 窗格里装文件时，让内容铺满整格 */
+.panes__host > .docv { height: 100%; }
