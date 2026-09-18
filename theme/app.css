@@ -627,6 +627,8 @@ body[data-sb='on'] .view {
 .badge--ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 36%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .badge--bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 36%, transparent); background: color-mix(in srgb, var(--bad) 10%, transparent); }
 .badge--mono { font-family: var(--font-mono); font-size: 11px; }
+/* 「我的题单」：自己出的题在卡片上要认得出（公共题库是默认，不标） */
+.badge--mine { color: var(--blue); border-color: color-mix(in srgb, var(--blue) 36%, transparent); background: color-mix(in srgb, var(--blue) 10%, transparent); }
 /* 主题树路径（单元 · 知识点）：中性色，让学科徽章的主题色更突出 */
 .badge--path { color: var(--fg2); border-color: var(--line); background: transparent; }
 

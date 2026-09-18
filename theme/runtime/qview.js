@@ -14,6 +14,17 @@
 
   /* --------------------------------------------------------- 元信息徽章 */
 
+  /**
+   * 这道题是不是**我自己出的**（在自己的题单里）。
+   *
+   * 判据取 **id 集合**（`QF.data.myIds`，装载时记下的），不看题对象上的字段 ——
+   * 练习页筛选用的是同一份，两边不会走岔。
+   */
+  function isMine(question) {
+    var ids = (QF.data && QF.data.myIds) || {};
+    return !!ids[question.id] || question.bank === 'mine';
+  }
+
   function metaRow(question, options) {
     var opts = options || {};
     var names = QF.data.topicPathNames(question.topic);
@@ -32,6 +43,12 @@
       row.appendChild(h('span.badge.badge--path', { text: names.slice(1).join(' · ') }));
     }
     row.appendChild(ui.difficultyDots(question.difficulty));
+
+    // 来源：自己的题单标出来，公共题库是默认所以不标 —— 一颗徽章的分量刚好，
+    // 多了会把分类信息挤散。判据见 `isMine`（与练习页筛选同一份）。
+    if (isMine(question)) {
+      row.appendChild(h('span.badge.badge--mine', { text: '我的题单' }));
+    }
 
     row.appendChild(h('span.spacer'));
     if (opts.extra) row.appendChild(opts.extra);

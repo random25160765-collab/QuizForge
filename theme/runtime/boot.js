@@ -127,9 +127,15 @@
         });
         return false;
       }
-      // 公共题库打上来源（练习/组卷靠 `source` 区分"公共"与"我的"）
+      // 公共题库打上来源标记。
+      //
+      // 字段名刻意**不叫 `source`**：题目自己的 `source` 是"出处"（材料与行号），
+      // 解析抽屉的出处行（`qview.js`）与题库搜索的搜索域（`data.js`）都在用它。
+      // 拿它记题源有两个后果：没有出处的题会把出处显示成 "public"，
+      // 而且每道公共题都会因为正文含 "public" 而命中搜索（实测踩过）。
+      // 筛选的权威判据仍是 `QF.data.myIds`（见下），这个字段只用于展示。
       (bank.questions || []).forEach(function (q) {
-        if (!q.source) q.source = 'public';
+        q.bank = 'public';
       });
       // 自己的题单**并进同一个池子**：练习与组卷那两头只认 QF.data，
       // 这样它们不必为"题从哪来"分叉，只多一个来源标记。
@@ -144,7 +150,7 @@
           (mine && mine.questions ? mine.questions : []).forEach(function (row) {
             var q = Object.assign({}, row.payload || {});
             q.id = row.id;
-            q.source = 'mine';
+            q.bank = 'mine';
             mineIds[q.id] = true;
             if (!q.pointKey) q.pointKey = row.pointKey || '';
             // 填空题的答案是题库自己的形状（一个带 accept 列表的字符串），
