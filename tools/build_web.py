@@ -90,6 +90,7 @@ PAGE_JS = {
     "wrongbook": ["wrongbook.js", "boot.js"],
     "graph": ["graph.js"],
     "chat": ["chat.js", "boot.js"],
+    "notes": ["notes.js"],              # 笔记页也自己启动（数据来自 /api/notes，不吃 boot.js）
 }
 
 PAGE_TITLE = {
@@ -97,6 +98,7 @@ PAGE_TITLE = {
     "wrongbook": "QuizForge · 错题本",
     "graph": "QuizForge · 知识图谱",
     "chat": "QuizForge · 对话",
+    "notes": "QuizForge · 笔记",
 }
 
 PAGE_BODY = {
@@ -104,10 +106,11 @@ PAGE_BODY = {
     "wrongbook": "wrongbook.body.html",
     "graph": "graph.body.html",
     "chat": "chat.body.html",
+    "notes": "notes.body.html",
 }
 
-# 页面专属样式：默认共用合并后的 app.css，只有图谱页与对话页要再加一份
-PAGE_CSS = {"graph": ["graph.css"], "chat": ["chat.css"]}
+# 页面专属样式：默认共用合并后的 app.css，只有图谱页、对话页与笔记页要再加一份
+PAGE_CSS = {"graph": ["graph.css"], "chat": ["chat.css"], "notes": ["notes.css"]}
 
 # 应用样式合并成一份，避免每页重复下载
 APP_CSS = ["markdown.css", "app.css"]

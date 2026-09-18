@@ -1,0 +1,531 @@
+/* 笔记页样式。只用在 body[data-page='notes'] 下，颜色/间距一律走 app.css 的令牌
+ * （浅色深色共用一套变量，切主题即时生效 —— 写死色值浅色下就会看到半页深色）。
+ *
+ * 结构：三栏 —— 树 / 正文 / 属性与反链。窄了就把右侧折成抽屉（见文件末尾）。
+ */
+
+.notes {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 300px;
+  gap: 0;
+  height: calc(100vh - var(--topbar-h, 48px) - var(--statusbar-h, 26px));
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------ 左栏：树 */
+
+.notes__aside {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+
+.notes__asidehead {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.notes__lib {
+  width: 100%;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.notes__search {
+  width: 100%;
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.notes__search:focus,
+.notes__lib:focus {
+  outline: none;
+  border-color: var(--pri);
+}
+
+.notes__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 6px 16px;
+}
+
+/* 树：目录与文件一行一个，层级靠缩进（不画连接线，留白就够） */
+.ntree__dir,
+.ntree__file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  font-size: 12.5px;
+  color: var(--fg2);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.ntree__file {
+  color: var(--fg);
+}
+
+.ntree__dir:hover,
+.ntree__file:hover {
+  background: var(--bg2);
+}
+
+.ntree__file.is-on {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.ntree__caret {
+  width: 12px;
+  color: var(--fg3);
+  font-size: 10px;
+  flex: none;
+}
+
+.ntree__label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ntree__count {
+  color: var(--fg3);
+  font-size: 11px;
+  flex: none;
+}
+
+.ntree__tagdot {
+  flex: none;
+  font-size: 10px;
+  color: var(--pri);
+}
+
+/* 检索结果：一节一行，命中处给一点点标记 */
+.nsearch__item {
+  display: block;
+  width: 100%;
+  padding: 6px 7px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.nsearch__item:hover {
+  background: var(--bg2);
+}
+
+.nsearch__title {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+.nsearch__snippet {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--fg3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nsearch__where {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--fg3);
+}
+
+/* ------------------------------------------------------------ 中栏：正文 */
+
+.notes__main {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 22px 60px;
+}
+
+.note__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.note__title {
+  flex: 1;
+  min-width: 120px;
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--fg);
+  cursor: text;
+}
+
+.note__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.note__meta {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+/* 文档 / 大纲两态切换：细边框的分段控件，不做填充色块 */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+  overflow: hidden;
+}
+
+.seg__item {
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg2);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.seg__item + .seg__item {
+  border-left: 1px solid var(--line);
+}
+
+.seg__item.is-on {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.doc {
+  max-width: 78ch;
+  font-size: var(--font-scale, 13px);
+  line-height: 1.75;
+  color: var(--fg);
+}
+
+/* 双链：细下划线，不用亮色块 —— 正文里一眼能认出，又不打断阅读 */
+.wikilink {
+  color: var(--pri);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--pri) 40%, transparent);
+}
+
+.wikilink:hover {
+  border-bottom-color: var(--pri);
+}
+
+.wikilink--embed {
+  color: var(--fg2);
+  border-bottom-style: dashed;
+}
+
+/* ------------------------------------------------------ 大纲（幕布那半边） */
+
+.outline {
+  font-size: var(--font-scale, 13px);
+}
+
+.oline {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 2px 6px 2px 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: default;
+}
+
+.oline:hover {
+  background: var(--bg2);
+}
+
+.oline.is-on {
+  background: var(--bg3);
+}
+
+/* 选中/悬停时才出现的折叠箭头与编辑按钮：平时不抢视线 */
+.oline__fold {
+  flex: none;
+  width: 14px;
+  height: 20px;
+  padding: 0;
+  font-size: 9px;
+  line-height: 20px;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.oline:hover .oline__fold,
+.oline.is-on .oline__fold,
+.oline__fold.is-folded {
+  opacity: 1;
+}
+
+.oline__fold--none {
+  visibility: hidden;
+}
+
+.oline__bullet {
+  flex: none;
+  width: 14px;
+  line-height: 1.75;
+  font-size: 11px;
+  color: var(--fg3);
+  text-align: center;
+  user-select: none;
+}
+
+.oline__text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.75;
+  color: var(--fg);
+  word-break: break-word;
+}
+
+.oline[data-kind='heading'] .oline__text {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.oline[data-kind='code'] .oline__text {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.oline[data-kind='quote'] .oline__text {
+  color: var(--fg2);
+  border-left: 2px solid var(--line-strong, var(--line));
+  padding-left: 8px;
+}
+
+.oline[data-kind='blank'] {
+  min-height: 18px;
+}
+
+.oline__placeholder {
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.oline__edit {
+  flex: none;
+  padding: 0 6px;
+  height: 20px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg3);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.oline:hover .oline__edit,
+.oline.is-on .oline__edit {
+  opacity: 1;
+}
+
+.oline__input {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--pri);
+  border-radius: var(--r-sm, 6px);
+}
+
+.oline__input:focus {
+  outline: none;
+}
+
+.outline__hint {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 11.5px;
+  color: var(--fg3);
+  line-height: 1.9;
+}
+
+.outline__hint kbd {
+  padding: 1px 5px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg2);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+/* ------------------------------------------------------------ 右栏：面板 */
+
+.notes__side {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 12px 40px;
+  border-left: 1px solid var(--line);
+}
+
+.npanel {
+  margin-bottom: 16px;
+}
+
+.npanel__title {
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--fg3);
+}
+
+.npanel__hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.nprop {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.nprop__key {
+  flex: none;
+  width: 46px;
+  color: var(--fg3);
+}
+
+.nprop__val {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+  word-break: break-word;
+}
+
+.nprop__val:hover {
+  border-bottom-color: var(--line);
+}
+
+.nprop__val--empty {
+  color: var(--fg3);
+}
+
+.nitem {
+  display: block;
+  width: 100%;
+  padding: 5px 6px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.nitem:hover {
+  background: var(--bg2);
+}
+
+.nitem__title {
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+.nitem__sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--fg3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.nchip {
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--fg2);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.nchip:hover {
+  color: var(--fg);
+  border-color: var(--line-strong, var(--line));
+}
+
+.nchip__count {
+  margin-left: 5px;
+  color: var(--fg3);
+}
+
+/* 窄屏：右栏折成抽屉（浮层，不挤压正文宽度） */
+@media (max-width: 1180px) {
+  .notes {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+
+  .notes__side {
+    position: fixed;
+    top: var(--topbar-h, 48px);
+    right: 0;
+    bottom: var(--statusbar-h, 26px);
+    width: 300px;
+    background: var(--bg);
+    box-shadow: var(--shadow-3, 0 8px 30px rgb(0 0 0 / 25%));
+    transform: translateX(100%);
+    transition: transform var(--dur, 160ms) var(--ease, ease-out);
+  }
+
+  .notes__side.is-open {
+    transform: none;
+  }
+}
