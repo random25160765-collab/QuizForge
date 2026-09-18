@@ -441,6 +441,11 @@ class Concept(Base):
     status: Mapped[str] = mapped_column(String(16), default="auto", index=True, nullable=False)
     #: 归并的把握度 0~1，越低越该人看一眼
     confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+
+    #: 「以概念为中心」的判边问过它了吗（见 `pipeline.graph_build relate-centric`）。
+    #: 用途只有一个：**别把同一个概念反复问** —— 模型说"没有前置"的也要留痕，
+    #: 否则下次查询照样选中它，钱白花。
+    centric_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
