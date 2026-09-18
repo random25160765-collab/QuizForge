@@ -212,18 +212,37 @@ def _graph_payload(nodes: list[dict], links: list[dict]) -> dict[str, Any]:
     }
 
 
-def diagnose(question_ids: list[str], depth: int = 2) -> dict[str, Any]:
-    """把"这几道题错了"翻译成"该去补哪个考点"。
+def diagnose(question_ids: list[str], depth: int = 8) -> dict[str, Any]:
+    """把"这几道题错了"翻译成"该去补哪个考点、按什么顺序、几步"。
 
     这是图谱对用户可见的第一件事：复习页不再只说"这题错了"，而是沿着
-    `requires`（前置）边往回走，指出**根因考点**与**建议的顺序**。
+    `requires`（前置）边往回走，指出**根因考点**、**整条前置链**与**建议顺序**。
 
-    只回到考点与先后关系这一步，不下"你掌握了没有"的结论 ——
-    掌握度是个人的、在客户端；这里给的是"这条链长什么样"，
-    前端拿它和自己的掌握度一对，就能说"先补 A，再回来做 B"。
+    为什么只走 `requires` 不走 `part_of`：`part_of` 说的是"谁是谁的一部分"，
+    是结构不是先后 —— "先学 A 再学 B"这件事只有 `requires` 说了算。
+
+    为什么不下"你掌握了没有"的判语：掌握度是个人的、在客户端。
+    这里只给"这条链长什么样"（含每一步的距离与依据），前端拿它和自己的掌握度一对，
+    就能说"先补 A，再回来做 B"。
+
+    返回（`wrongConcepts` / `prerequisites` / `order` 三个键是老的，保持不动）：
+
+    * `chains` —— 每道错题一条链：从最远的前置一路排到这道错题本身；
+    * `steps` —— 最长那条链的步数（含错题本身）；
+    * `roots` —— 链的起点（它自己没有更前置的东西，"从这里开始"就是它）；
+    * `truncated` —— 撞到了 `depth` 上限（链还没走完，别把它当成"没有前置"）。
     """
     if not question_ids:
-        return {"wrongConcepts": [], "prerequisites": [], "order": []}
+        return {
+            "wrongConcepts": [],
+            "prerequisites": [],
+            "order": [],
+            "chains": [],
+            "steps": 0,
+            "roots": [],
+            "truncated": False,
+        }
+
 
     with _engine().connect() as conn:
         info = {
@@ -254,19 +273,6 @@ def diagnose(question_ids: list[str], depth: int = 2) -> dict[str, Any]:
         ):
             prereq.setdefault(row[1], []).append((row[0], row[2] or "", row[3] or ""))
 
-        # 广度回溯：谁挡在它前面（含更前面一层），去重后按"离错题的距离"排序
-        seen: dict[int, int] = {}
-        frontier = [(cid, 0) for cid in wrong]
-        while frontier:
-            cid, distance = frontier.pop(0)
-            if distance >= depth:
-                continue
-            for source, why, by in prereq.get(cid, []):
-                if source in seen or source in wrong:
-                    continue
-                seen[source] = distance + 1
-                frontier.append((source, distance + 1))
-
         def brief(cid: int) -> dict:
             data = info.get(cid, {})
             return {
@@ -276,12 +282,83 @@ def diagnose(question_ids: list[str], depth: int = 2) -> dict[str, Any]:
                 "questions": data.get("questions", 0),
             }
 
+        def is_root(cid: int) -> bool:
+            """它自己还有没有"得先学"的东西 —— 没有就是链的起点。"""
+            return not [src for src, _why, _by in prereq.get(cid, []) if src not in wrong]
+
+        flags = {"truncated": False}
+
+        def walk(origin: int) -> tuple[dict[int, int], dict[int, tuple[str, str]]]:
+            """从一道错题往回走：{前置: 几步} 与 {前置: (依据, 谁判的)}。
+
+            广度优先，所以每个前置拿到的是**最短**那条路（"几步能补到"）。
+            撞到 `depth` 就停并标记 —— 停下来的那个不是"没有前置"。
+            """
+            local: dict[int, int] = {}
+            reason: dict[int, tuple[str, str]] = {}
+            frontier = [(origin, 0)]
+            while frontier:
+                cid, distance = frontier.pop(0)
+                for source, why, by in prereq.get(cid, []):
+                    if source in wrong:
+                        continue
+                    step = distance + 1
+                    if step > depth:
+                        flags["truncated"] = True
+                        continue
+                    if source in local and local[source] <= step:
+                        continue
+                    local[source] = step
+                    reason.setdefault(source, (why, by))
+                    frontier.append((source, step))
+            return local, reason
+
+        chains: list[dict] = []
+        hops: dict[int, int] = {}
+        via: dict[int, tuple[str, str]] = {}
+        for origin in wrong:
+            local, reason = walk(origin)
+            for cid, step in local.items():
+                if cid not in hops or step < hops[cid]:
+                    hops[cid] = step
+                via.setdefault(cid, reason.get(cid, ("", "")))
+            # 链是"从最远的前置往下排到错题本身" —— 那就是该照着补的顺序
+            chains.append(
+                {
+                    "wrong": brief(origin),
+                    "steps": [
+                        {
+                            **brief(cid),
+                            "hops": step,
+                            "isRoot": is_root(cid),
+                            "why": reason.get(cid, ("", ""))[0],
+                            "derivedBy": reason.get(cid, ("", ""))[1],
+                        }
+                        for cid, step in sorted(local.items(), key=lambda kv: (-kv[1], kv[0]))
+                    ]
+                    + [brief(origin)],
+                }
+            )
+
+    # 越远的越先补："几步"是从错题往回数的，所以降序就是补课顺序
+    ranked = sorted(hops.items(), key=lambda kv: (-kv[1], info.get(kv[0], {}).get("key", "")))
+
+    def detail(cid: int, step: int) -> dict:
+        return {
+            **brief(cid),
+            "hops": step,
+            "isRoot": is_root(cid),
+            "why": via.get(cid, ("", ""))[0],
+            "derivedBy": via.get(cid, ("", ""))[1],
+        }
+
     return {
         "wrongConcepts": [brief(cid) for cid in wrong],
-        "prerequisites": [
-            {**brief(cid), "hops": hops} for cid, hops in sorted(seen.items(), key=lambda x: x[1])
-        ],
+        "prerequisites": [detail(cid, step) for cid, step in ranked],
         # 先补更远的前置，再回到错题本身 —— 这就是"先练哪几道"的顺序
-        "order": [brief(cid) for cid, _ in sorted(seen.items(), key=lambda x: -x[1])]
-        + [brief(cid) for cid in wrong],
+        "order": [brief(cid) for cid, _ in ranked] + [brief(cid) for cid in wrong],
+        "chains": chains,
+        "steps": max((len(chain["steps"]) for chain in chains), default=0),
+        "roots": [brief(cid) for cid, _step in ranked if is_root(cid)],
+        "truncated": flags["truncated"],
     }

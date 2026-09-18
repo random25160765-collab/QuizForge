@@ -838,9 +838,18 @@
     box.appendChild(head);
 
     var text = document.createElement('div');
-    if (prereq.length) {
+    // 优先用服务端给的**链**：它已经是"从最远的前置一路排到错题本身"的顺序，
+    // 比只报"先补这几个"更能照着做（从哪开始、几步都写在里面）。
+    var chain = ((data.chains || [])[0] || {}).steps || [];
+    if (chain.length > 1) {
+      var road = [];
+      for (var i = 0; i < chain.length; i++) road.push('「' + chain[i].name + '」');
+      text.textContent = '根因在前置链上，照这个顺序补：' + road.join(' → ') +
+        '（共 ' + (data.steps || chain.length) + ' 步' +
+        (data.truncated ? '，链还没走完' : '') + '）。';
+    } else if (prereq.length) {
       var names = [];
-      for (var i = 0; i < Math.min(3, prereq.length); i++) names.push('「' + prereq[i].name + '」');
+      for (var j = 0; j < Math.min(3, prereq.length); j++) names.push('「' + prereq[j].name + '」');
       text.textContent = '这些错题的根子在前置考点上：先补 ' + names.join('、') +
         (prereq.length > 3 ? ' 等 ' + prereq.length + ' 个' : '') +
         '，再回来做错题。整个复习顺序共 ' + steps.length + ' 步。';
@@ -848,6 +857,15 @@
       text.textContent = '这些错题都落在同一个考点上（' + wrong[0].name + '），直接把这个考点再练几道即可。';
     }
     box.appendChild(text);
+
+    // 「为什么说它是前置」—— 判边时给的那句话，摊开让人能核
+    var first = (data.prerequisites || [])[0];
+    if (first && first.why) {
+      var why = document.createElement('div');
+      why.style.cssText = 'margin-top:4px;color:var(--fg3);font-size:12px';
+      why.textContent = '依据：' + first.why;
+      box.appendChild(why);
+    }
     list.insertBefore(box, list.firstChild);
   }
 
