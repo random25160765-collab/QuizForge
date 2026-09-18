@@ -12,12 +12,15 @@
 * ``edges`` —— 派**程序能确定派生**的边：同切片共现（co_occurs，弱边，当证据）。
 * ``relate`` —— 让模型给反复共现的概念对判**语义关系**（requires / part_of /
   contrast_with / implements）。这一步才是"知识"，程序算不出来，所以要留 why 给人核。
+* ``check`` —— 体检：图能不能支撑"下一步该学什么"（无环、能走到根、闭包不矛盾）。
+  它是补边的进度尺，也是唯一的闸门 —— 破了就退出码非零。
 
 命令行::
 
     api/.venv/bin/python -m pipeline.graph_build merge
     api/.venv/bin/python -m pipeline.graph_build edges
     api/.venv/bin/python -m pipeline.graph_build relate --limit 40
+    api/.venv/bin/python -m pipeline.graph_build check
     api/.venv/bin/python -m pipeline.graph_build export --out /tmp/graph.json
 """
 
@@ -41,6 +44,11 @@ VERSION = "v1"
 
 #: 受控关系词表（前端按它配色，别自由加）
 RELATION_TYPES = ("requires", "part_of", "contrast_with", "implements", "co_occurs")
+
+#: **有序**关系：`from` 是主动那头 —— `A →requires→ B` 读作「A 是 B 的前置」，
+#: `A →part_of→ B` 读作「A 是 B 的一部分」。只有这两类参与前置链与体检 ——
+#: `contrast_with`（易混）是**对称**的，`co_occurs`（共现）只是证据，都不排先后。
+ORDERED_TYPES = ("requires", "part_of")
 
 #: 归并信号的门槛
 TERM_MIN_SHARED = 3
@@ -516,6 +524,189 @@ def export(
 
 
 
+# --------------------------------------------------------------------------- 体检
+
+
+def _find_cycles(edges: list[tuple[str, str]]) -> list[list[str]]:
+    """找有向环（迭代式三色 DFS），返回若干条环的节点序列。
+
+    为什么不直接在库里用递归 CTE 算：环要**报出路径**人才修得动，而 SQL 里攒路径
+    得靠数组再自己复原。这张图只有几百条边，拉到内存里走一遍更快也更清楚。
+    """
+    out_edges: dict[str, list[str]] = defaultdict(list)
+    for src, dst in edges:
+        out_edges[src].append(dst)
+
+    WHITE, GREY, BLACK = 0, 1, 2
+    color: dict[str, int] = defaultdict(int)
+    found: list[list[str]] = []
+
+    for start in list(out_edges):
+        if color[start] != WHITE:
+            continue
+        stack: list[tuple[str, int]] = [(start, 0)]
+        path: list[str] = []
+        while stack:
+            node, index = stack[-1]
+            if index == 0:
+                color[node] = GREY
+                path.append(node)
+            neighbours = out_edges.get(node, [])
+            if index < len(neighbours):
+                stack[-1] = (node, index + 1)
+                nxt = neighbours[index]
+                if color[nxt] == GREY:
+                    found.append(path[path.index(nxt) :] + [nxt])
+                elif color[nxt] == WHITE:
+                    stack.append((nxt, 0))
+            else:
+                color[node] = BLACK
+                path.pop()
+                stack.pop()
+    return found
+
+
+def _longest_chain(prereqs: dict[str, set[str]]) -> int:
+    """最长前置链：从任一概念往上走（找它的前置）最多几步。
+
+    有环时按"环里不重复走"兜底 —— 环本身已经被报成硬问题了，这里只求不爆栈。
+    """
+    memo: dict[str, int] = {}
+
+    def walk(node: str, seen: frozenset[str]) -> int:
+        if node in memo:
+            return memo[node]
+        if node in seen:
+            return 0
+        deeper = seen | {node}
+        best = 0
+        for parent in prereqs.get(node, ()):  # type: ignore[union-attr]
+            best = max(best, 1 + walk(parent, deeper))
+        memo[node] = best
+        return best
+
+    return max((walk(node, frozenset()) for node in list(prereqs)), default=0)
+
+
+def check(limit: int = 5) -> dict:
+    """图谱体检：把「图上任取概念能走到根、无环、可传递闭包不矛盾」变成可执行断言。
+
+    ## 三条**硬**不变量（破了就是脏数据，`check` 的退出码非零）
+
+    * `self_loops` —— 自己指向自己；
+    * `cycles` —— 有序边上有环。它等价于「沿前置链往上走**永远到不了根**」，
+      是三条里最要命的一条：环上的概念排不出一个先后顺序；
+    * `kind_conflicts` —— 同一对概念同时被说成「前置」与「组成」（A 是 B 的前提，
+      同时又是 B 的一部分），或同一种有序关系**双向**成立（互为前提 / 互为组成部分）。
+      **刻意不算 `contrast_with` 的双向**：易混本来就是对称的，两边都写是对的；
+      也不算 `co_occurs`（它只是"一起出现过"的证据，不是结论）。
+
+    ## 两条**软**指标（只报出来，不判死）
+
+    * `roots` —— 没有前置的概念：对它们，"该先学什么"的答案就是"它自己"；
+    * `unrooted` —— **一条有序边都没有**的概念（这次实测 370 个）。它们不是错，
+      但任何路径推荐走到这里只会说"没有前置"，而这句话**没法验证**。补边的进度就看它。
+    """
+    with _engine().connect() as conn:
+        names = {
+            row[0]: (row[1] or "", row[2] or "")
+            for row in conn.execute(text("SELECT id, key, name FROM concepts")).all()
+        }
+        rows = conn.execute(
+            text("SELECT from_concept_id, to_concept_id, type FROM concept_edges")
+        ).all()
+
+    def label(concept_id: str) -> str:
+        key, name = names.get(concept_id, ("", ""))
+        if key and name:
+            return f"{key}（{name}）"
+        return key or name or concept_id
+
+    ordered = [(row[0], row[1], row[2]) for row in rows if row[2] in ORDERED_TYPES]
+    ordered_pairs = set(ordered)
+
+    self_loops = sorted({row[0] for row in rows if row[0] == row[1]})
+    cycles = _find_cycles([(src, dst) for src, dst, _kind in ordered])
+    bidirectional = sorted(
+        {(src, dst, kind) for src, dst, kind in ordered_pairs if (dst, src, kind) in ordered_pairs}
+    )
+    by_pair: dict[frozenset[str], set[str]] = defaultdict(set)
+    for src, dst, kind in ordered_pairs:
+        by_pair[frozenset((src, dst))].add(kind)
+    kind_conflicts = sorted(pair for pair, kinds in by_pair.items() if len(kinds) > 1)
+
+    prereqs: dict[str, set[str]] = defaultdict(set)
+    touched: set[str] = set()
+    for src, dst, kind in ordered:
+        touched.update((src, dst))
+        if kind == "requires":
+            prereqs[dst].add(src)
+
+    roots = [cid for cid in names if not prereqs.get(cid)]
+    unrooted = [cid for cid in names if cid not in touched]
+
+    problems: list[dict] = []
+
+    def flag(name: str, samples: list[str], hint: str) -> None:
+        if samples:
+            problems.append(
+                {"name": name, "count": len(samples), "samples": samples[:limit], "hint": hint}
+            )
+
+    flag(
+        "self_loops",
+        [label(cid) for cid in self_loops],
+        "自己指向自己 —— 删掉那条边",
+    )
+    flag(
+        "cycles",
+        [" → ".join(label(cid) for cid in cycle) for cycle in cycles],
+        "环上的概念排不出先后（互为前置），先断哪条边由人定",
+    )
+    flag(
+        "bidirectional",
+        [f"{label(src)} ⇄ {label(dst)}（{kind}）" for src, dst, kind in bidirectional],
+        "同一种有序关系双向成立 —— 只能留一个方向，方向约定见文件头",
+    )
+    flag(
+        "kind_conflicts",
+        [" ⇄ ".join(label(cid) for cid in sorted(pair)) for pair in kind_conflicts],
+        "同一对概念既是前置又是组成 —— 留下一句更准的",
+    )
+
+    metrics = {
+        "concepts": len(names),
+        "ordered_edges": len(ordered),
+        "concepts_with_ordered_edge": len(names) - len(unrooted),
+        "roots": len(roots),
+        "unrooted": len(unrooted),
+        "max_chain": _longest_chain(prereqs),
+        # 口径与 cc.md 一致：**边数 / 概念数**（686/912 ≈ 0.75），不是两端各算一次
+        "ordered_per_concept": round(len(ordered) / len(names), 2) if names else 0.0,
+    }
+    return {"ok": not problems, "problems": problems, "metrics": metrics}
+
+
+def _print_check(report: dict) -> None:
+    m = report["metrics"]
+    print(
+        f"  概念 {m['concepts']} · 有序边 {m['ordered_edges']}"
+        f"（平均 {m['ordered_per_concept']} 条/概念）"
+    )
+    print(
+        f"  起点（没有前置）{m['roots']} · 一条有序边都没有 {m['unrooted']}"
+        f" · 最长前置链 {m['max_chain']} 步"
+    )
+    if report["ok"]:
+        print("  体检通过：无自环、无环、同一种有序关系不双向、闭包不矛盾")
+        return
+    print("  体检没通过：")
+    for problem in report["problems"]:
+        print(f"    ✗ {problem['name']} × {problem['count']} —— {problem['hint']}")
+        for sample in problem["samples"]:
+            print(f"        {sample}")
+
+
 def stats() -> dict:
     """图谱体检：不只是"有多少"，还要能看出**算得对不对**。
 
@@ -523,6 +714,9 @@ def stats() -> dict:
     有多少概念还没被题覆盖（该出题）、每个概念几道题（够不够）、
     归并把握度低的有哪些（该人看一眼）、有没有自环与双向语义边（该修的脏数据）。
     """
+    # 体检结果并进来：这一眼既要看"有多少"，也要看"算得对不对"
+    # （明细 —— 哪个环、哪对边双向 —— 用 `graph_build check` 看）
+    report = check(limit=3)
     with _engine().connect() as conn:
         edges = {
             row[0]: row[1]
@@ -567,20 +761,12 @@ def stats() -> dict:
             "low_confidence_merges": conn.execute(
                 text("SELECT COUNT(*) FROM concepts WHERE confidence < 0.8")
             ).scalar(),
-            "dirty_edges": {
-                "self_loops": conn.execute(
-                    text("SELECT COUNT(*) FROM concept_edges WHERE from_concept_id = to_concept_id")
-                ).scalar(),
-                "bidirectional_semantic": conn.execute(
-                    text(
-                        "SELECT COUNT(*) FROM concept_edges a JOIN concept_edges b"
-                        " ON a.from_concept_id = b.to_concept_id"
-                        " AND a.to_concept_id = b.from_concept_id AND a.type = b.type"
-                        " WHERE a.type <> 'co_occurs'"
-                    )
-                ).scalar(),
-            },
             "edges": edges,
+            "health": {
+                "ok": report["ok"],
+                "problems": [problem["name"] for problem in report["problems"]],
+                **report["metrics"],
+            },
         }
 
 
@@ -596,6 +782,9 @@ def main(argv: list[str] | None = None) -> int:
     rel.add_argument("--limit", type=int, default=40)
     rel.add_argument("--min-weight", type=float, default=2.0)
     sub.add_parser("stats", help="看一眼图现在什么样")
+    chk = sub.add_parser("check", help="图谱体检：无环 / 能走到根 / 闭包不矛盾")
+    chk.add_argument("--json", action="store_true", help="输出 JSON（给脚本与流水线用）")
+    chk.add_argument("--limit", type=int, default=5, help="每类问题最多列几条")
     exp = sub.add_parser("export", help="导出前端要的 JSON")
     exp.add_argument("--out", required=True)
     exp.add_argument("--min-weight", type=float, default=1.0)
@@ -614,6 +803,14 @@ def main(argv: list[str] | None = None) -> int:
     elif args.cmd == "stats":
         for key, value in stats().items():
             print(f"  {key}: {value}")
+    elif args.cmd == "check":
+        report = check(limit=args.limit)
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            _print_check(report)
+        # 硬不变量破了就退出码非零 —— 这样它能直接串进流水线当闸门（见 Makefile 的 graph-check）
+        return 0 if report["ok"] else 1
     return 0
 
 

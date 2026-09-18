@@ -24,7 +24,7 @@ WEB_OUT   ?= api/web
 
 .PHONY: vendor check test new web api-venv api-dev api-test api-migrate api-migration \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
-        bank-export bank-import graph graph-relate graph-export skills-link \
+        bank-export bank-import graph graph-check graph-relate graph-export skills-link \
         coverage coverage-gaps drive help
 
 vendor:
@@ -135,6 +135,12 @@ graph:
 	@$(VENV)/bin/python -m pipeline.graph_build merge
 	@$(VENV)/bin/python -m pipeline.graph_build edges
 	@$(VENV)/bin/python -m pipeline.graph_build stats
+	@$(VENV)/bin/python -m pipeline.graph_build check
+
+# 图谱体检：无环 / 能走到根 / 闭包不矛盾。硬不变量破了退出码非零，可直接当闸门。
+# 补边的进度看它报的 `unrooted`（一条有序边都没有的概念数）。
+graph-check:
+	@$(VENV)/bin/python -m pipeline.graph_build check $(ARGS)
 
 graph-relate:
 	@$(VENV)/bin/python -m pipeline.graph_build relate --limit $(or $(LIMIT),400)
