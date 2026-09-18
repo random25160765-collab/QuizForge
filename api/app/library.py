@@ -664,13 +664,35 @@ def freeze(meta_dir: Path, text_dir: Path, meta: dict[str, Any], rel: str, *, or
     known = load_all_metadata(meta_dir)
     key = str(meta.get("citekey") or "")
     holder = known.get(key)
-    if holder is not None and str(holder.get("source") or "") not in ("", str(meta.get("source") or "")):
+    # "这把键被别人占着吗"要按**规范标识**比：同一个文件换了种写法（软链）不算别人，
+    # 否则会把自己判成撞键、给自己加一个目录后缀（实测那 7 组就是这么来的）。
+    if holder is not None and source_id(holder.get("source")) not in ("", source_id(meta.get("source"))):
         fixed = disambiguate(key, rel, known)
         if fixed != key:
             rename_text(text_dir, key, fixed)
             meta = dict(meta)
             meta["citekey"] = fixed
     return save_metadata(meta_dir, meta, origin=origin)
+
+
+def source_id(path: Any) -> str:
+    """源文件的**规范标识**：解析过软链的绝对路径。
+
+    为什么不能直接拿 `source` 字符串比：同一个文件经常有几种写法（开发环境里
+    `reference/` 是指向 `F:\\Documents` 的软链，真实路径是 `/mnt/f/Documents/...`）。
+    实测就这么长出了 7 组"同一文件两把键"：字符串匹配不上 → 条目回落到重新推断 →
+    猜出的键撞上已冻结的那把 → 被加上目录后缀（`…-cuda`），于是那份文件有两份元数据、
+    两把键，而笔记里到底引用的是哪一把就说不准了。
+
+    解析失败（文件不在、权限）时原样返回 —— 宁可比不上，也不要抛。
+    """
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(Path(text).expanduser().resolve())
+    except OSError:
+        return text
 
 
 def metadata_index(meta_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -684,20 +706,42 @@ def metadata_index(meta_dir: Path) -> tuple[dict[str, dict[str, Any]], dict[str,
     by_key = load_all_metadata(meta_dir)
     by_source: dict[str, dict[str, Any]] = {}
     for meta in by_key.values():
-        source = str(meta.get("source") or "").strip()
+        source = source_id(meta.get("source"))
         if source:
             by_source[source] = meta
     return by_key, by_source
 
 
+#: 标题开头的标记符号：md 的 `#`、项目符号、引用。
+#: **刻意不含"数字编号"**（`^\d+[.)]`）—— 试过，标题以数字开头太常见了：
+#: 实测把标准号 `1364.1 TM` 吃成了 `1 TM`。宁可不收拾，也别把真东西咬掉。
+_TITLE_MARKS = re.compile(r"^[\s>\-*+\u2022]+|^#{1,6}\s*")
+
+
+def clean_title(text: Any) -> str:
+    """把标题收拾干净：去开头的标记符号、压空白、去首尾。
+
+    三条路都会写标题（推断 / 模型归类 / 人手填），这里收一道 ——
+    实测看到列表里顶着 `# Layout polynomials`：那是**模型归类**写的，
+    推断那条路本来就有 `lstrip("#>*-")`，模型那条没有。
+    """
+    cleaned = _TITLE_MARKS.sub("", str(text or "").strip())
+    return re.sub(r"\s+", " ", cleaned).strip()[:180]
+
+
 def save_metadata(meta_dir: Path, meta: dict[str, Any], *, origin: str = "") -> dict[str, Any]:
-    """写一份元数据。`origin` 记的是**这一版是谁定的**（推断 / 模型 / 手工）。"""
+    """写一份元数据。`origin` 记的是**这一版是谁定的**（推断 / 模型 / 手工）。
+
+    标题在这里统一收拾干净（见 `clean_title`）—— 无论这一版是谁写的。
+    """
     citekey = str(meta.get("citekey") or "").strip()
     if not citekey:
         raise LibraryError("元数据里得有 citekey")
     safe = _safe_key(citekey)
     out = dict(meta)
     out["citekey"] = safe
+    if out.get("title"):
+        out["title"] = clean_title(out["title"])
     if origin:
         out["origin"] = origin
     folder = Path(meta_dir)
@@ -929,7 +973,11 @@ def entries(roots: list[Path], meta_dir: Path, text_dir: Path) -> list[Entry]:
     for root in roots:
         for item in scan(Path(root)):
             # 先按**路径**认（键是冻结的，跟临时猜的未必一样）；认不到再按键认一次。
-            meta = by_source.get(str(item.path)) or by_key.get(citekey_for(infer(item), fallback=item.rel))
+            # 路径要过 `source_id`：同一个文件有软链与真实路径两种写法（实测那 7 组
+            # "同一文件两把键"就是这么来的），字符串直接比会认不出来。
+            meta = by_source.get(source_id(item.path)) or by_key.get(
+                citekey_for(infer(item), fallback=item.rel)
+            )
             entry = entry_for(item, meta_dir, text_dir, meta=meta)
             entry.frozen = meta is not None
             out.append(entry)

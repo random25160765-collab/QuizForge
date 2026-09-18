@@ -409,3 +409,55 @@ def test_detail_lists_primary_and_assets_with_roles(tmp_path: Path, monkeypatch)
     detail = client.get("/api/library/item", params={"citekey": key}).json()
     roles = [(Path(one["path"]).name, one["role"]) for one in detail["files"]]
     assert roles == [("Review.md", "primary"), ("fig-1.svg", "asset")]
+
+
+def test_source_id_folds_symlink_spellings(tmp_path: Path):
+    """同一个文件的不同写法（软链）要算同一个源 —— 否则会长出"同一文件两把键"。
+
+    实测：真实库里有 7 组这样的重复（`dao2022flashattentionfastme` 与 `…-cuda`），
+    成因就是按字符串比 `source`：软链写法匹配不上 → 重新推断 → 撞键 → 加后缀。
+    """
+    real = tmp_path / "Documents"
+    (real / "cuda").mkdir(parents=True)
+    doc = real / "cuda" / "x.pdf"
+    doc.write_bytes(b"%PDF-1.4 fake")
+    link = tmp_path / "reference"
+    link.symlink_to(real)
+
+    assert lib.source_id(link / "cuda" / "x.pdf") == lib.source_id(doc)
+    assert lib.source_id(doc) == str(doc.resolve())
+    assert lib.source_id("") == ""
+    assert lib.source_id(None) == ""
+
+
+def test_metadata_lookup_survives_a_symlinked_root(tmp_path: Path):
+    """元数据按"解析后的路径"索引：换个根写法也找得到那份元数据。"""
+    real = tmp_path / "Documents"
+    real.mkdir()
+    (real / "paper.pdf").write_bytes(b"%PDF-1.4 fake")
+    link = tmp_path / "reference"
+    link.symlink_to(real)
+    meta_dir = tmp_path / "library"
+    meta_dir.mkdir()
+
+    lib.save_metadata(
+        meta_dir,
+        {"citekey": "someone2024paper", "title": "A Paper", "source": str(link / "paper.pdf")},
+        origin="llm",
+    )
+    _by_key, by_source = lib.metadata_index(meta_dir)
+    assert by_source.get(lib.source_id(real / "paper.pdf"), {}).get("citekey") == "someone2024paper"
+
+
+def test_title_cleaning_keeps_leading_numbers():
+    """标题收拾只去标记符号，**不许吃数字**。
+
+    踩过：正则里带上 `^\\d+[.)]`（当有序列表编号），于是标准号 `1364.1 TM`
+    被吃成了 `1 TM`。标题以数字开头太常见（标准号、`3D Graphics`），宁可不收拾。
+    """
+    assert lib.clean_title("# Layout polynomials") == "Layout polynomials"
+    assert lib.clean_title("### —— 用生成函数") == "—— 用生成函数"
+    assert lib.clean_title("  > 引用式标题  ") == "引用式标题"
+    assert lib.clean_title("1364.1 TM") == "1364.1 TM"
+    assert lib.clean_title("3D Graphics") == "3D Graphics"
+    assert lib.clean_title("1. Introduction") == "1. Introduction"
