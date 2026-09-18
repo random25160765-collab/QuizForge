@@ -24,7 +24,8 @@ API_PORT ?= 8100
 VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
-.PHONY: vendor check test new web api-venv api-dev api-test \
+.PHONY: vendor check test new web web-full release package pyodide-manifest \
+        api-venv api-dev api-test \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
         graph-export skills-link \
@@ -45,6 +46,23 @@ new:
 
 web:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT)
+
+# 把 76M 的 Pyodide 也拷进前端产物：**离线自包含**用（产物从 ~5M 变 ~81M）。
+# 分发包不要这个 —— 运行时改由首启取进本机缓存（见 build/package.py）。
+web-full:
+	@$(PYTHON) tools/build_web.py --out $(WEB_OUT) --with-pyodide
+
+# 单文件可执行程序（不含重型组件）。**必须在本平台构建**：PyInstaller 不能交叉编译，
+# 所以 Windows 的 exe 要在 Windows 上跑这条命令。
+package:
+	@$(VENV)/bin/python build/package.py build
+
+# 发布：先构建前端，再出包（出包后会自动跑一次自检：接口 + 静态页 + 首启建库）
+release: web package
+
+# 从 vendor/pyodide 生成首启下载时用的哈希清单（`make vendor` 之后跑，产物要提交）
+pyodide-manifest:
+	@$(VENV)/bin/python build/package.py manifest
 
 # 首次准备：创建虚拟环境并装依赖（Python 3.12+）
 api-venv:

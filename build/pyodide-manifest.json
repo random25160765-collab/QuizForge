@@ -1,0 +1,15 @@
+{
+ "version": "0.26.4",
+ "note": "Pyodide 运行时清单：首启下载后逐个校验（build/package.py manifest 生成）",
+ "bytes": 78964768,
+ "files": {
+  "numpy-1.26.4-cp312-cp312-pyodide_2024_0_wasm32.whl": "4a2f5303a88a0747c5e6c80701e0ff4ff5667e487c0c9f9c73875e4d88f4cf9a",
+  "openblas-0.3.26.zip": "3c0afcaaabec774f5fa739b908ae08672eacf3c8fe265328da2d632a04ba3cd3",
+  "pyodide-lock.json": "cd50b49de944c579045e122fe8628b31f9ce446379f032f36c05e273d38766e0",
+  "pyodide.asm.js": "919560652ed3dad3707cb3a394785da1e046fb13dc0defa162058ff230cb7eed",
+  "pyodide.asm.wasm": "b7e66a19427a55010ac3367c1b6c64b893f9826f783412945fdf0c3337f3bc94",
+  "pyodide.js": "c0069107621d5b942a659e737a12e774cc0451feaa2256f475d72e071d844ec7",
+  "python_stdlib.zip": "72894522b791858b9d613ac786b951d8b5094035dcf376313ea24a466810f336",
+  "scipy-1.12.0-cp312-cp312-pyodide_2024_0_wasm32.whl": "1a081410432367ee43f52a280961df4ba7e9bb65d8b9862b3cd2e3727e84d873"
+ }
+}

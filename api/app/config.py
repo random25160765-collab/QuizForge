@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -15,6 +16,18 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 API_DIR = Path(__file__).resolve().parent.parent
 ROOT = API_DIR.parent
+
+
+def _default_tools_dir() -> Path:
+    """`tools/` 在哪：开发时在仓库根下，打包后跟着包走（解包根下）。
+
+    为什么不干脆省掉它：**出题流水线要用它** —— `app/toolkit.py` 把
+    `question_parser` 与 `check` 挂到 import 路径上，而 A 段的"资料即入库口"
+    会让桌面应用去跑那条流水线。少了它，应用照样启动，但一点"送去做题"当场炸。
+    """
+    if getattr(sys, "frozen", False):
+        return API_DIR / "tools"
+    return API_DIR.parent / "tools"
 
 
 class Settings(BaseSettings):
@@ -45,6 +58,12 @@ class Settings(BaseSettings):
     # 想指到别处（内存库、临时文件）就设 `QF_DATABASE_URL`。
     database_url: str = ""
     db_echo: bool = False
+
+    # ------------------------------------------------------ 重型运行组件
+    # 首启在后台把 Pyodide（76M，不进安装包）取进 `data/cache/pyodide/`。
+    # 关掉它 = 不主动联网，等真正用到「跑 Python」那一次再取（见 app/heavy_deps.py）。
+    # 测试里一律关掉：用例不该因为跑一次就去下载几十兆。
+    heavy_prefetch: bool = True
 
     # 会话相关的配置项（cookie 名、有效期、令牌字节数）随账号面一起删掉了 ——
     # 单用户本地形态没有会话，见 `app/deps.py`。
@@ -102,11 +121,11 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------ 导入器
     # 容器里用 QF_QUESTIONS_DIR / QF_TOPICS_FILE / QF_TOOLS_DIR 指到挂载点。
-    # tools/ 是仓库根的脚本目录（题库解析器、主题树、校验器都在里面），
-    # 导入器直接复用它们，所以必须能找到。
+    # tools/ 是脚本目录（题库解析器、主题树、校验器都在里面），
+    # 导入器与出题流水线直接复用它们，所以必须能找到。
     questions_dir: Path = ROOT / "questions"
     topics_file: Path = ROOT / "meta" / "topics.yaml"
-    tools_dir: Path = ROOT / "tools"
+    tools_dir: Path = _default_tools_dir()
 
     # ------------------------------------------------------------ 派生属性
     @property

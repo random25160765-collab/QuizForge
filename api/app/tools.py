@@ -37,7 +37,7 @@ from pathlib import Path
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import mastery, materials
+from . import heavy_deps, mastery, materials
 from .models import (
     Concept,
     ConceptEdge,
@@ -599,33 +599,27 @@ def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 
 
 # Pyodide：CPython 编译成 WASM，在浏览器里**真跑** Python（不是模拟、不是转译）。
-# 版本钉死：CDN 上的东西会变，而这份运行时会被拷进 /assets 由我们自己托管。
-PYODIDE_VERSION = "0.26.4"
-PYODIDE_CDN_BASE = "https://cdn.jsdelivr.net/pyodide/v" + PYODIDE_VERSION + "/full/"
-# 本机副本（`make vendor` 取回，`make web` 拷进 api/web/assets/pyodide/）
-VENDOR_PYODIDE = Path(__file__).resolve().parents[2] / "vendor" / "pyodide"
-SERVED_PYODIDE = Path(__file__).resolve().parents[1] / "web" / "assets" / "pyodide"
+#
+# 运行时**不进安装包**：它 76M，而应用其余部分加起来约 5M。它缓存在
+# `data/cache/pyodide/`，第一次打开时由 `heavy_deps.ensure()` 取一次（从仓库
+# `vendor/` 拷、或按清单下载）并逐个校验 sha256，之后离线可用。
+# 位置、下载、校验、失败处理都在 `app/heavy_deps.py` 里 —— 这里只管怎么用。
+PYODIDE_VERSION = heavy_deps.PYODIDE_VERSION
 
 
-def pyodide_base() -> str:
-    """运行时从哪取 —— 有本机副本就用本机，没有才退回 CDN。
-
-    为什么优先本机：13MB 的运行时现下，实测在沙箱 iframe 里挂了 60 秒仍不成功
-    （用户看到的就是「正在加载运行时」停在那儿）。而且"为了跑一段脚本去联网"
-    本身就是件别扭的事 —— 沙箱不该依赖外网。
+def pyodide_base() -> str | None:
+    """运行时从哪加载（`None` = 本机还没有）。
 
     `__ORIGIN__` 是给前端填的占位符：沙箱页面里**相对路径解析不了**
     （srcdoc 文档的 base 是 about:srcdoc，`new URL('/assets/…')` 直接抛
     "Invalid URL"），而沙箱里 `location.origin` 是不透明的、页面自己也拼不出来。
     只有宿主知道自己的 origin，所以由它替换。
+
+    为什么不再退回 CDN：**沙箱不该依赖外网**（实测现下运行时会让面板
+    "正在加载运行时"停 60 秒）。现在只有一条路 —— 本机缓存，而缓存由
+    `ensure()` 负责填。
     """
-    for directory in (SERVED_PYODIDE, VENDOR_PYODIDE):
-        if (directory / "pyodide.js").is_file():
-            return "__ORIGIN__/assets/pyodide/"
-    return PYODIDE_CDN_BASE
-
-
-PYODIDE_BASE = pyodide_base()
+    return heavy_deps.base_url()
 
 # 代码上限：它会被嵌进零件的库、每次读会话都要发给前端（同 render_demo 的道理）
 CODE_MAX_CHARS = 20_000
@@ -804,7 +798,7 @@ function report(ok) {
 def _python_page(title: str, code: str, packages: list[str], run_id: str) -> str:
     return (
         _PYODIDE_PAGE.replace("__TITLE__", html.escape(title)[:80])
-        .replace("__INDEX__", pyodide_base())
+        .replace("__INDEX__", pyodide_base() or "")
         .replace("__RUNID__", html.escape(run_id)[:40])
         .replace("__PACKAGES__", json.dumps(packages, ensure_ascii=False))
         .replace("__CHECK__", json.dumps(list(packages), ensure_ascii=False))
@@ -846,6 +840,17 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     if len(code) > CODE_MAX_CHARS:
         return {
             "error": f"代码太长（{len(code)} 字，上限 {CODE_MAX_CHARS}）—— 精简到能说明问题就行。"
+        }
+
+    if pyodide_base() is None:
+        # 运行时不在本机（第一次用，缓存还没有）——**在后台开始取**，这一轮如实说明。
+        # 不在这里同步下载：76M 会把这次工具调用挂住，界面看起来像卡死。
+        started = heavy_deps.start_prefetch()
+        return {
+            "error": (
+                "跑 Python 的运行时还没到位（它 76M，不进安装包，要本机取一次并校验）。"
+                + ("已经在后台开始取了，过一会儿再让我跑这段代码。" if started else "等它取完再试。")
+            )
         }
 
     asked = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]

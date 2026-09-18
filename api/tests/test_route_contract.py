@@ -65,9 +65,25 @@ def test_the_auth_endpoints_are_gone() -> None:
     assert not stray, f"账号面的路由又出现了：{stray}"
 
 
+#: 允许挂在 `/api` 之外的路由前缀 —— 只给**静态资源**这一类，
+#: 它们和 StaticFiles 的挂载点是同一个命名空间（浏览器按 URL 直接取）。
+STATIC_ROUTE_PREFIXES = ("/assets/",)
+
+
 def test_every_api_route_is_under_api_prefix() -> None:
-    """业务路由统一挂在 /api 下，静态资源与 SPA 兜底才不会误吞接口请求。"""
-    stray = [route.path for route in _api_routes() if not route.path.startswith("/api")]
+    """业务路由统一挂在 /api 下，静态资源与 SPA 兜底才不会误吞接口请求。
+
+    例外只有一条：`/assets/*`。那里放的是**给浏览器直接取的文件**
+    （Pyodide 运行时按文件名逐个取，见 `app/heavy_deps.py`）——
+    它的路径必须与 `StaticFiles` 挂载的 `/assets` 同源，
+    挪到 `/api` 下反而会让"资源"和"接口"混在一起。
+    """
+    stray = [
+        route.path
+        for route in _api_routes()
+        if not route.path.startswith("/api")
+        and not route.path.startswith(STATIC_ROUTE_PREFIXES)
+    ]
     assert not stray, f"这些路由不在 /api 下：{stray}"
 
 

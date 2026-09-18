@@ -92,6 +92,8 @@ def _ensure_database() -> None:
 # 必须在 import app.* 之前落到环境里
 os.environ["QF_DATABASE_URL"] = TEST_URL
 os.environ["QF_DEBUG"] = "true"
+# 不许在测试里去联网取重型运行时（Pyodide 76M）：跑一次用例不该下载几十兆
+os.environ["QF_HEAVY_PREFETCH"] = "false"
 # 实例级 AI 总开关保持打开，好让「每用户自带密钥」那条路径可测。
 # 这里不再需要担心误打真实接口：服务端**不持有任何密钥**，
 # 密钥只能来自测试自己写进用户设置里的假值。
