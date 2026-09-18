@@ -788,10 +788,18 @@ def _atom(token: str, row: dict) -> bool:
             return want in str(row.get("title", "")).lower()
         if key == "path":
             return want in str(row.get("rel", "")).lower()
-        if key == "type":
+        if key in ("type", "kind"):
+            # `kind:` 是 `type:` 的别名 —— 资料那边的字段就叫 kind，两个都认省得记
             return want == str(row.get("kind", "note"))
         if key == "tag":
             return any(want == str(item).strip().lower() for item in row.get("tags", []))
+        if key == "authors":
+            # 资料模块用得多：`authors:dao` 找某人的东西
+            return want in str(row.get("authors", "")).lower()
+        if key == "citekey":
+            return want in str(row.get("citekey", "")).lower()
+        if key == "year":
+            return want == str(row.get("year", ""))
         if key == "is":
             if want == "unresolved":
                 return bool(row.get("unresolved", 0))
@@ -818,7 +826,7 @@ def parse_query(text: str) -> Query:
         term                 正文或标题包含
         "两个 词"             短语
         #标签 / #标签=值       有某个标签
-        title:词 path:词 tag:词 type:note|canvas
+        title:词 path:词 tag:词 authors:词 citekey:词 year:1997 type:note|canvas
         is:unresolved|empty|generated|archived
         -原子                取反
         A AND B / A OR B / ( … ) / not A
