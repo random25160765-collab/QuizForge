@@ -1022,7 +1022,9 @@
     // 这页不再自己拼一份导航，也不再往刷题页跳着开设置。
     // 包在 try 里：外壳的接线一旦早期抛错，会连累下面的图谱也跟着不动。
     try {
-      QF.shell.mount({});
+      // 传给外壳一个 view：图谱页属于练习中心那一族，这样顶栏那排会显示、
+      // 并把"图谱"高亮 —— 它和练习/组卷/复习是同一层的去处
+      QF.shell.mount({ view: 'graph' });
     } catch (err) {
       if (window.console) console.warn('顶栏接线失败', err);
     }
