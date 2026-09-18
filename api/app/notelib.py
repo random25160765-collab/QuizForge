@@ -475,6 +475,35 @@ _INDEXES: dict[str, Index] = {}
 _LOCK = threading.RLock()
 
 
+def link_graph(lib: Library) -> dict[str, Any]:
+    """文档图谱：一篇笔记一个节点、一条双链一条边。
+
+    直接读索引里现成的 `refs` —— 那里面已经存着每处引用**解析到谁**了，
+    不重新解析正文。一千多篇的量级下，这一点决定了它是"点开就有"还是"等十秒"。
+    只连**同库内、真实存在**的目标：断链与被引到别的库的不画进来（后者会突然
+    多出一片孤立点，反而看不清结构）。
+    """
+    idx = index(lib)
+    entries = idx.entries()
+    known = {entry.rel for entry in entries}
+    nodes = [
+        {
+            "id": entry.rel,
+            "title": entry.title,
+            "tags": list(entry.tags),
+            "out": len([ref for ref in entry.refs if ref.kind == "note"]),
+        }
+        for entry in entries
+    ]
+    edges: list[dict[str, str]] = []
+    for entry in entries:
+        for ref in entry.refs:
+            target = ref.resolved
+            if ref.kind == "note" and target and target in known and target != entry.rel:
+                edges.append({"source": entry.rel, "target": target})
+    return {"lib": lib.name, "nodes": nodes, "edges": edges}
+
+
 def index(lib: Library) -> Index:
     """拿到（并刷新）一个库的索引。"""
     with _LOCK:

@@ -521,3 +521,41 @@ body[data-page='workbench'] .view {
 
 /* 窗格里装"一份文件"时：查看器自己管滚动，别套两层 */
 .panes__host > .docv { overflow: hidden; }
+
+/* ---------------- 文档图谱（笔记双链） ---------------- */
+
+.ngraph {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ngraph__svg {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+}
+
+.ngraph__edge {
+  stroke: color-mix(in srgb, var(--fg) 22%, transparent);
+  stroke-width: 1;
+}
+
+.ngraph__node {
+  fill: color-mix(in srgb, var(--pri) 55%, var(--bg));
+  stroke: var(--pri);
+  stroke-width: 1;
+  cursor: pointer;
+  transition: fill var(--dur, 160ms) var(--ease, ease-out);
+}
+
+.ngraph__node:hover { fill: var(--pri); }
+
+/* 一个链接都没有的笔记：淡一点，但**留着** —— 它们正好是"该补链接"的清单 */
+.ngraph__node.is-lone {
+  fill: color-mix(in srgb, var(--fg) 18%, var(--bg));
+  stroke: color-mix(in srgb, var(--fg) 30%, transparent);
+}
+
+.ngraph__foot { padding: 8px 12px 12px; }
