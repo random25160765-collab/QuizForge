@@ -85,6 +85,15 @@ def _tolerant_stdout() -> None:
                 pass
 
 
+def _repo_stamp() -> str:
+    """仓库里 `api/web/build.json` 的构建戳（读不到就返回空串，不编一个）。"""
+    path = Path(__file__).resolve().parents[1] / "api" / "web" / "build.json"
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("stamp") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -436,6 +445,19 @@ def verify(
                 break
             except (urllib.error.URLError, TimeoutError, OSError, ValueError):
                 time.sleep(0.5)
+
+        # **构建戳比对**：包里正在服务的那份前端，必须与仓库里 `make web` 写下的那份一致。
+        # 结构上这件事由同步的"逐文件哈希"保证，这里再如实核对一次 ——
+        # 挡的是"开发端和给用户的不是同一份"：不一致就当场报错，
+        # 而不是等用户找不到入口才回头查（实测就是这么发现的）。
+        if health and (health.get("build") or {}).get("stamp"):
+            got = str(health["build"]["stamp"])
+            expected = _repo_stamp()
+            if expected and got != expected:
+                print(f"**包里那份前端与仓库不一致**：包 {got} · 仓库 {expected}")
+                print("先 `make web` 重新构建，再重打一次包。")
+                return 1
+            print(f"构建戳：包 {got} · 仓库 {expected or '（没读到 build.json）'}")
 
         # **写入探针**：在真包上写一次库（走 progress sync，不碰 AI 那条路）。
         # "能启动、能读"不等于"能写" —— 这个包就是死在写上（见 `_schema_problems`）。

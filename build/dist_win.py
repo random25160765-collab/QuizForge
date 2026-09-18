@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shutil
 import subprocess
@@ -45,6 +46,58 @@ DESKTOP_REL = "$env:USERPROFILE\\Desktop"
 
 
 
+def _stamp_now() -> str:
+    """现在仓库里 `api/web/build.json` 的构建戳（= 开发端正在服务的那一份）。"""
+    path = ROOT / "api" / "web" / "build.json"
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("stamp") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def write_stamp_sidecar(name: str, stamp: str) -> None:
+    """在那个包**旁边**写一个 `.stamp`：记下"这个包是哪次构建打的"。
+
+    为什么要单独一个文件：戳也写进了包（`/api/health` 会报），但"桌面这个包是不是
+    当前代码打的"应当**不用启动**就能问清楚 —— 用户提过"开发端有、exe 里没有"，
+    那种情况下当时没有任何地方看得出来，只能靠人问。
+    """
+    if not stamp:
+        return
+    _powershell(
+        f"Set-Content -Path \"{DESKTOP_REL}\\{name}.stamp\" -Value '{stamp}' -NoNewline -Encoding ascii; "
+        f"Copy-Item -Force \"{DESKTOP_REL}\\{name}.stamp\" \"{WIN_HOME}\\dist\\{name}.stamp\""
+    )
+    print(f"· 构建戳 {stamp} 已随包留在桌面（`make dist-check` 拿它比对）")
+
+
+def check_desktop() -> int:
+    """桌面那个包是不是**当前这份代码**打的（`make dist-check`）。"""
+    expected = _stamp_now()
+    if not expected:
+        print("仓库里还没有 api/web/build.json —— 先跑 `make web`")
+        return 2
+    print(f"开发端（仓库 api/web）构建戳：{expected}")
+    code, out = _powershell(
+        f"Get-ChildItem \"{DESKTOP_REL}\\quizforge*.stamp\" -ErrorAction SilentlyContinue | "
+        f"ForEach-Object {{ Write-Output ($_.BaseName + '=' + (Get-Content $_.FullName -Raw)) }}"
+    )
+    rows = [line.strip() for line in out.splitlines() if ".stamp" not in line and "=" in line]
+    rows = [line for line in rows if line.startswith("quizforge")]
+    if not rows:
+        print("桌面上没有带戳的包 —— 要么还没打过包，要么那个包是加这套机制之前打的。")
+        print("跑一次 `make dist` 就有了。")
+        return 1
+    bad = 0
+    for row in rows:
+        label, _, stamp = row.partition("=")
+        same = stamp.strip() == expected
+        print(f"  {label}：{stamp.strip() or '（没记）'}"
+              + ("  ✓ 与开发端一致" if same else "  ✗ 与开发端不一致 —— 重跑 `make dist`"))
+        bad += 0 if same else 1
+    return 1 if bad else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -57,7 +110,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--channel", choices=("beta", "release"), default="beta", help="通道（默认 beta 内测）")
     parser.add_argument("--no-sync", action="store_true", help="跳过同步（调试用）")
     parser.add_argument("--no-copy", action="store_true", help="不把产物拷到桌面与仓库")
+    parser.add_argument(
+        "--check", action="store_true", help="只检查桌面那个包是不是当前代码打的（不打包）"
+    )
     args = parser.parse_args(argv)
+
+    if args.check:
+        return check_desktop()
 
     mirror = sync_win._windows_src_dir()  # noqa: SLF001
     if mirror is None:
@@ -103,6 +162,9 @@ def main(argv: list[str] | None = None) -> int:
         print("打包说成功了，但没找着产物 —— 去看上面那段输出")
         return 1
     print(f"\n产物：{windows_artifact}")
+    # 戳要**在打包成功后立刻写**，不能等桌面拷贝那一步 —— 拷贝可能因为"包正在运行"失败，
+    # 而"这个包是哪次构建打的"这件事不该跟着一起丢（实测就丢过一次，留下一个 0 字节的戳）。
+    write_stamp_sidecar(name, _stamp_now())
 
     if not args.no_copy:
         print("· 拷到桌面…")
