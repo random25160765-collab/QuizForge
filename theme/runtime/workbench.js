@@ -231,6 +231,44 @@
     });
   }
 
+  /* ------------------------------------------------------------------ 题目 */
+
+  /** 在题库里按 id 找一道题。数据层换过名字，这里几种形状都认一遍，读得到就行。 */
+  function findQuestion(id) {
+    var D = QF.data;
+    if (!D || !id) return null;
+    var list = null;
+    if (typeof D.questions === 'function') list = D.questions();
+    else if (D.questions) list = D.questions;
+    (list || []).forEach(function () { /* 兼容遍历 */ });
+    for (var i = 0; i < (list || []).length; i++) {
+      if (list[i] && list[i].id === id) return list[i];
+    }
+    return null;
+  }
+
+  function registerQuestion() {
+    QF.panes.register('question', {
+      title: '题目',
+      icon: 'star',
+      key: function (opts) { return (opts && (opts.id || (opts.question && opts.question.id))) || ''; },
+      mount: function (host, opts) {
+        var q = (opts && opts.question) || findQuestion(opts && opts.id);
+        var box = h('div.panes__doc.panes__doc--q');
+        host.appendChild(box);
+        if (!q) {
+          box.appendChild(h('p.panes__muted', {
+            text: '找不到这道题（题库里没有这个 id：' + ((opts && opts.id) || '(空)') + '）',
+          }));
+          return;
+        }
+        // 直接复用刷题页与错题本那套卡片：题面、选项、判定条、解析的表现完全一致
+        box.appendChild(QF.qview.card(q, { locked: true }));
+        box.appendChild(QF.qview.explainPanel(q, { open: false }));
+      },
+    });
+  }
+
   /* ------------------------------------------------------------------ 装配 */
 
   var DEFAULT_LAYOUT = {
@@ -250,6 +288,7 @@
     registerCanvas();
     registerNote();
     registerDoc();
+    registerQuestion();
 
     // 主题必须显式初始化：`ui.theme.current()` 的兜底是 dark，
     // 不调这一句，整页（含顶栏）会是深色 —— app.js / chat.js / wrongbook.js 各自都调了
