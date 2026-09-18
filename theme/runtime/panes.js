@@ -254,6 +254,29 @@
     save();
   }
 
+  var PENDING_KEY = 'qf.panes.pending';
+
+  /**
+   * 把一样东西送到工作台 —— **任何页面**都能调。
+   *
+   *   在工作台：当场在**当前窗格**开一个标签
+   *   在别处：把"要开什么"记在本机，跳到工作台，由它启动时消费掉
+   *
+   * 用户的心智是"我要看这个"，不该因为当前在哪一页而失效。原先这段写在资源树里，
+   * 于是错题本想加一个"在工作台打开"就得再抄一份 —— 现在归引擎。
+   */
+  function openResource(kind, ref, title) {
+    if (document.body.dataset.page === 'workbench' && hostEl) {
+      open(kind, ref, title);
+      return true;
+    }
+    try {
+      localStorage.setItem(PENDING_KEY, JSON.stringify({ kind: kind, ref: ref, title: title }));
+    } catch (e) { /* 无痕模式忽略：那就只是这次跳不过去 */ }
+    location.href = 'workbench.html';
+    return false;
+  }
+
   /** 最大化 / 还原（tmux 的 zoom）。 */
   function zoom(id) {
     var target = id || state.active;
@@ -701,6 +724,7 @@
     focus: focus,
     open: open,
     openTab: open,
+    openResource: openResource,
     closeTab: closeTab,
     activateTab: activateTab,
     setView: setView,

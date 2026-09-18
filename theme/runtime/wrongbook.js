@@ -361,6 +361,19 @@
     var rec = store.record(id) || {};
     var result = view.redoResult;
 
+    // 「在工作台里打开」：窗格那一套能装题目（复用同一张卡片），所以从这儿给个入口 ——
+    // 答错一道题之后，接着就想把它和资料、笔记摆在一起看，而不是来回切页面。
+    detail.appendChild(
+      h('div.wb__tools', null,
+        h('button.btn.btn--sm', {
+          type: 'button',
+          title: '把这道题放进工作台的窗格里（与资料、笔记摆在一起）',
+          onClick: function () {
+            QF.panes.openResource('question', { question: q }, q.id);
+          },
+        }, h('span', { html: ui.icon('target', 14) }), h('span', { text: '在工作台里打开' })))
+    );
+
     // 大题：只读展示每一问的作答与批改结果，重做请到刷题应用里进行
     if (q.type === 'problem') {
       var storedResponses =
