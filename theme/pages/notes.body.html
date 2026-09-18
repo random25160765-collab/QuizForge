@@ -1,0 +1,29 @@
+<!--
+  笔记：三栏 —— 左是树与检索，中是正文（文档 / 大纲两态），右是属性与反链。
+
+  为什么另开一页：这一页是"笔记"，与刷题页那几个 hash 视图不是一回事；和 graph / chat
+  一样走独立页，顶栏由 shell.js 统一接线（见 theme/runtime/shell.js）。
+
+  `data-page` 必须写：页面级样式与顶栏图标隐藏都靠它（见 app.css 的 body[data-page] 规则）。
+-->
+<div id="app-root" data-page="notes">
+  <div class="notes" id="notes-root">
+    <aside class="notes__aside">
+      <div class="notes__asidehead">
+        <select class="notes__lib" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
+        <input class="notes__search" id="notes-search" type="search" placeholder="全文检索…"
+               autocomplete="off" spellcheck="false" aria-label="全文检索">
+      </div>
+      <div class="notes__scroll" id="notes-tree" role="tree"></div>
+    </aside>
+
+    <main class="notes__main" id="notes-main">
+      <div class="empty">
+        <div class="empty__title">选一篇笔记</div>
+        <div class="empty__text">左边挑一篇，或者在上面检索。</div>
+      </div>
+    </main>
+
+    <aside class="notes__side" id="notes-side"></aside>
+  </div>
+</div>
