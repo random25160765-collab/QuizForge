@@ -9,16 +9,17 @@
 * `data/library/.text/…` —— **派生物**（抽出来的正文与质量判定，删掉整个目录只会白跑一次抽取）
 * 源目录 —— **只读**。这个模块从不往资料根里写一个字节。
 
-实测（`/mnt/f/Documents`，55 个 PDF）逼出来的三条规矩：
-
-1. **抽取质量差异极大**：arXiv 论文、CXL 规范、IEEE 标准是 74~82% 的字母/汉字占比（能读），
-   而 NVIDIA 那几本手册只有 20~22%（字体编码坏了，抽出来是 `"!$#%` 这种东西）。
-   所以抽取结果**必须带质量判定** —— 把乱码当正文索引，比没有检索更坏：
-   用户会以为"库里搜不到"，其实是"库里的字是垃圾"。
-2. **乱码不许参与推断**：`Trefethen-Bau.pdf` 抽出来是乱码，照它推断会把引用键从
-   `trefethenbau` 毁成 `doc-30e408e0`。没有信息，好过有错的信息。
-3. **判定粒度是"要用的那一行"，不是整篇**：FlashAttention 那篇整篇只有 48%（满页数学符号），
-   但**标题行与作者行是干净的** —— 拿整篇占比否掉它，就把作者与年份一起丢了。
+1. **正文可用性要"跨篇多点采样"判，不能只看开头**。这是我自己的错，写在这里免得重犯：
+   第一版拿**前 4000 字**算字母占比，结果 14 份说明书被判成"抽不出字" ——
+   它们的开头是**封面加目录**（满是点线、页码、版本戳），字母占比自然低，而正文是好的。
+   改成整篇分五段取中位数之后：**54 / 55 份都可读（中位 54~78%）**。
+2. **真的抽不出字的只有 1 份**（`Trefethen-Bau.pdf`），病根在文件本身"没有字形到 Unicode 的映射"：
+   `pdffonts` 显示 460 个 **Type 3 + Custom 编码 + `uni: no`** 字体，页面是一堆 1×1 的
+   stencil 图片，生成器是 `Aladdin Ghostscript 6.01` —— 典型的**扫描书再转 PDF**。
+   基于文字层的工具都抽不出东西，**只能走 OCR**（渲染成位图再识别）；环境里没有
+   tesseract / ocrmypdf，所以如实标注"抽不出可用文字"，也不拿它的乱码去推断（那会毁掉引用键）。
+3. **判定粒度是"要用的那一行"，不是整篇**：FlashAttention 那篇的符号占比约 48%，
+   但**标题行与作者行是干净的** —— 拿整篇印象去否掉局部，会把作者与年份一起丢掉。
 """
 
 from __future__ import annotations
@@ -606,15 +607,86 @@ def text_of(text_dir: Path, citekey: str, *, limit: int = TEXT_LIMIT) -> str:
         return ""
 
 
+#: 判正文可用性时采几段。五段够稳，也不快不慢（每段只看 4000 字）。
+JUDGE_WINDOWS = 5
+
+
+#: 判正文可用性时采几段。五段够稳，也不快不慢（每段只看 4000 字）。
+JUDGE_WINDOWS = 5
+
+#: "真实词"的门槛（每千字）：ASCII 词（≥3 字母）或汉字词（≥2 字）。
+#: 这两条阈值是**量出来的**，不是拍的 —— 详见 `judge_text`。
+WORD_OK = 20
+WORD_POOR = 8
+
+#: 怪符号占比的上限。真乱码满屏 `!$#%&*`，好文本（哪怕满是表格）几乎为零。
+ODD_LIMIT = 0.10
+
+#: 什么算"怪符号"：不在"字母 / 数字 / 汉字 / 空白 / 常规标点"里的字符。
+_ODD = re.compile(
+    r"[^A-Za-z0-9\u4e00-\u9fff \n\t\r.,;:!?()\[\]{}\"'\-–—/\\%°+*=<>@|~^$`…、。，；：（）「」【】·]"
+)
+_WORDS = re.compile(r"[A-Za-z]{3,}|[\u4e00-\u9fff]{2,}")
+
+
 def judge_text(text: str) -> dict[str, Any]:
-    """整篇正文的可用性分档。**不是判死线**，只是给人看与给检索排序用。"""
-    sample = (text or "")[:4000]
-    if not sample.strip():
-        return {"state": "none", "chars": len(text or ""), "ratio": 0.0}
-    good = sum(1 for char in sample if char.isalpha() or "\u4e00" <= char <= "\u9fff")
-    ratio = good / max(1, len(sample))
-    state = "ok" if ratio >= TEXT_OK_RATIO else ("poor" if ratio >= TEXT_POOR_RATIO else "garbled")
-    return {"state": state, "chars": len(text or ""), "ratio": round(ratio, 4)}
+    """整篇正文的可用性分档。
+
+    两条规矩都是**先量真数据再定**的，写在下面免得下次又想当然：
+
+    1. **不能只看开头**：说明书开头是封面加目录（满是点线、页码），
+       只看头 4000 字会把 14 份好文件判死。所以**整篇分五段取中位**。
+    2. **不能只看"字母占比"**：表格与图表密集的技术文档（CXL 规范、STM32 参考手册、
+       IEEE 标准）字母占比天然只有 10~30%，但它们是**好文本**。
+       真正的差别在另外两处（实测对照）：
+
+           指标              7 份好文本        1 份真乱码
+           每千字真实词数     13 ~ 46          0
+           怪符号占比        0.0% ~ 1.0%      29.3%
+
+       所以判定用「真实词密度 + 怪符号占比」，字母占比只当参考值一并带出。
+
+    `state` 是给人看与给检索排序用的；真正的把关仍是逐行的 `_looks_like_prose`。
+    """
+    body = text or ""
+    if not body.strip():
+        return {"state": "none", "chars": len(body), "ratio": 0.0, "words": 0.0, "odd": 0.0, "windows": 0}
+    step = max(1, len(body) // JUDGE_WINDOWS)
+    letters: list[float] = []
+    words: list[float] = []
+    odd: list[float] = []
+    for index in range(JUDGE_WINDOWS):
+        chunk = body[index * step : index * step + 4000]
+        if not chunk.strip():
+            continue
+        letters.append(sum(1 for char in chunk if char.isalpha() or "\u4e00" <= char <= "\u9fff") / len(chunk))
+        words.append(len(_WORDS.findall(chunk)) / len(chunk) * 1000)
+        odd.append(len(_ODD.findall(chunk)) / len(chunk))
+    if not letters:
+        return {"state": "none", "chars": len(body), "ratio": 0.0, "words": 0.0, "odd": 0.0, "windows": 0}
+
+    def median(values: list[float]) -> float:
+        ordered = sorted(values)
+        return ordered[len(ordered) // 2]
+
+    ratio, word_rate, odd_rate = median(letters), median(words), median(odd)
+    if odd_rate >= ODD_LIMIT:
+        state = "garbled"                      # 怪符号成堆：抽出来的不是字
+    elif word_rate >= WORD_OK:
+        state = "ok"
+    elif word_rate >= WORD_POOR:
+        state = "poor"                         # 词少但符号正常：多半是表格密集，能用
+    else:
+        state = "garbled"                      # 既没词、符号也不像话
+    return {
+        "state": state,
+        "chars": len(body),
+        "ratio": round(ratio, 4),
+        "headRatio": round(sorted(letters)[0], 4),
+        "words": round(word_rate, 1),
+        "odd": round(odd_rate, 4),
+        "windows": len(letters),
+    }
 
 
 def head_text_for(item: Item, text_dir: Path, citekey: str, *, chars: int = 4000) -> str:

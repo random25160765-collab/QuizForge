@@ -169,6 +169,21 @@ def test_judge_text_bands():
     assert lib.judge_text("")["state"] == "none"
 
 
+def test_a_symbol_heavy_cover_does_not_condemn_the_whole_document():
+    """**回归用例**：封面加目录的符号密度不该判死整篇。
+
+    实测踩过：第一版只看头 4000 字，于是 14 份说明书被判成"抽不出字" ——
+    它们的开头是封面与目录（满是点线、页码、版本戳），而正文是好的。
+    改成整篇分五段取中位数之后，那些文件的中位占比是 54~78%。
+    """
+    cover = ("CUDA Programming Guide\nRelease 13.3\n\n" + ". . . . . . . . . . 1-1\n" * 120)
+    body = ("This chapter explains how the execution model maps threads to hardware, "
+            "and why coalesced access matters for throughput. ") * 60
+    got = lib.judge_text(cover + body)          # 短文本只采到很少几段，中位由正文那几段决定
+    assert got["state"] != "garbled", got
+    assert got["ratio"] > got["headRatio"], "头部与整篇的差距应当被记下来"
+
+
 # ------------------------------------------------------------------ 元数据
 
 
