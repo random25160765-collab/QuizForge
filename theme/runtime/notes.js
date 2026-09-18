@@ -31,7 +31,10 @@
     clear: document.getElementById('notes-clear'),
     tree: document.getElementById('notes-tree'),
     main: document.getElementById('notes-main'),
-    side: document.getElementById('notes-side')
+    side: document.getElementById('notes-side'),
+    ribbon: document.getElementById('notes-ribbon'),
+    vault: document.getElementById('notes-vault'),
+    collapse: document.getElementById('notes-collapse')
   };
 
   var state = {
@@ -44,7 +47,27 @@
     editing: false,     // 行内编辑中（键盘交给输入框）
     dirty: false,
     saving: false,
-    savedAt: ''
+    savedAt: '',
+    tabs: [],           // 打开过的笔记（标签页）—— 库大、目录深，没有它就得来回找
+    side: 'open',       // open | closed
+    panel: 'outline'    // 侧栏当前面板：outline | links | props | history
+  };
+
+  /* 图标一律内联画：不引图标库、不引 CDN（仓库铁律），描边粗细统一 1.6。 */
+  function svgIcon(paths) {
+    return (
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+      'stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>'
+    );
+  }
+
+  var ICONS = {
+    outline: svgIcon('<path d="M4 6h16M4 12h10M4 18h13"/>'),
+    links: svgIcon('<path d="M9.5 14.5 14.5 9.5"/><path d="M11 6.5 12.6 5a4 4 0 0 1 5.7 5.7L16.7 12"/><path d="M13 17.5 11.4 19a4 4 0 0 1-5.7-5.7L7.3 12"/>'),
+    props: svgIcon('<path d="M4 7h16M4 12h16M4 17h10"/>'),
+    history: svgIcon('<path d="M12 7v5l3 2"/><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5V10H9"/>'),
+    type: svgIcon('<path d="M5 19h6M11 19h8"/><path d="M12 4v15"/>'),
+    side: svgIcon('<path d="M4 5h16v14H4z"/><path d="M15 5v14"/>')
   };
   var folded = {};      // 大纲折叠
   var dirFolded = {};   // 目录折叠
@@ -107,7 +130,18 @@
     } catch (err) {
       if (window.console) console.warn('顶栏接线失败', err);
     }
+    // 侧栏开着还是收着，是"我的习惯"而不是"这次的状态" —— 记在本机，下次照旧
+    try {
+      var savedSide = window.localStorage.getItem('qf.notes.side');
+      if (savedSide === 'closed' || savedSide === 'open') state.side = savedSide;
+      var savedPanel = window.localStorage.getItem('qf.notes.panel');
+      if (savedPanel) state.panel = savedPanel;
+    } catch (err) {
+      /* 读不到就用默认 */
+    }
+    rootEl.setAttribute('data-side', state.side);
     applyTypography();
+    renderRibbon();
     bind();
     loadLibs();
   }
@@ -176,6 +210,11 @@
         });
         state.lib = state.libs[0].name;
         el.lib.value = state.lib;
+        if (el.vault) el.vault.textContent = state.lib;
+        // 启动时也得画一次主区 —— 不然中间是一片空白，看着像坏了
+        // （空态那句"左边挑一篇，或者新建一篇"就是在这里出来的）
+        renderMain();
+        renderSide();
         loadTree();
       })
       .catch(fail);
@@ -230,6 +269,14 @@
     return out;
   }
 
+  /** 每深一层加一条发丝竖线（Obsidian 的分层线）。
+   * 只靠内边距留白，层级在深目录里会糊成一片 —— 有了线，眼睛才知道自己在第几层。 */
+  function indentGuides(depth) {
+    var box = h('span.ntree__indents');
+    for (var i = 1; i < depth; i++) box.appendChild(h('span.ntree__indent'));
+    return box;
+  }
+
   function dirNode(dir, depth) {
     var box = h('div');
     var isFolded = !!dirFolded[dir.path];
@@ -238,7 +285,7 @@
       {
         type: 'button',
         title: dir.path,
-        style: { paddingLeft: 4 + depth * 11 + 'px' },
+        style: { paddingLeft: '4px' },
         onClick: function () {
           dirFolded[dir.path] = !dirFolded[dir.path];
           loadTree();
@@ -247,6 +294,7 @@
           showMenu(ev, dirMenu(dir));
         }
       },
+      indentGuides(depth),
       h('span.ntree__caret' + (isFolded ? '.ntree__caret--folded' : ''), { text: '▾' }),
       h('span.ntree__label', { text: dir.name }),
       h('span.ntree__count', { text: String(dir.count || 0) })
@@ -289,7 +337,7 @@
         title: file.path,
         draggable: 'true',
         dataset: { path: file.path },
-        style: { paddingLeft: 4 + depth * 11 + 'px' },
+        style: { paddingLeft: '4px' },
         onClick: function () {
           openNote(file.path);
         },
@@ -310,6 +358,7 @@
           dragPath = '';
         }
       },
+      indentGuides(depth),
       h('span.ntree__caret', { text: file.kind === 'canvas' ? '◇' : '' }),
       file.color ? h('span.ntree__color', { style: { background: file.color } }) : null,
       file.icon ? h('span.ntree__icon', { text: file.icon }) : null,
@@ -474,14 +523,16 @@
       .get('/notes/note?' + q({ lib: state.lib, path: path }))
       .then(function (note) {
         state.note = note;
+        addTab(note);
         state.selected = typeof line === 'number' ? line : -1;
         state.dirty = false;
         state.saving = false;
         state.savedAt = nowHM();
         folded = {};
         // 打开就准备写：宽屏分栏（边写边看），窄屏纯编辑。阅读要自己切 ——
-        // 这一页是写作台，默认状态应当是"能打字"。
-        state.mode = note.kind === 'canvas' ? 'read' : window.innerWidth > 1180 ? 'split' : 'edit';
+        // 打开一篇**默认是阅读**：多数时候是回来看，不是接着写。
+        // 读着读着想改，就在面包屑右边按「编辑」或「分栏」—— 一步的事。
+        state.mode = 'read';
         renderMain();
         renderSide();
         loadTree();
@@ -493,6 +544,7 @@
 
   function renderMain() {
     ui.clear(el.main);
+    el.main.appendChild(renderTabs());
     if (!isNote() && !(state.note && state.note.kind === 'canvas')) {
       el.main.appendChild(emptyState());
       return;
@@ -513,6 +565,125 @@
       return;
     }
     el.main.appendChild(renderBody());
+    el.main.appendChild(renderStatusBar());
+  }
+
+  /* ------------------------------------------------------------ 标签页
+
+   * 库大、目录四五层，没有"我开过哪几篇"就得来回找文件。
+   * 只记路径，标题每次从树/笔记里取 —— 改名之后标签页不会留旧名字。
+   */
+
+  function addTab(note) {
+    if (!note || !note.path) return;
+    var found = state.tabs.filter(function (tab) {
+      return tab.path === note.path;
+    })[0];
+    if (found) {
+      found.title = note.title;
+      return;
+    }
+    state.tabs.push({ path: note.path, title: note.title });
+    if (state.tabs.length > 12) state.tabs.shift();   // 标签页不是收藏夹，多了就挤掉最旧的
+  }
+
+  function closeTab(path) {
+    var index = -1;
+    state.tabs.forEach(function (tab, i) {
+      if (tab.path === path) index = i;
+    });
+    if (index < 0) return;
+    state.tabs.splice(index, 1);
+    if (state.note && state.note.path === path) {
+      var next = state.tabs[index] || state.tabs[index - 1];
+      state.note = null;
+      if (next) openNote(next.path);
+      else renderMain();
+    } else {
+      renderMain();
+    }
+  }
+
+  function renderTabs() {
+    var bar = h('div.ntabs');
+    state.tabs.forEach(function (tab) {
+      var active = state.note && state.note.path === tab.path;
+      var node = h(
+        'button.ntab' + (active ? '.is-on' : ''),
+        {
+          type: 'button',
+          title: tab.path,
+          onClick: function () {
+            if (!active) openNote(tab.path);
+          }
+        },
+        h('span.ntab__label', { text: tab.title || tab.path.split('/').pop() }),
+        h('span.ntab__x', {
+          text: '×',
+          title: '关掉这个标签页（笔记没有删）',
+          onClick: function (ev) {
+            ev.stopPropagation();
+            closeTab(tab.path);
+          }
+        })
+      );
+      bar.appendChild(node);
+    });
+    bar.appendChild(h('div.ntabs__sp'));
+    bar.appendChild(
+      h(
+        'div.ntabs__tools',
+        null,
+        h('button.nicon.nicon--mini', {
+          type: 'button',
+          text: '＋',
+          title: '新建笔记（⌘O 同级 / ⌘P 子级）',
+          onClick: function () {
+            createNote('', '');
+          }
+        }),
+        h('button.nicon.nicon--mini' + (state.side === 'open' ? '.is-on' : ''), {
+          type: 'button',
+          html: ICONS.side,
+          title: state.side === 'open' ? '收起右侧栏' : '展开右侧栏',
+          onClick: toggleSide
+        })
+      )
+    );
+    return bar;
+  }
+
+  function toggleSide(to) {
+    state.side = to || (state.side === 'open' ? 'closed' : 'open');
+    rootEl.setAttribute('data-side', state.side);
+    try {
+      window.localStorage.setItem('qf.notes.side', state.side);
+      window.localStorage.setItem('qf.notes.panel', state.panel);
+    } catch (err) {
+      /* 存不下就只在这次生效 */
+    }
+    renderMain();
+    renderSide();
+  }
+
+  /** 底部状态栏：与 Obsidian 一样把"这篇有多少东西"摆在脚边，不占正文。 */
+  function renderStatusBar() {
+    var note = state.note;
+    var bar = h('div.nstatus');
+    bar.appendChild(h('span', { text: '反链 ' + ((note.backlinks || []).length || 0) }));
+    bar.appendChild(h('span', { text: '出链 ' + ((note.outlinks || []).length || 0) }));
+    if ((note.unresolved || []).length) {
+      bar.appendChild(h('span', { text: '断链 ' + note.unresolved.length }));
+    }
+    bar.appendChild(h('div.nstatus__sp'));
+    bar.appendChild(
+      h('span.note__status' + (state.dirty ? '.note__status--dirty' : ''), {
+        id: 'note-status',
+        text: statusText()
+      })
+    );
+    bar.appendChild(h('span', { text: note.path }));
+    return bar;
   }
 
   function emptyState() {
@@ -540,14 +711,17 @@
 
   function renderBar() {
     var note = state.note;
-    var bar = h('div.note__bar');
-
-    var title = h('h1.note__title', {
-      text: note.title,
-      title: '双击改标题（会连同文件名一起改，引用它的地方也会跟着改）',
-      onDblclick: renameTitle
+    // 这一条是**面包屑**（Obsidian 的位置）：右边放视图切换与撤销，标题在正文里
+    var bar = h('div.ncrumb');
+    var path = h('div.ncrumb__path');
+    note.path.split('/').forEach(function (part, index, all) {
+      if (index) path.appendChild(h('span.ncrumb__sep', { text: '/' }));
+      path.appendChild(
+        h('span.ncrumb__seg' + (index === all.length - 1 ? '.ncrumb__seg--last' : ''), { text: part })
+      );
     });
-    bar.appendChild(title);
+    bar.appendChild(path);
+    bar.appendChild(h('div.ncrumb__actions'));
 
     bar.appendChild(
       h(
@@ -571,10 +745,7 @@
       )
     );
 
-    bar.appendChild(h('span.note__status' + (state.dirty ? '.note__status--dirty' : ''), {
-      id: 'note-status',
-      text: statusText()
-    }));
+    // 状态文字搬到底部状态栏去了（id 不变，renderStatusOnly 照旧能找到它）
 
     // 撤销摆在最容易够到的地方：改字最需要的就是"刚才那一步不算"
     if (state.note.can_undo) {
@@ -667,8 +838,21 @@
 
   function renderBody() {
     if (state.mode === 'read') return renderRead();
-    if (state.mode === 'outline') return renderOutline();
-    return renderEditor(state.mode === 'split');
+    // 编辑 / 分栏 / 大纲：标题压成一行，剩下的高度全给正文 —— 写的时候别跟标题抢地方
+    var wrap = h('div.nbody');
+    wrap.appendChild(
+      h(
+        'div.nbody__slim',
+        null,
+        h('h1.note__title', {
+          text: state.note.title,
+          title: '双击改标题（会连同文件名一起改，引用它的地方也会跟着改）',
+          onDblclick: renameTitle
+        })
+      )
+    );
+    wrap.appendChild(state.mode === 'outline' ? renderOutline() : renderEditor(state.mode === 'split'));
+    return wrap;
   }
 
   /* ------------------------------------------------------------ 阅读 */
@@ -676,6 +860,31 @@
   function renderRead() {
     var pane = h('div.note__pane');
     var inner = h('div.nread__inner');
+    // 标题属于文档本身（Obsidian 就是这样）：它不该另占一条栏，也不该跟正文分离
+    inner.appendChild(
+      h('h1.note__title', {
+        text: state.note.title,
+        title: '双击改标题（会连同文件名一起改，引用它的地方也会跟着改）',
+        onDblclick: renameTitle
+      })
+    );
+    if ((state.note.tags || []).length) {
+      var tagRow = h('div.nbody__tags');
+      state.note.tags.forEach(function (tag) {
+        tagRow.appendChild(
+          h('span.ntag', {
+            text: '#' + tag,
+            title: '点一下 = 搜这个标签',
+            onClick: function () {
+              el.search.value = '#' + tag;
+              el.clear.hidden = false;
+              runSearch('#' + tag);
+            }
+          })
+        );
+      });
+      inner.appendChild(tagRow);
+    }
     var text = state.note.body || '';
     if (!text.trim()) {
       inner.appendChild(h('div.nread__empty', { text: '（这篇还是空的 —— 切到「编辑」写点什么）' }));
@@ -689,8 +898,115 @@
     } else {
       inner.appendChild(h('pre', { text: text }));
     }
+    decorateCallouts(inner);
     pane.appendChild(h('div.nread', null, inner));
     return pane;
+  }
+
+  /* ------------------------------------------------------------ 提示框（callout）
+
+   * 源里写 `> [!NOTE] 回顾`，而渲染器只把它当普通引用 —— 于是这些块跟别的引用一样平，
+   * 一个"这是结论/这是提醒"的信号就丢了。这里补一步**后处理**：认出标记、按类型上色、
+   * 把标记本身从正文里去掉。
+   * 放在 notes.js 而不是改 md.js：这是笔记页的读法，聊天那边不需要这套形状。
+   */
+  /* 提示框（callout）—— 形状、图标、配色都照 Obsidian 的默认主题来。
+   *
+   * 图标取自用户给的参考页（"Callouts - Obsidian Help"）里的内联 SVG：那是 **Lucide** 图标集，
+   * 描边 2、24 格视口。上一版我自己画了十二个近似图形，形状不对、颜色也只有一个色系，
+   * 于是 note / tip / warning 看起来全一样 —— callout 的价值恰恰在"一眼认出这是哪一类"。
+   *
+   * 色值是 Obsidian 默认主题的 `--callout-*`（每类一个 RGB），别名按官方文档合并
+   * （summary/tldr → abstract，hint/important → tip，check/done → success，
+   * help/faq → question，caution/attention → warning，fail/missing → failure，
+   * error → danger，cite → quote）。
+   */
+  var CALLOUTS = {
+    note: ['说明', '#086DDD', '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path><path d="m15 5 4 4"></path>'],
+    abstract: ['摘要', '#00BFBC', '<rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><path d="M12 11h4"></path><path d="M12 16h4"></path><path d="M8 11h.01"></path><path d="M8 16h.01"></path>'],
+    info: ['信息', '#086DDD', '<circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>'],
+    todo: ['待办', '#086DDD', '<circle cx="12" cy="12" r="10"></circle><path d="m9 12 2 2 4-4"></path>'],
+    tip: ['提示', '#00BFBC', '<path d="M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4"></path>'],
+    success: ['完成', '#08B94E', '<path d="M20 6 9 17l-5-5"></path>'],
+    question: ['问题', '#EC7500', '<circle cx="12" cy="12" r="10"></circle><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path><path d="M12 17h.01"></path>'],
+    warning: ['注意', '#E0AC00', '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"></path><path d="M12 9v4"></path><path d="M12 17h.01"></path>'],
+    failure: ['失败', '#E93147', '<path d="M18 6 6 18"></path><path d="m6 6 12 12"></path>'],
+    danger: ['危险', '#E93147', '<path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"></path>'],
+    bug: ['缺陷', '#E93147', '<path d="M12 20v-9"></path><path d="M14 7a4 4 0 0 1 4 4v3a6 6 0 0 1-12 0v-3a4 4 0 0 1 4-4z"></path><path d="M14.12 3.88 16 2"></path><path d="M21 21a4 4 0 0 0-3.81-4"></path><path d="M21 5a4 4 0 0 1-3.55 3.97"></path><path d="M22 13h-4"></path><path d="M3 21a4 4 0 0 1 3.81-4"></path><path d="M3 5a4 4 0 0 0 3.55 3.97"></path><path d="M6 13H2"></path><path d="m8 2 1.88 1.88"></path><path d="M9 7.13V6a3 3 0 1 1 6 0v1.13"></path>'],
+    example: ['例', '#7852EE', '<path d="M3 5h.01"></path><path d="M3 12h.01"></path><path d="M3 19h.01"></path><path d="M8 5h13"></path><path d="M8 12h13"></path><path d="M8 19h13"></path>'],
+    quote: ['引用', '#9E9E9E', '<path d="M16 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"></path><path d="M5 3a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2 1 1 0 0 1 1 1v1a2 2 0 0 1-2 2 1 1 0 0 0-1 1v2a1 1 0 0 0 1 1 6 6 0 0 0 6-6V5a2 2 0 0 0-2-2z"></path>'],
+  };
+
+  //: Obsidian 官方文档里的别名 → 归到主类型（`[!summary]` 与 `[!abstract]` 是同一个）
+  var CALLOUT_ALIAS = {
+    summary: 'abstract', tldr: 'abstract',
+    hint: 'tip', important: 'tip',
+    check: 'success', done: 'success',
+    help: 'question', faq: 'question',
+    caution: 'warning', attention: 'warning',
+    fail: 'failure', missing: 'failure',
+    error: 'danger', cite: 'quote'
+  };
+
+  /** callout 的图标：与参考页同一套参数（描边 2、24 格、圆头圆角）。 */
+  function calloutIcon(inner) {
+    return (
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>'
+    );
+  }
+
+  function decorateCallouts(root) {
+    if (!root || !root.querySelectorAll) return;
+    var quotes = root.querySelectorAll('blockquote');
+    Array.prototype.forEach.call(quotes, function (quote) {
+      // 只看**第一个子节点**：渲染后正文里的换行是 <br> 而不是 \\n，
+      // 拿整个 textContent 去匹配会把整段正文都当成标题（实测就是这么串成一坨的）
+      var first = quote.firstChild;
+      var head = (first && (first.textContent !== undefined ? first.textContent : first.nodeValue)) || '';
+      var found = head.match(/\[!([A-Za-z]+)\]([-+])?[ \t]*(.*)/);
+      if (!found) return;
+      var raw = found[1].toLowerCase();
+      var kind = CALLOUTS[raw] ? raw : CALLOUT_ALIAS[raw] || 'note';
+      var spec = CALLOUTS[kind];
+      // 标题里可能缠着源文件里的 `%%` 注释标记，去掉；实在取不到就用类型名
+      var title = (found[3] || '').replace(/[%\\]+/g, '').trim().slice(0, 60) || spec[0];
+      var fold = found[2] || '';
+
+      // 把标记本身从正文里摘掉（它不该作为一个字出现在读物里）
+      var walker = document.createTreeWalker(quote, NodeFilter.SHOW_TEXT, null);
+      var node = walker.nextNode();
+      while (node && (node.nodeValue || '').indexOf('[!') < 0) node = walker.nextNode();
+      if (node) {
+        // 连同**那一行的标题**一起去掉（不是只去标记）：
+        // Obsidian 把 `> [!tip] 某标题` 里的"某标题"当作标题展示，正文里就不再重复它。
+        // 只管到第一个换行/段落边界为止 —— 正文在后面的节点里，不动它。
+        node.nodeValue = node.nodeValue.replace(/^[%\\\s]*\[![A-Za-z]+\][-+]?[ \t]*[^\n]*/, '');
+        node.nodeValue = node.nodeValue.replace(/^[%\\]+/, '');
+      }
+
+      quote.classList.add('callout', 'callout--' + kind);
+      if (fold) {
+        // `[!note]-` 默认收起、`[!note]+` 默认展开 —— 点标题切换
+        quote.classList.add('callout--foldable');
+        if (fold === '-') quote.classList.add('is-folded');
+        head.setAttribute('role', 'button');
+        head.setAttribute('tabindex', '0');
+        head.addEventListener('click', function () {
+          quote.classList.toggle('is-folded');
+        });
+      }
+      var head = h('div.callout__title');
+      head.appendChild(h('span.callout__icon', { html: calloutIcon(spec[2]) }));
+      head.appendChild(h('span', { text: title }));
+
+      // 把正文收进 `.callout__content`（与 Obsidian 同一层结构）：
+      // 一是折叠时"只藏正文、留住标题"才有东西可藏，二是标题行与正文的间距好控。
+      var content = h('div.callout__content');
+      while (quote.firstChild) content.appendChild(quote.firstChild);
+      quote.appendChild(head);
+      quote.appendChild(content);
+    });
   }
 
   /** 渲染完再走一遍 DOM，把 `[[目标|别名]]` 换成可点的元素。
@@ -851,39 +1167,57 @@
     return box;
   }
 
+  /* 工具栏一律用图标。
+   *
+   * 上一版是文字（"粗 / 斜 / 码 / 标题 / 列表…"）：十三个词横排，眼睛要先读一遍才知道点哪个，
+   * 而它抢的正是正文最上面那一行。图标 + 悬停提示才是这类常驻工具的形状 ——
+   * 描边粗细与左栏图标栏一致（1.6），不引图标库。
+   */
+  var FORMAT_ICONS = {
+    bold: '<path d="M7 4h6.5a3.5 3.5 0 0 1 0 7H7z"/><path d="M7 11h7.5a4 4 0 0 1 0 8H7z"/>',
+    italic: '<path d="M14 4h-6M16 20H8M14.5 4 9.5 20"/>',
+    code: '<path d="M9 8 5 12l4 4M15 8l4 4-4 4"/>',
+    head: '<path d="M5 5v14M13 5v14M5 12h8"/><path d="M17 9v10M17 9l3-2v12"/>',
+    list: '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/>',
+    ol: '<path d="M10 6h10M10 12h10M10 18h10"/><path d="M4 5h1.5v4M4 15.5c0-.8.7-1.5 1.5-1.5s1.5.7 1.5 1.5S4 18 4 18h3"/>',
+    quote: '<path d="M6 7v10M11 7v10"/><path d="M15 9h4M15 15h4"/>',
+    math: '<path d="M7 6h9M7 6l4 6-4 6h9"/><path d="M17 10v7"/>',
+    link: '<path d="M9.5 14.5 14.5 9.5"/><path d="M11 6.5 12.6 5a4 4 0 0 1 5.7 5.7L16.7 12"/><path d="M13 17.5 11.4 19a4 4 0 0 1-5.7-5.7L7.3 12"/>',
+    wiki: '<path d="M6 8 9 5.5 12 8l3-2.5L18 8"/><path d="M9 19l3-9 3 9"/><path d="M11 19h2"/>',
+    hr: '<path d="M4 12h16"/>',
+    table: '<path d="M4 6h16v12H4z"/><path d="M4 10h16M4 14h16M10 6v12"/>',
+    indent: '<path d="M4 6h16M10 12h10M10 18h10"/><path d="M4 9.5 6.5 12 4 14.5"/>'
+  };
+
   function renderPad() {
     var pad = h('div.nedit__pad');
     var tools = [
-      ['**', '粗', function () { wrapSel('**', '**', '粗体'); }],
-      ['*', '斜', function () { wrapSel('*', '*', '斜体'); }],
-      ['`', '码', function () { wrapSel('`', '`', 'code'); }],
-      ['#', '标题', function () { linePrefix('## '); }],
-      ['-', '列表', function () { linePrefix('- '); }],
-      ['1.', '有序', function () { linePrefix('1. '); }],
-      ['>', '引用', function () { linePrefix('> '); }],
-      ['$$', '公式', function () { wrapSel('$$\n', '\n$$', 'x = y'); }],
-      ['[]', '链接', function () { wrapSel('[', '](https://)', '说明'); }],
-      ['[[]]', '双链', function () { wrapSel('[[', ']]', '笔记名'); }],
-      ['---', '分隔', function () { linePrefix('---'); }],
-      ['|', '表格', function () { insertText('| 列 | 列 |\n| --- | --- |\n|  |  |\n'); }]
+      ['bold', '加粗（已加粗则取消）', function () { wrapSel('**', '**', '粗体'); }],
+      ['italic', '斜体', function () { wrapSel('*', '*', '斜体'); }],
+      ['code', '行内代码', function () { wrapSel('`', '`', 'code'); }],
+      ['head', '标题（加在行首）', function () { linePrefix('## '); }],
+      ['list', '无序列表', function () { linePrefix('- '); }],
+      ['ol', '有序列表', function () { linePrefix('1. '); }],
+      ['quote', '引用', function () { linePrefix('> '); }],
+      ['math', '公式块', function () { wrapSel('$$\\n', '\\n$$', 'x = y'); }],
+      ['link', '链接', function () { wrapSel('[', '](https://)', '说明'); }],
+      ['wiki', '双链到另一篇笔记', function () { wrapSel('[[', ']]', '笔记名'); }],
+      ['hr', '分隔线', function () { linePrefix('---'); }],
+      ['table', '插入表格', function () { insertText('| 列 | 列 |\\n| --- | --- |\\n|  |  |\\n'); }],
+      ['indent', '缩进一级（Tab）', function () { linePrefix(indentUnit()); }]
     ];
     tools.forEach(function (tool, i) {
-      if (i === 3 || i === 7 || i === 9) pad.appendChild(h('span.nedit__sep'));
+      if (i === 3 || i === 7) pad.appendChild(h('span.nedit__sep'));
       pad.appendChild(
-        h('button.nedit__btn', { type: 'button', text: tool[1], title: tool[1], onClick: tool[2] })
+        h('button.nedit__btn', {
+          type: 'button',
+          html: svgIcon(FORMAT_ICONS[tool[0]]),
+          title: tool[1],
+          'aria-label': tool[1],
+          onClick: tool[2]
+        })
       );
     });
-    pad.appendChild(h('span.nedit__sep'));
-    pad.appendChild(
-      h('button.nedit__btn', {
-        type: 'button',
-        text: '⇥ 缩进',
-        title: '给选中的行加一级缩进',
-        onClick: function () {
-          linePrefix(indentUnit());
-        }
-      })
-    );
     return pad;
   }
 
@@ -1112,6 +1446,7 @@
       } catch (err) {
         target.appendChild(h('pre', { text: text }));
       }
+      decorateCallouts(target);
       linkify(target);
     }
     if (host) host.scrollTop = keepTop;
@@ -1334,11 +1669,126 @@
 
   /* ------------------------------------------------------------ 右栏 */
 
+  /* ------------------------------------------------------------ 侧栏
+
+   * **一次只显示一个面板**（与 Obsidian 的右侧栏一致）。上一版把属性、排版、大纲、
+   * 反链、出链、断链、历史、标签八块堆成一长条 —— 写东西时没人会滚那么远，
+   * 真正要看的永远是"当前这一个"。面板由左边的图标栏切换，也可以从顶部这排切。
+   */
+
+  var PANELS = [
+    ['outline', '大纲'],
+    ['links', '连接'],
+    ['props', '属性'],
+    ['history', '历史'],
+    ['tags', '标签']
+  ];
+
+  var sideTargetEl = null;
+
+  /** 面板里那些"稍后才异步填进来"的东西（历史、标签）往哪儿塞。 */
+  function sideTarget() {
+    return sideTargetEl || el.side;
+  }
+
   function renderSide() {
     ui.clear(el.side);
-    if (!state.note) return;
-    var note = state.note;
+    renderRibbon();
+    if (!state.note) {
+      // 没打开笔记时也把它填满：一条空栏比一句说明更让人以为坏了
+      el.side.appendChild(
+        h(
+          'div.nside__scroll',
+          null,
+          h(
+            'section.npanel',
+            null,
+            h('div.npanel__title', { text: '还没有打开笔记' }),
+            h('div.npanel__hint', { text: '左边挑一篇（或按 ＋ 新建），这里会出现它的大纲、反链、属性与改动历史。' })
+          )
+        )
+      );
+      return;
+    }
 
+    var head = h('div.nside__head');
+    var tabs = h('div.nside__tabs');
+    PANELS.forEach(function (pair) {
+      tabs.appendChild(
+        h('button.nside__tab' + (state.panel === pair[0] ? '.is-on' : ''), {
+          type: 'button',
+          text: pair[1],
+          onClick: function () {
+            state.panel = pair[0];
+            renderSide();
+          }
+        })
+      );
+    });
+    head.appendChild(tabs);
+    head.appendChild(
+      h('button.nicon.nicon--mini', {
+        type: 'button',
+        html: ICONS.side,
+        title: '收起右侧栏',
+        onClick: function () {
+          toggleSide('closed');
+        }
+      })
+    );
+    el.side.appendChild(head);
+
+    var scroll = h('div.nside__scroll');
+    el.side.appendChild(scroll);
+    sideTargetEl = scroll;
+    if (state.panel === 'props') sideProps(scroll);
+    else if (state.panel === 'links') sideLinks(scroll);
+    else if (state.panel === 'history') sideHistory(scroll);
+    else if (state.panel === 'tags') sideTags(scroll);
+    else sideOutline(scroll);
+    // 不把它置空：历史和标签是**稍后**才填进来的，置空之后它们会挂到侧栏根上、
+    // 跑到滚动区外面去。下次 renderSide 会重新赋值并清空，多挂一次也不会留下东西。
+  }
+
+  function sideOutline(target) {
+    var heads = (state.note.outline || []).filter(function (row) {
+      return row.kind === 'heading';
+    });
+    var panel = h('section.npanel', null, h('div.npanel__title', { text: '大纲 · ' + heads.length + ' 个标题' }));
+    if (!heads.length) {
+      panel.appendChild(h('div.npanel__hint', { text: '这篇还没有标题。写了 `# 标题` 这里就会出现。' }));
+    }
+    heads.forEach(function (row) {
+      panel.appendChild(
+        h(
+          'button.nitem.nitem--head',
+          {
+            type: 'button',
+            title: row.text,
+            onClick: function () {
+              jumpToLine(row.index);
+            }
+          },
+          h('span', { text: '　'.repeat(Math.max(0, row.level)) + row.text })
+        )
+      );
+    });
+    target.appendChild(panel);
+  }
+
+  function sideLinks(target) {
+    var note = state.note;
+    target.appendChild(
+      listPanel('反链 · 谁引用了我', note.backlinks || [], function (item) {
+        openNote(item.path, item.line);
+      })
+    );
+    target.appendChild(linkPanel('出链 · 我引用了谁', note.outlinks || []));
+    if ((note.unresolved || []).length) target.appendChild(unresolvedPanel(note.unresolved));
+  }
+
+  function sideProps(target) {
+    var note = state.note;
     var props = h('section.npanel');
     props.appendChild(h('div.npanel__title', { text: '属性' }));
     props.appendChild(
@@ -1363,48 +1813,73 @@
         }
       )
     );
+    // Trilium 的内置属性里用得上的那几个（见 docs/笔记模块设计.md 的词汇表）
+    props.appendChild(
+      propRow('图标', String((note.meta && note.meta.icon) || ''), '比如 bxs-flask 或 📐', function (v) {
+        saveMeta({ icon: v });
+      })
+    );
+    props.appendChild(
+      propRow('颜色', String((note.meta && note.meta.color) || ''), '比如 #2DD4BF', function (v) {
+        saveMeta({ color: v });
+      })
+    );
     if (note.generated_header) {
       props.appendChild(
         h('div.npanel__hint', { text: '这个头是导入时补的（带 qf_generated 标记，可批量回退）' })
       );
     }
-    el.side.appendChild(props);
-    el.side.appendChild(typographyPanel());
+    target.appendChild(props);
+    target.appendChild(typographyPanel());
+  }
 
-    if (note.kind === 'note') {
-      var heads = (note.outline || []).filter(function (row) {
-        return row.kind === 'heading';
-      });
-      if (heads.length) {
-        var outlinePanel = h('section.npanel', null, h('div.npanel__title', { text: '大纲' }));
-        heads.forEach(function (row) {
-          outlinePanel.appendChild(
-            h(
-              'button.nitem.nitem--head',
-              {
-                type: 'button',
-                title: row.text,
-                onClick: function () {
-                  jumpToLine(row.index);
-                }
-              },
-              h('span', { text: '　'.repeat(Math.max(0, row.level)) + row.text })
-            )
-          );
-        });
-        el.side.appendChild(outlinePanel);
-      }
+  function sideHistory(target) {
+    loadHistory();
+  }
 
-      el.side.appendChild(
-        listPanel('反链 · 谁引用了我', note.backlinks || [], function (item) {
-          openNote(item.path, item.line);
+  function sideTags(target) {
+    loadTags();
+  }
+
+  /** 图标栏（最左边那一条）：点一个切到那个面板，再点一下收起侧栏。 */
+  function renderRibbon() {
+    ui.clear(el.ribbon);
+    [
+      ['outline', 'outline', '大纲'],
+      ['links', 'links', '连接 · 反链与出链'],
+      ['props', 'props', '属性与排版'],
+      ['history', 'history', '改动历史与版本'],
+      ['tags', 'props', '标签']
+    ].forEach(function (row) {
+      var on = state.side === 'open' && state.panel === row[0];
+      el.ribbon.appendChild(
+        h('button.nribbon__btn' + (on ? '.is-on' : ''), {
+          type: 'button',
+          html: ICONS[row[1]],
+          title: row[2],
+          onClick: function () {
+            if (on) {
+              toggleSide('closed');
+              return;
+            }
+            state.panel = row[0];
+            if (state.side !== 'open') toggleSide('open');
+            else renderSide();
+          }
         })
       );
-      el.side.appendChild(linkPanel('出链 · 我引用了谁', note.outlinks || []));
-      if ((note.unresolved || []).length) el.side.appendChild(unresolvedPanel(note.unresolved));
-      loadHistory();
-    }
-    loadTags();
+    });
+    el.ribbon.appendChild(h('div.nribbon__sp'));
+    el.ribbon.appendChild(
+      h('button.nribbon__btn', {
+        type: 'button',
+        html: ICONS.side,
+        title: state.side === 'open' ? '收起右侧栏' : '展开右侧栏',
+        onClick: function () {
+          toggleSide();
+        }
+      })
+    );
   }
 
   /** 点侧栏大纲 → 切到编辑态并把光标放到那一行（不猜滚动位置，直接定位）。 */
@@ -1435,7 +1910,8 @@
    * 之所以必须有：这一页是拿来看字、写字的地方，"字号不合适"不是审美问题，是不能用。
    */
 
-  var TYPO_DEFAULTS = { size: 14, line: 1.82, width: 74, mono: false };
+  //: 行宽单位是"字"（ch）。默认给到 92 —— 上一版 72 太窄，长句一眼扫不完要换行两次。
+  var TYPO_DEFAULTS = { size: 15, line: 1.72, width: 92, mono: false };
 
   function typoPrefs() {
     var out = {};
@@ -1511,7 +1987,7 @@
       })
     );
     panel.appendChild(
-      slider('行宽', 'width', 50, 120, 2, function (v) {
+      slider('行宽', 'width', 60, 150, 2, function (v) {
         return v + ' 字';
       })
     );
@@ -1684,7 +2160,7 @@
         );
         if (items.length < 2 && !named.length) {
           panel.appendChild(h('div.npanel__hint', { text: '改过之后这里会记下每一版。' }));
-          el.side.appendChild(panel);
+          sideTarget().appendChild(panel);
           return;
         }
         named.concat(items).slice(0, 14).forEach(function (item) {
@@ -1725,7 +2201,7 @@
             )
           );
         });
-        el.side.appendChild(panel);
+        sideTarget().appendChild(panel);
       })
       .catch(function () {
         /* 历史拉不到不影响正文 */
@@ -1832,7 +2308,7 @@
           );
         });
         panel.appendChild(chips);
-        el.side.appendChild(panel);
+        sideTarget().appendChild(panel);
       })
       .catch(function () {
         /* 标签面板拉不到不影响正文 */
@@ -1969,7 +2445,8 @@
         state.note = note;
         // 与打开一篇同一个默认：宽屏**分栏**（右边就是即时渲染的那一半）。
         // 新建完只给一块空白编辑区，等于把"边写边看"这个最该有的东西藏起来了。
-        state.mode = note.kind === 'canvas' ? 'read' : window.innerWidth > 1180 ? 'split' : 'edit';
+        // 新建的是一张白纸，没什么可读 —— 直接给编辑态，省一次切换
+        state.mode = note.kind === 'canvas' ? 'read' : 'edit';
         state.selected = 0;
         state.dirty = false;
         state.savedAt = nowHM();
