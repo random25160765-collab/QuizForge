@@ -139,8 +139,8 @@ def main(argv: list[str] | None = None) -> int:
             payload["topic"] = mapped
             conn.execute(
                 text(
-                    "UPDATE questions SET topic = :topic, payload = CAST(:payload AS JSONB),"
-                    " updated_at = now() WHERE id = :id"
+                    "UPDATE questions SET topic = :topic, payload = :payload,"
+                    " updated_at = CURRENT_TIMESTAMP WHERE id = :id"
                 ),
                 {
                     "topic": mapped,
@@ -190,8 +190,8 @@ def main(argv: list[str] | None = None) -> int:
             payload["topic"] = item["topic_new"]
             conn.execute(
                 text(
-                    "UPDATE questions SET topic = :topic, payload = CAST(:payload AS JSONB),"
-                    " status = 'published', updated_at = now() WHERE id = :id"
+                    "UPDATE questions SET topic = :topic, payload = :payload,"
+                    " status = 'published', updated_at = CURRENT_TIMESTAMP WHERE id = :id"
                 ),
                 {
                     "topic": item["topic_new"],

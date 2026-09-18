@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 import tempfile
@@ -22,6 +23,11 @@ from pathlib import Path
 from . import config
 
 sys.path.insert(0, str(config.ROOT / "api"))
+
+from app.db import as_json  # noqa: E402
+
+__all__ = ["as_json", "next_ids", "save_question", "mark_verified", "export_bank"]
+
 
 def _strip_front(markdown: str | None) -> str:
     """只留正文：库里的 `raw_markdown` 不该带元信息头（前端会把它当正文渲染）。"""
@@ -83,17 +89,18 @@ def _column(payload: dict, key: str, default=""):
 
 
 def next_ids(cursor, subject: str, count: int) -> list[str]:
-    """在**库内**分配编号（并发安全）。
+    """在**库内**分配编号。
 
     文件时代靠"扫目录取最大值"编号，多个出题包并行必然撞号（实测 60 个材料
-    全从 0039 开始）。编号的权威挪进库之后，这件事才有唯一答案：先拿学科级
-    咨询锁，读最大值，再往后排 —— 同一事务里完成，别的 worker 只能排队。
+    全从 0039 开始）。编号的权威挪进库之后，这件事才有唯一答案：读最大值，再往后排。
+
+    并发：原先这里要先拿学科级的 Postgres **咨询锁**（`pg_advisory_xact_lock`）——
+    SQLite 没有咨询锁，也不需要：它的写事务是**全库排他**的，
+    "读最大值 + 写新题"本来就在同一个写事务里，别的 worker 只能等。
+    换内置引擎时锁就不见了，而不是换成"更弱的锁"。
     """
     from sqlalchemy import text  # noqa: PLC0415
 
-    cursor.execute(
-        text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": f"id:{subject}"}
-    )
     row = cursor.execute(
         text("SELECT id FROM questions WHERE id LIKE :pat ORDER BY id DESC LIMIT 1"),
         {"pat": f"{subject}-%"},
@@ -165,13 +172,13 @@ def insert_drafts(
                     INSERT INTO questions (id, type, topic, difficulty, source, status, layer, wing,
                                            chapter, raw_markdown, payload, content_hash, verify_report)
                     VALUES (:id, :type, :topic, :difficulty, :source, 'draft', :layer, :wing,
-                            :chapter, :raw, CAST(:payload AS JSONB), :hash, NULL)
+                            :chapter, :raw, :payload, :hash, NULL)
                     ON CONFLICT (id) DO UPDATE SET
                       type = EXCLUDED.type, topic = EXCLUDED.topic, difficulty = EXCLUDED.difficulty,
                       source = EXCLUDED.source, layer = EXCLUDED.layer, wing = EXCLUDED.wing,
                       chapter = EXCLUDED.chapter, raw_markdown = EXCLUDED.raw_markdown,
                       payload = EXCLUDED.payload, content_hash = EXCLUDED.content_hash,
-                      status = 'draft', updated_at = now()
+                      status = 'draft', updated_at = CURRENT_TIMESTAMP
                     """
                 ),
                 {
@@ -227,10 +234,10 @@ def save_slices(subject: str, meta: dict, slices: list[dict], figures: list[dict
         mid = conn.execute(
             text(
                 "INSERT INTO materials (slug, subject, title, source_path, sha256, lines, updated_at)"
-                " VALUES (:slug, :subject, :title, :source_path, :sha256, :lines, now())"
+                " VALUES (:slug, :subject, :title, :source_path, :sha256, :lines, CURRENT_TIMESTAMP)"
                 " ON CONFLICT (slug) DO UPDATE SET subject = EXCLUDED.subject,"
                 " title = EXCLUDED.title, source_path = EXCLUDED.source_path,"
-                " sha256 = EXCLUDED.sha256, lines = EXCLUDED.lines, updated_at = now()"
+                " sha256 = EXCLUDED.sha256, lines = EXCLUDED.lines, updated_at = CURRENT_TIMESTAMP"
                 " RETURNING id"
             ),
             {
@@ -250,8 +257,8 @@ def save_slices(subject: str, meta: dict, slices: list[dict], figures: list[dict
             conn.execute(
                 text(
                     "INSERT INTO material_slices (material_id, slice_id, path, start_line, end_line,"
-                    " tokens, figures, summary) VALUES (:mid, :sid, CAST(:path AS JSONB), :start,"
-                    " :end, :tokens, CAST(:figures AS JSONB), :summary)"
+                    " tokens, figures, summary) VALUES (:mid, :sid, :path, :start,"
+                    " :end, :tokens, :figures, :summary)"
                 ),
                 {
                     "mid": mid,
@@ -275,7 +282,7 @@ def save_slices(subject: str, meta: dict, slices: list[dict], figures: list[dict
                 text(
                     "INSERT INTO material_figures (material_id, figure_id, src, slice_id, start_line,"
                     " end_line, caption, kind, keys, plan) VALUES (:mid, :fid, :src, :sid, :start,"
-                    " :end, :caption, :kind, CAST(:keys AS JSONB), :plan)"
+                    " :end, :caption, :kind, :keys, :plan)"
                 ),
                 {
                     "mid": mid,
@@ -331,8 +338,8 @@ def save_extract(material_slug: str, slice_id: str, data: dict) -> int:
                 text(
                     "INSERT INTO point_candidates (material_id, slice_id, key, name, kind, thickness,"
                     " layers, sources, terms, raw, consumed)"
-                    " VALUES (:mid, :sid, :key, :name, :kind, :thickness, CAST(:layers AS JSONB),"
-                    " CAST(:sources AS JSONB), CAST(:terms AS JSONB), :raw, false)"
+                    " VALUES (:mid, :sid, :key, :name, :kind, :thickness, :layers,"
+                    " :sources, :terms, :raw, false)"
                     # 同一片里同一个 key 出现多次是正常的（模型会从不同角度说同一件事），
                     # 候选表按 (材料, 切片, key) 唯一 —— 保留第一条，不因此让整批回滚
                     " ON CONFLICT (material_id, slice_id, key) DO NOTHING"
@@ -383,8 +390,8 @@ def save_vision(material_slug: str, figure_id: str, data: dict) -> int:
                 text(
                     "INSERT INTO point_candidates (material_id, slice_id, key, name, kind, thickness,"
                     " layers, sources, terms, raw, consumed)"
-                    " VALUES (:mid, :sid, :key, :name, :kind, 2, CAST(:layers AS JSONB),"
-                    " CAST(:sources AS JSONB), CAST(:terms AS JSONB), :raw, false)"
+                    " VALUES (:mid, :sid, :key, :name, :kind, 2, :layers,"
+                    " :sources, :terms, :raw, false)"
                     # 一张图可能对同一个 key 给出多条事实（同一件事的不同说法），保留第一条
                     " ON CONFLICT (material_id, slice_id, key) DO NOTHING"
                 ),
@@ -424,8 +431,8 @@ def save_verdict(question_id: str, verdict: str, report: dict) -> None:
     with _engine().begin() as conn:
         conn.execute(
             text(
-                "UPDATE questions SET status = :status, verify_report = CAST(:report AS JSONB),"
-                " updated_at = now() WHERE id = :id"
+                "UPDATE questions SET status = :status, verify_report = :report,"
+                " updated_at = CURRENT_TIMESTAMP WHERE id = :id"
             ),
             {"status": status, "report": json.dumps(report, ensure_ascii=False), "id": question_id},
         )
@@ -434,13 +441,15 @@ def save_verdict(question_id: str, verdict: str, report: dict) -> None:
             # 草稿/被打回的题不该把点标成"已出题" —— 否则一道废题会让那个点
             # 从此不再出题，这比重复出题更糟。
             # 点的 key 在**题目的 payload** 里（出题入库时写下的），不在校验报告里。
-            point_key = (
+            # 取整列在应用层解（原先用 Postgres 的 `payload -> 'point'`：
+            # SQLite 上 JSON 运算符要靠 JSON1 扩展，取回来解更省事，也不挑编译选项）。
+            payload = as_json(
                 conn.execute(
-                    text("SELECT payload -> 'point' FROM questions WHERE id = :id"),
-                    {"id": question_id},
-                ).scalar()
-                or ""
+                    text("SELECT payload FROM questions WHERE id = :id"), {"id": question_id}
+                ).scalar(),
+                {},
             )
+            point_key = (payload or {}).get("point") or ""
             if point_key:
                 conn.execute(
                     text(

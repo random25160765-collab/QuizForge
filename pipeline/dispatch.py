@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import yaml
@@ -330,14 +331,8 @@ def coverage_from_db(slug: str) -> dict | None:
         rows = conn.execute(
             text(
                 """
-                SELECT kp.key, kp.name, kp.kind, kp.thickness, kp.layers, kp.producible, kp.note,
-                       COALESCE((
-                         SELECT jsonb_agg(
-                           DISTINCT jsonb_build_array(ps.start_line, ps.end_line)
-                           ORDER BY jsonb_build_array(ps.start_line, ps.end_line)
-                         )
-                         FROM point_sources ps WHERE ps.point_id = kp.id
-                       ), '[]'::jsonb) AS sources
+                SELECT kp.id, kp.key, kp.name, kp.kind, kp.thickness, kp.layers,
+                       kp.producible, kp.note
                 FROM knowledge_points kp
                 JOIN materials m ON m.id = kp.material_id
                 WHERE m.slug = :slug
@@ -346,8 +341,32 @@ def coverage_from_db(slug: str) -> dict | None:
             ),
             {"slug": slug},
         ).fetchall()
+        # 出处区间单独取回来再归组。原先是在 SQL 里 `jsonb_agg(DISTINCT
+        # jsonb_build_array(…))` —— Postgres 专有（换引擎后 SQLite 不认）。
+        # 一个材料最多几百行，应用层拼既简单又不挑方言。
+        source_rows = conn.execute(
+            text(
+                """
+                SELECT ps.point_id, ps.start_line, ps.end_line
+                FROM point_sources ps
+                JOIN knowledge_points kp ON kp.id = ps.point_id
+                JOIN materials m ON m.id = kp.material_id
+                WHERE m.slug = :slug
+                ORDER BY ps.point_id, ps.start_line, ps.end_line
+                """
+            ),
+            {"slug": slug},
+        ).fetchall()
+
     if not rows:
         return None
+
+    by_point: dict[int, list[list[int]]] = defaultdict(list)
+    for source in source_rows:
+        pair = [source[1], source[2]]
+        if pair not in by_point[source[0]]:
+            by_point[source[0]].append(pair)
+
     points: list[dict] = []
     for row in rows:
         data = dict(row._mapping)
@@ -357,10 +376,11 @@ def coverage_from_db(slug: str) -> dict | None:
                 "name": data["name"],
                 "kind": data["kind"],
                 "thickness": data["thickness"],
-                "layers": data["layers"] or [],
+                # 裸 SQL 读到的是字符串（SQLite）—— 见 `as_json`
+                "layers": dbstore.as_json(data["layers"], []) or [],
                 "producible": data["producible"],
                 "note": data["note"],
-                "sources": data["sources"] or [],
+                "sources": by_point.get(data["id"], []),
             }
         )
     return {"material": slug, "points": points}

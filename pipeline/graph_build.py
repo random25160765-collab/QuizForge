@@ -240,7 +240,9 @@ def link_questions(conn) -> dict:
         text(
             """
             INSERT INTO question_concepts (question_id, concept_id, is_primary)
-            SELECT qp.question_id, k.concept_id, bool_or(qp.is_primary)
+            -- `MAX` 而不是 Postgres 的 `bool_or`：SQLite 里布尔就是 0/1，
+            -- 取最大值与"只要有一处是主要就算主要"同义（换引擎时把方言函数换掉）
+            SELECT qp.question_id, k.concept_id, MAX(qp.is_primary)
             FROM question_points qp
             JOIN knowledge_points k ON k.id = qp.point_id
             WHERE k.concept_id IS NOT NULL
@@ -252,7 +254,7 @@ def link_questions(conn) -> dict:
     conn.execute(
         text(
             """
-            UPDATE concepts c SET question_count = COALESCE(s.n, 0), updated_at = now()
+            UPDATE concepts c SET question_count = COALESCE(s.n, 0), updated_at = CURRENT_TIMESTAMP
             FROM (SELECT concept_id, COUNT(DISTINCT question_id) n
                   FROM question_concepts GROUP BY 1) s
             WHERE s.concept_id = c.id
@@ -261,7 +263,7 @@ def link_questions(conn) -> dict:
     )
     conn.execute(
         text(
-            "UPDATE concepts SET question_count = 0, updated_at = now()"
+            "UPDATE concepts SET question_count = 0, updated_at = CURRENT_TIMESTAMP"
             " WHERE id NOT IN (SELECT DISTINCT concept_id FROM question_concepts)"
         )
     )
@@ -347,7 +349,7 @@ def merge_concepts() -> dict:
                     INSERT INTO concepts (key, name, kind, definition, topic_key, aliases,
                                           point_count, material_count, question_count,
                                           status, confidence)
-                    VALUES (:key, :name, :kind, :definition, :topic, CAST(:aliases AS JSONB),
+                    VALUES (:key, :name, :kind, :definition, :topic, :aliases,
                             :points, :materials, :questions, 'auto', :confidence)
                     ON CONFLICT (key) DO UPDATE SET
                       name = EXCLUDED.name, kind = EXCLUDED.kind,
@@ -360,7 +362,7 @@ def merge_concepts() -> dict:
                       aliases = EXCLUDED.aliases, point_count = EXCLUDED.point_count,
                       material_count = EXCLUDED.material_count,
                       question_count = EXCLUDED.question_count,
-                      confidence = EXCLUDED.confidence, updated_at = now()
+                      confidence = EXCLUDED.confidence, updated_at = CURRENT_TIMESTAMP
                     """
                 ),
                 {
@@ -902,7 +904,7 @@ async def relate_centric(limit: int = 20) -> dict:
                 empty += 1
             edges_added += added
             conn.execute(
-                text("UPDATE concepts SET centric_at = now() WHERE id = :id"),
+                text("UPDATE concepts SET centric_at = CURRENT_TIMESTAMP WHERE id = :id"),
                 {"id": target_id},
             )
 

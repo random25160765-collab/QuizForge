@@ -35,15 +35,28 @@ class Settings(BaseSettings):
     # 早期从 JWT 方案沿袭下来的 QF_SECRET_KEY 是一条假需求：它从未被读取过，
     # 却让运维多做一个无用步骤、还以为不设会出错。宁可删掉也不要留误导。
 
+    # ------------------------------------------------------------ 数据
+    # **local-first**：应用自己的东西（数据库，以后还有笔记与资料的索引）都落在这个
+    # 数据目录里，不依赖任何外部服务 —— 双击即用，没有"先把数据库起起来"这一步。
+    data_dir: Path = ROOT / "data"
+
     # ------------------------------------------------------------ 数据库
-    # 本机开发默认连 docker compose 起的 postgres
-    database_url: str = "postgresql+psycopg://quizforge:quizforge@127.0.0.1:5432/quizforge"
+    # 留空 = 用 `data_dir` 下的 `quizforge.db`（SQLite，随应用分发）。
+    # 想指到别处（内存库、临时文件）就设 `QF_DATABASE_URL`。
+    database_url: str = ""
     db_echo: bool = False
-    db_pool_size: int = 5
-    db_max_overflow: int = 10
 
     # 会话相关的配置项（cookie 名、有效期、令牌字节数）随账号面一起删掉了 ——
     # 单用户本地形态没有会话，见 `app/deps.py`。
+
+    def model_post_init(self, __context: object) -> None:
+        """没显式给连接串就用数据目录下的 SQLite 文件。
+
+        放在这里而不是写成字段默认值：默认值要引用**另一个字段**（`data_dir`），
+        而字段默认值在类定义时就求值了 —— 那样 `QF_DATA_DIR` 会被忽略。
+        """
+        if not self.database_url:
+            self.database_url = f"sqlite:///{self.data_dir / 'quizforge.db'}"
 
     # ------------------------------------------------------------ 静态资源
     # 由 tools/build.py --web 输出，FastAPI 直接挂载。
@@ -102,24 +115,9 @@ class Settings(BaseSettings):
 
     @property
     def is_postgres(self) -> bool:
+        """还在用 Postgres 吗 —— 只剩"把老数据搬过来"那一次脚本会用到它。"""
         return self.database_url.startswith("postgresql")
 
-    # ------------------------------------------------------------ 导入器
-    # 容器里用 QF_QUESTIONS_DIR / QF_TOPICS_FILE / QF_TOOLS_DIR 指到挂载点。
-    # tools/ 是仓库根的脚本目录（题库解析器、主题树、校验器都在里面），
-    # 导入器直接复用它们，所以必须能找到。
-    questions_dir: Path = ROOT / "questions"
-    topics_file: Path = ROOT / "meta" / "topics.yaml"
-    tools_dir: Path = ROOT / "tools"
-
-    # ------------------------------------------------------------ 派生属性
-    @property
-    def cors_origin_list(self) -> list[str]:
-        return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
-
-    @property
-    def is_postgres(self) -> bool:
-        return self.database_url.startswith("postgresql")
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

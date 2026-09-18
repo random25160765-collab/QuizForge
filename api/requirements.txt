@@ -13,8 +13,9 @@ uvicorn[standard]>=0.32
 
 # --- 数据层 ---
 sqlalchemy>=2.0.36
-alembic>=1.14
-psycopg[binary]>=3.2          # PostgreSQL 驱动；[binary] 免装 libpq
+# alembic 已退役：local-first 之后库是本机一个 SQLite 文件，建表走
+# `app.db.ensure_schema`（create_all），第一次运行时自动建好，没有迁移链。
+psycopg[binary]>=3.2          # 只给 tools/migrate_to_local.py 当源库用（一次性的搬运）
 
 # --- 校验与配置 ---
 pydantic>=2.10

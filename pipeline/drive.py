@@ -60,10 +60,12 @@ def _counts() -> dict[str, int]:
     with get_engine().connect() as conn:
         row = conn.execute(
             text(
-                "SELECT COUNT(*) FILTER (WHERE status = 'published'),"
-                " COUNT(*) FILTER (WHERE status = 'verified'),"
-                " COUNT(*) FILTER (WHERE status = 'draft' AND retired_at IS NULL),"
-                " COUNT(*) FILTER (WHERE retired_at IS NOT NULL) FROM questions"
+                # `SUM(CASE WHEN … THEN 1 ELSE 0 END)` 而不是 `FILTER (WHERE …)`：
+                # 后者是 Postgres 的聚合过滤语法（换引擎时实测 SQLite 不认）
+                "SELECT SUM(CASE WHEN status = 'published' THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN status = 'verified' THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN status = 'draft' AND retired_at IS NULL THEN 1 ELSE 0 END),"
+                " SUM(CASE WHEN retired_at IS NOT NULL THEN 1 ELSE 0 END) FROM questions"
             )
         ).fetchone()
     return {"published": row[0], "verified": row[1], "draft": row[2], "retired": row[3]}

@@ -37,7 +37,9 @@ MAX_ROUND = 2
 PLAN_SQL = text(
     """
     SELECT q.id, q.topic, q.payload, q.verify_report,
-           COALESCE((q.payload ->> 'round')::int, 0) AS round,
+           -- SQLite 内置的 JSON 函数（3.38 起编译进内核）：取字段 + 转整数。
+           -- 原先写的是 Postgres 的 `->>` 与 `::int`
+           COALESCE(CAST(json_extract(q.payload, '$.round') AS INTEGER), 0) AS round,
            kp.id AS point_id, kp.key AS point_key, kp.name AS point_name, kp.kind AS point_kind,
            kp.thickness, kp.layers, kp.note,
            m.slug AS material, m.source_path,
@@ -48,7 +50,7 @@ PLAN_SQL = text(
            ) AS covered
     FROM questions q
     LEFT JOIN knowledge_points kp
-           ON kp.key = COALESCE(NULLIF(q.payload ->> 'point', ''), q.topic)
+           ON kp.key = COALESCE(NULLIF(json_extract(q.payload, '$.point'), ''), q.topic)
     LEFT JOIN materials m ON m.id = kp.material_id
     WHERE q.status = 'draft' AND q.verify_report IS NOT NULL
       AND q.retired_at IS NULL  -- 已退役的不再挑出来（否则每轮都要重新处理一遍）
@@ -133,7 +135,7 @@ def run(rows: list[dict], apply: bool) -> dict:
             if apply:
                 with dbstore._engine().begin() as db:  # noqa: SLF001
                     db.execute(
-                        text("UPDATE questions SET retired_at = now(), updated_at = now() WHERE id = :id"),
+                        text("UPDATE questions SET retired_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
                         {"id": row["id"]},
                     )
     finally:

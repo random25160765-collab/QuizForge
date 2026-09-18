@@ -119,7 +119,7 @@ def assign_topics(rounds: int = 4) -> dict:
                 concepts[cid]["topic"] = topic
                 conn.execute(
                     text(
-                        "UPDATE concepts SET topic_key = :topic, updated_at = now()"
+                        "UPDATE concepts SET topic_key = :topic, updated_at = CURRENT_TIMESTAMP"
                         " WHERE id = :id AND topic_key = ''"
                     ),
                     {"topic": topic, "id": cid},
@@ -145,7 +145,7 @@ def assign_topics(rounds: int = 4) -> dict:
                     concepts[row[0]]["topic"] = row[1]
                     conn.execute(
                         text(
-                            "UPDATE concepts SET topic_key = :topic, updated_at = now()"
+                            "UPDATE concepts SET topic_key = :topic, updated_at = CURRENT_TIMESTAMP"
                             " WHERE id = :id AND topic_key = ''"
                         ),
                         {"topic": row[1], "id": row[0]},
