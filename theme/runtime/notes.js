@@ -2051,11 +2051,18 @@
     input.focus();
     input.setSelectionRange(input.value.length, input.value.length);
     var done = false;
-    function finish(save) {
+    /** `action` 是"存完接着做什么"（回车 `sibling`、Tab `indent`、Shift+Tab `outdent`）。
+     *
+     * 参数必须收下来 —— 先前只写了 `function finish(save)`，键盘那边传的
+     * `finish(true, 'sibling')` 第二个参数被**丢掉**，于是 `afterEdit` 永远收到
+     * 闭包里那个 `undefined`（双击进来时本来就没传 next），回车因此什么都不会接下去做。
+     * 症状很迷惑：保存是对的、新节点也建了，就是"接着编辑"这一步没了。
+     */
+    function finish(save, action) {
       if (done) return;
       done = true;
       state.editing = false;
-      var follow = function () { afterEdit(idx, next); };
+      var follow = function () { afterEdit(idx, action || next); };
       if (save && input.value !== row.raw) lineOp('replace', idx, { raw: input.value }, follow);
       else {
         renderMain();
@@ -2086,10 +2093,10 @@
   function afterEdit(idx, next) {
     if (!next) return;
     if (next === 'sibling') {
-      lineOp('insert', idx, {}, function () {
-        // 新那一条在第 idx+1 行；渲染完直接进编辑态
-        setTimeout(function () { editLine(idx + 1); }, 0);
-      });
+      // 只发请求：**开编辑框这件事由 `lineOp` 统一做**（它原本就有
+      // `if (op === 'insert') { setTimeout(editLine(fresh)) }`）。
+      // 上一轮我这里又开了一次，两个入口抢着开，编辑框与时机就对不上了。
+      lineOp('insert', idx, {});
       return;
     }
     if (next === 'indent' || next === 'outdent') {
