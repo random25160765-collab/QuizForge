@@ -64,10 +64,35 @@ from .. import agent_loop, tools
 from .. import ai_gateway as gateway
 from .. import attachments as attach
 from .. import parts as msgparts
+from .. import mounts
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
 from ..models import Attachment, Conversation, Message
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+
+@router.get("/mounts")
+def mounts_state(user: CurrentUser, db: DbSession) -> dict:
+    """顶栏那组开关现在的状态：五组各亮着没有，以及**这一版真声明了哪些工具**。
+
+    `declared` 是从 `tools.specs()` 真算出来的，不是另抄一份 ——
+    "图标亮着"与"模型看得到几个工具"必须能对得上，而这是唯一能证明它俩一致的办法
+    （改完在界面上量一下 `declared` 的条数，就知道开关有没有真的接上）。
+    """
+    return mounts.describe(db, user.id)
+
+
+@router.post("/mounts")
+def mounts_save(body: dict, user: CurrentUser, db: DbSession) -> dict:
+    """存一份挂载集。**空列表是合法的** —— 那就是极简模式（一条工具都不声明）。"""
+    groups = body.get("groups")
+    if not isinstance(groups, list):
+        raise HTTPException(status_code=400, detail="groups 得是个列表")
+    try:
+        mounts.write(db, user.id, [str(part) for part in groups])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return mounts.describe(db, user.id)
 
 # 人设刻意的短：真正的「懂这个知识空间」应该来自工具与材料，而不是往提示词里堆形容词。
 # 这里只定三件事：说什么语言、怎么说话、以及一条硬规矩（不许编出处）。
@@ -1154,6 +1179,8 @@ def _stream(  # noqa: ANN001
             system=SYSTEM_PROMPT,
             history=history,
             tools=tools,
+            # 只声明**已挂载**的那几组；未挂载的即使被叫到名字也不执行（纵深防御）
+            mounts=mounts.effective(db, user.id),
             # 工具要知道"这是哪次对话"：push_question 靠它避开这次已经推过的题
             tool_context={"conversationId": str(conv.id)},
         ):

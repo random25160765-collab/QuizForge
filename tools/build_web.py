@@ -79,6 +79,7 @@ RUNTIME_ORDER = [
     "sm2.js",
     "ai.js",
     "shell.js",
+    "mounts.js",        # 顶栏的挂载开关：亮度＝AI 能调哪几块
     "qview.js",
     "router.js",
 ]

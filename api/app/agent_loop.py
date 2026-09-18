@@ -164,6 +164,7 @@ def run(  # noqa: ANN001
     tool_context: dict | None = None,
     budget=None,
     max_turns=MAX_TURNS,
+    mounts: set[str] | None = None,
 ):
     """驱动若干轮，产出事件字典（宿主按 kind 分发）：
 
@@ -230,7 +231,7 @@ def run(  # noqa: ANN001
                 for kind, value in gateway.stream_completion(
                     conf,
                     messages,
-                    tools=tools.specs() if (allow_tools and _turn < max_turns - 1) else None,
+                    tools=tools.specs(mounts) if (allow_tools and _turn < max_turns - 1) else None,
                 ):
                     if kind == "delta":
                         if leaked:
@@ -320,7 +321,7 @@ def run(  # noqa: ANN001
             yield {"kind": "tool_start", "callId": call_id, "name": call["name"], "args": args}
 
             started = time.perf_counter()
-            ok, payload = tools.call(db, user, call["name"], args, tool_context)
+            ok, payload = tools.call(db, user, call["name"], args, tool_context, mounts=mounts)
             elapsed = gateway.elapsed_ms(started)
             text = clip(tools.output_text(payload))
             yield {

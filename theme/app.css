@@ -1663,3 +1663,63 @@ body[data-page='wrongbook'] .part {
   opacity: 0;
   transition: opacity 0.18s var(--ease);
 }
+
+/* ---- 顶栏中部的枢纽图标组（工具挂载开关）----
+   亮起＝描边加重 + 主色；熄灭＝次级色。过渡 140ms ease-out（计划里定的是 120–160ms），
+   只动颜色与一点点缩放，不动布局尺寸。 */
+
+.hubs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+.hubs:empty {
+  display: none;
+}
+
+.hub {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 140ms ease-out, background 140ms ease-out, transform 140ms ease-out;
+}
+
+.hub:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+.hub.is-on {
+  color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+}
+
+.hub.is-on:hover {
+  transform: scale(1.08);
+}
+
+.hub:active {
+  transform: scale(0.94);
+}
+
+.hubs__note {
+  margin-left: 6px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.hubs__note.is-bad {
+  color: #d9534f;
+}

@@ -1642,8 +1642,185 @@ def create_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+# ---------------------------------------------------------------- 笔记 / 资料（可挂载）
+
+
+def search_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """在笔记里找。**跨所有笔记库**（Math / Personal / Philosophy / Tech）。
+
+    与 `search_material` 的分工：那份材料在**资料根**下（PDF、手册、别人的东西），
+    这里的笔记是**用户自己写的**。两边的检索表达式是同一套。
+    """
+    from . import notelib  # noqa: PLC0415
+
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"error": "得给一个 query"}
+    limit = _clamp(args.get("limit"), 1, 30, 12)
+    lib_name = str(args.get("lib") or "").strip()
+    try:
+        hits = notelib.search(query, lib_name=lib_name, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"检索失败：{exc}"}
+    return {
+        "items": hits,
+        "count": len(hits),
+        "note": "命中含库名与路径；要读某一篇的全文，让用户打开它、或者直接说要看哪一篇。",
+    }
+
+
+def write_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """把一段话写进某篇笔记（**追加到正文末尾**）。
+
+    写入前会留一份快照，所以"写错了"随时能撤回（与笔记页那个撤销同源）。
+    只写**正文**，不动元数据头 —— 头是笔记的属性，不该被一次追加顺手改掉。
+    """
+    from . import notelib  # noqa: PLC0415
+
+    path = str(args.get("path") or "").strip()
+    text = str(args.get("text") or "").rstrip()
+    if not path:
+        return {"error": "得给 path（笔记在库里的相对路径）"}
+    if not text:
+        return {"error": "得给 text（要写进去的内容）"}
+    lib_name = str(args.get("lib") or "").strip()
+    targets = notelib.libraries()
+    if not targets:
+        return {"error": "还没有任何笔记库"}
+    target = next((one for one in targets if one.name == lib_name), None) if lib_name else targets[0]
+    if target is None:
+        return {"error": f"没有这个笔记库：{lib_name}"}
+    try:
+        note = notelib.read_note(target, path)
+        body = str(note.get("body") or "").rstrip()
+        merged = (body + "\n\n" + text).strip() + "\n"
+        notelib.write_body(target, path, merged, why="ai_append")
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"没写成：{exc}"}
+    return {
+        "ok": True,
+        "lib": target.name,
+        "path": path,
+        "addedChars": len(text),
+        "note": "已追加。改动前的版本留在快照里，笔记页可以撤回。",
+    }
+
+
+def attach_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """把一份资料挂进这次对话：给出它的元数据与一段正文。
+
+    "挂"的实际含义是**把正文交给这一轮的模型上下文**（条目粒度是计划里定死的：
+    一个条目 = 主文件 + 它引用的附属资源）。正文没抽过就顺手抽一次；
+    抽出来是乱码也照实说 —— 那种情况（实测 `Trefethen-Bau.pdf`）让模型别硬引。
+    """
+    from . import library as lib  # noqa: PLC0415
+    from .routers.library import _meta_dir, _text_dir, roots_for  # noqa: PLC0415
+
+    want = str(args.get("citekey") or args.get("name") or "").strip()
+    if not want:
+        return {"error": "得给 citekey 或文件名"}
+    chars = _clamp(args.get("chars"), 500, 20000, 6000)
+    roots = roots_for(None)
+    meta_dir, text_dir = _meta_dir(), _text_dir()
+    found = lib.entries(roots, meta_dir, text_dir)
+    lowered = want.lower()
+    hit = next((one for one in found if one.citekey == want), None) or next(
+        (
+            one
+            for one in found
+            if lowered in one.item.rel.lower() or lowered in str(one.meta.get("title") or "").lower()
+        ),
+        None,
+    )
+    if hit is None:
+        return {"error": f"资料库里没有这一份：{want}", "hint": "先 search_material 找一下它的引用键"}
+    key = hit.citekey
+    if not lib.text_state(text_dir, key).get("at"):
+        lib.extract_text(hit.item, text_dir, key)
+    state = lib.text_state(text_dir, key)
+    return {
+        "citekey": key,
+        "title": str(hit.meta.get("title") or ""),
+        "authors": list(hit.meta.get("authors") or []),
+        "year": hit.meta.get("year") or 0,
+        "kind": str(hit.meta.get("kind") or ""),
+        "source": str(hit.item.path),
+        "textState": str(state.get("state") or "none"),
+        "text": lib.text_of(text_dir, key, limit=chars),
+        "note": "text 是这份资料的正文节选。引用时请说清是**哪一份的哪一段**；"
+        "textState 不是 ok 时（garbled）说明这份抽不出可用文字，别拿它当依据。",
+    }
+
+
+#: 挂载分组 —— 顶栏那几个枢纽图标就是它。
+#:
+#: **唯一出处**：界面上的标签与顺序、`specs()` 的过滤、`call()` 的纵深防御都读这里。
+#: （与资料模块的 `KINDS` 同一条规矩：抄成两处，早晚有一天对不上。）
+#: `hint` 是给鼠标悬停用的一句话，说清"亮起来之后 AI 能做什么"。
+GROUPS: tuple[tuple[str, str, str], ...] = (
+    ("notes", "笔记", "翻笔记树、读正文、看大纲与画布、按内容找"),
+    ("library", "资料", "在资料库里找条目、读它的正文与元数据"),
+    ("graph", "图谱", "查概念与知识点、看前置链"),
+    ("quiz", "出题", "查题库、判题、标记掌握、安排复习"),
+    ("sandbox", "沙箱", "跑一段代码、渲染演示"),
+)
+
+GROUP_LABELS: dict[str, str] = {key: label for key, label, _ in GROUPS}
+GROUP_HINTS: dict[str, str] = {key: hint for key, _, hint in GROUPS}
+ALL_GROUPS: tuple[str, ...] = tuple(key for key, _, _ in GROUPS)
+
+
 REGISTRY = {
+    "search_notes": {
+        "group": "notes",
+        "fn": search_notes,
+        "description": "在**用户自己的笔记**里按内容找（跨所有笔记库）。"
+        "用户说\"我笔记里写过\"\"我之前记过\"\"找一下我的笔记\"时用它；"
+        "要找的是资料根下的材料（PDF、手册），用 search_material。"
+        "返回库名、路径、标题与片段。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "关键词或短语"},
+                "lib": {"type": "string", "description": "限定某个笔记库（可省，省了就全找）"},
+                "limit": {"type": "integer", "description": "最多几条（默认 12）"},
+            },
+            "required": ["query"],
+        },
+    },
+    "write_note": {
+        "group": "notes",
+        "fn": write_note,
+        "description": "把一段话**追加到某篇笔记的末尾**。用户说\"记到我的笔记里\""
+        "\"写进那篇\"时用它。写入前会自动留快照，可以撤回。"
+        "**先跟用户确认写哪一篇**（路径要准确），别自己挑一篇就写。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "笔记在库里的相对路径，如 信号与系统/卷积.md"},
+                "text": {"type": "string", "description": "要写进去的内容（Markdown）"},
+                "lib": {"type": "string", "description": "哪个笔记库（可省）"},
+            },
+            "required": ["path", "text"],
+        },
+    },
+    "attach_material": {
+        "group": "library",
+        "fn": attach_material,
+        "description": "把资料库里的一份资料读进来：给它的元数据与一段正文，"
+        "这样后面的回答能**基于原文**而不是凭印象。用户说\"看那份规范\""
+        "\"把这篇论文挂上\"时用它；不知道引用键就先 search_material。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "citekey": {"type": "string", "description": "引用键（首选）"},
+                "name": {"type": "string", "description": "或者文件名/标题的一部分"},
+                "chars": {"type": "integer", "description": "取多少字正文（默认 6000）"},
+            },
+        },
+    },
     "search_knowledge": {
+        "group": "graph",
         "fn": search_knowledge,
         "description": "在知识空间里按关键词找概念与知识点。用户问到一个术语、"
         "一个机制名、或你不确定它在这套材料里怎么表述时，先用它。"
@@ -1658,6 +1835,7 @@ REGISTRY = {
         },
     },
     "get_point_detail": {
+        "group": "graph",
         "fn": get_point_detail,
         "description": "取一个知识点或概念的详情：它是什么、在哪份材料的哪几行出现、"
         "挂了几道题、与哪些概念有前置/包含/易混关系。要讲清一处机制时用它拿出处。",
@@ -1670,6 +1848,7 @@ REGISTRY = {
         },
     },
     "get_existing_questions": {
+        "group": "quiz",
         "fn": get_existing_questions,
         "description": "题库里已有的题（默认不含答案，避免推题时剧透）。"
         "用户想练某个知识点、或你想看看已有题长什么样时用它。",
@@ -1684,6 +1863,7 @@ REGISTRY = {
         },
     },
     "get_mastery": {
+        "group": "quiz",
         "fn": get_mastery,
         "description": "用户在各知识点上的掌握度与档位（new/learning/familiar/mastered）。"
         "想判断该给他讲多深、该先补哪儿时用它。",
@@ -1699,6 +1879,7 @@ REGISTRY = {
         },
     },
     "get_due_reviews": {
+        "group": "quiz",
         "fn": get_due_reviews,
         "description": "按间隔重复算法到期该复习的题。用户问「今天该复习什么」时用它。",
         "parameters": {
@@ -1707,6 +1888,7 @@ REGISTRY = {
         },
     },
     "run_python": {
+        "group": "sandbox",
         "fn": run_python,
         "description": "在沙箱里**真跑**一段 Python（Pyodide：浏览器里跑 CPython）。"
         "用户说「跑一段脚本」「算一下」「验证一下这个算法」「试试这段代码」时**直接用它**，"
@@ -1740,6 +1922,7 @@ REGISTRY = {
         },
     },
     "render_demo": {
+        "group": "sandbox",
         "fn": render_demo,
         "description": "产出一个**能动的演示**（跑在沙箱 iframe 里）。"
         "机制里有空间/时间结构时用它：数据怎么流、怎么切、怎么重叠、流水线怎么排、瓶颈在哪 —— "
@@ -1787,6 +1970,7 @@ REGISTRY = {
         },
     },
     "explore_graph": {
+        "group": "graph",
         "fn": explore_graph,
         "description": "从一个概念/知识点出发，走**语义关系**看邻域：前置、后继、组成部分、易混、实现。"
         "「我该先学什么」「这两块什么关系」「为什么我学不懂 X」用它；按词找节点用 search_knowledge。"
@@ -1813,6 +1997,7 @@ REGISTRY = {
         },
     },
     "search_material": {
+        "group": "library",
         "fn": search_material,
         "description": "在**材料原文**里做字面检索，返回命中的行区间与原文片段。"
         "想知道「材料里原话是怎么说的」时用它；想知道概念/点在知识空间里的位置，用 search_knowledge。"
@@ -1830,6 +2015,7 @@ REGISTRY = {
         },
     },
     "read_material": {
+        "group": "library",
         "fn": read_material,
         "description": "读材料原文的某几行（默认从 startLine 起 60 行）。"
         "要用原文支撑结论时：先 search_material 拿到行号，再用它把上下文读全；"
@@ -1848,6 +2034,7 @@ REGISTRY = {
         },
     },
     "grade_problem": {
+        "group": "quiz",
         "fn": grade_problem,
         "description": "把一次**大题批改**的逐问判定写进答题记录（掌握度与间隔重复因此"
         "与其它题走同一条路）。批完**必须**调它，否则这次作答不算数 —— 记录是事实，"
@@ -1876,6 +2063,7 @@ REGISTRY = {
         },
     },
     "flag_question": {
+        "group": "quiz",
         "fn": flag_question,
         "description": "提议把某道题加入/移出**收藏夹**（=「这题值得再看」的标记，刷题页里叫收藏夹）。"
         "注意这是**提议**：界面上会出现一张待确认的凭条，他点了才真的生效。"
@@ -1890,6 +2078,7 @@ REGISTRY = {
         },
     },
     "mark_mastered": {
+        "group": "quiz",
         "fn": mark_mastered,
         "description": "提议把某道题标成**已掌握**（错题本里不再催它）或取消这个标记。"
         "他说「这题我会了，别老考我」时用它。"
@@ -1905,6 +2094,7 @@ REGISTRY = {
         },
     },
     "push_question": {
+        "group": "quiz",
         "fn": push_question,
         "description": "推一道题给他做（返回一张**可作答的题卡**，不含答案）。"
         "他说「考考我」「来道题」「练一道」时用它；你刚讲完一段机制、想确认他确实懂了时也可以主动推。"
@@ -1926,6 +2116,7 @@ REGISTRY = {
         },
     },
     "create_question": {
+        "group": "quiz",
         "fn": create_question,
         "description": "**自己出一道题**给他做（挂成一张**临时题卡**：能直接作答，默认不进题单）。"
         "题库里没有贴切的题、或你想就着刚讲的内容专门考他一个点时用它 —— "
@@ -1953,8 +2144,17 @@ REGISTRY = {
 }
 
 
-def specs() -> list[dict]:
-    """OpenAI 兼容的工具声明。"""
+def group_of(name: str) -> str:
+    """这个工具属于哪一组（没有就空串）。"""
+    return str((REGISTRY.get(name) or {}).get("group") or "")
+
+
+def specs(mounts: set[str] | None = None) -> list[dict]:
+    """OpenAI 兼容的工具声明。
+
+    `mounts` 是这次挂载了哪几组；**`None` = 全都挂上**（没配过的默认）。
+    空集合是合法输入，而且正是"极简模式"：一条声明都不给模型，它就只剩聊天。
+    """
     return [
         {
             "type": "function",
@@ -1965,10 +2165,19 @@ def specs() -> list[dict]:
             },
         }
         for name, spec in REGISTRY.items()
+        if mounts is None or str(spec.get("group") or "") in mounts
     ]
 
 
-def call(db, user, name: str, args: dict, ctx: dict | None = None) -> tuple[bool, dict]:  # noqa: ANN001
+def call(
+    db,
+    user,
+    name: str,
+    args: dict,
+    ctx: dict | None = None,
+    *,
+    mounts: set[str] | None = None,
+) -> tuple[bool, dict]:  # noqa: ANN001
     """执行一次工具调用。**永远不抛**：失败也是给模型的一条结果。
 
     理由见模块 docstring：抛出去的结果是白屏 + 已花的额度，
@@ -1980,6 +2189,16 @@ def call(db, user, name: str, args: dict, ctx: dict | None = None) -> tuple[bool
     spec = REGISTRY.get(name)
     if spec is None:
         return False, {"error": "没有这个工具：" + str(name)}
+    # 纵深防御：**没挂载的模块，即使模型把名字报出来也不执行**。
+    # 光靠"不声明"是不够的 —— 上下文里可能还留着上一轮的痕迹、
+    # 或者模型就是会猜一个名字出来试。
+    group = group_of(name)
+    if mounts is not None and group and group not in mounts:
+        label = GROUP_LABELS.get(group, group)
+        return False, {
+            "error": f"「{label}」这个模块这次没有挂载，我这边调不动它。"
+            f"（顶栏那个图标可以把它亮起来；或者你直接把需要的内容贴给我。）"
+        }
     try:
         return True, spec["fn"](db, user, args or {}, ctx or {})
     except Exception as exc:  # noqa: BLE001
