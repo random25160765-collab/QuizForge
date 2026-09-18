@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -458,73 +459,147 @@ def reset_index() -> None:
         _INDEXES.clear()
 
 
-# ------------------------------------------------------------------ 快照
+# ------------------------------------------------------------------ 快照 / 历史
+#
+# 模型：**历史 = 所有版本，游标 = 当前那一版**。
+#
+# 早先写的是"每次改动前存一份、撤销时取最新那份"，看着等价，实测不成立：
+# 撤销自己也会存一份，于是"最新那份"永远是刚撤掉的那版 —— 再点就在最后两个状态
+# 之间来回跳，连撤 11 次都退不回原样。改成"记下每一版 + 一个游标"之后，
+# 撤销就是"把游标往回挪一格"，再挪一格还能继续往回。
 
 
 def _snapshot_dir(lib: Library, rel: str) -> Path:
     return notes_root() / SNAPSHOT_DIR / lib.name / Path(rel)
 
 
-def snapshot(lib: Library, rel: str, data: bytes, *, why: str = "") -> str | None:
-    """写之前先把内容存一份。返回快照文件名。
+def _seq_of(path: Path) -> int:
+    """版本号（文件名开头那串数字）。老格式或别的文件返回 -1，直接忽略。"""
+    head = path.name.split("-", 1)[0]
+    return int(head) if head.isdigit() else -1
 
-    为什么快照要带 `why`：撤销的时候至少能看出"这一版是什么原因被换掉的"，
-    比一个光秃秃的时间戳有用。
 
-    空文件也要存 —— 一篇空笔记被写进内容，撤销的锚点正是那个"空"。
-    """
-    folder = _snapshot_dir(lib, rel)
+def _cursor_file(folder: Path) -> Path:
+    return folder / "current.json"
+
+
+def _read_cursor(folder: Path) -> int:
+    try:
+        payload = json.loads(_cursor_file(folder).read_text(encoding="utf-8"))
+        return int(payload.get("seq") or 0)
+    except (OSError, ValueError, AttributeError, TypeError):
+        return 0
+
+
+def _write_cursor(folder: Path, seq: int) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    _cursor_file(folder).write_text(json.dumps({"seq": seq}), encoding="utf-8")
+
+
+def _write_version(folder: Path, seq: int, data: bytes, why: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    name = f"{stamp}{'-' + why if why else ''}.snap"
+    name = f"{max(seq, 0):05d}-{why or 'save'}-{stamp}.snap"
     (folder / name).write_bytes(data)
     _rotate(folder)
-    return name
 
 
 def _rotate(folder: Path) -> None:
-    items = sorted(folder.glob("*.snap"))
-    for old in items[:-MAX_SNAPSHOTS]:
+    """只留最近 MAX_SNAPSHOTS 版。按**版本号**排序，不靠文件名里的时间戳。"""
+    items = [path for path in folder.glob("*.snap") if _seq_of(path) >= 0]
+    for old in sorted(items, key=_seq_of)[:-MAX_SNAPSHOTS]:
         old.unlink(missing_ok=True)
 
 
+def _save(lib: Library, rel: str, path: Path, text: str, *, why: str) -> None:
+    """写一份新内容，并把每一版都记进历史。
+
+    第一次改动时把**改动前**那一版也补记进去，否则撤不回原始内容。
+    """
+    folder = _snapshot_dir(lib, rel)
+    folder.mkdir(parents=True, exist_ok=True)
+    cursor = _read_cursor(folder)
+    if not [item for item in folder.glob("*.snap") if _seq_of(item) >= 0] and path.is_file():
+        _write_version(folder, cursor, path.read_bytes(), "原始")
+        cursor += 1
+    _write_atomic(path, text.encode("utf-8"))
+    _write_version(folder, cursor + 1, text.encode("utf-8"), why)
+    _write_cursor(folder, cursor + 1)
+
+
 def snapshots(lib: Library, rel: str) -> list[dict[str, Any]]:
+    """改动历史（新→旧），并标出"哪一版是当前这一版"。"""
     folder = _snapshot_dir(lib, rel)
     if not folder.is_dir():
         return []
+    cursor = _read_cursor(folder)
     out: list[dict[str, Any]] = []
-    for path in sorted(folder.glob("*.snap"), reverse=True):
+    for path in sorted(
+        [item for item in folder.glob("*.snap") if _seq_of(item) >= 0],
+        key=_seq_of,
+        reverse=True,
+    ):
         stat = path.stat()
+        parts = path.stem.split("-", 2)
         out.append(
             {
                 "name": path.name,
+                "seq": _seq_of(path),
                 "at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
                 "size": stat.st_size,
-                "why": path.stem.split("-", 3)[-1] if path.stem.count("-") >= 3 else "",
+                "why": parts[1] if len(parts) > 2 else "",
+                "current": _seq_of(path) == cursor,
             }
         )
     return out
 
 
-def undo(lib: Library, rel: str) -> dict[str, Any]:
-    """把最近一次改动撤回。
+def history_state(lib: Library, rel: str) -> dict[str, Any]:
+    items = snapshots(lib, rel)
+    cursor = next((item["seq"] for item in items if item["current"]), -1)
+    return {
+        "versions": len(items),
+        "cursor": cursor,
+        "can_undo": any(item["seq"] < cursor for item in items),
+    }
 
-    撤回之前**先给当前状态存一份** —— 于是"撤销"本身也能被撤销：
-    点错了不会把内容一次性抹掉，这是文件恢复该有的样子。
+
+def undo(lib: Library, rel: str) -> dict[str, Any]:
+    """把游标往回挪一格（撤销上一次改动）。"""
+    path = safe_path(lib, rel)
+    folder = _snapshot_dir(lib, rel)
+    cursor = _read_cursor(folder)
+    older = [
+        item for item in sorted(folder.glob("*.snap"), key=_seq_of) if 0 <= _seq_of(item) < cursor
+    ]
+    if not older:
+        raise NoteError("已经是最早的那一版了")
+    target = older[-1]
+    data = target.read_bytes()
+    _write_atomic(path, data)
+    _write_cursor(folder, _seq_of(target))
+    _invalidate(lib)
+    return {"restored": target.name, "seq": _seq_of(target), "remaining": len(older) - 1}
+
+
+def restore(lib: Library, rel: str, name: str) -> dict[str, Any]:
+    """恢复**指定的那一版**（文件恢复：从历史里挑一条）。
+
+    撤销是"往回退一步"，这个是"跳到某一版" —— 两者都有用：前者治手滑，
+    后者是"三天前那版里有一段我要抄回来"。
     """
     folder = _snapshot_dir(lib, rel)
-    items = sorted(folder.glob("*.snap")) if folder.is_dir() else []
-    if not items:
-        raise NoteError("这篇笔记还没有可撤销的改动")
+    target = folder / Path(name).name          # 只取文件名，挡住 `../` 这类路径
+    if not target.is_file():
+        raise NoteNotFound(f"没有这一版：{name}")
     path = safe_path(lib, rel)
-    latest = items[-1]
-    restored = latest.read_bytes()
-    if path.is_file():
-        snapshot(lib, rel, path.read_bytes(), why="undo")
-    _write_atomic(path, restored)
-    latest.unlink(missing_ok=True)
+    data = target.read_bytes()
+    _write_atomic(path, data)
+    seq = _seq_of(target)
+    if seq >= 0:
+        _write_cursor(folder, seq)
     _invalidate(lib)
-    return {"restored": latest.name, "bytes": len(restored)}
+    return {"restored": target.name, "bytes": len(data), "seq": seq}
 
 
 # ------------------------------------------------------------------ 写
@@ -568,8 +643,7 @@ def write_body(lib: Library, rel: str, body: str, *, why: str) -> dict[str, Any]
         from .notes import render as _render  # noqa: PLC0415
 
         new_text = _render(minimal_meta(body, path.stem), body)
-    snapshot(lib, rel, text.encode("utf-8"), why=why)
-    _write_atomic(path, new_text.encode("utf-8"))
+    _save(lib, rel, path, new_text, why=why)
     _invalidate(lib)
     return read_note(lib, rel)
 
@@ -586,9 +660,8 @@ def set_meta(lib: Library, rel: str, patch: dict[str, Any]) -> dict[str, Any]:
             meta.pop(key, None)
         else:
             meta[key] = value
-    snapshot(lib, rel, text.encode("utf-8"), why="meta")
     new_text = render(meta, note.body)
-    _write_atomic(path, new_text.encode("utf-8"))
+    _save(lib, rel, path, new_text, why="meta")
     _invalidate(lib)
     return read_note(lib, rel)
 
@@ -670,8 +743,7 @@ def line_op(
     new_text = splice_body(text, body) if note.had_header else render(
         minimal_meta(body, path.stem), body
     )
-    snapshot(lib, rel, text.encode("utf-8"), why=op)
-    _write_atomic(path, new_text.encode("utf-8"))
+    _save(lib, rel, path, new_text, why=op)
     _invalidate(lib)
     return read_note(lib, rel)
 
@@ -689,7 +761,7 @@ def create_note(lib: Library, folder: str, title: str) -> dict[str, Any]:
     # 新建的笔记不标 `qf_generated`：头是应用写的，但内容是作者写的 ——
     # 那个标记的语义是"这个头是导入器补的"，别把它稀释掉
     meta: dict[str, Any] = {"title": clean, "tags": []}
-    _write_atomic(path, render(meta, "").encode("utf-8"))
+    _save(lib, rel, path, render(meta, ""), why="create")
     _invalidate(lib)
     return read_note(lib, rel)
 
@@ -746,8 +818,7 @@ def rename_note(lib: Library, rel: str, new_rel: str) -> dict[str, Any]:
     written: list[tuple[str, str]] = []
     try:
         for other, text, new_text in plan:
-            snapshot(lib, other, text.encode("utf-8"), why="rename")
-            _write_atomic(safe_path(lib, other), new_text.encode("utf-8"))
+            _save(lib, other, safe_path(lib, other), new_text, why="rename")
             written.append((other, text))
         new_path.parent.mkdir(parents=True, exist_ok=True)
         old_path.rename(new_path)
@@ -808,8 +879,8 @@ def read_note(lib: Library, rel: str) -> dict[str, Any]:
             "linked": [ref.target for ref in (entry.refs if entry else [])],
             "backlinks": found.backlinks(rel),
             "unresolved": [],
-            "can_undo": bool(snapshots(lib, rel)),
-            "snapshots": len(snapshots(lib, rel)),
+            "can_undo": history_state(lib, rel)["can_undo"],
+            "snapshots": history_state(lib, rel)["versions"],
             "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
             "message": "画布（Canvas）的渲染与编辑在下一步做，这里先作为笔记树里的一等条目出现",
         }
@@ -839,8 +910,8 @@ def read_note(lib: Library, rel: str) -> dict[str, Any]:
         "outlinks": found.outlinks(rel),
         "backlinks": found.backlinks(rel),
         "unresolved": entry.unresolved if entry else [],
-        "snapshots": len(snapshots(lib, rel)),
-        "can_undo": bool(snapshots(lib, rel)),
+        "snapshots": history_state(lib, rel)["versions"],
+        "can_undo": history_state(lib, rel)["can_undo"],
         "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
         "bytes": path.stat().st_size,
     }
@@ -941,10 +1012,11 @@ __all__ = [
     "read_note",
     "rename_note",
     "reset_index",
+    "restore",
     "safe_path",
     "search",
     "set_meta",
-    "snapshot",
+    "history_state",
     "snapshots",
     "stats",
     "tag_list",

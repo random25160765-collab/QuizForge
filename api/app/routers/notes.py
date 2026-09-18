@@ -143,3 +143,10 @@ def undo(body: dict) -> dict:
 def snapshots(lib: str, path: str) -> dict:
     """这篇笔记的改动历史（文件恢复列表）。"""
     return {"items": _run(notelib.snapshots, _lib(lib), path)}
+
+
+@router.post("/restore")
+def restore(body: dict) -> dict:
+    """恢复指定的那一版（历史里的某一条）。"""
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.restore, lib, _text(body, "path"), _text(body, "name"))

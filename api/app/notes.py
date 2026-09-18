@@ -323,6 +323,7 @@ def outline(body: str) -> list[OutlineLine]:
     heading_level = -1                      # 最近一个标题的层级（-1 = 还没遇到标题）
     stack: list[tuple[int, int]] = []       # 打开着的路径：(缩进列, 层级)
     fence: str | None = None
+    math_open = False                       # 是否在 `$$ … $$` 块里
 
     def level_for(indent: str) -> int:
         """按缩进算层级 —— 大纲算法里最经典的那套。
@@ -359,6 +360,20 @@ def outline(body: str) -> list[OutlineLine]:
         if not raw.strip():
             out.append(OutlineLine(index, 0, "blank", raw, ""))
             continue
+        # 公式块（`$$ … $$`）与代码块同样是"哑内容"，**不参与层级**。
+        # 数学笔记里的多行公式常靠缩进排版（实测一篇里 138 行是这么来的），
+        # 拿它当父子关系会把大纲撑到三四层，整页就没法看了。
+        current = stack[-1][1] if stack else heading_level + 1
+        if math_open:
+            if "$$" in raw:
+                math_open = False
+            out.append(OutlineLine(index, current, "math", raw, raw))
+            continue
+        if _MATH.match(raw):
+            if raw.count("$$") == 1:
+                math_open = True
+            out.append(OutlineLine(index, current, "math", raw, raw.strip()))
+            continue
         if match := _HEADING.match(raw):
             heading_level = len(match.group("hashes")) - 1
             # 标题另起一节：路径清空，于是这一节里的第一层从 `标题层级 + 1` 开始
@@ -384,8 +399,6 @@ def outline(body: str) -> list[OutlineLine]:
         level = level_for(indent)
         if _QUOTE.match(raw):
             out.append(OutlineLine(index, level, "quote", raw, raw.strip()))
-        elif _MATH.match(raw):
-            out.append(OutlineLine(index, level, "math", raw, raw.strip()))
         else:
             out.append(OutlineLine(index, level, "text", raw, raw.strip()))
 

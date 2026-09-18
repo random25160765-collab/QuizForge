@@ -230,6 +230,20 @@ def test_detect_indent_unit_follows_the_file():
     assert detect_indent_unit("- 一\n  - 二\n") == "  "
 
 
+def test_math_block_does_not_create_nesting():
+    """**回归**：公式块里的排版缩进不该变成父子层级。
+
+    实测一篇数学笔记里 138 行是这样被算到第三层的 —— 多行公式靠缩进对齐，
+    拿它当大纲的层级，整页就没法看了。公式块与代码块同样处理：哑内容、不参与层级。
+    """
+    body = "普通一行\n\n$$\n    a = b\n        c = d\n$$\n尾行\n"
+    lines = outline(body)
+    kinds = [item.kind for item in lines]
+    assert kinds == ["text", "blank", "math", "math", "math", "math", "text"]
+    # 块内 4 行层级不变，块外也没被带偏
+    assert {item.level for item in lines[:6]} == {0}
+
+
 # ------------------------------------------------------------------ 行级操作
 
 
