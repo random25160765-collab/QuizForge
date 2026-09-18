@@ -24,7 +24,7 @@ API_PORT ?= 8100
 VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
-.PHONY: vendor check test new web web-full package pyodide-manifest \
+.PHONY: vendor check test new web web-full package pyodide-manifest notes-import \
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
@@ -52,6 +52,20 @@ web:
 # 分发包不要这个 —— 运行时改由首启取进本机缓存（见 build/package.py）。
 web-full:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT) --with-pyodide
+
+# ============================================================================
+# 笔记库导入
+#
+# 把旧编辑器的笔记库搬进应用数据目录（`data/notes/<库名>/`）。三件事同时成立：
+# **源目录只读** · **第二次跑不产生副本** · **你改过的笔记不会被冲掉**（报冲突、不动）。
+#
+#   make notes-import VAULT=Math        导入一个库
+#   make notes-import                   根目录下所有库
+#   make notes-import VAULT=Math DRY=1  只看会做什么，一个字都不写
+# ============================================================================
+
+notes-import:
+	@$(VENV)/bin/python tools/import_vault.py $(if $(VAULT),--vault $(VAULT),) $(if $(DRY),--dry-run,)
 
 # 单文件可执行程序（不含重型组件）。**必须在本平台构建**：PyInstaller 不能交叉编译。
 # 这条出的是"当前平台"的包 —— 在 WSL 里跑它得到的是 Linux 二进制，
