@@ -118,6 +118,9 @@ def roots(user: CurrentUser, db: DbSession) -> dict:
         "items": len(items),
         # 附属资源不单独成条目，但要报个数：不然"图去哪儿了"没人答得上来
         "media": len(media),
+        # 顺带报一句"文件处理这层缺什么"：界面初始化时就拿到了，
+        # 抽不出文字时能直接说清原因（不用再问一次接口）
+        "toolchain": attach.capabilities(),
         "missing": [str(path) for path in active if not path.is_dir()],
     }
 
@@ -169,6 +172,12 @@ def _classifier():
     from pipeline import doc_classify  # noqa: PLC0415
 
     return doc_classify
+
+
+@router.get("/toolchain")
+def toolchain_state() -> dict:
+    """文件处理这层的外部工具现状（缺哪个、从哪来的）。只看，不动。"""
+    return attach.capabilities()
 
 
 @router.get("/kinds")

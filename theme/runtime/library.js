@@ -160,6 +160,8 @@
     api
       .get('/library/roots')
       .then(function (res) {
+        // 文件处理这层缺什么（抽不出文字时要拿它解释原因）
+        state.toolchain = res.toolchain || { components: [] };
         state.roots = res.roots || [];
         renderRootPicker(res);
         if (thenItems || !state.items.length) loadItems();
@@ -530,13 +532,21 @@
     var state_ = one.text || { state: 'none' };
     var panel = h('section.lib__panel', null, h('div.lib__paneltitle', { text: '抽出来的正文' }));
     if (state_.state === 'none') {
-      panel.appendChild(
-        h('div.lib__hint', {
-          text: state_.attempted
-            ? '抓过了，但这类文件（代码、纯文本以外的格式）没有可抽的正文 —— 元数据与文件名照样能搜到它。'
-            : '还没抓。点左下角「抓正文」——PDF 抽取慢（实测约 2 秒一份），会分批推进。'
-        })
-      );
+      // 说清"为什么没有"：是还没抓、是这类文件本来就没正文、还是**缺外部工具**
+      var missing = ((state.toolchain || {}).components || []).filter(function (one) {
+        return !one.available;
+      });
+      var why = state_.attempted
+        ? '抓过了，但这份没有可抽的正文（代码、纯文本以外的格式，或者文档本身是空的）—— 元数据与文件名照样能搜到它。'
+        : '还没抓。点左下角「抓正文」——PDF 抽取慢（实测约 2 秒一份），会分批推进。';
+      if (missing.length) {
+        why += ' 另外，这台机器上还缺：' + missing.map(function (one) {
+          return one.which ? one.which : one.binary;
+        }).join('、') + '（' + missing.map(function (one) {
+          return one.why;
+        }).join('；') + '）。缺的组件在清单里钉好哈希后会自动取一次。';
+      }
+      panel.appendChild(h('div.lib__hint', { text: why }));
       return panel;
     }
     panel.appendChild(
