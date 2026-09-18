@@ -63,6 +63,9 @@ def health(db: Session = Depends(get_db)) -> dict:
     return {
         "ok": database_ok,
         "version": __version__,
+        # 这条是给"我手上这个包是哪个通道"用的（内测包与正式包长得一样，
+        # 只有这里能一眼看出来）。界面据此自称"内测"，用户也知道自己在试哪一版。
+        "channel": settings.channel,
         "database": {"ok": database_ok, "detail": detail},
         "bank": bank,
         # AI 的接口与密钥属于**每个用户自己的设置**，服务端不持有，
@@ -75,8 +78,10 @@ def health(db: Session = Depends(get_db)) -> dict:
             "mode": "per-user",
             "dailyQuota": settings.ai_daily_quota,
             # 内测通道开没开、配置里有没有密钥（**不给地址、不给密钥**：
-            # 这个接口不需要登录，它只该回答"这个实例能不能免密钥用"）
-            "betaEnabled": settings.ai_beta_enabled,
+            # 这个接口不需要登录，它只该回答"这个实例能不能免密钥用"）。
+            # 注意判据是 `beta_active`：正式通道下它恒为 False —— 正式包不可能
+            # 用到站长的额度，这是通道层保证的，不看配置写没写对。
+            "betaEnabled": settings.beta_active,
             "betaConfigured": bool(
                 str((gateway.beta_config() or {}).get("apiKey") or "").strip()
             ),

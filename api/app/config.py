@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -18,31 +20,76 @@ API_DIR = Path(__file__).resolve().parent.parent
 ROOT = API_DIR.parent
 
 
-def _default_data_dir() -> Path:
-    """应用数据目录（库文件、缓存，以后还有笔记与资料）：开发在仓库里，打包后进主目录。
+def _resource_root() -> Path:
+    """随包分发的**只读资源**在哪：开发时是仓库根，打包后是解包目录。
 
-    **打包后绝不能沿用 `<根>/data`**：单文件模式里那个"根"是解包出来的临时目录
-    （`sys._MEIPASS` 的上一级，即 `%TEMP%`）—— 数据会攒在 `%TEMP%\\data` 下：
-    既不好找，又随时可能被清理工具当垃圾收走。用户的东西不该住在临时目录里。
+    与"数据目录"是两回事：数据目录是可写的、属于用户的（`~/quizforge`）；
+    这里的东西跟着包走，不该被改。
 
-    所以打包后落在 `~/quizforge/`（Windows 是 `C:\\Users\\<你>\\quizforge`）。
-    启动器会把完整路径打印出来，用户要知道自己的东西在哪。
+    打包后**千万不能用 `ROOT`**：单文件模式里它是解包目录的上一级（`%TEMP%`），
+    于是"内测配置在不在""哈希清单在不在"会被问到一个临时目录里去 —— 这个坑刚踩过
+    （`heavy_deps` 里也有一份同样的判断，两处都改过才算干净）。
     """
     if getattr(sys, "frozen", False):
-        return Path.home() / "quizforge"
-    return ROOT / "data"
+        return Path(getattr(sys, "_MEIPASS", API_DIR))
+    return ROOT
+
+
+RESOURCE_ROOT = _resource_root()
+
+
+#: 通道：`beta`（内测 —— 用**站长的额度**，给试用的人）或 `release`（正式 —— 用各人自己的密钥）。
+#:
+#: ① **分发的 exe 默认 beta**（用户定的：内测通道就是给人试用的）；
+#: ② 两条通道的**数据目录不同**（`~/quizforge-beta` vs `~/quizforge`）—— 内测怎么折腾
+#:    都碰不到正式那份库、记录、以后的笔记与资料；
+#: ③ 正式通道**连内测配置文件都不看**，所以正式包里用不到站长的额度。
+CHANNELS = ("beta", "release")
+
+
+def _default_channel() -> str:
+    """通道从哪来：环境变量 > 包里带的 `channel.json` > 开发机默认。
+
+    `channel.json` 是打包时写进包里的（见 `build/package.py`）—— 冻结之后没有
+    环境变量可读，只能把"这是哪个通道的包"写在一个跟着包走的小文件里。
+    """
+    raw = os.environ.get("QF_CHANNEL", "").strip().lower()
+    if raw in CHANNELS:
+        return raw
+    bundled = RESOURCE_ROOT / "channel.json"
+    if bundled.is_file():
+        try:
+            payload = json.loads(bundled.read_text(encoding="utf-8"))
+            value = str((payload or {}).get("channel") or "").strip().lower()
+        except ValueError:
+            value = ""
+        if value in CHANNELS:
+            return value
+    # 开发机默认内测：仓库里就放着 `config/ai.local.json`，日常开发一直这么走
+    return "beta"
+
+
+def frozen_data_dir(channel: str) -> Path:
+    """打包后数据放哪：**用户主目录**下，且**按通道分开**。
+
+    为什么不能沿用 `<根>/data`：单文件模式里那个"根"是解包出来的临时目录
+    （`%TEMP%`），数据攒在那儿既不好找，又随时可能被清理工具当垃圾收走 ——
+    用户的东西不该住在临时目录里。
+
+    为什么按通道分：用户原话"内测和正式要分开"。同一台机器上跑内测包与正式包，
+    库、作答记录、以后的笔记与资料互不干扰。
+    """
+    return Path.home() / ("quizforge-beta" if channel == "beta" else "quizforge")
 
 
 def _default_tools_dir() -> Path:
-    """`tools/` 在哪：开发时在仓库根下，打包后跟着包走（解包根下）。
+    """`tools/` 在哪：跟着**只读资源**走（开发时是仓库根，打包后是解包目录）。
 
     为什么不干脆省掉它：**出题流水线要用它** —— `app/toolkit.py` 把
     `question_parser` 与 `check` 挂到 import 路径上，而 A 段的"资料即入库口"
     会让桌面应用去跑那条流水线。少了它，应用照样启动，但一点"送去做题"当场炸。
     """
-    if getattr(sys, "frozen", False):
-        return API_DIR / "tools"
-    return API_DIR.parent / "tools"
+    return RESOURCE_ROOT / "tools"
 
 
 class Settings(BaseSettings):
@@ -63,11 +110,17 @@ class Settings(BaseSettings):
     # 早期从 JWT 方案沿袭下来的 QF_SECRET_KEY 是一条假需求：它从未被读取过，
     # 却让运维多做一个无用步骤、还以为不设会出错。宁可删掉也不要留误导。
 
+    # ------------------------------------------------------------ 通道
+    # `beta`（内测，用站长的额度）或 `release`（正式，用各人自己的密钥）。
+    # 分发的 exe **默认 beta**；开发机也默认 beta（仓库里就放着内测配置）。
+    # 它决定三件事：内测额度能不能用、打包后数据放哪个目录、以及界面上怎么自称。
+    channel: str = _default_channel()
+
     # ------------------------------------------------------------ 数据
     # **local-first**：应用自己的东西（数据库，以后还有笔记与资料的索引）都落在这个
     # 数据目录里，不依赖任何外部服务 —— 双击即用，没有"先把数据库起起来"这一步。
-    # 打包后它指向用户主目录下的 `quizforge/`，见 `_default_data_dir`。
-    data_dir: Path = _default_data_dir()
+    # 开发时是仓库里的 `data/`；打包后搬进主目录并按通道分开（见 `model_post_init`）。
+    data_dir: Path = ROOT / "data"
 
     # ------------------------------------------------------------ 数据库
     # 留空 = 用 `data_dir` 下的 `quizforge.db`（SQLite，随应用分发）。
@@ -85,11 +138,17 @@ class Settings(BaseSettings):
     # 单用户本地形态没有会话，见 `app/deps.py`。
 
     def model_post_init(self, __context: object) -> None:
-        """没显式给连接串就用数据目录下的 SQLite 文件。
+        """两件要在"所有字段都就位"之后才能定的事。
 
-        放在这里而不是写成字段默认值：默认值要引用**另一个字段**（`data_dir`），
-        而字段默认值在类定义时就求值了 —— 那样 `QF_DATA_DIR` 会被忽略。
+        放在这里而不是写成字段默认值：默认值要引用**别的字段**（`channel` / `data_dir`），
+        而字段默认值在类定义时就求值了 —— 那样 `QF_DATA_DIR` 也会被忽略。
         """
+        # ① 打包后：数据目录搬进用户主目录，并按通道分开。
+        #    显式给了 `QF_DATA_DIR` 就不动（测试与打包自检都靠它指临时目录）。
+        if getattr(sys, "frozen", False) and not os.environ.get("QF_DATA_DIR"):
+            self.data_dir = frozen_data_dir(self.channel)
+
+        # ② 没显式给连接串就用数据目录下的 SQLite 文件
         if not self.database_url:
             self.database_url = f"sqlite:///{self.data_dir / 'quizforge.db'}"
 
@@ -132,8 +191,14 @@ class Settings(BaseSettings):
     #   * 没填 → 走内测通道，并且**建议把 QF_AI_DAILY_QUOTA 设成非 0**，
     #     否则一个人就能把这份共享额度刷光
     #   * 两条路都没有 → 明确报错，不静默降级
+    #
+    # 与「通道」的关系（2026-09-18 定）：**只有 beta 通道才读它**。
+    # 正式包里连这个文件都不看，所以正式包用不到站长的额度（见 `beta_active`）。
     ai_beta_enabled: bool = True
-    ai_beta_config_file: Path = ROOT / "config" / "ai.local.json"
+    # 走 `RESOURCE_ROOT` 而不是 `ROOT`：打包后后者是解包目录的上一级（`%TEMP%`），
+    # 会把"内测配置在不在"问到一个临时目录里去。打包时这个文件被放进包里
+    # （`build/package.py --channel beta`），所以冻结之后它是**跟着包走**的。
+    ai_beta_config_file: Path = RESOURCE_ROOT / "config" / "ai.local.json"
 
     # ------------------------------------------------------------ 导入器
     # 容器里用 QF_QUESTIONS_DIR / QF_TOPICS_FILE / QF_TOOLS_DIR 指到挂载点。
@@ -144,6 +209,19 @@ class Settings(BaseSettings):
     tools_dir: Path = _default_tools_dir()
 
     # ------------------------------------------------------------ 派生属性
+    @property
+    def beta_active(self) -> bool:
+        """内测额度还能不能用：**通道是 beta**，且没被显式关掉。
+
+        这是"内测和正式要分开"的落点：正式通道下**连文件都不看**，
+        所以正式包不可能用到站长的额度 —— 而不是"看着像没配、其实能命中"。
+        """
+        return self.channel == "beta" and self.ai_beta_enabled
+
+    @property
+    def is_beta(self) -> bool:
+        return self.channel == "beta"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
@@ -156,9 +234,9 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """进程内单例。全部来自环境变量（容器里由 compose 的 .env 提供）。
+    """进程内单例。全部来自环境变量（开发时由 `api/.env` 提供）。
 
-    不读 `config/ai.local.json`：那是离线单页时代用来把密钥内联进 HTML 的本机文件，
-    随离线形态一起淘汰了 —— 现在没有任何代码读它，服务端也不持有任何人的 AI 密钥。
+    `Settings` 自己**不装密钥**（它会被 repr、被日志打印）—— 内测配置只留一个**路径**
+    在这里，真读它的是 `ai_gateway.beta_config()`，而且只在 beta 通道下读。
     """
     return Settings()

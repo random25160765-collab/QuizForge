@@ -24,7 +24,8 @@ API_PORT ?= 8100
 VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
-.PHONY: vendor check test new web web-full release package pyodide-manifest \
+.PHONY: vendor check test new web web-full package pyodide-manifest \
+        win-setup win-sync dist dist-release \
         api-venv api-dev api-test \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
@@ -52,13 +53,42 @@ web:
 web-full:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT) --with-pyodide
 
-# 单文件可执行程序（不含重型组件）。**必须在本平台构建**：PyInstaller 不能交叉编译，
-# 所以 Windows 的 exe 要在 Windows 上跑这条命令。
+# 单文件可执行程序（不含重型组件）。**必须在本平台构建**：PyInstaller 不能交叉编译。
+# 这条出的是"当前平台"的包 —— 在 WSL 里跑它得到的是 Linux 二进制，
+# 只用来验证打包链本身。要发出去的包走 `make dist`（见下）。
 package:
 	@$(VENV)/bin/python build/package.py build
 
-# 发布：先构建前端，再出包（出包后会自动跑一次自检：接口 + 静态页 + 首启建库）
-release: web package
+# ============================================================================
+# 分发工作流
+#
+# **唯一事实是 WSL 侧这份仓库。** Windows 侧那个目录（`%USERPROFILE%\qf-build\src`）
+# 只是构建用的**镜像**，不许手改 —— 改了会在下次同步时被覆盖。
+# 打包必须在 Windows 上跑（PyInstaller 不能交叉编译），所以是"这边开发、那边出包"。
+#
+#   make win-setup     首次准备 Windows 侧构建环境（Python + venv + 依赖，幂等）
+#   make win-sync      把仓库镜像过去（删掉多出来的、逐文件校验哈希）
+#   make dist          出**内测**包（默认通道）：带走内测配置，试用的人不用自备密钥
+#   make dist-release  出正式包：不带内测配置，且数据目录与内测分开
+#
+# 日常顺序：`win-setup` 一次 → 之后每次改完代码直接 `make dist`（它会先构建前端、
+# 再同步、再在 Windows 上打包并自检、最后把产物放到桌面与 build/dist/）。
+# ============================================================================
+
+win-setup:
+	@$(VENV)/bin/python build/setup_win.py
+
+win-sync:
+	@$(VENV)/bin/python build/sync_win.py
+
+dist:
+	@$(MAKE) --no-print-directory web
+	@# PYTHONUNBUFFERED：这一步要跑两三分钟，输出被缓冲的话看起来像卡死
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/dist_win.py --channel beta
+
+dist-release:
+	@$(MAKE) --no-print-directory web
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/dist_win.py --channel release
 
 # 从 vendor/pyodide 生成首启下载时用的哈希清单（`make vendor` 之后跑，产物要提交）
 pyodide-manifest:
