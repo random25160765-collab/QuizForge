@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -20,6 +22,17 @@ from ..models import BankVersion, Question, Topic
 from .bank import _current_hash as _live_hash
 
 router = APIRouter(prefix="/api", tags=["health"])
+
+
+def _build_info() -> dict:
+    """读产物根下的 `build.json`（没有就如实说没有，不编一个）。"""
+    path = get_settings().web_dir / "build.json"
+    if not path.is_file():
+        return {"stamp": "", "detail": "还没有构建信息（先 make web）"}
+    try:
+        return {"stamp": "", **json.loads(path.read_text(encoding="utf-8"))}
+    except ValueError:
+        return {"stamp": "", "detail": "build.json 读不出来"}
 
 
 @router.get("/health")
@@ -64,6 +77,10 @@ def health(db: Session = Depends(get_db)) -> dict:
     return {
         "ok": database_ok,
         "version": __version__,
+        # 这次运行**真正在服务的**那份前端是哪个构建（见 tools/build_web.py 的构建戳）。
+        # 单文件包里它跟着包走，开发时由 `make web` 现写 —— 两边报同一个戳，
+        # 才说明"给用户的和开发时看到的是同一份"（用户提过这个疑问）。
+        "build": _build_info(),
         # 这条是给"我手上这个包是哪个通道"用的（内测包与正式包长得一样，
         # 只有这里能一眼看出来）。界面据此自称"内测"，用户也知道自己在试哪一版。
         "channel": settings.channel,

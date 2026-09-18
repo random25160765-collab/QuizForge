@@ -139,9 +139,17 @@ db-up:
 db-down:
 	@docker compose down
 
-api-dev:
-	@echo "→ http://127.0.0.1:$(API_PORT)/  （前端请先 make web）"
+# 起开发服务前**必构建前端**：前端是静态产物，不构建看到的就是上一次的样子 ——
+# 实测踩过（"开发端找不到笔记入口"，其实是产物还是旧的）。构建戳会打出来，
+# 和 exe 上的对一下就知道是不是同一份（见 `make dist-check`）。
+api-dev: web
+	@echo "→ http://127.0.0.1:$(API_PORT)/"
 	@cd api && .venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port $(API_PORT)
+
+# 桌面那个包是不是**当前这份代码**打的：比对它随附的构建戳与现在 `api/web` 的戳。
+# 这条是给"开发端改了、exe 还是老的"这种情况准备的 —— 一句话就能问清楚。
+dist-check:
+	@$(VENV)/bin/python build/dist_win.py --check
 
 # 开发通道：本机起 web 服务（**不是**分发形态）。
 # 它用的是仓库里的 `data/`（不是 exe 那两份 `~/quizforge*`），改代码即时生效。

@@ -161,6 +161,36 @@ def _index_redirect() -> str:
     )
 
 
+def _fingerprint(out_dir: Path) -> dict:
+    """给这次构建打一个戳：**前端产物 + 后端源码**一起算。
+
+    为什么两边都算：用户提过"开发端有、exe 里没有"—— 那是两次构建内容不同，而当时
+    没有任何地方看得出来。有了戳：一样 = 你看的界面和那个包是同一份东西；
+    不一样 = 当场就能发现，而不是等用户找不到入口才回头查。
+
+    `build.json` 自己不参与（否则戳会自我指涉、永远不稳定）。
+    """
+    digest = hashlib.sha256()
+    web_files = 0
+    for path in sorted(out_dir.rglob("*")):
+        if not path.is_file() or path.name == "build.json":
+            continue
+        digest.update(path.relative_to(out_dir).as_posix().encode())
+        digest.update(path.read_bytes())
+        web_files += 1
+    backend_files = 0
+    app_dir = ROOT / "api" / "app"
+    for path in sorted(app_dir.rglob("*.py")):
+        digest.update(path.relative_to(app_dir).as_posix().encode())
+        digest.update(path.read_bytes())
+        backend_files += 1
+    return {
+        "stamp": digest.hexdigest()[:12],
+        "webFiles": web_files,
+        "backendFiles": backend_files,
+    }
+
+
 def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = False) -> dict:
     """输出在线模式的前端产物，返回统计信息。"""
     assets = out_dir / "assets"
@@ -338,6 +368,24 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     (out_dir / "index.html").write_text(_index_redirect(), encoding="utf-8")
     pages_written.append("index")
 
+    # ---------------------------------------------------------- 构建戳
+    # 写进产物根下：后端 `/api/health` 会把它报出来，打包自检拿它比对 ——
+    # "开发端看到的"和"包里那份"是不是同一份，从此有个可核对的数字。
+    build_stamp = _fingerprint(out_dir)
+    (out_dir / "build.json").write_text(
+        json.dumps(
+            {
+                **build_stamp,
+                "builtAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "pages": pages_written,
+                "withPyodide": bool(pyodide_count),
+            },
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+
     info = {
         "pages": pages_written,
         "runtime": len(RUNTIME_ORDER),
@@ -345,6 +393,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
         "pyodide": pyodide_count,
         "demoKit": kit_count,
         "out": out_dir,
+        "build": build_stamp,
     }
     log.step(
         f"在线前端：{len(pages_written)} 个页面 · {len(RUNTIME_ORDER)} 个运行时脚本 · "
@@ -355,6 +404,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
             else " · 不含 Pyodide（运行时首启取进本机缓存，见 app/heavy_deps.py）"
         )
         + (f" · 演示套件 {kit_count} 个文件" if kit_count else "")
+        + f" · 构建戳 {build_stamp['stamp']}"
         + f" -> {out_dir}"
     )
     return info
