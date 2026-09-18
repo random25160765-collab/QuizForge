@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import ai, bank, chat, graph, health, knowledge, mybank, problem, progress
+from . import ai, bank, chat, graph, health, knowledge, mybank, notes, problem, progress
 
 
 def all_routers() -> list[APIRouter]:
@@ -24,6 +24,8 @@ def all_routers() -> list[APIRouter]:
         chat.router,
         problem.router,
         mybank.router,
+        # 笔记：权威是文件（`data/notes/`），不碰数据库
+        notes.router,
     ]
 
 
