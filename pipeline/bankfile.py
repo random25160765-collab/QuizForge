@@ -25,7 +25,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, select, text
+
+from .dbstore import as_json
 
 from . import config
 
@@ -55,12 +57,16 @@ def export_bundle(out: Path, statuses: tuple[str, ...] | None = None) -> dict:
             "SELECT id, type, topic, difficulty, source, status, layer, wing, chapter,"
             " raw_markdown, payload, content_hash FROM questions"
         )
-        args: dict = {}
+        # `IN :st` + `expanding=True`：SQLAlchemy 会按列表长度展开成 `IN (?, ?, …)`。
+        # 原先写的是 Postgres 的 `= ANY(:st)`，SQLite 上没有 `ANY` 这个函数（换库时实测炸）。
+        stmt = text(sql + (" WHERE status IN :st" if statuses else "") + " ORDER BY id")
         if statuses:
-            sql += " WHERE status = ANY(:st)"
-            args["st"] = list(statuses)
-        sql += " ORDER BY id"
-        questions = [dict(row._mapping) for row in conn.execute(text(sql), args)]
+            stmt = stmt.bindparams(bindparam("st", expanding=True))
+        params = {"st": list(statuses)} if statuses else {}
+        questions = [dict(row._mapping) for row in conn.execute(stmt, params)]
+        # 裸 SQL 不会替我们解码 JSON 列（SQLite 给字符串）—— 见 `as_json`
+        for question in questions:
+            question["payload"] = as_json(question.get("payload"), {})
         documents = {
             row[0]: row[1]
             for row in conn.execute(text("SELECT key, content FROM meta_documents"))
@@ -100,13 +106,13 @@ def import_bundle(path: Path) -> dict:
                     INSERT INTO questions (id, type, topic, difficulty, source, status, layer, wing,
                                            chapter, raw_markdown, payload, content_hash)
                     VALUES (:id, :type, :topic, :difficulty, :source, :status, :layer, :wing,
-                            :chapter, :raw_markdown, CAST(:payload AS JSONB), :content_hash)
+                            :chapter, :raw_markdown, :payload, :content_hash)
                     ON CONFLICT (id) DO UPDATE SET
                       type = EXCLUDED.type, topic = EXCLUDED.topic, difficulty = EXCLUDED.difficulty,
                       source = EXCLUDED.source, layer = EXCLUDED.layer, wing = EXCLUDED.wing,
                       chapter = EXCLUDED.chapter, raw_markdown = EXCLUDED.raw_markdown,
                       payload = EXCLUDED.payload, content_hash = EXCLUDED.content_hash,
-                      updated_at = now()
+                      updated_at = CURRENT_TIMESTAMP
                     """
                 ),
                 {**question, "payload": json.dumps(question["payload"], ensure_ascii=False)},
@@ -117,7 +123,8 @@ def import_bundle(path: Path) -> dict:
             conn.execute(
                 text(
                     "INSERT INTO meta_documents (key, content) VALUES (:k, :c) "
-                    "ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content, updated_at = now()"
+                    "ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content,"
+                    " updated_at = CURRENT_TIMESTAMP"
                 ),
                 {"k": key, "c": content},
             )
@@ -171,8 +178,8 @@ def materialize(out: Path, statuses: tuple[str, ...] = ("published",)) -> dict:
                 text(
                     "SELECT id, type, topic, difficulty, source, layer, wing, chapter,"
                     " raw_markdown, payload FROM questions"
-                    " WHERE status = ANY(:st) ORDER BY id"
-                ),
+                    " WHERE status IN :st ORDER BY id"
+                ).bindparams(bindparam("st", expanding=True)),
                 {"st": list(statuses)},
             )
         ]
@@ -185,7 +192,8 @@ def materialize(out: Path, statuses: tuple[str, ...] = ("published",)) -> dict:
             ("topic", question["topic"]),
             ("difficulty", question["difficulty"]),
         ]
-        payload = question.get("payload") or {}
+        # 裸 SQL 读到的是字符串（SQLite）—— 见 `as_json`
+        payload = as_json(question.get("payload"), {}) or {}
         # 列里可能为空（历史导入没填这几列），payload 里一定有 —— 两边都看，避免物化后
         # 反而比原文件少了字段（实测少了 chapter 就多出上百条告警）。
         for key in ("layer", "wing", "chapter"):

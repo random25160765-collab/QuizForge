@@ -27,8 +27,8 @@ from collections import defaultdict
 from datetime import UTC, date as date_type, datetime
 from typing import Any
 
-from sqlalchemy import case, cast, func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import case, func, select, type_coerce
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session as OrmSession
 
 from .models import Attempt, DayStat, Record, Topic
@@ -235,7 +235,7 @@ def insert_attempts(db: OrmSession, user_id: uuid.UUID, rows: list[dict]) -> lis
     ]
 
     inserted = db.execute(
-        pg_insert(Attempt)
+        sqlite_insert(Attempt)
         # 主键是客户端生成的 id，所以重发天然落到 DO NOTHING 上
         .on_conflict_do_nothing(index_elements=["id"])
         .returning(
@@ -307,7 +307,7 @@ def bump_records(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> No
     for question_id, group in grouped.items():
         latest = group["latest"]
         db.execute(
-            pg_insert(Record)
+            sqlite_insert(Record)
             .values(
                 user_id=user_id,
                 question_id=question_id,
@@ -331,13 +331,22 @@ def bump_records(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> No
                     "correct": Record.correct + group["correct"],
                     "partial": Record.partial + group["partial"],
                     "wrong": Record.wrong + group["wrong"],
-                    # first_at 初值是 0（「还没作答过」），不能直接 LEAST，
-                    # 否则 LEAST(0, x) 永远是 0
+                    # first_at 初值是 0（「还没作答过」），不能直接取较小值，
+                    # 否则 min(0, x) 永远是 0
                     "first_at": case(
                         (Record.first_at == 0, group["first"]),
-                        else_=func.least(Record.first_at, group["first"]),
+                        else_=case(
+                            (Record.first_at < group["first"], Record.first_at),
+                            else_=group["first"],
+                        ),
                     ),
-                    "last_at": func.greatest(Record.last_at, group["last"]),
+                    # 取较晚的那个。用 `case` 而不是 `greatest`：SQLite 没有
+                    # greatest（那是 Postgres 的），scalar 的 `max(a, b)` 在
+                    # Postgres 上又是聚合函数 —— `case` 两边都对。
+                    "last_at": case(
+                        (Record.last_at > group["last"], Record.last_at),
+                        else_=group["last"],
+                    ),
                     # 只有这批流水确实更新时才改「最近一次」的各项。
                     # SQL 的 SET 表达式看到的都是旧值，所以这里的比较是安全的。
                     "last_status": case(
@@ -354,12 +363,15 @@ def bump_records(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> No
                     # 补丁通道**也**能写它，那是为了「待批改」—— 那种提交不产生
                     # 流水，只由流水驱动的字段装不下用户填的内容。
                     #
-                    # 必须显式 cast 到列的类型：CASE 两侧类型不一致时 Postgres
-                    # 直接报「jsonb and character varying cannot be matched」。
+                    # 这里必须**带上列的类型**（`type_coerce`）：`last_response` 是
+                    # JSON 列，而 CASE 分支里的裸值不会经过 JSON 序列化 ——
+                    # 直接塞字符串会把 `C` 而不是 `"C"` 写进去，读的时候 JSON 解不开
+                    # （实测：`JSONDecodeError: Expecting value: line 1 column 1`）。
+                    # 用 type_coerce 而不是 cast：只带类型、不生成 SQL 里的 CAST。
                     "last_response": case(
                         (
                             group["last"] >= Record.last_at,
-                            cast(latest["response"], Record.last_response.type),
+                            type_coerce(latest["response"], Record.last_response.type),
                         ),
                         else_=Record.last_response,
                     ),
@@ -375,10 +387,13 @@ def bump_days(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> None:
     这里是「跨设备不再少算」的落点：累加而不是取较大值，
     两台设备同一天各练 10 题就是 20。
 
-    先用 `ON CONFLICT DO NOTHING` 确保行存在，再 `FOR UPDATE` 锁住读改写。
-    `topics` 的键是动态的（学科名），JSONB 没有「按路径自增」的原子写法，
-    所以退化为「锁住行 + 读改写」—— 行锁让并发安全，而每日统计只占一行，
-    开销可以忽略。
+    先用 `ON CONFLICT DO NOTHING` 确保行存在，再读改写。
+    `topics` 的键是动态的（学科名），JSON 列没有「按路径自增」的原子写法，
+    所以只能「读出来 + 改 + 写回去」。
+
+    并发：单用户本地形态下这一整段本来就在一个写事务里，而 SQLite 的写事务
+    是**全库排他**的 —— 不需要再 `FOR UPDATE`（SQLite 也没有行锁）。
+    所以这里从"锁行 + 读改写"简化成"读改写"。
     """
     if not attempts:
         return
@@ -399,14 +414,12 @@ def bump_days(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> None:
 
     for day, agg in per_day.items():
         db.execute(
-            pg_insert(DayStat)
+            sqlite_insert(DayStat)
             .values(user_id=user_id, date=day, answers=0, correct=0, topics={})
             .on_conflict_do_nothing(index_elements=["user_id", "date"])
         )
         row = db.execute(
-            select(DayStat)
-            .where(DayStat.user_id == user_id, DayStat.date == day)
-            .with_for_update()
+            select(DayStat).where(DayStat.user_id == user_id, DayStat.date == day)
         ).scalar_one()
 
         row.answers += agg["answers"]
@@ -441,14 +454,12 @@ def apply_days_seed(db: OrmSession, user_id: uuid.UUID, seed: Any) -> list[str]:
             continue
 
         db.execute(
-            pg_insert(DayStat)
+            sqlite_insert(DayStat)
             .values(user_id=user_id, date=day, answers=0, correct=0, topics={})
             .on_conflict_do_nothing(index_elements=["user_id", "date"])
         )
         row = db.execute(
-            select(DayStat)
-            .where(DayStat.user_id == user_id, DayStat.date == day)
-            .with_for_update()
+            select(DayStat).where(DayStat.user_id == user_id, DayStat.date == day)
         ).scalar_one()
 
         row.answers = max(row.answers, _as_int(value.get("answers")) or 0)

@@ -488,15 +488,24 @@ def list_conversations(user: CurrentUser, db: DbSession) -> dict:
         .limit(200)
     ).all()
 
-    # 每个会话的最后一条消息：DISTINCT ON 一次取回，避免 N+1
+    # 每个会话的最后一条消息：一次取回，避免 N+1。
+    #
+    # 用**窗口函数**而不是 `DISTINCT ON`：后者是 Postgres 专有，SQLite 上会被
+    # **静默忽略** —— 那比报错更糟（列表里的预览会变成随便哪一条）。
+    ranked = (
+        select(
+            Message.conversation_id.label("cid"),
+            Message.content.label("content"),
+            func.row_number()
+            .over(partition_by=Message.conversation_id, order_by=Message.id.desc())
+            .label("rank"),
+        )
+        .where(Message.user_id == user.id)
+        .subquery()
+    )
     last = {
-        cid: content
-        for cid, content in db.execute(
-            select(Message.conversation_id, Message.content)
-            .where(Message.user_id == user.id)
-            .distinct(Message.conversation_id)
-            .order_by(Message.conversation_id, Message.id.desc())
-        ).all()
+        row.cid: row.content
+        for row in db.execute(select(ranked.c.cid, ranked.c.content).where(ranked.c.rank == 1))
     }
     return {"conversations": [_conversation_out(c, int(n or 0), last.get(c.id, "")) for c, n in rows]}
 

@@ -1,17 +1,19 @@
 # ============================================================================
 # quizforge
 #
-# 前端走在线一条路径：FastAPI + PostgreSQL 提供数据，前端是普通静态资源。
-# （离线单文件形态已淘汰 —— 题库权威在数据库，内联单文件没有意义。）
+# **local-first**：数据落在 `data/quizforge.db`（SQLite，随应用分发），
+# 不依赖任何外部服务 —— `make api-test` / `make test` 都不必先起数据库。
+# 前端是普通静态资源，由本机的 FastAPI 进程提供。
 #
 #   make web            构建前端到 api/web/
-#   make db-up          起 PostgreSQL 容器
-#   make db-restore     从 db/quizforge.sql.gz 恢复题库与知识空间
-#   make api-migrate    执行数据库迁移
 #   make api-dev        启动后端（热重载，默认 8100）
-#   make api-test       后端测试（pytest）
+#   make api-test       后端测试（pytest，跑在临时 SQLite 文件上）
 #   make check          题库校验（从库物化后校验，0 error 是硬线）
 #   make test           上面的校验 + 前端逻辑自测
+#   make graph-check    图谱体检（无环 / 能走到根 / 闭包不矛盾）
+#
+# 老路径（只在"把历史数据从 Postgres 搬过来"时用得上，见 tools/migrate_to_local.py）：
+#   make db-up / db-down / db-restore
 # ============================================================================
 
 PYTHON ?= python3
@@ -22,7 +24,7 @@ API_PORT ?= 8100
 VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
-.PHONY: vendor check test new web api-venv api-dev api-test api-migrate api-migration \
+.PHONY: vendor check test new web api-venv api-dev api-test \
         db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
         graph-export skills-link \
@@ -50,19 +52,14 @@ api-venv:
 	@$(VENV)/bin/pip install -q -r api/requirements.txt
 	@echo "后端依赖就绪：$(VENV)"
 
+# ---- 老路径：只在搬历史数据时用（应用本身不再需要 Postgres）----
+
 db-up:
 	@docker compose up -d db
-	@echo "PostgreSQL 已在 127.0.0.1:5432 启动"
+	@echo "PostgreSQL 已在 127.0.0.1:5432 启动（仅供 tools/migrate_to_local.py 当源库用）"
 
 db-down:
 	@docker compose down
-
-api-migrate:
-	@cd api && .venv/bin/alembic upgrade head
-
-# 改完模型后生成迁移；生成前请先 api-migrate 保证基线一致
-api-migration:
-	@cd api && .venv/bin/alembic revision --autogenerate -m "$(M)"
 
 api-dev:
 	@echo "→ http://127.0.0.1:$(API_PORT)/  （前端请先 make web）"

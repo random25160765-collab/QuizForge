@@ -21,6 +21,7 @@ options / answer / parts 等若干张表，就多出一层「库表 ↔ 解析�
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from datetime import date as date_type
 from datetime import datetime
 
@@ -37,6 +38,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    TypeDecorator,
     UniqueConstraint,
     Uuid,
     func,
@@ -46,9 +48,42 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
+
+class UtcDateTime(TypeDecorator):
+    """总是**按 UTC 存、按 UTC 还原**的 datetime。
+
+    为什么需要它：SQLite 没有时区类型，`UtcDateTime` 落库时把偏移丢了 ——
+    读回来是 **naive** 的，而 naive datetime 的 `.timestamp()` 会按**本地时区**解释。
+    换内置引擎时实测就撞在这上面：UTC+8 的机器上，作答时间读回来整整差 8 小时，
+    「更早的时间要更新首次作答」那条用例挂在它上面（`firstAt` 差 28800000 毫秒）。
+
+    存进去时统一转 UTC；读出来时若没有时区信息就**补上 UTC**。
+    这样 `datetime.timestamp()` 在任何机器上都得到同一个绝对值。
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect) -> datetime | None:  # noqa: ANN001
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+    def process_result_value(self, value: datetime | None, dialect) -> datetime | None:  # noqa: ANN001
+        if value is None:
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
 # Postgres 上用 JSONB（可索引、可查询）；其它方言退化为普通 JSON，
 # 代价为零，好处是测试可以直接跑在 SQLite 上。
 JSONType = JSON().with_variant(JSONB(), "postgresql")
+
+#: 自增大整数主键。
+#: SQLite 只把 **`INTEGER PRIMARY KEY`** 当 rowid 别名（也就是只有它才会自增），
+#: `BIGINT PRIMARY KEY` 不行 —— 换内置引擎时实测撞上「NOT NULL constraint failed:
+#: messages.id」：插入时没给 id、数据库也不替它生成。
+#: 所以这一列在 SQLite 上退化成 Integer（SQLite 的整数本来就是 64 位，装得下）。
+BigAutoId = BigInteger().with_variant(Integer, "sqlite")
 
 
 class User(Base):
@@ -65,8 +100,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
@@ -83,7 +118,7 @@ class BankVersion(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     content_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
     question_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     topic_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     stats: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
@@ -116,9 +151,9 @@ class Topic(Base):
 
     # 「主题」这个维度也放在 topics 里（depth=1 的行）：
     # import 时正常 upsert，退役时置时间戳
-    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -162,10 +197,10 @@ class Question(Base):
     content_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
 
     bank_version_id: Mapped[int | None] = mapped_column(ForeignKey("bank_versions.id", ondelete="SET NULL"))
-    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    retired_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     __table_args__ = (
@@ -206,10 +241,10 @@ class UserQuestion(Base):
         String(96), default="", server_default="", nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     __table_args__ = (Index("ix_user_questions_user_created", "user_id", "created_at"),)
@@ -293,7 +328,7 @@ class Record(Base):
 
     client_rev: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     __table_args__ = (Index("ix_records_user_updated", "user_id", "updated_at"),)
@@ -316,7 +351,7 @@ class Attempt(Base):
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
     question_id: Mapped[str] = mapped_column(String(96), index=True, nullable=False)
-    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     # 归属哪一天由**客户端的本地日期**决定，随流水一起上报。
     # 不用服务端时区从 at 反推：服务器跑 UTC 时，用户凌晨作答会被算到前一天，
     # 热力图与「今日已练」就会对不上。
@@ -326,7 +361,7 @@ class Attempt(Base):
     response: Mapped[dict | list | None] = mapped_column(JSONType)
     # 作答时的主题快照：即使主题树后续调整，历史热力图仍能按当时的归属统计
     topic_key: Mapped[str] = mapped_column(String(64), default="", index=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
 
     __table_args__ = (
         UniqueConstraint("user_id", "id", name="uq_attempts_user_id_id"),
@@ -365,7 +400,7 @@ class UserSettings(Base):
     data: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
     client_rev: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -386,7 +421,7 @@ class Material(Base):
     sha256: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     lines: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -427,12 +462,12 @@ class Concept(Base):
     #: 「以概念为中心」的判边问过它了吗（见 `pipeline.graph_build relate-centric`）。
     #: 用途只有一个：**别把同一个概念反复问** —— 模型说"没有前置"的也要留痕，
     #: 否则下次查询照样选中它，钱白花。
-    centric_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    centric_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -467,7 +502,7 @@ class ConceptEdge(Base):
     derived_by: Mapped[str] = mapped_column(String(16), default="code", nullable=False)
     weight: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
 
     __table_args__ = (
@@ -679,7 +714,7 @@ class MetaDocument(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     content: Mapped[str] = mapped_column(Text, default="", nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -705,7 +740,7 @@ class AiUsage(Base):
     last_latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str] = mapped_column(String(300), default="", nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
 
@@ -736,14 +771,14 @@ class Conversation(Base):
     #: 置顶：用户自己钉在列表最上面的那些（排序里永远排在"按时间"之前）
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
     # 刻意**没有** `onupdate`：这一列是"最近活动"，而列表按它排序 ——
     # 有 onupdate 的话，改个标题或取消置顶都会把这条会话顶到最前面去
     # （实测撞到：取消置顶之后它反而排得更前）。谁真正动过它，由"产生了消息"
     # 来定义，所以只有 `post_message` 显式写它。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
 
     __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)
@@ -775,7 +810,7 @@ class Message(Base):
 
     __tablename__ = "messages"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -805,10 +840,10 @@ class Message(Base):
     # 与「题目是事实、索引是投影」同一条规矩。
     parts: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
     __table_args__ = (
@@ -852,5 +887,5 @@ class Attachment(Base):
     kind: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        UtcDateTime, server_default=func.now(), nullable=False
     )

@@ -66,7 +66,9 @@ services:
       # 宿主端口可用 .env 里的 API_PORT 覆盖（容器内固定 8000）
       - "${API_PORT:-8100}:8000"
     command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+      # 建表由应用自己完成（`app.db.ensure_schema`）—— alembic 已随
+      # "local-first" 一起退役，见 api/requirements.txt 里的说明
+      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
   # 图数据库：题目与知识点之间是有类型的边（前置 / 同节 / 共享术语 / 题↔点），
   # 到几十万题、十万级知识点的量级时，「沿关系链取某一类题」用关系表会越写越长，

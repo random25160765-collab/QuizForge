@@ -305,10 +305,10 @@ def record_usage(  # noqa: ANN001
     from datetime import date as date_type
 
     from sqlalchemy import func
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
     db.execute(
-        pg_insert(AiUsage)
+        sqlite_insert(AiUsage)
         .values(
             user_id=user.id,
             date=date_type.today(),
@@ -328,7 +328,7 @@ def record_usage(  # noqa: ANN001
                 "completion_tokens": AiUsage.completion_tokens + max(completion_tokens, 0),
                 "last_latency_ms": latency_ms,
                 "last_error": "" if ok else detail[:300],
-                "updated_at": func.now(),
+                "updated_at": func.current_timestamp(),
             },
         )
     )

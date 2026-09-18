@@ -41,7 +41,7 @@ DRAFTS_SQL = text(
            COALESCE(m.source_path, '') AS source_path
     FROM questions q
     LEFT JOIN knowledge_points kp
-           ON kp.key = COALESCE(NULLIF(q.payload ->> 'point', ''), q.topic)
+           ON kp.key = COALESCE(NULLIF(json_extract(q.payload, '$.point'), ''), q.topic)
     LEFT JOIN materials m ON m.id = kp.material_id
     WHERE q.status = 'draft' AND q.verify_report IS NOT NULL
     ORDER BY q.id
@@ -140,9 +140,9 @@ async def fix_one(llm: LLM, row: dict, apply: bool) -> dict:
     with dbstore._engine().begin() as conn:  # noqa: SLF001
         conn.execute(
             text(
-                "UPDATE questions SET raw_markdown = :raw, payload = CAST(:payload AS JSONB),"
+                "UPDATE questions SET raw_markdown = :raw, payload = :payload,"
                 " type = :type, topic = :topic, layer = :layer,"
-                " content_hash = :hash, updated_at = now() WHERE id = :id"
+                " content_hash = :hash, updated_at = CURRENT_TIMESTAMP WHERE id = :id"
             ),
             {
                 "raw": raw,
@@ -170,7 +170,7 @@ async def recheck(llm: LLM, question_id: str) -> str:
                 "SELECT q.payload, COALESCE(m.source_path, '') AS source_path"
                 " FROM questions q"
                 " LEFT JOIN knowledge_points kp"
-                "        ON kp.key = COALESCE(NULLIF(q.payload ->> 'point',''), q.topic)"
+                "        ON kp.key = COALESCE(NULLIF(json_extract(q.payload, '$.point'),''), q.topic)"
                 " LEFT JOIN materials m ON m.id = kp.material_id"
                 " WHERE q.id = :id"
             ),

@@ -21,9 +21,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
-from .db import get_engine
+from .db import as_json, get_engine
 
 MAX_DEPTH = 3  # 学科 → 单元 → 知识点（与 tools/topics.py 一致）
 
@@ -152,9 +152,10 @@ def _recompute(conn) -> None:
         conn.execute(
             text(
                 """
-                UPDATE topics SET depth = :depth, path = CAST(:path AS JSONB),
-                  path_names = CAST(:names AS JSONB), children = CAST(:children AS JSONB),
-                  descendants = CAST(:descendants AS JSONB), is_leaf = :leaf, updated_at = now()
+                UPDATE topics SET depth = :depth, path = :path,
+                  path_names = :names, children = :children,
+                  descendants = :descendants, is_leaf = :leaf,
+                  updated_at = CURRENT_TIMESTAMP
                 WHERE key = :key
                 """
             ),
@@ -210,8 +211,10 @@ def add_node(
         if order is None:
             row = conn.execute(
                 text(
+                    # 空安全的比较：SQLite 没有 `IS NOT DISTINCT FROM`（Postgres 专有），
+                    # 它自己的 `IS` 就是空安全的，这里用它
                     "SELECT COALESCE(MAX(order_index), 0) + 10 FROM topics"
-                    " WHERE parent_key IS NOT DISTINCT FROM :parent"
+                    " WHERE parent_key IS :parent"
                 ),
                 {"parent": parent},
             ).fetchone()
@@ -222,7 +225,7 @@ def add_node(
                 INSERT INTO topics (key, name, group_key, order_index, color, "desc", depth,
                                     parent_key, path, path_names, children, descendants, is_leaf)
                 VALUES (:key, :name, :group, :order, :color, :desc, :depth, :parent,
-                        '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, '[]'::jsonb, true)
+                        '[]', '[]', '[]', '[]', true)
                 """
             ),
             {
@@ -257,7 +260,7 @@ def update_node(key: str, **fields: Any) -> dict:
                 raise ValueError("不能把节点搬到它自己或它的后代下")
         sets = ", ".join(f'"{name}" = :{name}' for name in patch)
         conn.execute(
-            text(f"UPDATE topics SET {sets}, updated_at = now() WHERE key = :key"),
+            text(f"UPDATE topics SET {sets}, updated_at = CURRENT_TIMESTAMP WHERE key = :key"),
             {**patch, "key": key},
         )
         _recompute(conn)
@@ -275,13 +278,18 @@ def retire_node(key: str, cascade: bool = True) -> dict:
             raise ValueError(f"节点不存在：{key}")
         keys = [key]
         if cascade:
-            rows = conn.execute(
-                text("SELECT key FROM topics WHERE path @> CAST(:path AS JSONB)"),
-                {"path": json.dumps([key])},
-            ).fetchall()
-            keys = sorted({key, *(row[0] for row in rows)})
+            # "谁的 path 里含这个 key"原先用 Postgres 的 jsonb `@>`,SQLite 没有这个运算符 ——
+            # 改成**应用层过滤**：考纲一共几百行，取回来判断一眼的事，
+            # 比为了一个包含查询去装 JSON 扩展划算。
+            rows = conn.execute(text("SELECT key, path FROM topics")).fetchall()
+            keys = sorted(
+                {key, *(row[0] for row in rows if key in (as_json(row[1], []) or []))}
+            )
         conn.execute(
-            text("UPDATE topics SET retired_at = now(), updated_at = now() WHERE key = ANY(:keys)"),
+            text(
+                "UPDATE topics SET retired_at = CURRENT_TIMESTAMP,"
+                " updated_at = CURRENT_TIMESTAMP WHERE key IN :keys"
+            ).bindparams(bindparam("keys", expanding=True)),
             {"keys": keys},
         )
         _recompute(conn)

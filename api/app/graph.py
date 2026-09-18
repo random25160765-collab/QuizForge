@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from .db import get_engine
 
@@ -257,10 +257,11 @@ def diagnose(question_ids: list[str], depth: int = 8) -> dict[str, Any]:
         wrong = [
             row[0]
             for row in conn.execute(
+                # `IN :ids` + expanding：SQLite 没有 `ANY`（那是 Postgres 的）
                 text(
                     "SELECT DISTINCT concept_id FROM question_concepts"
-                    " WHERE question_id = ANY(:ids)"
-                ),
+                    " WHERE question_id IN :ids"
+                ).bindparams(bindparam("ids", expanding=True)),
                 {"ids": list(question_ids)},
             )
         ]

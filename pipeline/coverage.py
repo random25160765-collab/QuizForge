@@ -50,9 +50,12 @@ SUMMARY_SQL = text(
       JOIN questions q ON q.topic = kp.key AND q.status IN ('published', 'verified')
     ),
     qs AS (
+      -- `COUNT(DISTINCT CASE WHEN … THEN … END)` 而不是 `FILTER (WHERE …)`：
+      -- 后者是 Postgres 的聚合过滤语法，SQLite 没有（`COUNT(DISTINCT x)` 本来
+      -- 就跳过 NULL，所以 CASE 不写 ELSE 与 FILTER 等价）
       SELECT kp.material_id,
-             COUNT(DISTINCT q.id) FILTER (WHERE q.status = 'published') AS published,
-             COUNT(DISTINCT q.id) FILTER (WHERE q.status = 'draft') AS drafts
+             COUNT(DISTINCT CASE WHEN q.status = 'published' THEN q.id END) AS published,
+             COUNT(DISTINCT CASE WHEN q.status = 'draft' THEN q.id END) AS drafts
       FROM questions q JOIN knowledge_points kp ON kp.key = q.topic
       GROUP BY kp.material_id
     )

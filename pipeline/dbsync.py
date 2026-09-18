@@ -42,11 +42,11 @@ sys.path.insert(0, str(config.ROOT / "api"))
 UPSERT_MATERIAL = text(
     """
     INSERT INTO materials (slug, subject, title, source_path, sha256, lines, updated_at)
-    VALUES (:slug, :subject, :title, :source_path, :sha256, :lines, now())
+    VALUES (:slug, :subject, :title, :source_path, :sha256, :lines, CURRENT_TIMESTAMP)
     ON CONFLICT (slug) DO UPDATE SET
       subject = EXCLUDED.subject, title = EXCLUDED.title,
       source_path = EXCLUDED.source_path, sha256 = EXCLUDED.sha256,
-      lines = EXCLUDED.lines, updated_at = now()
+      lines = EXCLUDED.lines, updated_at = CURRENT_TIMESTAMP
     RETURNING id
     """
 )
@@ -55,7 +55,7 @@ UPSERT_POINT = text(
     INSERT INTO knowledge_points
       (material_id, key, name, kind, thickness, layers, producible, note)
     VALUES
-      (:material_id, :key, :name, :kind, :thickness, CAST(:layers AS JSONB), :producible, :note)
+      (:material_id, :key, :name, :kind, :thickness, :layers, :producible, :note)
     ON CONFLICT (material_id, key) DO UPDATE SET
       name = EXCLUDED.name, kind = EXCLUDED.kind, thickness = EXCLUDED.thickness,
       layers = EXCLUDED.layers, producible = EXCLUDED.producible, note = EXCLUDED.note
@@ -89,8 +89,8 @@ UPSERT_SLICE = text(
     """
     INSERT INTO material_slices (material_id, slice_id, path, start_line, end_line, tokens,
                                  figures, summary)
-    VALUES (:material_id, :slice_id, CAST(:path AS JSONB), :start, :end, :tokens,
-            CAST(:figures AS JSONB), :summary)
+    VALUES (:material_id, :slice_id, :path, :start, :end, :tokens,
+            :figures, :summary)
     ON CONFLICT (material_id, slice_id) DO UPDATE SET
       path = EXCLUDED.path, start_line = EXCLUDED.start_line, end_line = EXCLUDED.end_line,
       tokens = EXCLUDED.tokens, figures = EXCLUDED.figures, summary = EXCLUDED.summary
@@ -101,8 +101,8 @@ INSERT_CANDIDATE = text(
     """
     INSERT INTO point_candidates (material_id, slice_id, key, name, kind, thickness, layers,
                                   sources, terms, raw, consumed)
-    VALUES (:material_id, :slice_id, :key, :name, :kind, :thickness, CAST(:layers AS JSONB),
-            CAST(:sources AS JSONB), CAST(:terms AS JSONB), :raw, false)
+    VALUES (:material_id, :slice_id, :key, :name, :kind, :thickness, :layers,
+            :sources, :terms, :raw, false)
     ON CONFLICT (material_id, slice_id, key) DO NOTHING
     """
 )
@@ -223,7 +223,7 @@ def sync_material(conn, map_dir: Path) -> dict:
                     "INSERT INTO material_figures (material_id, figure_id, src, slice_id, start_line,"
                     " end_line, caption, kind, keys, plan)"
                     " VALUES (:mid, :fid, :src, :sid, :start, :end, :caption, :kind,"
-                    " CAST(:keys AS JSONB), :plan)"
+                    " :keys, :plan)"
                     " ON CONFLICT (material_id, figure_id) DO UPDATE SET"
                     " src = EXCLUDED.src, slice_id = EXCLUDED.slice_id,"
                     " start_line = EXCLUDED.start_line, end_line = EXCLUDED.end_line,"

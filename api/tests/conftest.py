@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -22,18 +23,19 @@ API_DIR = Path(__file__).resolve().parent.parent
 if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
-ADMIN_URL = os.environ.get(
-    "QF_TEST_ADMIN_URL", "postgresql+psycopg://quizforge:quizforge@127.0.0.1:5432/quizforge"
+# 测试库：一个一次性的 SQLite 文件。
+#
+# local-first 之后**开发与运行同一套引擎**（见 `app/db.py`），测试也跑在同一套上 ——
+# 换库那一步的验收就是这 180 多项用例：它们把「JSON 怎么存」「upsert 怎么写」
+# 「时间戳怎么比」这些方言差别全踩一遍。测试不再需要"先把数据库起起来"。
+TEST_DB = Path(os.environ.get("QF_TEST_TMP", tempfile.gettempdir())) / f"quizforge-test-{os.getpid()}.db"
+TEST_URL = f"sqlite:///{TEST_DB}"
+
+# 物化题库要读**权威库**（开发库），不是测试库。
+BANK_SOURCE_URL = os.environ.get(
+    "QF_BANK_SOURCE_URL",
+    f"sqlite:///{Path(__file__).resolve().parents[2] / 'data' / 'quizforge.db'}",
 )
-TEST_DB_NAME = os.environ.get("QF_TEST_DB", "quizforge_test")
-
-
-def _sync_url(url: str, db_name: str) -> str:
-    base, _, _ = url.rpartition("/")
-    return f"{base}/{db_name}"
-
-
-TEST_URL = _sync_url(ADMIN_URL, TEST_DB_NAME)
 
 
 def _ensure_bank_source() -> None:
@@ -54,26 +56,26 @@ def _ensure_bank_source() -> None:
     import subprocess
     import tempfile
 
-    target = Path(tempfile.mkdtemp(prefix="qf-test-bank-"))
+    bank_dir = Path(tempfile.mkdtemp(prefix="qf-test-bank-"))
     proc = subprocess.run(
-        [sys.executable, "-m", "pipeline.bankfile", "materialize", "--out", str(target)],
+        [sys.executable, "-m", "pipeline.bankfile", "materialize", "--out", str(bank_dir)],
         cwd=str(API_DIR.parent),
-        env={**os.environ, "QF_DATABASE_URL": ADMIN_URL},
+        env={**os.environ, "QF_DATABASE_URL": BANK_SOURCE_URL},
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
         print("[conftest] 物化题库失败：", proc.stdout[-400:], proc.stderr[-400:])
         return
-    os.environ["QF_QUESTIONS_DIR"] = str(target / "questions")
-    os.environ["QF_TOPICS_FILE"] = str(target / "meta" / "topics.yaml")
+    os.environ["QF_QUESTIONS_DIR"] = str(bank_dir / "questions")
+    os.environ["QF_TOPICS_FILE"] = str(bank_dir / "meta" / "topics.yaml")
 
 
 _ensure_bank_source()
 
 
 def _ensure_database() -> None:
-    """**重建**测试库（存在就先删）。用 psycopg 直连 admin 库，避免 ORM 的额外抽象。
+    """**重建**测试库：文件存在就先删掉（连 WAL 的附属文件一起）。
 
     为什么每次都重建而不是"不存在才建"：导入只增不删（缺的内容置 retired_at），
     于是上一次跑留下的行会让断言取决于"这台机器之前跑过什么" ——
@@ -81,12 +83,10 @@ def _ensure_database() -> None:
     「入库再读出来 == 导入时的数据集」这条断言于是挂在分组上，
     看起来像产品 bug，其实是残留。测试库本来就是一次性的。
     """
-    import psycopg
-
-    dsn = ADMIN_URL.replace("postgresql+psycopg://", "postgresql://")
-    with psycopg.connect(dsn, autocommit=True) as conn:
-        conn.execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)')
-        conn.execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
+    for suffix in ("", "-wal", "-shm"):
+        path = Path(f"{TEST_DB}{suffix}")
+        if path.exists():
+            path.unlink()
 
 
 # 必须在 import app.* 之前落到环境里
