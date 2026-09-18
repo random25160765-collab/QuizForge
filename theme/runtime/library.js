@@ -611,48 +611,11 @@
     var body = h('div.lib__viewbody');
     if (state.viewing) {
       body.appendChild(h('div.lib__hint', { text: '正在打开…' }));
-    } else if (one.kind === 'pdf') {
-      body.appendChild(h('iframe.lib__frame', { src: one.raw, title: one.name || 'PDF' }));
-    } else if (one.kind === 'image') {
-      body.appendChild(h('img.lib__image', { src: one.raw, alt: one.name || '' }));
-    } else if (one.kind === 'markdown') {
-      var host = h('div.lib__prose');
-      if (QF.md && QF.md.renderInto) QF.md.renderInto(host, one.text || '');
-      else host.textContent = one.text || '';
-      body.appendChild(host);
-    } else if (one.kind === 'docx') {
-      if (one.html) {
-        var doc = h('div.lib__prose.lib__prose--docx');
-        doc.innerHTML = one.html;          // 后端已经洗过脚本与事件属性
-        body.appendChild(doc);
-      } else {
-        body.appendChild(h('div.lib__hint', { text: one.note || '没转出内容。' }));
-      }
-    } else if (one.kind === 'pptx') {
-      (one.slides || []).forEach(function (slide) {
-        body.appendChild(
-          h(
-            'div.lib__slide',
-            null,
-            h('div.lib__slideno', { text: '第 ' + slide.index + ' 页' }),
-            h('div.lib__slidetitle', { text: slide.title }),
-            h(
-              'ul.lib__slidebody',
-              null,
-              (slide.lines || []).map(function (line) {
-                return h('li', { text: line });
-              })
-            )
-          )
-        );
-      });
-      if (!(one.slides || []).length) body.appendChild(h('div.lib__hint', { text: one.note || '没解出幻灯片。' }));
-    } else if (one.kind === 'text') {
-      body.appendChild(h('pre.lib__text.lib__text--raw', { text: one.text || '' }));
     } else {
-      body.appendChild(
-        h('div.lib__hint', { text: one.note || '这个格式没有内建查看器，用上面的「下载」看吧。' })
-      );
+      // 正文交给共用模块 —— 与窗格里装"一份文件"用的是同一份渲染。
+      // 原先这里自己画了一遍，于是成了两份：一处改了另一处不会跟着改，
+      // 而且"资料页能看、窗格里看不了"。已经取到的返回直接喂进去，不重复请求。
+      QF.docview.paint(body, one);
     }
     pane.appendChild(body);
     return pane;

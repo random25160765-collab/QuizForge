@@ -231,6 +231,22 @@
     });
   }
 
+  /* ------------------------------------------------------------------ 一份文件 */
+
+  function registerFile() {
+    QF.panes.register('file', {
+      title: '文件',
+      icon: 'book',
+      key: function (opts) {
+        return (opts.citekey || '') + '#' + (opts.index == null ? -1 : opts.index);
+      },
+      // 查看器自己管滚动与铺满（样板见 docview.css），所以这里只把容器给它
+      mount: function (host, opts) {
+        return QF.docview.render(host, opts, {});
+      },
+    });
+  }
+
   /* ------------------------------------------------------------------ 题目 */
 
   /** 在题库里按 id 找一道题。数据层换过名字，这里几种形状都认一遍，读得到就行。 */
@@ -289,6 +305,7 @@
     registerNote();
     registerDoc();
     registerQuestion();
+    registerFile();
 
     // 主题必须显式初始化：`ui.theme.current()` 的兜底是 dark，
     // 不调这一句，整页（含顶栏）会是深色 —— app.js / chat.js / wrongbook.js 各自都调了

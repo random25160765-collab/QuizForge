@@ -518,3 +518,6 @@ body[data-page='workbench'] .view {
 }
 
 .panes__pane.is-drop::before { background: var(--pri); }
+
+/* 窗格里装"一份文件"时：查看器自己管滚动，别套两层 */
+.panes__host > .docv { overflow: hidden; }
