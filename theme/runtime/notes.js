@@ -533,10 +533,9 @@
         state.saving = false;
         state.savedAt = nowHM();
         folded = {};
-        // 打开就准备写：宽屏分栏（边写边看），窄屏纯编辑。阅读要自己切 ——
-        // 打开一篇**默认是阅读**：多数时候是回来看，不是接着写。
-        // 读着读着想改，就在面包屑右边按「编辑」或「分栏」—— 一步的事。
-        state.mode = 'read';
+        // 打开一篇进**默认**视图：它既能读又能写，是最常用的那一档。
+        // 想纯读就按「阅读」，想改原始 markdown 就按「源码」（⌘E 在默认与阅读之间切）。
+        state.mode = 'live';
         renderMain();
         renderSide();
         loadTree();
@@ -758,7 +757,10 @@
         'div.seg',
         null,
         // 画布没有"阅读/分栏/编辑/大纲"这回事（它就是一块平面），不给它摆这排按钮
-        (state.note.kind === 'canvas' ? [] : [['read', '阅读'], ['split', '分栏'], ['edit', '编辑'], ['outline', '大纲']]).map(function (pair) {
+        // 一个笔记三个视图：源码 / 默认 / 阅读。源码与默认都能改 —— 默认就是
+        // "块级实时渲染 + 就地编辑"，把原先"分栏"那两栏并成了一块。
+        // 画布没有"阅读/默认/源码"这回事（它是一块平面），不给它摆这排按钮。
+        (state.note.kind === 'canvas' ? [] : [['source', '源码'], ['live', '默认'], ['read', '阅读']]).map(function (pair) {
           return h(
             'button.seg__item' + (state.mode === pair[0] ? '.is-on' : ''),
             {
@@ -887,7 +889,8 @@
         })
       )
     );
-    wrap.appendChild(state.mode === 'outline' ? renderOutline() : renderEditor(state.mode === 'split'));
+    // 「默认」走块级实时渲染；「源码」是全宽文本框；「阅读」在上面就 return 了
+    wrap.appendChild(state.mode === 'live' ? renderLive() : renderEditor(false));
     return wrap;
   }
 
@@ -1182,6 +1185,11 @@
       if (state.dirty) saveNow();
     });
     area.addEventListener('keydown', onEditorKey);
+    // 正文的右键菜单：插入各种东西 / 对选中文字格式化 / 复制。
+    // 这个位置原来什么都没有 —— 树的右键菜单早就有，正文一直没有。
+    area.addEventListener('contextmenu', function (ev) {
+      showMenu(ev, sourceMenu(area));
+    });
     // 单向滚动同步：编辑器滚到哪，预览跟到哪（Trilium 的 useSyncedScrolling）。
     // 比例映射而不是精确对齐 —— 精确对齐要 md.js 在渲染时给每块打源码行号，
     // 那要改渲染器；先用比例，手感已经对了，精确对齐留作后续。
@@ -1391,19 +1399,20 @@
         saveNow(true);
         return;
       }
-      if (key === 'b') {
+      if (key === '/') {
         ev.preventDefault();
-        wrapSel('**', '**', '粗体');
+        shortcutHelp();
         return;
       }
-      if (key === 'i') {
-        ev.preventDefault();
-        wrapSel('*', '*', '斜体');
-        return;
-      }
+      // 格式化：一张表，源码视图与块编辑共用（`formatShortcut`）。
+      // 标题/列表那几个用 `ev.code`（Digit7…）而不是 `ev.key` —— 按住 Shift 时
+      // `ev.key` 在美式布局下变成 `&` `*` `(`，按 key 判会一个都命不中。
+      var area = ev.target;
+      if (formatShortcut(ev, area)) return;
       if (key === 'e') {
         ev.preventDefault();
-        state.mode = state.mode === 'read' ? 'split' : 'read';
+        // ⌘E 在「默认」与「阅读」之间来回 —— 这两个是最常切的一对
+        state.mode = state.mode === 'read' ? 'live' : 'read';
         if (state.dirty) saveNow(true);
         renderMain();
         return;
@@ -1491,6 +1500,324 @@
       linkify(target);
     }
     if (host) host.scrollTop = keepTop;
+  }
+
+
+  /* ------------------------------------------------------------ 默认视图（块级实时渲染）
+
+     一个**块** = 源文里连续的一段：空行分段，代码围栏与表格整块算一个。
+     点一块 → 那一块变成编辑框（里面是**这一块的源码**）→ 失焦或 ⌘↵ 写回。
+     为什么按块而不是整篇：整篇重渲染会把光标顶掉、也会让滚动跳；
+     按块改只动那几行（`replace_range`），改动小、可撤销、也看得见改了哪里。
+   */
+
+  function blocksOf(text) {
+    var lines = (text || '').split('\n');
+    var out = [];
+    var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+      if (!line.trim()) {                       // 空行只是分隔符，不成块
+        i += 1;
+        continue;
+      }
+      var start = i;
+      var fence = line.match(/^\s*(```|~~~)/);
+      if (fence) {                              // 代码围栏：一直吃到收尾那根
+        i += 1;
+        while (i < lines.length && !lines[i].trim().startsWith(fence[1])) i += 1;
+        if (i < lines.length) i += 1;
+      } else {
+        while (i < lines.length && lines[i].trim()) i += 1;   // 连续非空行 = 一块
+      }
+      out.push({ start: start, count: i - start, raw: lines.slice(start, i).join('\n') });
+    }
+    return out;
+  }
+
+  function renderLive() {
+    var pane = h('div.note__pane');
+    var box = h('div.nlive');
+    var blocks = blocksOf(state.note.body || '');
+    if (!blocks.length) {
+      box.appendChild(
+        h('div.nlive__empty', {
+          text: '（空的）点这里开始写 —— 或按 ⌘/ 看全部快捷键',
+          onClick: function () { appendBlock(); }
+        })
+      );
+    }
+    blocks.forEach(function (block) {
+      box.appendChild(liveBlock(block));
+    });
+    box.appendChild(
+      h('button.nlive__add', {
+        type: 'button',
+        text: '＋ 新的一段',
+        title: '在末尾加一段（也可以点正文下面的空白处）',
+        onClick: function () { appendBlock(); }
+      })
+    );
+    box.addEventListener('click', function (ev) {
+      // 点在最后一块下面那片空白 = 加一段（Obsidian 也是这个手感）
+      if (ev.target === box) appendBlock();
+    });
+    pane.appendChild(box);
+    // 刚加的那一段：渲染完直接进编辑态，免得多点一次。
+    // 用"最后一块"定位，不做行号算术 —— 行号算术在末尾空行多一个少一个时会错。
+    if (state.editLastBlock) {
+      state.editLastBlock = false;
+      var all = box.querySelectorAll('.nlive__block');
+      if (all.length) setTimeout(function () { editBlock(all[all.length - 1]); }, 0);
+    }
+    return pane;
+  }
+
+  function liveBlock(block) {
+    var row = h('div.nlive__block', { dataset: { start: String(block.start), count: String(block.count) } });
+    row.appendChild(h('div.nlive__rendered', { html: renderBlockHtml(block.raw) }));
+    row.setAttribute('title', '点一下改这一段（源码里第 ' + (block.start + 1) + ' 行起）');
+    row.addEventListener('click', function (ev) {
+      if (ev.target.closest && ev.target.closest('a')) return;   // 链接要点得通
+      editBlock(row);
+    });
+    row.addEventListener('contextmenu', function (ev) {
+      showMenu(ev, blockMenu(block));
+    });
+    return row;
+  }
+
+  function renderBlockHtml(raw) {
+    try {
+      if (QF.md && QF.md.render) {
+        var node = QF.md.render(raw);
+        var holder = h('div');
+        holder.appendChild(node);
+        return holder.innerHTML;
+      }
+    } catch (err) {
+      /* 渲染器出错就退回原文，别把这一段吞掉 */
+    }
+    return '<pre>' + esc(raw) + '</pre>';
+  }
+
+  /** 把一块变成编辑框。里面是**这一块的源码**。 */
+  function editBlock(row) {
+    if (state.editing) return;
+    var start = Number(row.dataset.start);
+    var count = Number(row.dataset.count);
+    var block = blocksOf(state.note.body || '').filter(function (one) { return one.start === start; })[0];
+    if (!block) return;
+    state.editing = true;
+    ui.clear(row);
+    var area = h('textarea.nlive__area', { value: block.raw, rows: String(Math.max(1, count)) });
+    row.appendChild(area);
+    autosize(area);
+    area.focus();
+    area.setSelectionRange(area.value.length, area.value.length);
+    var done = false;
+    function finish(save) {
+      if (done) return;
+      done = true;
+      state.editing = false;
+      area.removeEventListener('blur', onBlur);
+      if (save && area.value !== block.raw) {
+        lineOp('replace_range', start, { count: count, raw: area.value });
+        return;
+      }
+      renderMain();
+    }
+    function onBlur() { finish(true); }
+    area.addEventListener('input', function () { autosize(area); });
+    area.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Escape') { ev.preventDefault(); finish(false); return; }
+      if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); finish(true); return; }
+      // 编辑块里也能用格式化快捷键（与源码视图同一套）
+      if (formatShortcut(ev, area)) return;
+    });
+    area.addEventListener('blur', onBlur);
+    area.addEventListener('contextmenu', function (ev) {
+      showMenu(ev, sourceMenu(area, { inBlock: true }));
+    });
+  }
+
+  function autosize(area) {
+    area.style.height = 'auto';
+    area.style.height = Math.max(28, area.scrollHeight) + 'px';
+  }
+
+  /** 在末尾加一段，并直接进编辑态。 */
+  function appendBlock() {
+    var lines = (state.note.body || '').split('\n');
+    var last = Math.max(0, lines.length - 1);
+    var raw = lines[last] && lines[last].trim() ? '\n\n' : '';
+    state.editLastBlock = true;
+    lineOp('insert', last, { raw: raw });
+  }
+
+  /** 块的右键菜单：编辑 / 插入 / 复制 / 删除。 */
+  function blockMenu(block) {
+    var start = block.start;
+    return [
+      { label: '编辑这一段', run: function () {
+          var row = el.main.querySelector('.nlive__block[data-start="' + start + '"]');
+          if (row) editBlock(row);
+        } },
+      '-',
+      { label: '在这段之后插入标题', run: function () { insertAfterBlock(start, block.count, '## 新标题'); } },
+      { label: '在这段之后插入列表', run: function () { insertAfterBlock(start, block.count, '- 第一条\n- 第二条'); } },
+      { label: '在这段之后插入引用', run: function () { insertAfterBlock(start, block.count, '> 引用'); } },
+      { label: '在这段之后插入代码块', run: function () { insertAfterBlock(start, block.count, '```\ncode\n```'); } },
+      { label: '在这段之后插入公式块', run: function () { insertAfterBlock(start, block.count, '$$\nx = y\n$$'); } },
+      { label: '在这段之后插入表格', run: function () { insertAfterBlock(start, block.count, '| 列 | 列 |\n| --- | --- |\n|  |  |'); } },
+      { label: '在这段之后插入分隔线', run: function () { insertAfterBlock(start, block.count, '---'); } },
+      '-',
+      { label: '复制这一段的源码', run: function () { copyText(block.raw, '这一段的源码'); } },
+      {
+        label: '删除这一段',
+        danger: true,
+        run: function () {
+          ui.confirm('删掉这一段？', { okLabel: '删掉' }).then(function (yes) {
+            if (!yes) return;
+            lineOp('replace_range', start, { count: block.count, raw: '' });
+          });
+        }
+      }
+    ];
+  }
+
+  function insertAfterBlock(start, count, raw) {
+    // 用范围替换来做：把这一块连同它后面那个空行一起换成"这一块 + 空行 + 新块"
+    var block = blocksOf(state.note.body || '').filter(function (one) { return one.start === start; })[0];
+    if (!block) return;
+    lineOp('replace_range', start, { count: count, raw: block.raw + '\n\n' + raw });
+  }
+
+  /** 源码视图（与块编辑）的右键菜单：插入 + 对选中文字格式化 + 复制。 */
+  function sourceMenu(area, opts) {
+    var hasSel = area.selectionStart !== area.selectionEnd;
+    var wrap = function (before, after, placeholder) {
+      return function () { wrapIn(area, before, after, placeholder); };
+    };
+    var items = [];
+    items.push({ label: '加粗（选中文字）', run: wrap('**', '**', '粗体') });
+    items.push({ label: '斜体（选中文字）', run: wrap('*', '*', '斜体') });
+    items.push({ label: '行内代码（选中文字）', run: wrap('`', '`', 'code') });
+    items.push({ label: '删除线（选中文字）', run: wrap('~~', '~~', '删掉') });
+    items.push({ label: '高亮（选中文字）', run: wrap('==', '==', '重点') });
+    items.push({ label: '行内公式（选中文字）', run: wrap('$', '$', 'x = y') });
+    items.push({ label: '双链（选中文字）', run: wrap('[[', ']]', '笔记名') });
+    items.push({ label: '链接（选中文字）', run: wrap('[', '](https://)', '说明') });
+    items.push('-');
+    items.push({ label: '插入标题', run: function () { linePrefixIn(area, '## '); } });
+    items.push({ label: '插入无序列表', run: function () { linePrefixIn(area, '- '); } });
+    items.push({ label: '插入有序列表', run: function () { linePrefixIn(area, '1. '); } });
+    items.push({ label: '插入引用', run: function () { linePrefixIn(area, '> '); } });
+    items.push({ label: '插入代码块', run: wrap('```\n', '\n```', 'code') });
+    items.push({ label: '插入公式块', run: wrap('$$\n', '\n$$', 'x = y') });
+    items.push({ label: '插入表格', run: function () { insertIn(area, '| 列 | 列 |\n| --- | --- |\n|  |  |\n'); } });
+    items.push({ label: '插入分隔线', run: function () { linePrefixIn(area, '---'); } });
+    items.push({ label: '插入日期时间', run: function () { insertIn(area, nowStamp()); } });
+    items.push({ label: '插入图片（本地路径）', run: wrap('![', '](assets/)', '说明') });
+    items.push('-');
+    items.push({ label: '复制选中的文字', run: function () { copyText(area.value.slice(area.selectionStart, area.selectionEnd), '选中的文字'); } });
+    items.push({ label: '复制这一篇的双链', run: function () { copyText('[[' + (state.note.title || '') + ']]', '双链'); } });
+    items.push({ label: '全选', run: function () { area.focus(); area.select(); } });
+    // 没选中文字时，把"对选中文字"的那几条标出来（点了也能用：会插入占位文字）
+    if (!hasSel && !opts) items[0].label = '加粗（没选中 → 插入占位）';
+    return items;
+  }
+
+  function nowStamp() {
+    var now = new Date();
+    var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+    return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes());
+  }
+
+  /** 在指定 textarea 上做"包裹/解包裹"（右键菜单与快捷键共用）。 */
+  function wrapIn(area, before, after, placeholder) {
+    area.focus();
+    var start = area.selectionStart;
+    var end = area.selectionEnd;
+    var value = area.value;
+    var outer =
+      value.slice(Math.max(0, start - before.length), start) === before &&
+      value.slice(end, end + after.length) === after;
+    if (outer) {
+      area.setRangeText(value.slice(start, end), start - before.length, end + after.length, 'select');
+    } else {
+      var picked = value.slice(start, end) || placeholder || '';
+      area.setRangeText(before + picked + after, start, end, 'select');
+      area.setSelectionRange(start + before.length, start + before.length + picked.length);
+    }
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function linePrefixIn(area, prefix) {
+    area.focus();
+    var start = area.selectionStart;
+    var head = area.value.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+    area.setRangeText(prefix, head, head, 'end');
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  function insertIn(area, text) {
+    area.focus();
+    var start = area.selectionStart;
+    area.setRangeText(text, start, area.selectionEnd, 'end');
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  /** 格式化快捷键。返回 true 表示这个键被吃掉了。 */
+  function formatShortcut(ev, area) {
+    if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return false;
+    var key = (ev.key || '').toLowerCase();
+    var code = ev.code || '';
+    var shift = ev.shiftKey;
+    var table = null;
+    if (!shift && key === 'b') table = ['**', '**', '粗体'];
+    else if (!shift && key === 'i') table = ['*', '*', '斜体'];
+    else if (!shift && key === 'k') table = ['[', '](https://)', '说明'];
+    else if (!shift && key === '`') table = ['`', '`', 'code'];
+    else if (shift && key === 'k') table = ['[[', ']]', '笔记名'];
+    else if (shift && key === 'x') table = ['~~', '~~', '删掉'];
+    else if (shift && key === 'h') table = ['==', '==', '重点'];
+    else if (shift && key === 'm') table = ['$$\n', '\n$$', 'x = y'];
+    else if (shift && code === 'Digit1') table = [null, null, null, '## '];
+    else if (shift && code === 'Digit2') table = [null, null, null, '### '];
+    else if (shift && code === 'Digit3') table = [null, null, null, '#### '];
+    else if (shift && code === 'Digit4') table = [null, null, null, '##### '];
+    else if (shift && code === 'Digit8') table = [null, null, null, '- '];
+    else if (shift && code === 'Digit7') table = [null, null, null, '1. '];
+    else if (shift && code === 'Digit9') table = [null, null, null, '> '];
+    else if (shift && code === 'Digit5') table = ['~~', '~~', '删掉'];
+    else if (shift && code === 'Digit6') table = ['==', '==', '重点'];
+    else if (shift && key === 't') { ev.preventDefault(); insertIn(area, '| 列 | 列 |\n| --- | --- |\n|  |  |\n'); return true; }
+    else if (shift && key === 'l') { ev.preventDefault(); linePrefixIn(area, '---'); return true; }
+    if (!table) return false;
+    ev.preventDefault();
+    if (table[0] === null) linePrefixIn(area, table[3]);
+    else wrapIn(area, table[0], table[1], table[2]);
+    return true;
+  }
+
+  /** ⌘/ ：把全部快捷键列出来（记不住就等于没有）。 */
+  function shortcutHelp() {
+    var rows = [
+      ['⌘S', '立即保存'], ['⌘E', '「默认」与「阅读」互切'], ['⌘/', '这份清单'],
+      ['⌘B', '加粗'], ['⌘I', '斜体'], ['⌘`', '行内代码'], ['⌘K', '链接'],
+      ['⌘⇧K', '双链'], ['⌘⇧X', '删除线'], ['⌘⇧H', '高亮'], ['⌘⇧M', '公式块'],
+      ['⌘⇧1 ~ 4', '二级到五级标题'], ['⌘⇧8', '无序列表'], ['⌘⇧7', '有序列表'], ['⌘⇧9', '引用'],
+      ['⌘⇧T', '表格'], ['⌘⇧L', '分隔线'],
+      ['⌘O / ⌘P', '同级 / 子笔记新建'], ['⌥T', '插入日期时间'], ['⌥L', '给这一篇加标签'],
+      ['⌘↵', '（编辑某一段时）保存这一段'], ['Esc', '（编辑某一段时）放弃改动']
+    ];
+    var body = h('div.nhelp');
+    rows.forEach(function (pair) {
+      body.appendChild(h('div.nhelp__row', null, h('kbd', { text: pair[0] }), h('span', { text: pair[1] })));
+    });
+    ui.modal({ title: '快捷键', size: 'sm', body: body, actions: [{ label: '知道了', kind: 'primary', onClick: function (close) { close(); } }] });
   }
 
   /* ------------------------------------------------------------ 大纲（幕布那半边） */
@@ -1637,6 +1964,11 @@
         createNote(folder, '');
         return;
       }
+    }
+    if ((ev.metaKey || ev.ctrlKey) && (ev.key || '') === '/') {
+      ev.preventDefault();
+      shortcutHelp();
+      return;
     }
     if (!typing && ev.altKey && !ev.metaKey && !ev.ctrlKey) {
       var letter = (ev.key || '').toLowerCase();
@@ -2139,8 +2471,8 @@
 
   /** 点侧栏大纲 → 切到编辑态并把光标放到那一行（不猜滚动位置，直接定位）。 */
   function jumpToLine(line) {
-    if (state.mode === 'read' || state.mode === 'outline') {
-      state.mode = 'edit';
+    if (state.mode === 'read') {
+      state.mode = 'source';
       renderMain();
     }
     setTimeout(function () {
@@ -2701,7 +3033,7 @@
         // 与打开一篇同一个默认：宽屏**分栏**（右边就是即时渲染的那一半）。
         // 新建完只给一块空白编辑区，等于把"边写边看"这个最该有的东西藏起来了。
         // 新建的是一张白纸，没什么可读 —— 直接给编辑态，省一次切换
-        state.mode = note.kind === 'canvas' ? 'read' : 'edit';
+        state.mode = note.kind === 'canvas' ? 'read' : 'live';
         state.selected = 0;
         state.dirty = false;
         state.savedAt = nowHM();

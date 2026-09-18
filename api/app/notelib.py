@@ -803,9 +803,17 @@ def line_op(
     index: int,
     raw: str = "",
     delta: int = 0,
+    count: int = 0,
 ) -> dict[str, Any]:
     """行级操作 —— 幕布那半边的核心（回车同级、Tab 缩进、Alt+↑ 挪块）。"""
-    from .notes import delete_line, insert_line, move_block, replace_line, shift_line  # noqa: PLC0415
+    from .notes import (  # noqa: PLC0415
+        delete_line,
+        insert_line,
+        move_block,
+        replace_line,
+        replace_range,
+        shift_line,
+    )
 
     path, text, note = ensure_note(lib, rel)
     body = note.body
@@ -813,6 +821,9 @@ def line_op(
         body = insert_line(body, index, raw or _sibling_line(body, index))
     elif op == "replace":
         body = replace_line(body, index, raw)
+    elif op == "replace_range":
+        # 块级替换：`count` 行换成 `raw`（可以多行）。默认视图按块改走这一条。
+        body = replace_range(body, index, count, raw)
     elif op == "delete":
         body = delete_line(body, index)
     elif op in ("indent", "outdent"):
