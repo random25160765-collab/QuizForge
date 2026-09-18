@@ -344,3 +344,113 @@ body[data-page='workbench'] .view {
   font-size: 11px;
   color: var(--fg3);
 }
+
+/* ---------------- 标签栏（每个窗格顶上一条） ---------------- */
+
+.panes__tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto hidden;
+  scrollbar-width: none;
+}
+
+.panes__tabs::-webkit-scrollbar { height: 0; }
+
+.panes__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  max-width: 220px;
+  padding: 3px 6px 3px 8px;
+  border-radius: var(--r-sm, 6px);
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.panes__tab:hover { background: var(--bg3); color: var(--fg2); }
+
+/* 当前标签：底色 + 主色，和下面对应的内容一眼对得上 */
+.panes__tab.is-on {
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  color: var(--fg);
+}
+
+.panes__tabicon { display: inline-flex; flex: none; opacity: 0.8; }
+
+.panes__tabtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.panes__tabx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg3);
+  opacity: 0;
+  cursor: pointer;
+}
+
+.panes__tab:hover .panes__tabx,
+.panes__tab.is-on .panes__tabx { opacity: 1; }
+
+.panes__tabx:hover { background: var(--bg); color: var(--bad); }
+
+/* 内容容器：一个标签一个，切换只切显示（不重建） */
+.panes__host {
+  display: none;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.panes__host.is-on { display: block; }
+
+/* 画布那类要铺满而不是滚动的：给它自己管 */
+.panes__host > .panes__fill {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 窗格里的笔记 / 资料：给正文留出舒服的行长 */
+.panes__doc {
+  max-width: 72ch;
+  margin: 0 auto;
+  padding: 18px 22px 40px;
+}
+
+.panes__doc h1 { font-size: 19px; font-weight: 600; margin: 0 0 10px; }
+
+.panes__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.panes__chip {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--fg2);
+}
+
+.panes__muted { color: var(--fg3); font-size: 12px; line-height: 1.75; }

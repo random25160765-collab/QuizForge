@@ -11,8 +11,13 @@
  *   2. **叶子不重挂**：布局变化时只**搬动**已有 DOM（`appendChild` 搬家会保留
  *      内部状态：滚动位置、画布缩放、正在编辑的输入框），绝不重建 ——
  *      否则每拆一次，旁边的画布就"复位"一次，那没法用。
+ *      同一条道理也用在**标签**上：切标签只切显示，不重建内容。
  *   3. **比例是相对的**：存的是 0~1 的比例而不是像素，所以窗口一缩放不用重算，
  *      纵向也不会因为顶栏高度变化而错位。
+ *
+ * 窗格里装的是**标签**（照参考图：每个分组顶上一条自己的标签栏）：
+ *   一个窗格可以开好几样东西、来回切、单独关掉。`open()` 是唯一的入口 ——
+ *   资源树上点一下、从树上拖进来，落到的地方都是"当前窗格的当前标签"。
  *
  * 命名：一律用 `panes` 前缀。**不要用 `.pn` 或 `.wb`** —— 那两个在
  *   `app.css` 里已经各有主人（`.wb` 是错题本的网格，一撞就把窗格裁成 340px 宽的窄条，
@@ -22,8 +27,8 @@
  *   QF.panes.register('note', {
  *     title: '笔记',
  *     icon: 'book',
- *     mount(host, opts),    // 往 host 里渲染；opts 是该窗格自己的参数
- *     unmount(),            // 可选：窗格关掉时收摊（清定时器、存未落盘的改动）
+ *     mount(host, opts),    // 往 host 里渲染；opts 是该标签自己的参数
+ *     unmount(opts),        // 可选：标签关掉时收摊（清定时器、存未落盘的改动）
  *   });
  * 视图只认这一件事：给它一个容器，它把自己画进去。
  */
@@ -31,20 +36,22 @@
   var ui = QF.ui;
   var h = ui.h;
 
-  var KEY = 'qf.panes.v1';           // 布局存这儿：只有"哪个窗格装什么、怎么分、多大比"，不含内容状态
-  var MIN_RATIO = 0.12;              // 拖到极窄就抓不住了，留个下限
+  // 布局格式变过一次（叶子从"一个视图"变成"一串标签"），所以换个键：
+  // 旧的那份读不出来就自然退回默认布局，不需要写迁移代码
+  var KEY = 'qf.panes.v2';
+  var MIN_RATIO = 0.12;
   var MAX_RATIO = 0.88;
 
-  var views = {};                    // 视图注册表：type -> { title, icon, mount, unmount }
-  var live = {};                     // 窗格实例：leafId -> { el, bodyEl, headEl, def, cleanup }
-  var seq = 0;                       // 本地 id 计数（只在本机布局里用，不进任何持久数据）
+  var views = {};                    // 视图注册表：type -> { title, icon, mount, unmount, key }
+  var live = {};                     // 窗格实例：leafId -> { el, bodyEl, tabsEl, hosts, mounted }
+  var seq = 0;
   var hostEl = null;
   var saveLater = null;
 
   var state = {
-    root: null,                      // 二叉树：{ kind:'split', dir, ratio, a, b } | { kind:'stage', id, view, opts }
-    active: null,                    // 活跃窗格 id（拆分/关闭/换内容都作用在它身上，同 tmux 的 current pane）
-    zoomed: null,                    // 最大化中的窗格 id（同 tmux 的 zoom：只显示它，再按一次还原）
+    root: null,                      // { kind:'split', dir, ratio, a, b } | { kind:'stage', id, at, tabs:[…] }
+    active: null,
+    zoomed: null,
   };
 
   function uid(prefix) {
@@ -52,8 +59,28 @@
     return prefix + seq;
   }
 
-  function stage(view, opts) {
-    return { kind: 'stage', id: uid('p'), view: view || 'blank', opts: opts || {} };
+  /* ------------------------------------------------------------------ 标签 */
+
+  /** 一个标签的身份：同一样东西开两次，应当**切到已有那个**而不是再开一个。 */
+  function tabKey(view, opts) {
+    var def = views[view];
+    if (def && def.key) return view + ':' + def.key(opts || {});
+    return view + ':' + JSON.stringify(opts || {});
+  }
+
+  function makeTab(view, opts, title) {
+    return { key: tabKey(view, opts), view: view, opts: opts || {}, title: title || '' };
+  }
+
+  function stage(view, opts, title) {
+    return { kind: 'stage', id: uid('p'), at: 0, tabs: [makeTab(view || 'blank', opts, title)] };
+  }
+
+  function activeTab(leaf) {
+    if (!leaf || !leaf.tabs || !leaf.tabs.length) return null;
+    var at = leaf.at || 0;
+    if (at < 0 || at >= leaf.tabs.length) at = 0;
+    return leaf.tabs[at];
   }
 
   /* ------------------------------------------------------------------ 树的读写 */
@@ -122,7 +149,6 @@
     render();
     save();
     var box = live[fresh.id];
-    // 新窗格淡入一下：拆完一眼能看出"新的是哪个"（`viewSwap` 收的是回调，不是元素，别拿它当动画）
     if (box) box.el.classList.add('is-fresh');
   }
 
@@ -131,13 +157,13 @@
     var target = id || state.active;
     var all = leaves();
     if (all.length <= 1) {
-      // 只剩一个就不关了：关掉会剩一片空白，用户会以为"坏了"
       ui.toast('还剩最后一个窗格，先拆一个再关这个', 'warn');
       return;
     }
+    var leaf = findLeaf(target);
     var parent = parentOf(target);
-    if (!parent) return;
-    var sibling = parent.a === findLeaf(target) ? parent.b : parent.a;
+    if (!parent || !leaf) return;
+    var sibling = parent.a === leaf ? parent.b : parent.a;
     var grand = parentOf(parent.id) || null;
 
     if (!grand) {
@@ -148,35 +174,81 @@
       grand.b = sibling;
     }
 
-    var box = live[target];
-    if (box) {
-      if (box.def && box.def.unmount) {
-        try { box.def.unmount(box.leaf); } catch (e) { /* 收摊失败不该拦住关窗 */ }
-      }
-      if (box.cleanup) { try { box.cleanup(); } catch (e) { /* 同上 */ } }
-      box.el.remove();
-      delete live[target];
-    }
+    dropPane(target);
     if (state.zoomed === target) state.zoomed = null;
     state.active = sibling.id;
     render();
     save();
   }
 
-  /** 换当前窗格装什么（tmux 里相当于把那个 pane 里的程序换掉）。 */
-  function setView(view, opts) {
-    var target = findLeaf(state.active) || leaves()[0];
-    if (!target) return;
-    target.view = view;
-    target.opts = opts || {};
-    var box = live[target.id];
-    if (box) {
-      if (box.def && box.def.unmount) {
-        try { box.def.unmount(box.leaf); } catch (e) { /* 忽略 */ }
+  /** 打开一样东西：落在**当前窗格**里。已经开着就切过去，不重复开。 */
+  function open(view, opts, title) {
+    var leaf = findLeaf(state.active) || leaves()[0];
+    if (!leaf) return;
+    if (!leaf.tabs) leaf.tabs = [];
+    var want = tabKey(view, opts);
+    var at = -1;
+    leaf.tabs.forEach(function (item, i) {
+      if (item.key === want) at = i;
+    });
+    if (at < 0) {
+      // 唯一一个还是"空"标签时，直接把它换成要开的东西（否则会留下一个空标签）
+      if (leaf.tabs.length === 1 && leaf.tabs[0].view === 'blank') {
+        leaf.tabs[0] = makeTab(view, opts, title);
+        at = 0;
+      } else {
+        leaf.tabs.push(makeTab(view, opts, title));
+        at = leaf.tabs.length - 1;
       }
-      if (box.cleanup) { try { box.cleanup(); } catch (e) { /* 忽略 */ } }
-      box.cleanup = null;
-      mountInto(box, target);
+    } else if (title) {
+      leaf.tabs[at].title = title;   // 名字可能会变（改了标题），以最新的为准
+    }
+    leaf.at = at;
+    render();
+    save();
+  }
+
+  /** 关掉某个标签。关掉最后一个就退回"空"标签（窗格本身还在）。 */
+  function closeTab(paneId, key) {
+    var leaf = findLeaf(paneId || state.active);
+    if (!leaf || !leaf.tabs) return;
+    var at = -1;
+    leaf.tabs.forEach(function (item, i) {
+      if (item.key === key) at = i;
+    });
+    if (at < 0) return;
+    dropTab(leaf, leaf.tabs[at]);
+    leaf.tabs.splice(at, 1);
+    if (!leaf.tabs.length) leaf.tabs.push(makeTab('blank'));
+    if (leaf.at >= leaf.tabs.length) leaf.at = leaf.tabs.length - 1;
+    if (leaf.at > at) leaf.at -= 1;
+    render();
+    save();
+  }
+
+  function activateTab(paneId, key) {
+    var leaf = findLeaf(paneId);
+    if (!leaf || !leaf.tabs) return;
+    leaf.tabs.forEach(function (item, i) {
+      if (item.key === key) leaf.at = i;
+    });
+    state.active = leaf.id;
+    render();
+    save();
+  }
+
+  /** 换掉**当前标签**装什么（窗格头那个列表图标用它）。 */
+  function setView(view, opts, title) {
+    var leaf = findLeaf(state.active) || leaves()[0];
+    if (!leaf) return;
+    var old = activeTab(leaf);
+    var fresh = makeTab(view, opts, title);
+    if (old) {
+      dropTab(leaf, old);
+      leaf.tabs[leaf.at] = fresh;
+    } else {
+      leaf.tabs = [fresh];
+      leaf.at = 0;
     }
     render();
     save();
@@ -198,11 +270,7 @@
   }
 
   function reset(layout) {
-    Object.keys(live).forEach(function (id) {
-      var box = live[id];
-      if (box.cleanup) { try { box.cleanup(); } catch (e) { /* 忽略 */ } }
-    });
-    live = {};
+    Object.keys(live).forEach(function (id) { dropPane(id); });
     state.root = layout || stage('blank');
     state.active = leaves()[0].id;
     state.zoomed = null;
@@ -241,13 +309,13 @@
 
   function divider(node, wrap) {
     var bar = h('div.panes__div' + (node.dir === 'col' ? '.is-col' : '.is-row'), {
-      title: '拖动调整比例',
+      title: '拖动调整比例（双击回中）',
       role: 'separator',
     });
     bar.addEventListener('pointerdown', function (ev) {
       ev.preventDefault();
       var rect = wrap.getBoundingClientRect();
-      var vertical = node.dir === 'col';            // 上下叠 -> 拖动改高度
+      var vertical = node.dir === 'col';
       bar.classList.add('is-dragging');
       document.body.classList.add(vertical ? 'panes-resizing-v' : 'panes-resizing-h');
       try { bar.setPointerCapture(ev.pointerId); } catch (e) { /* 老浏览器忽略 */ }
@@ -257,7 +325,6 @@
           ? (move.clientY - rect.top) / (rect.height || 1)
           : (move.clientX - rect.left) / (rect.width || 1);
         node.ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, next));
-        // 只改这一层的两条 flex，不整棵重画 —— 重画会打断正在拖的手感
         wrap.firstChild.style.flex = node.ratio + ' 1 0px';
         wrap.lastChild.style.flex = (1 - node.ratio) + ' 1 0px';
       }
@@ -273,7 +340,6 @@
       bar.addEventListener('pointerup', onUp);
       bar.addEventListener('pointercancel', onUp);
     });
-    // 双击分隔条：对半分（拆歪了想回正时的快捷）
     bar.addEventListener('dblclick', function () {
       node.ratio = 0.5;
       wrap.firstChild.style.flex = '0.5 1 0px';
@@ -285,77 +351,167 @@
 
   function paneEl(leaf) {
     var box = live[leaf.id];
-    if (!box) {
-      box = live[leaf.id] = makePane(leaf);
-    }
+    if (!box) box = live[leaf.id] = makePane(leaf);
     box.el.classList.toggle('is-active', state.active === leaf.id);
     box.el.classList.toggle('is-zoomed', state.zoomed === leaf.id);
+    paintTabs(box, leaf);
     return box.el;
   }
 
   function makePane(leaf) {
-    var body = h('div.panes__body');
-    var title = h('span.panes__title');
-    var head = h('div.panes__head', null, title, h('span.panes__spacer'), buttons());
-    var el = h('section.panes__pane', { 'data-pane': leaf.id }, head, body);
+    var tabsEl = h('div.panes__tabs', { role: 'tablist' });
+    var acts = h('div.panes__acts');
+    var head = h('div.panes__head', null, tabsEl, h('span.panes__spacer'), acts);
+    var bodyEl = h('div.panes__body');
+    var el = h('section.panes__pane', { 'data-pane': leaf.id }, head, bodyEl);
 
-    var box = { el: el, bodyEl: body, headEl: head, titleEl: title, leaf: leaf, def: null, cleanup: null };
-
-    // 点哪儿哪儿是活跃窗格（同 tmux：键盘与拆分都作用在活跃窗格上）
+    var box = {
+      el: el, bodyEl: bodyEl, tabsEl: tabsEl, leaf: leaf,
+      hosts: {},          // tabKey -> 那个标签自己的容器（切换只切显示，内容不重建）
+      mounted: {},        // tabKey -> { def, cleanup }
+    };
+    fillActs(box, acts);
     el.addEventListener('pointerdown', function () { focus(leaf.id); }, true);
-
-    function buttons() {
-      var wrap = h('div.panes__acts');
-      var pick = h('button.panes__act', { title: '这个窗格装什么', type: 'button' });
-      pick.innerHTML = ui.icon('list', 14);
-      pick.addEventListener('click', function (ev) {
-        ev.stopPropagation();
-        openPicker(leaf, wrap);
-      });
-      var row = h('button.panes__act', { title: '左右拆（Alt+\\）', type: 'button' });
-      row.innerHTML = ui.icon('chevronR', 14);
-      row.addEventListener('click', function (ev) { ev.stopPropagation(); state.active = leaf.id; split('row'); });
-      var col = h('button.panes__act', { title: '上下拆（Alt+-）', type: 'button' });
-      col.innerHTML = ui.icon('list', 14);
-      col.style.transform = 'rotate(90deg)';
-      col.addEventListener('click', function (ev) { ev.stopPropagation(); state.active = leaf.id; split('col'); });
-      var max = h('button.panes__act', { title: '最大化（Alt+Z）', type: 'button' });
-      max.innerHTML = ui.icon('target', 14);
-      max.addEventListener('click', function (ev) { ev.stopPropagation(); zoom(leaf.id); });
-      var shut = h('button.panes__act', { title: '关掉这个窗格（Alt+W）', type: 'button' });
-      shut.innerHTML = ui.icon('close', 14);
-      shut.addEventListener('click', function (ev) { ev.stopPropagation(); close(leaf.id); });
-      wrap.appendChild(pick);
-      wrap.appendChild(row);
-      wrap.appendChild(col);
-      wrap.appendChild(max);
-      wrap.appendChild(shut);
-      return wrap;
-    }
-
-    mountInto(box, leaf);
     return box;
   }
 
-  function mountInto(box, leaf) {
-    var def = views[leaf.view];
-    box.def = def || null;
-    box.leaf = leaf;
-    box.titleEl.textContent = def ? def.title : leaf.view;
-    box.bodyEl.innerHTML = '';
-    if (!def) {
-      box.bodyEl.appendChild(missing(leaf));
-      return;
-    }
-    // 视图自己可能会往别的容器挂浮层，`mount` 返回的清理函数由引擎保管
-    var out = def.mount(box.bodyEl, leaf.opts || {}, { leaf: leaf });
-    box.cleanup = typeof out === 'function' ? out : null;
+  function fillActs(box, acts) {
+    var leaf = box.leaf;
+
+    var pick = h('button.panes__act', { title: '这个窗格装什么', type: 'button' });
+    pick.innerHTML = ui.icon('list', 14);
+    pick.addEventListener('click', function (ev) { ev.stopPropagation(); openPicker(leaf, acts); });
+
+    var row = h('button.panes__act', { title: '左右拆（Alt+\\）', type: 'button' });
+    row.innerHTML = ui.icon('chevronR', 14);
+    row.addEventListener('click', function (ev) { ev.stopPropagation(); state.active = leaf.id; split('row'); });
+
+    var col = h('button.panes__act', { title: '上下拆（Alt+-）', type: 'button' });
+    col.innerHTML = ui.icon('list', 14);
+    col.style.transform = 'rotate(90deg)';
+    col.addEventListener('click', function (ev) { ev.stopPropagation(); state.active = leaf.id; split('col'); });
+
+    var max = h('button.panes__act', { title: '最大化（Alt+Z）', type: 'button' });
+    max.innerHTML = ui.icon('target', 14);
+    max.addEventListener('click', function (ev) { ev.stopPropagation(); zoom(leaf.id); });
+
+    var shut = h('button.panes__act', { title: '关掉这个窗格（Alt+W）', type: 'button' });
+    shut.innerHTML = ui.icon('close', 14);
+    shut.addEventListener('click', function (ev) { ev.stopPropagation(); close(leaf.id); });
+
+    [pick, row, col, max, shut].forEach(function (btn) { acts.appendChild(btn); });
   }
 
-  function missing(leaf) {
+  /** 画标签栏：每个标签一个标题 + 一个关掉的叉。 */
+  function paintTabs(box, leaf) {
+    box.leaf = leaf;
+    var strip = box.tabsEl;
+    ui.clear(strip);
+    (leaf.tabs || []).forEach(function (item, i) {
+      var def = views[item.view];
+      var title = item.title || (def ? def.title : item.view);
+      var on = i === (leaf.at || 0);
+      var node = h('div.panes__tab' + (on ? '.is-on' : ''), {
+        role: 'tab',
+        draggable: 'true',
+        title: title,
+        'aria-selected': on ? 'true' : 'false',
+      });
+      if (def && def.icon) {
+        var mark = h('span.panes__tabicon');
+        mark.innerHTML = ui.icon(def.icon, 13);
+        node.appendChild(mark);
+      }
+      node.appendChild(h('span.panes__tabtitle', { text: title }));
+      var x = h('button.panes__tabx', { type: 'button', title: '关掉这个标签', 'aria-label': '关掉这个标签' });
+      x.innerHTML = ui.icon('close', 12);
+      x.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        closeTab(leaf.id, item.key);
+      });
+      node.appendChild(x);
+      node.addEventListener('click', function () { activateTab(leaf.id, item.key); });
+      // 拖动标签：把这一格拖到别的格里去（tmux 的 move-pane，用标签当抓手）
+      node.addEventListener('dragstart', function (ev) {
+        ev.dataTransfer.setData('text/panes-tab', leaf.id + '|' + item.key);
+        ev.dataTransfer.effectAllowed = 'move';
+      });
+      strip.appendChild(node);
+    });
+    // 空白处双击＝再开一个标签（与"新建标签页"一个意思）
+    strip.addEventListener('dblclick', function (ev) {
+      if (ev.target.closest('.panes__tab')) return;
+      state.active = leaf.id;
+      open('blank');
+    });
+    syncHosts(box, leaf);
+  }
+
+  /** 内容容器：每个标签一个，切标签只切显示 —— 不重建，所以滚动位置与编辑状态都还在。 */
+  function syncHosts(box, leaf) {
+    var keep = {};
+    (leaf.tabs || []).forEach(function (item, i) {
+      keep[item.key] = true;
+      var host = box.hosts[item.key];
+      if (!host) {
+        host = box.hosts[item.key] = h('div.panes__host');
+        box.bodyEl.appendChild(host);
+        mountTab(box, item, host);
+      }
+      var on = i === (leaf.at || 0);
+      host.classList.toggle('is-on', on);
+      host.hidden = !on;
+    });
+    Object.keys(box.hosts).forEach(function (key) {
+      if (keep[key]) return;
+      var host = box.hosts[key];
+      unmountTab(box, key);
+      if (host.parentNode) host.parentNode.removeChild(host);
+      delete box.hosts[key];
+    });
+  }
+
+  function mountTab(box, item, host) {
+    var def = views[item.view];
+    box.mounted[item.key] = { def: def || null, cleanup: null };
+    host.innerHTML = '';
+    if (!def) {
+      host.appendChild(missing(item));
+      return;
+    }
+    var out = def.mount(host, item.opts || {}, { leaf: box.leaf, tab: item, panes: api });
+    box.mounted[item.key].cleanup = typeof out === 'function' ? out : null;
+  }
+
+  function unmountTab(box, key) {
+    var run = box.mounted[key];
+    if (!run) return;
+    if (run.def && run.def.unmount) {
+      try { run.def.unmount(); } catch (e) { /* 收摊失败不该拦住关标签 */ }
+    }
+    if (run.cleanup) {
+      try { run.cleanup(); } catch (e) { /* 同上 */ }
+    }
+    delete box.mounted[key];
+  }
+
+  function dropTab(leaf, item) {
+    var box = live[leaf.id];
+    if (box) unmountTab(box, item.key);
+  }
+
+  function dropPane(id) {
+    var box = live[id];
+    if (!box) return;
+    Object.keys(box.mounted).forEach(function (key) { unmountTab(box, key); });
+    box.el.remove();
+    delete live[id];
+  }
+
+  function missing(item) {
     return h('div.panes__missing', null,
-      h('p.panes__missing-t', null, '这个窗格要装「' + leaf.view + '」，但那个视图还没接进来'),
-      h('p.panes__missing-s', null, '点上面的列表图标换一个，或者把它的 mount(host, opts) 写好并 register 一下'));
+      h('p.panes__missing-t', null, '这个标签要装「' + item.view + '」，但那个视图还没接进来'),
+      h('p.panes__missing-s', null, '点窗格头上的列表图标换一个，或者把它的 mount(host, opts) 写好并 register 一下'));
   }
 
   function emptyHint() {
@@ -364,19 +520,20 @@
 
   /** 换内容的小菜单：列出所有已注册的视图。 */
   function openPicker(leaf, anchor) {
-    var open = document.querySelector('.panes__menu');
-    if (open) open.remove();
+    var old = document.querySelector('.panes__menu');
+    if (old) old.remove();
     var menu = h('div.panes__menu', { role: 'menu' });
     Object.keys(views).forEach(function (type) {
       var def = views[type];
-      var item = h('button.panes__menu-item' + (leaf.view === type ? '.is-on' : ''), { type: 'button' });
+      var item = h('button.panes__menu-item' + (activeTab(leaf) && activeTab(leaf).view === type ? '.is-on' : ''),
+        { type: 'button' });
       item.innerHTML = ui.icon(def.icon || 'list', 14);
       item.appendChild(h('span', null, def.title));
       item.addEventListener('click', function (ev) {
         ev.stopPropagation();
         menu.remove();
         state.active = leaf.id;
-        if (leaf.view !== type) setView(type);
+        open(type);
       });
       menu.appendChild(item);
     });
@@ -384,9 +541,9 @@
       menu.appendChild(h('p.panes__menu-empty', null, '还没有注册任何视图'));
     }
     document.body.appendChild(menu);
-    var box = anchor.getBoundingClientRect();
-    menu.style.top = Math.round(box.bottom + 6) + 'px';
-    menu.style.left = Math.round(Math.min(box.left, window.innerWidth - menu.offsetWidth - 12)) + 'px';
+    var area = anchor.getBoundingClientRect();
+    menu.style.top = Math.round(area.bottom + 6) + 'px';
+    menu.style.left = Math.round(Math.min(area.left, window.innerWidth - menu.offsetWidth - 12)) + 'px';
 
     function away(ev) {
       if (!menu.contains(ev.target)) {
@@ -405,7 +562,14 @@
     if (key === '\\') { ev.preventDefault(); split('row'); }
     else if (key === '-') { ev.preventDefault(); split('col'); }
     else if (key === 'z' || key === 'Z') { ev.preventDefault(); zoom(); }
-    else if (key === 'w' || key === 'W') { ev.preventDefault(); close(); }
+    else if (key === 'w' || key === 'W') {
+      ev.preventDefault();
+      // 有标签先关标签，只剩一个标签时才关窗格 —— 与编辑器里的习惯一致
+      var leaf = findLeaf(state.active);
+      var item = activeTab(leaf);
+      if (leaf && leaf.tabs && leaf.tabs.length > 1 && item) closeTab(leaf.id, item.key);
+      else close();
+    }
   }
 
   /* ------------------------------------------------------------------ 持久化与状态栏 */
@@ -415,7 +579,6 @@
   }
 
   function save() {
-    // 拖动分隔条时每次 pointermove 都存一下太浪费：合并到一帧之后
     if (saveLater) return;
     saveLater = setTimeout(function () {
       saveLater = null;
@@ -446,20 +609,20 @@
 
   function paintStatus() {
     var all = leaves();
-    var current = findLeaf(state.active);
-    var def = current ? views[current.view] : null;
+    var leaf = findLeaf(state.active);
+    var item = activeTab(leaf);
+    var def = item ? views[item.view] : null;
+    var name = item ? (item.title || (def ? def.title : item.view)) : '空';
     var order = all
-      .map(function (leaf, i) { return leaf.id === state.active ? '[' + (i + 1) + ']' : String(i + 1); })
+      .map(function (one, i) { return one.id === state.active ? '[' + (i + 1) + ']' : String(i + 1); })
       .join(' ');
-    // `ui.statusbar.set` 收的是 **item 数组**（不是 key/value）；顺手把四个键位摆在状态栏里，
-    // 免得"能拆"这件事只有看过源码的人知道
     ui.statusbar.set([
-      { kind: 'stat', label: '窗格', value: (def ? def.title : '空') + ' ' + order + (state.zoomed ? ' · 最大化中' : '') },
+      { kind: 'stat', label: '窗格', value: name + ' ' + order + (state.zoomed ? ' · 最大化中' : '') },
       { spacer: true },
       { kind: 'hint', key: 'Alt+\\', label: '左右拆' },
       { kind: 'hint', key: 'Alt+-', label: '上下拆' },
       { kind: 'hint', key: 'Alt+Z', label: '最大化' },
-      { kind: 'hint', key: 'Alt+W', label: '关闭' },
+      { kind: 'hint', key: 'Alt+W', label: '关标签' },
     ]);
   }
 
@@ -472,7 +635,6 @@
       state.root = options.layout;
       state.active = leaves()[0].id;
     } else {
-      // 没存过布局就用调用方给的默认布局（传 `layout` 则是强制用这一份）
       load(options && options.default);
     }
     // 布局里的 id 是上次那份，恢复后 live 里没有它们；paneEl 会按需建
@@ -489,7 +651,7 @@
     views[type] = def || {};
   }
 
-  QF.panes = {
+  var api = {
     mount: mount,
     register: register,
     state: state,
@@ -498,9 +660,15 @@
     close: close,
     zoom: zoom,
     focus: focus,
+    open: open,
+    openTab: open,
+    closeTab: closeTab,
+    activateTab: activateTab,
     setView: setView,
     reset: reset,
     views: views,
     save: save,
   };
+
+  QF.panes = api;
 })();
