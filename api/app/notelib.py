@@ -53,7 +53,14 @@ TRASH_DIR = ".trash"
 #: 不该出现在笔记树里的目录
 SKIP_DIRS = frozenset({SNAPSHOT_DIR, IMPORT_DIR, ".obsidian", ".trash", ".git", "__pycache__"})
 
-NOTE_SUFFIXES = (MD_SUFFIX, CANVAS_SUFFIX)
+
+
+#: 大纲：**纯文本的缩进项目符号**，一行一个节点，没有 YAML 头。
+#: 为什么单独一种后缀而不是 `.md` 里打个标记：这样树里一眼分得清、
+#: 打开就知道该用哪套视图，而且解析完全不依赖"头有没有写坏"。
+OUTLINE_SUFFIX = ".outline"
+
+NOTE_SUFFIXES = (MD_SUFFIX, CANVAS_SUFFIX, OUTLINE_SUFFIX)
 
 #: 文件名里不许出现的东西（新建笔记时用标题当文件名）
 _BAD_NAME = re.compile(r"[\\/:*?\"<>|\n\r\t]+")
@@ -422,7 +429,7 @@ class Index:
                 entry.title,
                 entry.body,
                 entry.tags,
-                kind="canvas" if entry.rel.endswith(CANVAS_SUFFIX) else "note",
+                kind=kind_of(entry.rel),
                 modified=entry.mtime,
                 size=entry.size,
                 links=len(entry.refs),
@@ -708,9 +715,17 @@ def ensure_note(lib: Library, rel: str) -> tuple[Path, str, Any]:
     path = safe_path(lib, rel)
     if not path.is_file():
         raise NoteNotFound(f"没有这篇笔记：{rel}")
-    if path.suffix.lower() != MD_SUFFIX:
-        raise NoteError(f"这个操作只支持 Markdown 笔记（当前是 {path.suffix}）")
+    suffix = path.suffix.lower()
+    if suffix not in (MD_SUFFIX, OUTLINE_SUFFIX):
+        # 画布不走这条路（它写的是 JSON，走 `save_raw` + `canvas.apply`）；
+        # **大纲走这条**：它也是纯文本，行级操作照用，只是没有头。
+        raise NoteError(f"这个操作只支持 Markdown 笔记与大纲（当前是 {path.suffix}）")
     text = read_text(path)
+    if suffix == OUTLINE_SUFFIX:
+        # 大纲没有 YAML 头，也就没有"头没闭合"这回事；
+        # 解析结果照 `split_text` 给（`note.body` 就是全文）—— 调用方只用到 `.body`
+        # 与 `.had_header`，两个都对得上。
+        return path, text, split_text(text)
     note = split_text(text)
     if note.broken_header:
         raise NoteError("这篇笔记的元数据头没有闭合，先修好再编辑（免得越改越乱）")
@@ -719,7 +734,11 @@ def ensure_note(lib: Library, rel: str) -> tuple[Path, str, Any]:
 
 def write_body(lib: Library, rel: str, body: str, *, why: str) -> dict[str, Any]:
     path, text, note = ensure_note(lib, rel)
-    if note.had_header:
+    if kind_of(rel) == "outline":
+        # 大纲**不带 YAML 头**，写正文就是写正文 —— 走 `render()` 会给它补一个头，
+        # 文件的形状就被悄悄改了（实测：写一次正文，行数从 3 变成 9，头也成了节点）。
+        new_text = body
+    elif note.had_header:
         new_text = splice_body(text, body)
     else:
         from .notes import render as _render  # noqa: PLC0415
@@ -769,6 +788,43 @@ def _sibling_line(body: str, index: int) -> str:
     return indent
 
 
+def _level_of_line(lines: list[str], index: int) -> int:
+    """某一行的缩进层级（按缩进列算，与 `notes.outline()` 同一套口径）。
+
+    只用来对齐拖拉后的层级，所以按"每 4 列一级、制表符算 4 列"就够 ——
+    真正的层级判定归解析器，这里不重复发明。
+    """
+    if not 0 <= index < len(lines):
+        return 0
+    raw = lines[index]
+    indent = raw[: len(raw) - len(raw.lstrip(" \t"))]
+    return len(indent.replace("\t", "    ")) // 4
+
+
+def _align_level(body: str, index: int, level: int) -> str:
+    """把第 `index` 行那棵子树**整棵**对齐到 `level` 层。
+
+    关键在"整棵"：算的是**第一行要挪几级**，然后子树里每一行都挪**同一个差值**。
+    踩过 —— 写成"把每一行都设成同一个层级"会把子树**摊平**：
+    `甲 / 甲一(子) / 甲二(子)` 拖进一层之后变成三个并列的兄弟，
+    相对结构没了（那是比"位置不对"更重的错，而且看起来还挺整齐）。
+    """
+    from .notes import block_extent, shift_line  # noqa: PLC0415
+
+    lines, _ = split_lines(body)
+    if not 0 <= index < len(lines):
+        return body
+    start, end = block_extent(body, index)
+    unit = detect_indent_unit(body)
+    delta = max(0, level) - _level_of_line(lines, index)
+    if not delta:
+        return body
+    for cursor in range(start, end):
+        # 逐行调 `shift_line`：它只改缩进、不改行数，所以原行号一路有效
+        body = shift_line(body, cursor, delta, unit)
+    return body
+
+
 def _move(body: str, index: int, delta: int) -> str:
     """上/下挪一块（幕布的 Alt+↑ / Alt+↓）：与相邻的兄弟块交换位置。
 
@@ -804,6 +860,7 @@ def line_op(
     raw: str = "",
     delta: int = 0,
     count: int = 0,
+    target: int = -1,
 ) -> dict[str, Any]:
     """行级操作 —— 幕布那半边的核心（回车同级、Tab 缩进、Alt+↑ 挪块）。"""
     from .notes import (  # noqa: PLC0415
@@ -830,18 +887,58 @@ def line_op(
         body = shift_line(body, index, 1 if op == "indent" else -1, detect_indent_unit(body))
     elif op == "move":
         body = _move(body, index, delta or 1)
+    elif op == "move_sibling":
+        # 拖拽搬块：把第 `index` 行的**整棵子树**搬到第 `target` 行的那个兄弟的
+        # 上边（`delta < 0`）或下边（`delta > 0`）。
+        # **边界由这里算，不由前端算** —— 前端只知道"我拖到了哪一行"，
+        # 而"那一行的子树到哪儿结束"要 `block_extent`；让调用方算，算错一次
+        # 就把内容挪进别人的子树里（`_move` 顶上那段注释写的就是这个顾虑）。
+        from .notes import block_extent, move_block  # noqa: PLC0415
+
+        lines, _ = split_lines(body)
+        if not 0 <= target < len(lines):
+            raise NoteError(f"要挪到的那一行不存在：{target}（共 {len(lines)} 行）")
+        if target == index:
+            # 拖回原地：什么都不做，也**不保存**（省一个没意义的快照）
+            return read_note(lib, rel)
+        target_start, target_end = block_extent(body, target)
+        # **先对齐层级、再搬**：幕布拖到某行前后是"插到那一层的相邻位置"，
+        # 不是"抱着原来的缩进过去"（从 L0 拖进一堆 L1 里就该变成 L1）。
+        # 顺序很重要：`_align_level` 只改缩进、**不改行数**，所以 `index` 与上面算出的
+        # `target_start/target_end` 依旧有效；反过来先搬再对齐就会对到别人身上
+        #（实测踩过：拖一次下去，旁边的兄弟跟着缩进了两级）。
+        body = _align_level(body, index, _level_of_line(split_lines(body)[0], target))
+        body = move_block(body, index, target_end if (delta or 1) > 0 else target_start)
+    elif op == "move_into":
+        # 落到**行上** = 成为它的子级（幕布拖拽的另一种落法）。
+        # 这一条与上一条是两件事：上一条"插在那一层的相邻位"，这一条"进入它里面"。
+        from .notes import block_extent, move_block  # noqa: PLC0415
+
+        lines, _ = split_lines(body)
+        if not 0 <= target < len(lines):
+            raise NoteError(f"要放进去的那一行不存在：{target}（共 {len(lines)} 行）")
+        if target == index:
+            return read_note(lib, rel)
+        _, target_end = block_extent(body, target)
+        # 同样先对齐再搬（理由见 `move_sibling`）
+        body = _align_level(body, index, _level_of_line(split_lines(body)[0], target) + 1)
+        body = move_block(body, index, target_end)
     else:
         raise NoteError(f"不认识的编辑操作：{op}")
 
-    new_text = splice_body(text, body) if note.had_header else render(
-        minimal_meta(body, path.stem), body
-    )
+    # **大纲不能走 `render()`**：那份函数会给没有头的文件补一个 YAML 头，
+    # 而 `.outline` 的全部好处就在于"没有头、纯文本、随便编辑" ——
+    # 每次编辑都给它加个头，文件形状就被悄悄改掉了（改完还是能读，所以更难发现）。
+    if kind_of(rel) == "outline" or note.had_header:
+        new_text = body if kind_of(rel) == "outline" else splice_body(text, body)
+    else:
+        new_text = render(minimal_meta(body, path.stem), body)
     _save(lib, rel, path, new_text, why=op)
     _invalidate(lib)
     return read_note(lib, rel)
 
 
-def create_note(lib: Library, folder: str, title: str) -> dict[str, Any]:
+def create_note(lib: Library, folder: str, title: str, *, kind: str = "note") -> dict[str, Any]:
     """新建一篇笔记（「未解析链接」一键补齐也走这里）。
 
     **标题可以为空** —— 界面上的新建是"先把它建出来，再在树里起名"（Trilium 的
@@ -849,23 +946,29 @@ def create_note(lib: Library, folder: str, title: str) -> dict[str, Any]:
     要求先想好名字，等于给最高频的动作加一道仪式；而空标题只要给个占位名、
     重名往后编号就行。
     """
+    suffix = OUTLINE_SUFFIX if kind == "outline" else MD_SUFFIX
     clean = _BAD_NAME.sub(" ", title).strip()
     folder_rel = (folder or "").replace("\\", "/").strip("/")
     if not clean:
         clean, series = "未命名", 2
         while True:
-            probe = f"{folder_rel}/{clean}.md" if folder_rel else f"{clean}.md"
+            probe = f"{folder_rel}/{clean}{suffix}" if folder_rel else f"{clean}{suffix}"
             if not safe_path(lib, probe).exists():
                 break
             clean, series = f"未命名 {series}", series + 1
-    rel = f"{folder_rel}/{clean}.md" if folder_rel else f"{clean}.md"
+    rel = f"{folder_rel}/{clean}{suffix}" if folder_rel else f"{clean}{suffix}"
     path = safe_path(lib, rel)
     if path.exists():
         raise NoteError(f"已经有一篇叫这个的了：{rel}")
     # 新建的笔记不标 `qf_generated`：头是应用写的，但内容是作者写的 ——
     # 那个标记的语义是"这个头是导入器补的"，别把它稀释掉
-    meta: dict[str, Any] = {"title": clean, "tags": []}
-    _save(lib, rel, path, render(meta, ""), why="create")
+    if kind == "outline":
+        # 大纲**不写 YAML 头**（这正是它好编辑的原因）：先给一个空节点，
+        # 打开就能直接打字 —— 与幕布新建即一条空主题一样。
+        _save(lib, rel, path, "- \n", why="create")
+    else:
+        meta: dict[str, Any] = {"title": clean, "tags": []}
+        _save(lib, rel, path, render(meta, ""), why="create")
     _invalidate(lib)
     return read_note(lib, rel)
 
@@ -1106,6 +1209,41 @@ def _tag_list(meta: dict[str, Any], body: str) -> list[str]:
     return list(seen)
 
 
+def kind_of(rel: str) -> str:
+    """这份文件是什么：`note` / `canvas` / `outline`。
+
+    一处判定，索引与 `read_note` 共用 —— 分两处写就会有一天对不上
+    （症状是"树里的图标是一个样、打开又是另一个样"）。
+    """
+    lowered = rel.lower()
+    if lowered.endswith(CANVAS_SUFFIX):
+        return "canvas"
+    if lowered.endswith(OUTLINE_SUFFIX):
+        return "outline"
+    return "note"
+
+
+_INLINE_TAG = re.compile(r"(?<![\w/#])#([\w\u4e00-\u9fff][\w\u4e00-\u9fff\-]{0,39})")
+
+
+def inline_tags(text: str) -> list[str]:
+    """从正文里取 `#标签`（大纲没有 YAML 头，标签只能写在正文里 —— 幕布就是这样）。"""
+    out: list[str] = []
+    fenced = False
+    for line in split_lines(text or "")[0]:
+        # 代码围栏里不认标签（`# 注释` 在代码里到处都是，认了会冒出一堆假标签）
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        for hit in _INLINE_TAG.findall(line):
+            if hit.isdigit() or hit in out:
+                continue
+            out.append(hit)
+    return out[:30]
+
+
 def read_note(lib: Library, rel: str) -> dict[str, Any]:
     """读一篇笔记：正文 + 大纲 + 引用 + 反链，一次给全（前端一次渲染不用来回问）。"""
     path = safe_path(lib, rel)
@@ -1132,6 +1270,33 @@ def read_note(lib: Library, rel: str) -> dict[str, Any]:
             "snapshots": history_state(lib, rel)["versions"],
             "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
             "message": "画布（Canvas）的渲染与编辑在下一步做，这里先作为笔记树里的一等条目出现",
+        }
+
+    if path.suffix.lower() == OUTLINE_SUFFIX:
+        # 大纲：正文就是全部，没有头。节点信息由解析器给出
+        #（它已经能算标题、项目符号、相对缩进、围栏 —— 正好是大纲要的那套）
+        text = read_text(path)
+        entry = found.entry(rel)
+        body = text
+        return {
+            "lib": lib.name,
+            "path": rel,
+            "kind": "outline",
+            "title": path.stem,
+            "meta": {},
+            "tags": inline_tags(body),
+            "generated_header": False,
+            "body": body,
+            "outline": [asdict(item) for item in outline(body)],
+            "lines": len(split_lines(body)[0]),
+            "indent_unit": detect_indent_unit(body),
+            "outlinks": found.outlinks(rel),
+            "backlinks": found.backlinks(rel),
+            "unresolved": entry.unresolved if entry else [],
+            "snapshots": history_state(lib, rel)["versions"],
+            "can_undo": history_state(lib, rel)["can_undo"],
+            "mtime": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+            "bytes": path.stat().st_size,
         }
 
     text = read_text(path)
@@ -1185,7 +1350,7 @@ def tree(lib: Library) -> dict[str, Any]:
                 "path": entry.rel,
                 "name": parts[-1],
                 "title": entry.title,
-                "kind": "canvas" if entry.rel.endswith(CANVAS_SUFFIX) else "note",
+                "kind": kind_of(entry.rel),
                 "tags": entry.tags,
                 "mtime": entry.mtime,
                 # Trilium 的三个展示位：`#iconClass` / `#color` / `branch.prefix`（见 docs/笔记模块设计.md）。
