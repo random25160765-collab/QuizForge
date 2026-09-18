@@ -1942,3 +1942,11 @@ body[data-side='closed'] .side > * { display: none; }
 /* 品牌挪进资源栏之后的小尺寸修正（顶栏那条线留给练习中心的按钮与将来的标签） */
 .side__brand { flex: none; display: inline-flex; align-items: center; }
 .side__brand .brand-mark { width: 22px; height: 22px; }
+
+/* 错题本详情顶部那行小动作（目前只有「在工作台里打开」） */
+.wb__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}

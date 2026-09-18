@@ -14,8 +14,7 @@
   var h = ui.h;
   var api = QF.api;
 
-  var OPEN_KEY = 'qf.sidetree.v1';       // 展开状态
-  var PENDING_KEY = 'qf.panes.pending';  // 从别的页面点树时，暂存"要开什么"
+  var OPEN_KEY = 'qf.sidetree.v1';       // 展开状态（"要开什么"那件事归引擎管，见 openResource）
   var state = { open: null, busy: false };
   var hostEl = null;
 
@@ -33,21 +32,9 @@
 
   /* ------------------------------------------------------------------ 送东西去右边 */
 
-  function onWorkbench() {
-    return document.body.dataset.page === 'workbench';
-  }
-
-  /** 打开一样资源：在工作台就当场开标签，在别的页面就记下来再跳过去。 */
+  /** 打开一样资源 —— 这件事归引擎（别的页面也要用，比如错题本的"在工作台打开"）。 */
   function send(kind, ref, title) {
-    if (onWorkbench() && QF.panes && QF.panes.open) {
-      QF.panes.open(kind, ref, title);
-      return;
-    }
-    // 记在本机：工作台启动时会把它消费掉（比 URL 传参干净，也不用改路由表）
-    try {
-      localStorage.setItem(PENDING_KEY, JSON.stringify({ kind: kind, ref: ref, title: title }));
-    } catch (e) { /* 忽略 */ }
-    location.href = 'workbench.html';
+    QF.panes.openResource(kind, ref, title);
   }
 
   /* ------------------------------------------------------------------ 树零件 */
