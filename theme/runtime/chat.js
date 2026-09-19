@@ -1364,6 +1364,8 @@
           h(
             'div.chat__composer',
             null,
+            // 能力选择栏：这一版对话能调哪些模块（内容由 mounts.js 画）
+            h('div.chat__modes', { id: 'chat-modes', role: 'group', 'aria-label': '这一版对话能用的模块' }),
             pendingEl,
             (jumpBtn = iconButton('down', '回到最新', function () {
               scrollToEnd(true);
@@ -3842,6 +3844,8 @@
     QF.shell.mount({});
 
     buildSkeleton();
+    // 能力选择栏（工具挂载）由 mounts.js 画进 `#chat-modes`；骨架建好就让它画一次
+    if (QF.mounts && QF.mounts.render) QF.mounts.render();
     renderAside();
     renderEmptyThread();
     updateComposer();

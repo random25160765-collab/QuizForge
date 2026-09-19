@@ -135,7 +135,8 @@
   function renderNav() {
     // 主导航由 shell.js 统一渲染（全站一份）：错题本页是「副页面」，
     // 四项视图都渲染成链接，当前页不占导航 —— 它由右上角的图标表示。
-    QF.shell.mount({});
+    // 错题本属于练习中心那一族：给它 view，顶栏那排才会显示（否则是一条空 bar）
+    QF.shell.mount({ view: 'wrongbook' });
   }
 
   function buildHeader() {
@@ -782,7 +783,8 @@
     document.documentElement.style.setProperty('--content-max', (conf.maxWidth || 880) + 'px');
 
     // 主题按钮、设置按钮、当前页图标都由 shell.js 统一接线（全站一份）
-    QF.shell.mount({});
+    // 错题本属于练习中心那一族：给它 view，顶栏那排才会显示（否则是一条空 bar）
+    QF.shell.mount({ view: 'wrongbook' });
 
     // 设置面板里导入/清空数据之后，这一页要把列表重画一遍
     document.addEventListener('qf:data-changed', function () {
