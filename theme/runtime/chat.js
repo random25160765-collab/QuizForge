@@ -365,7 +365,7 @@
         'button.chat__treebtn' + (state.treeOpen ? '.is-on' : ''),
         {
           type: 'button',
-          title: label + '（点开看分叉，Esc 关闭）',
+          title: label + '',
           'aria-label': label,
           onClick: function () {
             state.treeOpen = !state.treeOpen;
@@ -1439,10 +1439,10 @@
             h(
               'div.chat__box',
               null,
-              iconButton('clip', '加附件', function () {
+              iconButton('clip', '附件', function () {
                 if (clipInput) clipInput.click();
               }),
-              iconButton('note', '便签（边聊边记）', function () {
+              iconButton('note', '便签', function () {
                 if (notesOpen) closeNotes();
                 else openNotes();
               }),

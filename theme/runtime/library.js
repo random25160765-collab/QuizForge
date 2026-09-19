@@ -587,7 +587,7 @@
       panel.appendChild(fileRow('附属', path, 0, index, true));
     });
     if (!(one.assets || []).length) {
-      panel.appendChild(h('div.lib__hint', { text: '这一份没有外部附属资源（PDF 里嵌的图不算）。' }));
+      panel.appendChild(h('div.lib__hint', { text: '这一份没有外部附属资源。' }));
     }
     return panel;
   }
@@ -707,7 +707,7 @@
     if (!cited.length) {
       panel.appendChild(
         h('div.lib__hint', {
-          text: '没有笔记引用它。在笔记里写 ' + one.citekey + ' 或 ' + one.rel.split('/').pop() + ' 就算引用（判定按字面来，不做模糊匹配）。'
+          text: '没有笔记引用它。在笔记里写 ' + one.citekey + ' 或 ' + one.rel.split('/').pop() + ' 就算引用。'
         })
       );
     } else {

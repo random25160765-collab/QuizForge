@@ -428,18 +428,23 @@ body[data-page='workbench'] .view {
 }
 
 /* 窗格里的笔记 / 资料：给正文留出舒服的行长 */
-.panes__doc {
-  max-width: 72ch;
-  margin: 0 auto;
-  padding: 18px 22px 40px;
-}
-
-/* 资料窗格：原件（PDF/图片/网页…）占主位，元数据与抽取的正文折在下面 */
+/* 资料窗格：原件（PDF/图片/网页…）占主位，元数据与抽取的正文折在下面。
+ *
+ * **这里原先还有一条 `max-width: 72ch; margin: 0 auto; padding: 18px 22px 40px`** ——
+ * 那是 `.panes__doc` 还只是"一段散文的容器"时留下的。它与下面这条"整格是 flex 列、
+ * 铺满窗格"直接打架：整个资料格（**包含 PDF 原件**）被压进 552px 里，窗格一宽右边
+ * 就是一大片空白（用户的原话："不是自适应铺满页面而是有大量奇怪的留白"）。
+ * 要限阅读宽度的是**折叠里那段抽出来的正文**，不是放原件的那一格。 */
 .panes__doc {
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+/* 折叠里那段是"读的字"：给它一个阅读宽度（原件那一格不设限，铺满） */
+.panes__docbody {
+  max-width: 76ch;
 }
 
 .panes__docfile {

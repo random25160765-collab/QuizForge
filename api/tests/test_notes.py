@@ -436,3 +436,52 @@ def test_reveal_only_opens_a_registered_library(client, monkeypatch) -> None:  #
         return  # 这台机器还没挂过外部库：守卫那条已经测到了
     ok = client.post("/api/notes/reveal", json={"lib": libs[0]})
     assert ok.status_code == 200, ok.text
+
+
+def test_trash_round_trip(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """删掉的笔记进回收站：能列出来、能捞回来。
+
+    「删除 = 移到回收站」这件事原先只在后端成立 —— 界面上删完就再也找不到入口，
+    用户只能当它真没了（那和直接删掉没区别）。这两个函数就是那颗回收站按钮
+    背后的东西，所以钉住三件事：文件真的离开了库里、回收站里列得出来、
+    恢复之后**回到库里**且内容一字不差。
+    """
+    from app import notelib
+
+    # 回收站落在"应用数据目录"下（`notes_root()`），指到 tmp 才不会碰真实数据
+    monkeypatch.setattr(notelib, "notes_root", lambda: tmp_path / "appdata" / "notes")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    body = "# 一篇会被删的笔记\n\n正文若干。\n"
+    (vault / "会被删.md").write_text(body, encoding="utf-8")
+    lib = notelib.Library(name="T", root=vault)
+
+    notelib.delete_note(lib, "会被删.md")
+
+    assert not (vault / "会被删.md").exists(), "库里那份该走了（不然用户以为没删掉）"
+    listed = notelib.trash_list(lib)
+    assert [one["title"] for one in listed] == ["会被删.md"]
+
+    back = notelib.restore_from_trash(lib, listed[0]["name"])
+    assert back["title"] == "会被删"
+    assert (vault / "会被删.md").read_text(encoding="utf-8") == body, "捞回来的必须是原文"
+    assert notelib.trash_list(lib) == [], "捞走之后回收站该空了"
+
+
+def test_restore_never_overwrites(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """恢复时同名冲突加序号，**不覆盖**现有笔记 —— 回收站不该变成删数据的另一条路。"""
+    from app import notelib
+
+    monkeypatch.setattr(notelib, "notes_root", lambda: tmp_path / "appdata" / "notes")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "同名.md").write_text("旧的一份\n", encoding="utf-8")
+    lib = notelib.Library(name="T", root=vault)
+
+    notelib.delete_note(lib, "同名.md")
+    (vault / "同名.md").write_text("删完之后又写的一份\n", encoding="utf-8")
+    listed = notelib.trash_list(lib)
+    notelib.restore_from_trash(lib, listed[0]["name"])
+
+    assert (vault / "同名.md").read_text(encoding="utf-8") == "删完之后又写的一份\n"
+    assert (vault / "同名 2.md").read_text(encoding="utf-8") == "旧的一份\n"

@@ -33,7 +33,8 @@
     treebar: document.getElementById('notes-treebar'),
     main: document.getElementById('notes-main'),
     side: document.getElementById('notes-side'),
-    reveal: document.getElementById('notes-reveal')
+    reveal: document.getElementById('notes-reveal'),
+    trash: document.getElementById('notes-trash')
   };
 
   var state = {
@@ -180,6 +181,10 @@
     // 一律换成内联 SVG —— 与工具条上那几颗同一套画法。
     if (el.newBtn) el.newBtn.innerHTML = ICONS.plus;
     if (el.clear) el.clear.innerHTML = ICONS.x;
+    if (el.trash) {
+      el.trash.innerHTML = ui.icon('trash', 14);
+      el.trash.addEventListener('click', openTrash);
+    }
     if (el.reveal) {
       el.reveal.innerHTML = ICONS.folder;
       el.reveal.addEventListener('click', function () {
@@ -343,6 +348,12 @@
   function indentGuides(depth) {
     var box = h('span.ntree__indents');
     for (var i = 1; i < depth; i++) box.appendChild(h('span.ntree__indent'));
+    // **零格也照样返回这个空容器**（不要塞 null）：flex 的 `gap` 对空元素照给不误，
+    // 那 4px 正是"箭头"与"缩进格"之间恒定的一段偏移 —— 留着它，各层的箭头中心
+    // 就落在 68 + 16n 上（n = 左边有几格），而每一格里的竖线画在"格左 + 12"处，
+    // 恰好也是 68 + 16j。两边同一条公式，才是真正对齐。
+    // 反过来把空容器去掉，第一层会**少这 4px**，整棵树从第二层起就与上面错开
+    // （实测：箭头 64 / 竖线 68）。用户连着两轮说"图标和竖线对不齐"，差的就是它。
     return box;
   }
 
@@ -781,7 +792,7 @@
         h('button.nicon.nicon--mini', {
           type: 'button',
           html: ui.icon('target', 16),
-          title: '这一库的双链图谱（开成一个标签）',
+          title: '知识图谱',
           onClick: openGraph,
         }),
         h('button.nicon.nicon--mini', {
@@ -801,6 +812,65 @@
       )
     );
     return bar;
+  }
+
+  /**
+   * 回收站：删掉的笔记都在后端那儿（`data/notes/.trash/<库>/`）。
+   *
+   * 为什么要有这个面板：删除是"移到回收站"这件事**只有在能看见它的时候**才成立。
+   * 原先界面上删掉就再也找不到入口，用户只能当它真没了 —— 那和直接删掉没区别。
+   */
+  function openTrash() {
+    api
+      .get('/notes/trash?lib=' + encodeURIComponent(state.lib))
+      .then(function (out) {
+        var items = (out && out.items) || [];
+        var box = h('div.ntrash');
+        var list = h('div.ntrash__list');
+        if (!items.length) {
+          list.appendChild(h('p.npanel__hint', { text: '回收站是空的（删掉的笔记会来这里）' }));
+        }
+        items.forEach(function (one) {
+          list.appendChild(trashRow(one));
+        });
+        box.appendChild(list);
+        box.appendChild(
+          h('p.npanel__hint', {
+            text: '这些文件还在磁盘上（应用数据目录里），恢复之后就回到库里。',
+          })
+        );
+        var panel = ui.modal({
+          title: '回收站 · ' + state.lib,
+          size: 'md',
+          body: box,
+        });
+
+        function trashRow(one) {
+          var when = (one.at || '').replace('T', ' ').slice(0, 16);
+          return h(
+            'div.ntrash__row',
+            null,
+            h('span.ntrash__name', { text: one.title || one.name, title: one.name }),
+            h('span.ntrash__when', { text: when }),
+            h('button.nbtn', {
+              type: 'button',
+              text: '恢复',
+              title: '放回这个库（同名不覆盖，自动加序号）',
+              onClick: function () {
+                api
+                  .post('/notes/restore', { lib: state.lib, name: one.name })
+                  .then(function (note) {
+                    toast('已恢复：' + ((note && note.title) || one.title || ''), 'ok');
+                    panel.close();
+                    loadTree();
+                  })
+                  .catch(fail);
+              },
+            })
+          );
+        }
+      })
+      .catch(fail);
   }
 
   /** 文件面板的开合按钮：两个朝向，转过去而不是闪一下。 */
@@ -929,13 +999,13 @@
           ? []
           : state.note.kind === 'outline'
             ? [
-                ['outline', '大纲', ICONS.props, '大纲（逐行折起来）'],
-                ['mindmap', '思维导图', ICONS.mind, '思维导图（按层级画开）']
+                ['outline', '大纲', ICONS.props, '大纲'],
+                ['mindmap', '思维导图', ICONS.mind, '思维导图']
               ]
             : [
-                ['source', '源码', ICONS.code, '源码（Markdown 原文）'],
-                ['live', '默认', ICONS.inline, '默认（就地改写，逐块渲染）'],
-                ['read', '阅读', ICONS.page, '阅读（渲染后的样子）']
+                ['source', '源码', ICONS.code, '源码'],
+                ['live', '默认', ICONS.inline, '默认'],
+                ['read', '阅读', ICONS.page, '阅读']
               ]).map(function (pair) {
           return h(
             'button.seg__item.seg__item--icon' + (state.mode === pair[0] ? '.is-on' : ''),

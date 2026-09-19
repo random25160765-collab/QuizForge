@@ -477,14 +477,47 @@ def _looks_like_authors(line: str) -> bool:
 _ORG_WORDS = frozenset({"inc", "ltd", "corp", "corporation", "consortium", "university", "institute", "llc", "gmbh"})
 
 
-def _looks_like_a_person(piece: str) -> bool:
+#: 地名与国家名：署名区块里紧跟着 institutions 的那些。
+#: 判据是"**这个词都算**"（见 `_looks_like_a_person`）—— 这样 `Ann Smith` 不会被
+#: 误杀，而 `Ann Arbor`、`Japan Tokyo`、单独的 `Osaka` 会被挡掉。
+_PLACES = frozenset(
+    {
+        # 国家与地区
+        "new", "japan", "china", "usa", "us", "uk", "england", "scotland", "germany", "france",
+        "canada", "india", "korea", "taiwan", "singapore", "italy", "spain", "portugal",
+        "netherlands", "belgium", "sweden", "norway", "denmark", "finland", "switzerland",
+        "austria", "poland", "czech", "russia", "israel", "iran", "turkey", "egypt",
+        "brazil", "mexico", "chile", "argentina", "australia", "zealand", "ireland",
+        "greece", "hungary", "romania", "vietnam", "thailand", "malaysia", "indonesia",
+        # 常见城市（含研究机构密集的那些）
+        "tokyo", "osaka", "kyoto", "nagoya", "sendai", "sapporo", "fukuoka",
+        "beijing", "shanghai", "shenzhen", "hangzhou", "nanjing", "wuhan", "chengdu",
+        "seoul", "daejeon", "taipei", "hsinchu", "hong", "kong", "macau",
+        "bangalore", "bengaluru", "mumbai", "delhi", "chennai", "hyderabad", "pune",
+        "london", "oxford", "cambridge", "manchester", "edinburgh", "glasgow",
+        "boston", "cambridge", "seattle", "austin", "york", "francisco", "angeles",
+        "chicago", "pittsburgh", "arbor", "urbana", "champaign", "diego", "atlanta",
+        "paris", "berlin", "munich", "zurich", "vienna", "rome", "milan", "turin",
+        "amsterdam", "eindhoven", "stockholm", "oslo", "helsinki", "copenhagen",
+        "toronto", "montreal", "vancouver", "ottawa", "sydney", "melbourne", "canberra",
+        "moscow", "tel", "aviv", "haifa", "istanbul", "cairo", "sao", "paulo",
+    }
+)
+
+
+def _looks_like_a_person(piece: str, title: str = "") -> bool:
     """一个片段像不像**人名**。
 
-    两条约束覆盖了实测里的两类误判，都是从真数据里抠出来的：
+    四条约束，每一条都对应真实数据里的一次误判：
 
     * **不许含数字** —— IEEE 那份商标页的 `New York, NY 10016-` 会被当成人名；
     * **不许超过 3 个词、不许是机构词** —— CXL 那份的版权声明
-      `Compute Express Link Consortium, Inc.` 有 4 个词且带 `Consortium`。
+      `Compute Express Link Consortium, Inc.` 有 4 个词且带 `Consortium`；
+    * **全都是地名就不是人名** —— 论文那篇的署名区块按逗号切开后是
+      `Osaka` / `Japan Tokyo` / `Japan Tokyo`…… 一串地名；
+    * **标题里出现过的不是人名** —— 白皮书封面那句
+      `…with Enhanced AI Capabilities, Advanced Precisions, High Efficiency`
+      被逗号切开后整段当成三个作者。
     """
     text = (piece or "").strip().strip("†‡*")
     if not (2 < len(text) < 60) or not text[:1].isupper():
@@ -494,7 +527,15 @@ def _looks_like_a_person(piece: str) -> bool:
     words = text.split()
     if not (1 <= len(words) <= 3):
         return False
-    return not any(word.strip(".,").lower() in _ORG_WORDS for word in words)
+    if any(word.strip(".,").lower() in _ORG_WORDS for word in words):
+        return False
+    # **任一个词**是地名就否掉（不是"全都要是"）：`Ann Arbor` 里只有 `Arbor` 是地名，
+    # 而 `Ann` 本身是常见名 —— 只看"全都是"就会把 Ann Arbor 当成人名。
+    # 代价是个别"名 + 地名"的组合会误杀（如 `York Smith`），在这个库里可以接受：
+    # 宁可作者留空等人来补，也不要写一个错的进去。
+    if any(word.strip(".,").lower() in _PLACES for word in words):
+        return False
+    return not (title and text.lower() in title.lower())
 
 
 # ------------------------------------------------------------------ 元数据推断
@@ -589,7 +630,14 @@ def infer(item: Item, *, head_text: str = "") -> dict[str, Any]:
     else:
         meta["title"] = _pretty(item.stem)
     if authors:
-        meta["authors"] = authors
+        # **逐个人名再筛一遍**，而且这次带着标题一起筛。
+        # 原先只筛了"整行像不像署名"，而取出来时是**整行按逗号切**的 —— 于是署名
+        # 区块里的机构行会被切成一串地名混进来。实测两条真实数据就是这么坏的：
+        #   论文那篇 → ["Osaka", "Japan Tokyo", "Japan Tokyo", …]（用户："作者怎么会
+        #   是 Osaka 和 Tokyo？"）；
+        #   白皮书那篇 → ["Capabilities", "Advanced Precisions", "High Efficiency"]，
+        #   那是封面副标题被逗号切开（用户："Capabilities, Advanced Precisions"）。
+        meta["authors"] = [name for name in authors if _looks_like_a_person(name, title=title)][:8]
     topics = [part for part in item.rel.split("/")[:-1] if part and not part.startswith(".")]
     if topics:
         meta["topics"] = topics[:4]

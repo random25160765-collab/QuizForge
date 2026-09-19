@@ -634,3 +634,62 @@ def test_safe_name_and_unique_in(root: Path):
     assert lib.unique_in(folder, "x.pdf").name == "x 2.pdf"
     (folder / "x 2.pdf").write_bytes(b"x")
     assert lib.unique_in(folder, "x.pdf").name == "x 3.pdf"
+
+
+def test_place_names_are_not_authors() -> None:
+    """署名区块里的**地名**不是作者。
+
+    这条是拿两条真实数据换的。论文那篇的首页署名区块按逗号切开之后是
+    `Osaka` / `Japan Tokyo` / `Japan Tokyo`…… 一串地名，全写进了作者
+    （用户的原话："作者怎么会是 Osaka 和 Tokyo？肯定你解析的时候搞错了！"）。
+
+    判据是"**这个词都算地名**"：所以 `Ann Arbor` 挡得住，`Ann Smith` 不会被误杀。
+    """
+    assert not lib._looks_like_a_person("Osaka")
+    assert not lib._looks_like_a_person("Japan")
+    assert not lib._looks_like_a_person("Japan                          Tokyo")
+    assert not lib._looks_like_a_person("New York")
+    assert not lib._looks_like_a_person("Ann Arbor")
+    assert not lib._looks_like_a_person("Tokyo, Japan")
+    # 真人不能一起被挡掉（含地名词的姓名、单个名字都要放过）
+    assert lib._looks_like_a_person("Ann Smith")
+    assert lib._looks_like_a_person("Yoshiaki Fukazawa")
+    assert lib._looks_like_a_person("Tri Dao")
+
+
+def test_title_fragments_are_not_authors() -> None:
+    """封面**副标题**被逗号切开之后不是作者。
+
+    `INTRODUCING AMD CDNA™ 4 ARCHITECTURE … with Enhanced AI Capabilities,
+    Advanced Precisions, High Efficiency` —— 逗号之后那三段被当成了三个作者。
+    """
+    title = (
+        "INTRODUCING AMD CDNA™ 4 ARCHITECTURE Breakthrough AI and HPC Acceleration "
+        "with Enhanced AI Capabilities, Advanced Precisions, High Efficiency"
+    )
+    assert not lib._looks_like_a_person("Capabilities", title=title)
+    assert not lib._looks_like_a_person("Advanced Precisions", title=title)
+    # 不在标题里的名字照样认（判据是"出现在标题里"，不是"标题像什么"）
+    assert lib._looks_like_a_person("Kiyoshi Honda", title=title)
+
+
+def test_infer_drops_place_names_from_a_real_signature_block(root: Path) -> None:
+    """整条链路：一份首页长这样，抽出来的作者里不许有地名。
+
+    光有单元测试不够 —— 真正写进元数据的那一步是"整行按逗号切"，
+    所以这条从 `infer` 走一遍。
+    """
+    # `_item(...)` 是"从磁盘上真扫一遍再挑出那一条"，所以文件得真在
+    (root / "swe").mkdir(parents=True, exist_ok=True)
+    (root / "swe" / "bugpred.pdf").write_bytes(b"%PDF-1.4 fake")
+    head = (
+        "An Empirical Study on Predicting Software Development Bugs\n"
+        "Using Dynamic Bayesian Networks\n"
+        "Kiyoshi Honda, Hironori Washizaki, Yoshiaki Fukazawa\n"
+        "Osaka, Japan                          Tokyo, Japan\n"
+    )
+    meta = lib.infer(_item(root, "swe/bugpred.pdf"), head_text=head)
+    assert "Osaka" not in meta.get("authors", [])
+    assert "Japan" not in " ".join(meta.get("authors", []))
+    # 真作者要留住（判据只该挡掉地名，不该把整行都丢掉）
+    assert "Kiyoshi Honda" in meta.get("authors", [])

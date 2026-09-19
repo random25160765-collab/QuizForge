@@ -148,7 +148,11 @@
             if (note.backlinks && note.backlinks.length) {
               meta.appendChild(h('span.panes__muted', { text: '被引 ' + note.backlinks.length + ' 处' }));
             }
-            body.appendChild(meta);
+            // 这里是 `doc`，不是 `body`：写成 `body` 是个**没声明过的变量**，
+            // 于是每读一篇笔记都当场抛 `body is not defined` —— 被下面的 catch 接住，
+            // 用户看到的永远是"读不到这篇笔记"，而接口其实好好的
+            // （用户报的原文就是这句："现在资源页面还是没法看笔记"）。
+            doc.appendChild(meta);
             // 正文交给共用的 Markdown 零件（与笔记页、对话里用的是同一份）
             doc.appendChild(h('div.md', null, QF.md.render(note.body || '')));
           })
@@ -209,7 +213,9 @@
               meta.appendChild(h('span.panes__chip', { text: topic }));
             });
             meta.appendChild(h('span.panes__chip', { text: item.citekey || opts.citekey }));
-            doc.appendChild(meta);
+            // 挂进 body（折叠里），不是 doc：不然它会跟标题分家，跑到「元数据与抽取的
+            // 正文」那行摘要**下面**去（折叠收起时也看得见一排孤零零的标签）
+            body.appendChild(meta);
             if (item.source) {
               body.appendChild(h('p.panes__muted', { text: '来源：' + item.source }));
             }
