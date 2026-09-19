@@ -58,9 +58,19 @@
     return document.body.dataset.side !== 'closed';
   }
 
-  function setSide(open) {
+  /** 窄屏下资源栏是**浮层抽屉**（app.css 的 1180px 断点：position fixed + z-index 70）。
+   *  这时候它是盖在内容上的，不是并排 —— 所以窄屏不能沿用"上次开着"的习惯。 */
+  function drawerMode() {
+    return window.innerWidth <= 1180;
+  }
+
+  function setSide(open, persist) {
     document.body.dataset.side = open ? 'open' : 'closed';
-    try { localStorage.setItem(SIDE_KEY, open ? '1' : '0'); } catch (e) { /* 无痕模式忽略 */ }
+    // 首屏那次**不写本机**：窄屏默认收起只是"这一屏该怎么摆"，
+    // 不该把大屏上的习惯一起改掉（不然回到宽窗口，资源栏就再也默认不开了）
+    if (persist !== false) {
+      try { localStorage.setItem(SIDE_KEY, open ? '1' : '0'); } catch (e) { /* 无痕模式忽略 */ }
+    }
     var btn = document.querySelector('#rail-nav .rail__btn[data-key="side"]');
     if (btn) {
       btn.classList.toggle('is-on', open);
@@ -96,7 +106,9 @@
   function bindSide() {
     var saved = null;
     try { saved = localStorage.getItem(SIDE_KEY); } catch (e) { /* 同上 */ }
-    setSide(saved !== '0');
+    // 窄屏一律先收起：抽屉默认开着就等于一进来拿 264px 盖住右边的内容
+    // （实测 1000px 宽时正好压在画布那两行字上，看着像"内容被裁了"）
+    setSide(!drawerMode() && saved !== '0', false);
 
     var box = document.getElementById('rail-nav');
     if (box && !box.dataset.sideBound) {
@@ -110,6 +122,16 @@
     }
     var fold = document.getElementById('side-fold');
     if (fold) fold.addEventListener('click', function () { setSide(false); });
+
+    // 拖窗口跨过断点（并排 <-> 抽屉）时重新摆一次：抽屉模式一进入就收起，
+    // 免得"并排时开着、缩窄后变成一块盖住内容的浮层"
+    var wasDrawer = drawerMode();
+    window.addEventListener('resize', function () {
+      var now = drawerMode();
+      if (now === wasDrawer) return;
+      wasDrawer = now;
+      setSide(false, false);
+    });
     document.addEventListener('keydown', function (ev) {
       if (!ev.altKey || ev.ctrlKey || ev.metaKey) return;
       if (ev.key === 'b' || ev.key === 'B') { ev.preventDefault(); setSide(!sideOpen()); }
