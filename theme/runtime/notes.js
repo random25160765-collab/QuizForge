@@ -33,7 +33,6 @@
     treebar: document.getElementById('notes-treebar'),
     main: document.getElementById('notes-main'),
     side: document.getElementById('notes-side'),
-    ribbon: document.getElementById('notes-ribbon'),
     vault: document.getElementById('notes-vault'),
     collapse: document.getElementById('notes-collapse')
   };
@@ -152,7 +151,6 @@
     }
     rootEl.setAttribute('data-side', state.side);
     applyTypography();
-    renderRibbon();
     bind();
     loadLibs();
   }
@@ -688,7 +686,11 @@
   }
 
   function toggleSide(to) {
-    state.side = to || (state.side === 'open' ? 'closed' : 'open');
+    // 只认 `'open'` / `'closed'` 两个明确的词；其余一律当"切换"。
+    // 踩过：这个函数被直接当 onClick 处理器用（`onClick: toggleSide`），
+    // 于是 `to` 是**事件对象**，`data-side` 被写成 `[object PointerEvent]` ——
+    // 侧栏开关从此点不动（栅格匹配不到任何一条规则）。
+    state.side = to === 'open' || to === 'closed' ? to : (state.side === 'open' ? 'closed' : 'open');
     rootEl.setAttribute('data-side', state.side);
     try {
       window.localStorage.setItem('qf.notes.side', state.side);
@@ -2579,7 +2581,6 @@
 
   function renderSide() {
     ui.clear(el.side);
-    renderRibbon();
     if (!state.note) {
       // 没打开笔记时也把它填满：一条空栏比一句说明更让人以为坏了
       el.side.appendChild(
@@ -2937,48 +2938,6 @@
         }
       })
       .catch(fail);
-  }
-
-  /** 图标栏（最左边那一条）：点一个切到那个面板，再点一下收起侧栏。 */
-  function renderRibbon() {
-    ui.clear(el.ribbon);
-    [
-      ['outline', 'outline', '大纲'],
-      ['links', 'links', '连接 · 反链与出链'],
-      ['props', 'props', '属性与排版'],
-      ['history', 'history', '改动历史与版本'],
-      ['tags', 'props', '标签'],
-      ['tidy', 'tidy', '整理：让模型建议标签与双链（逐条接受）']
-    ].forEach(function (row) {
-      var on = state.side === 'open' && state.panel === row[0];
-      el.ribbon.appendChild(
-        h('button.nribbon__btn' + (on ? '.is-on' : ''), {
-          type: 'button',
-          html: ICONS[row[1]],
-          title: row[2],
-          onClick: function () {
-            if (on) {
-              toggleSide('closed');
-              return;
-            }
-            state.panel = row[0];
-            if (state.side !== 'open') toggleSide('open');
-            else renderSide();
-          }
-        })
-      );
-    });
-    el.ribbon.appendChild(h('div.nribbon__sp'));
-    el.ribbon.appendChild(
-      h('button.nribbon__btn', {
-        type: 'button',
-        html: ICONS.side,
-        title: state.side === 'open' ? '收起右侧栏' : '展开右侧栏',
-        onClick: function () {
-          toggleSide();
-        }
-      })
-    );
   }
 
   /** 点侧栏大纲 → 切到编辑态并把光标放到那一行（不猜滚动位置，直接定位）。 */

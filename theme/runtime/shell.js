@@ -36,6 +36,10 @@
     // 题库图谱归练习中心：它不是一个独立去处，而是"练什么"的一部分。
     // 带 href 的项渲染成链接（图谱有自己的页面），其余三项是原地切视图。
     { view: 'graph', label: '图谱', icon: 'target', href: 'graph.html' },
+    // 错题本是一个独立页面（不是刷题页内部的一个视图），所以带 href 渲染成链接，
+    // 与"图谱"同一套。它属于练习中心 —— 用户说"这个错题本应该在练习中心而不是
+    // 出现在（活动栏）这里"。
+    { view: 'wrongbook', label: '错题本', icon: 'flag', href: 'wrongbook.html' },
   ];
 
   /* ------------------------------------------------------------ 活动栏 */
@@ -49,7 +53,7 @@
     { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
     { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
     { href: 'notes.html', label: '笔记', icon: 'list', page: 'notes' },
-    { href: 'wrongbook.html', label: '错题本', icon: 'flag', page: 'wrongbook' },
+    // 错题本**不在这儿**：它是"练什么"的一部分，入口归练习中心（见 NAV 最后一项）
   ];
 
   var SIDE_KEY = 'qf.side.open';
@@ -120,9 +124,6 @@
         setSide(!sideOpen());
       });
     }
-    var fold = document.getElementById('side-fold');
-    if (fold) fold.addEventListener('click', function () { setSide(false); });
-
     // 拖窗口跨过断点（并排 <-> 抽屉）时重新摆一次：抽屉模式一进入就收起，
     // 免得"并排时开着、缩窄后变成一块盖住内容的浮层"
     var wasDrawer = drawerMode();
