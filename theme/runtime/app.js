@@ -328,32 +328,9 @@
 
     page.appendChild(todayStrip(stats, overview));
 
-    page.appendChild(
-      h(
-        'div.modegrid',
-        null,
-        modecard('play', '练习', {
-          meta: ['未练过', overview.untouched + ' 题', '待复习', overview.dueToday + ' 题'],
-          onClick: function () {
-            go('practice');
-          },
-        }),
-        modecard('list', '组卷', {
-          variant: 'paper',
-          meta: ['题库', stats.total + ' 题'],
-          onClick: function () {
-            go('paper');
-          },
-        }),
-        modecard('refresh', '复习', {
-          variant: 'review',
-          meta: ['今日到期', overview.dueToday + ' 题', '在学', overview.learning + ' 题'],
-          onClick: function () {
-            go('review');
-          },
-        })
-      )
-    );
+    // 原先这儿还有三张卡（练习 / 组卷 / 复习）—— 与顶栏那排是同一件事的两种画法，
+    // 用户的原话是"根本没必要，因为顶部已经有一组完全相同的按钮了"。删掉。
+    // 这一页留下的价值是**看**：今日数字、热力图、主题掌握度，它们都在统计里。
 
     page.appendChild(h('div.section__title', null, h('span', { text: '刷题记录' }), h('span', { class: 'section__note', text: '最近 18 周' })));
     // 按主题筛选热力图（GitHub 的贡献图也能按仓库筛）

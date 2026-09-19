@@ -68,8 +68,8 @@
     </button>
   </nav>
 
-  <!-- 资源栏：一棵大树，三个根（对话 / 资料 / 文档）＋ 文档图谱。
-       可整体收起（body[data-side] 控制宽度，见 pane.css 的外壳一节）。 -->
+  <!-- 资源栏：一棵大树，三个根（对话 / 资料 / 笔记）＋ 笔记图谱。
+       可整体收起（body[data-side] 控制宽度，见 app.css 的外壳一节；开关在活动栏那颗）。 -->
   <aside class="side" aria-label="资源">
     <div class="side__head">
       <!-- 品牌放在资源栏顶上（参考图里的 VS Code 也是这样）：
@@ -84,17 +84,12 @@
         </span>
       </a>
       <span class="side__title" id="side-title">资源</span>
-      <button class="side__fold" id="side-fold" type="button" title="收起资源栏（Alt+B）" aria-label="收起资源栏">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14.5 6 8.5 12l6 6"></path>
-        </svg>
-      </button>
+      <!-- 这里原先还有一个「收起资源栏」的箭头 —— 活动栏里那颗 `side` 按钮做的就是
+           同一件事，两处并存容易让人以为它们收的不是同一样东西。用户说"只留左边"，删掉。 -->
     </div>
     <div class="side__body" id="side-body">
-      <!-- 资源树由 sidetree.js 填（对话 / 资料 / 文档 三个根 + 文档图谱）。
-           还没接上之前，先放一句说明 —— 空面板看着像坏了。 -->
-      <p class="side__hint">资源树正在接：对话 / 资料 / 文档三个根，加文档图谱。</p>
+      <!-- 资源树由 sidetree.js 填（对话 / 资料 / 笔记 三个根 + 笔记图谱）。
+           还没接上之前先不说空话 —— 树是懒加载的，空面板只在一瞬间。 -->
     </div>
   </aside>
 

@@ -84,7 +84,8 @@
      三者以前各写各的 padding（28px vs 30px）且顶栏还是通栏，
      导致 logo 与内容卡片的左边框错开 77px。抽成变量后不可能再跑偏。 */
   --shell-max: 1280px;
-  --shell-pad: clamp(14px, 3vw, 30px);
+  /* 左右内距：原先最宽到 30px，宽屏上顶栏与内容各留一条宽边（用户圈着说"留白不要有"） */
+  --shell-pad: clamp(12px, 1.6vw, 16px);
   /* 通栏元素（状态栏）要让内部内容对齐内容列时，需要的左右内边距 */
   --shell-gutter: max(var(--shell-pad), calc((100% - var(--shell-max)) / 2 + var(--shell-pad)));
 }
@@ -207,8 +208,11 @@ svg { display: block; }
   align-items: center;
   gap: 18px;
   height: var(--topbar-h);
-  max-width: var(--shell-max);
-  margin: 0 auto;
+  /* 通栏、**不居中**：`.view` 在应用外壳里是左对齐的（见下面 `.stage > .view`），
+     顶栏要是居中，两者在宽窗口下会错开一大截
+     （实测 2200px 宽：导航在 x=645、内容在 x=340 —— 中间那 305px 就是那条空白）。 */
+  max-width: none;
+  margin: 0;
   padding: 0 var(--shell-pad);
 }
 .topbar-progress {
@@ -308,7 +312,8 @@ svg { display: block; }
 .view {
   max-width: var(--shell-max);
   margin: 0 auto;
-  padding: clamp(18px, 3vw, 34px) var(--shell-pad) 40px;
+  /* 顶部间距收紧（用户："上面的这个间距收紧一点"） */
+  padding: clamp(12px, 2vw, 20px) var(--shell-pad) 40px;
   min-height: calc(100vh - var(--topbar-h));
 }
 /* 底部出现状态栏时，给内容让出它占的高度 */
@@ -1961,3 +1966,126 @@ body[data-side='closed'] .side > * { display: none; }
   gap: 8px;
   margin-bottom: 10px;
 }
+
+/* ===========================================================================
+ * 资源栏那棵树（全站共享）
+ *
+ * 为什么放在这儿而不是 pane.css：左栏是**每个页面都有**的，而 pane.css 只在
+ * 工作台加载 —— 放那儿的话，练习中心 / 对话 / 笔记几页的左栏树是"裸"的
+ * （行变块级、字号回退到 15px、名字不省略、缩进全丢）。实测对比过两种页面的
+ * 计算样式才定位到，所以这一块归到全站都加载的 app.css。
+ * ========================================================================= */
+
+.stree { padding: 2px 0 6px; }
+
+.stree__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 8px 2px 0;
+  color: var(--fg2);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.stree__row:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+
+.stree__row.is-dim { color: var(--fg3); }
+
+.stree__caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--fg3);
+  transition: transform var(--dur, 160ms) var(--ease, ease-out);
+}
+
+.stree__caret--none { width: 14px; }
+
+.stree__icon { display: inline-flex; flex: none; color: var(--fg3); }
+
+/* 图标位：留出宽度但不画东西（目录行用，好让名字和带图标的兄弟行对齐） */
+.stree__icon--slot { width: 13px; }
+
+.stree__label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stree__row--head .stree__label { font-weight: 500; color: var(--fg); }
+
+.stree__count { flex: none; font-size: 11px; color: var(--fg3); }
+
+.stree__body { min-width: 0; }
+
+.stree__hint {
+  margin: 2px 12px 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--fg3);
+}
+
+/* 目录行上的「＋」：平时不出现，悬停才亮（目录行常驻一个按钮会让整棵树变吵） */
+.stree__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg3);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity var(--dur, 160ms) var(--ease, ease-out);
+}
+
+.stree__row:hover .stree__more { opacity: 1; }
+
+.stree__more:hover { background: var(--bg3); color: var(--fg); }
+
+/* 拖着一个条目悬在某个目录上：给明确回应 */
+.stree__row.is-drop {
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pri) 50%, transparent);
+}
+
+/* 目录行上那个小菜单（新建文件夹 / 新建笔记） */
+.stree__menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 136px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+  box-shadow: var(--shadow-2);
+}
+
+.stree__menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stree__menu-item:hover { background: var(--bg3); }

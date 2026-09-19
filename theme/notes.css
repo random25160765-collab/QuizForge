@@ -19,8 +19,10 @@ body[data-page='notes'] .view {
 
 .notes {
   display: grid;
-  /* 图标栏 / 文件面板 / 正文 / 侧栏 —— 与 Obsidian 同一套骨架 */
-  grid-template-columns: 46px 252px minmax(0, 1fr) 304px;
+  /* 文件面板 / 正文 / 侧栏 —— 与 Obsidian 同一套骨架。
+     原先最前面还有一条 46px 的图标栏，可外壳的活动栏也是 46px，两条并排；
+     面板切换在右侧栏那排带字的页签里就够了，那条栏已删。 */
+  grid-template-columns: 252px minmax(0, 1fr) 304px;
   height: calc(100vh - var(--topbar-h, 58px));
   min-height: 0;
   background: var(--bg);
@@ -28,7 +30,7 @@ body[data-page='notes'] .view {
 }
 
 .notes[data-side='closed'] {
-  grid-template-columns: 46px 252px minmax(0, 1fr) 0;
+  grid-template-columns: 252px minmax(0, 1fr) 0;
 }
 
 .notes[data-side='closed'] .nside {
@@ -42,47 +44,8 @@ body[data-page='notes'] .view {
  * 密度按"一天要在这里读几百行"来定：行高 26，字号 12.5，留白靠间距不靠边框。
  */
 
-.nribbon {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  padding: 8px 0;
-  background: var(--bg2);
-  border-right: 1px solid var(--line);
-}
-
-.nribbon__btn {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  color: var(--fg3);
-  background: none;
-  border: 0;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-
-.nribbon__btn:hover {
-  color: var(--fg);
-  background: var(--bg3);
-}
-
-.nribbon__btn.is-on {
-  color: var(--pri);
-  background: color-mix(in srgb, var(--pri) 12%, transparent);
-}
-
-.nribbon__btn svg {
-  width: 17px;
-  height: 17px;
-}
-
-.nribbon__sp {
-  flex: 1;
-}
+/* 这里原先有一族 `.nribbon*`（笔记页自己那条 46px 图标栏）。
+   它与外壳的活动栏并排成两条，面板切换在右侧栏的页签里已有 —— 整族已删。 */
 
 .nicon {
   display: grid;
