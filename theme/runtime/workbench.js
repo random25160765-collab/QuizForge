@@ -148,7 +148,7 @@
             if (note.backlinks && note.backlinks.length) {
               meta.appendChild(h('span.panes__muted', { text: '被引 ' + note.backlinks.length + ' 处' }));
             }
-            doc.appendChild(meta);
+            body.appendChild(meta);
             // 正文交给共用的 Markdown 零件（与笔记页、对话里用的是同一份）
             doc.appendChild(h('div.md', null, QF.md.render(note.body || '')));
           })
@@ -176,7 +176,19 @@
           doc.appendChild(h('p.panes__muted', { text: '没给引用键' }));
           return;
         }
-        doc.appendChild(h('p.panes__muted', { text: '正在读 ' + opts.citekey + '…' }));
+        // **原件在最上面**：这一格是"看这份资料"的地方，正文只是它的抽取物。
+        // 原先只给抽取的正文（前 4000 字），想看 PDF 还得回资料页 —— 用户的原话是
+        // "在资源页面无法查看资料"。查看器与资料页共用（docview.js）。
+        var fileBox = h('div.panes__docfile');
+        doc.appendChild(fileBox);
+        QF.docview.render(fileBox, { citekey: opts.citekey, index: -1 }, { head: false });
+
+        // 元数据与抽取的正文收在下面（默认折起：要先看到资料本身）
+        var fold = h('details.panes__docinfo', null, h('summary', { text: '元数据与抽取的正文' }));
+        var body = h('div.panes__docbody');
+        fold.appendChild(body);
+        doc.appendChild(fold);
+        body.appendChild(h('p.panes__muted', { text: '正在读 ' + opts.citekey + '…' }));
         api.get('/library/item?citekey=' + encodeURIComponent(opts.citekey) + '&text=4000')
           .then(function (data) {
             // 接口返回的是**摊平的字典**：brief() 的字段 + bibtex / citedBy / assets / files，
@@ -185,8 +197,8 @@
             var item = (data && data.item) || data || {};
             var info = (data && data.text) || {};
             var text = info.head || '';
-            ui.clear(doc);
-            doc.appendChild(h('h1', { text: item.title || opts.citekey }));
+            ui.clear(body);
+            body.appendChild(h('h2.panes__doctitle', { text: item.title || opts.citekey }));
             var meta = h('div.panes__meta');
             if (item.authors && item.authors.length) {
               meta.appendChild(h('span.panes__muted', { text: item.authors.join('、') }));
@@ -199,31 +211,31 @@
             meta.appendChild(h('span.panes__chip', { text: item.citekey || opts.citekey }));
             doc.appendChild(meta);
             if (item.source) {
-              doc.appendChild(h('p.panes__muted', { text: '来源：' + item.source }));
+              body.appendChild(h('p.panes__muted', { text: '来源：' + item.source }));
             }
             if (item.files && item.files.length > 1) {
-              doc.appendChild(h('p.panes__muted', {
+              body.appendChild(h('p.panes__muted', {
                 text: '这条还带 ' + (item.files.length - 1) + ' 个附属资源',
               }));
             }
             if (item.citedBy && item.citedBy.length) {
-              doc.appendChild(h('p.panes__muted', {
+              body.appendChild(h('p.panes__muted', {
                 text: '被这些笔记引用：' + item.citedBy.map(function (one) { return one.title || one.path; }).join('、'),
               }));
             }
             if (text) {
               var label = { pdf: 'PDF 抽取', md: '原文', html: '网页抽取' }[info.state] || info.state || '';
-              doc.appendChild(h('p.panes__muted', {
+              body.appendChild(h('p.panes__muted', {
                 text: '正文 ' + (info.chars || text.length) + ' 字' + (label ? ' · ' + label : ''),
               }));
-              doc.appendChild(h('div.md', null, QF.md.render(text)));
+              body.appendChild(h('div.md', null, QF.md.render(text)));
             } else {
-              doc.appendChild(h('p.panes__muted', { text: '还没有抽取到正文（资料页里点"建索引"就会缓存一份）' }));
+              body.appendChild(h('p.panes__muted', { text: '还没有抽取到正文（资料页里点"建索引"就会缓存一份）' }));
             }
           })
           .catch(function (err) {
-            ui.clear(doc);
-            doc.appendChild(h('p.panes__muted', {
+            ui.clear(body);
+            body.appendChild(h('p.panes__muted', {
               text: '读不到这份资料：' + ((err && err.message) || err),
             }));
           });
