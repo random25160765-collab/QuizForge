@@ -48,7 +48,7 @@
       hint: '练习 · 组卷 · 复习 · 图谱' },
     { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
     { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
-    { href: 'notes.html', label: '文档', icon: 'list', page: 'notes' },
+    { href: 'notes.html', label: '笔记', icon: 'list', page: 'notes' },
     { href: 'wrongbook.html', label: '错题本', icon: 'flag', page: 'wrongbook' },
   ];
 
@@ -377,6 +377,8 @@
       h('div.statline', null, h('span', { text: '本地数据体积' }), h('b', { text: ui.fmtBytes(stats.storageBytes) })),
       h('div.statline', null, h('span', { text: '存储状态' }), h('b', { text: store.available ? 'localStorage 可用' : '不可用（内存模式，刷新会丢失）' })),
       h('div.statline', null, h('span', { text: '题库生成时间' }), h('b', { text: (D && D.generatedAt) || '未知' })),
+      // 构建戳：`make web` 之后数字就该变，拿来一眼核对"我看的是不是最新那份"
+      h('div.statline', null, h('span', { text: '前端构建戳' }), h('b', { text: myBuild() || '未知' })),
       h('div.btnrow', { style: { marginTop: '12px' } },
         h('button.btn', {
           type: 'button',
@@ -484,6 +486,7 @@
       bindTheme();
       bindSettings();
       bindSide();
+      watchBuild();
       // 工具挂载开关现在长在活动栏里，所以由外壳拉起（原来只有对话页调它）
       if (QF.mounts && QF.mounts.load) QF.mounts.load();
     }
@@ -521,6 +524,42 @@
     return settingsPull;
   }
 
-  QF.shell = { mount: mount, pullSettings: pullSettings };
+  /* ------------------------------------------------- 跟上新构建（开发纪律） */
+
+  /* 改了 `theme/` 要 `make web`，产物换了，可**已经打开的那一页不会自己知道** ——
+     用户看到的还是旧的，还以为没改。这事真发生过，所以让页面自己盯着：
+     每几秒问一次轻接口 `/api/build`，发现"我这一页"的指纹变了就自己刷新。 */
+  var BUILD_POLL_MS = 3000;
+
+  /** 这一页是从哪一次构建来的（构建时写在 head 里的 meta，见 tools/build_web.py） */
+  function myBuild() {
+    var meta = document.querySelector('meta[name="qf-build"]');
+    return meta ? meta.getAttribute('content') || '' : '';
+  }
+
+  /** 正在编辑就先不刷 —— 把用户正在写的东西冲掉，比"晚几秒更新"糟得多 */
+  function busyEditing() {
+    var el = document.activeElement;
+    if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return true;
+    var modal = document.getElementById('modal-root');
+    return !!(modal && modal.childElementCount);
+  }
+
+  function watchBuild() {
+    var mine = myBuild();
+    // 没有这个 meta（很老的产物）就什么都不做：不拿猜出来的东西当成依据
+    if (!mine || watchBuild.timer) return;
+    watchBuild.timer = setInterval(function () {
+      if (document.visibilityState !== 'visible') return;
+      api.get('/build').then(function (info) {
+        var page = (QF.config && QF.config.page) || '';
+        var theirs = ((info && info.pageStamps) || {})[page] || '';
+        if (!theirs || theirs === mine || busyEditing()) return;
+        location.reload();
+      }).catch(function () { /* 服务没在跑：下一轮再说 */ });
+    }, BUILD_POLL_MS);
+  }
+
+  QF.shell = { mount: mount, pullSettings: pullSettings, build: myBuild, watchBuild: watchBuild };
   QF.settings = { open: openSettings };
 })();

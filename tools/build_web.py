@@ -326,6 +326,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     hljs_js_url = _asset("hljs.min.js", _digest(hljs_out)) if hljs_ready else ""
     runtime_url = {name: _asset(f"runtime/{name}", _digest(runtime_out / name)) for name in scripts_to_copy}
 
+    page_stamps: dict[str, str] = {}
     for page, page_js in PAGE_JS.items():
         links = [
             f'<link rel="stylesheet" href="{katex_css_url}">',
@@ -356,6 +357,13 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
                 "body": _read(PAGES_DIR / PAGE_BODY[page]),
             },
         )
+        # 「我看到的这一版是哪一版」：把**这一页渲染出来的内容**的指纹写进 head，
+        # 前端拿它跟服务端 `build.json` 里的值对 —— 不一样就说明产物换了，自己刷新。
+        # 指纹取的是注入**之前**的内容：注进去的那 12 个字符不该参与自我指涉。
+        page_digest = hashlib.sha256(html.encode("utf-8")).hexdigest()[:12]
+        assert "</head>" in html, "shell 模板里没有 </head>，注入点没了"
+        html = html.replace("</head>", f'<meta name="qf-build" content="{page_digest}">\n</head>', 1)
+        page_stamps[page] = page_digest
         (out_dir / f"{page}.html").write_text(html, encoding="utf-8")
         pages_written.append(page)
 
@@ -397,6 +405,8 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
                 **build_stamp,
                 "builtAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "pages": pages_written,
+                # 每一页各自的指纹：前端轮询 `/api/build` 比它，判断自己是不是旧的那一份
+                "pageStamps": page_stamps,
                 "withPyodide": bool(pyodide_count),
             },
             ensure_ascii=False,

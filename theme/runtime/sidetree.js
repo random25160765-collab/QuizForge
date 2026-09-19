@@ -1,4 +1,4 @@
-/* sidetree.js —— 资源树：一棵大树，三个根（对话 / 资料 / 文档），加一个文档图谱位。
+/* sidetree.js —— 资源树：一棵大树，三个根（对话 / 资料 / 笔记），加一个笔记图谱位。
  *
  * 用户的原话是"所有的资源全部在左边被收起来，在右边的画布随意组合"，所以这一块的
  * 职责只有两件：**列出来**，以及**把东西送进右边**。送的方式两种 ——
@@ -7,7 +7,7 @@
  * 在别的页面（练习中心、错题本……）点树上的东西时，先把"要开什么"记在本机，
  * 再跳去工作台 —— 用户的心智是"我要看这个"，不该因为当前在哪一页而失效。
  *
- * 懒加载：文档库有 1113 篇，展开哪个库才读哪个库的树。
+ * 懒加载：笔记库有 1113 篇，展开哪个库才读哪个库的树。
  */
 (function () {
   var ui = QF.ui;
@@ -191,7 +191,7 @@
 
   /** 资料按**目录**分层。
    *  条目自己带着相对路径（`cuda/layout_algebra.pdf`），拿它当文件夹用即可 ——
-   *  原先 70 多条平铺成一坨，只能靠滚，和「文档」那边的形状也不一致。 */
+   *  原先 70 多条平铺成一坨，只能靠滚，和「笔记」那边的形状也不一致。 */
   function paintItems(box) {
     return api.get('/library/items?limit=600').then(function (res) {
       var list = (res && res.items) || [];
@@ -323,16 +323,16 @@
     }));
     box.appendChild(group(0, {
       key: 'root:notes',
-      label: '文档',
+      label: '笔记',
       icon: 'list',
       load: paintVaults,
     }));
-    // 文档图谱：一间库一张图（笔记为节点、双链为边）。
+    // 笔记图谱：一间库一张图（笔记为节点、双链为边）。
     // 入口留在左栏（用户的原话"文档站的知识图谱就放左栏"），图本身开在右边窗格里 ——
     // 左栏只有 240px 宽，真画起来没法看。
     box.appendChild(group(0, {
       key: 'root:notegraph',
-      label: '文档图谱',
+      label: '笔记图谱',
       icon: 'target',
       load: function (body) {
         return api.get('/notes/stats').then(function (data) {
