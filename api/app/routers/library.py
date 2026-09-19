@@ -151,6 +151,41 @@ def edit_roots(body: dict, user: CurrentUser, db: DbSession) -> dict:
     return {"roots": [str(path) for path in current], "added": action == "add"}
 
 
+def _root_of(roots: list[Path], target: Path) -> Path:
+    """这个绝对路径属于哪个资料根。**不属于任何一个就拒绝** —— 写操作只能落在根里。"""
+    resolved = Path(target).expanduser().resolve()
+    for root in roots:
+        base = Path(root).expanduser().resolve()
+        if resolved == base or base in resolved.parents:
+            return Path(root)
+    raise HTTPException(status_code=400, detail=f"这个位置不在资料根里：{target}")
+
+
+@router.post("/mkdir")
+def mkdir(body: dict, user: CurrentUser, db: DbSession) -> dict:
+    """新建文件夹。在**用户的真实目录**里真的建一个 —— 组织树就是磁盘上的目录树。"""
+    dir_path = str(body.get("dir") or "").strip()
+    if not dir_path:
+        raise HTTPException(status_code=400, detail="得给一个目录")
+    roots = roots_for(_settings_row(db, user.id))
+    root = _root_of(roots, Path(dir_path))
+    return {"dir": _run(lib.mkdir, root, dir_path)}
+
+
+@router.post("/move")
+def move(body: dict, user: CurrentUser, db: DbSession) -> dict:
+    """把条目挪进另一个目录（左栏树上拖拽就是这个）。**真的移动文件**。"""
+    path = str(body.get("path") or "").strip()
+    to_dir = str(body.get("to") or "").strip()
+    if not path or not to_dir:
+        raise HTTPException(status_code=400, detail="得给 path 与 to")
+    roots = roots_for(_settings_row(db, user.id))
+    root = _root_of(roots, Path(path))
+    # 目标也要在同一根内，否则就是把文件挪出资料库
+    _root_of(roots, Path(to_dir))
+    return {"rel": _run(lib.move, root, path, to_dir)}
+
+
 @router.get("/items")
 def items(user: CurrentUser, db: DbSession, q: str = "", limit: int = 200) -> dict:
     """条目列表。带 `q` 时走**与笔记同一套表达式**检索。"""

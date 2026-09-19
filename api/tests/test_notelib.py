@@ -279,3 +279,42 @@ def test_canvas_is_a_first_class_entry_and_counts_its_cards(lib: notelib.Library
     assert note["linked"] == ["A.md"]
     # 画布指向某篇笔记 → 那篇笔记的反链里应当出现画布（最容易被漏掉的一种引用）
     assert any(item["path"] == "图.canvas" for item in notelib.read_note(lib, "A.md")["backlinks"])
+
+
+# ------------------------------------------------------------------ 目录与搬家（真的动磁盘）
+
+
+def test_folder_of_accepts_both_forms(lib: notelib.Library):
+    """目标目录两种写法都得认：树上目录节点带的是**库名打头**的 `path`。
+
+    这条是踩出来的 —— 把 `Math/Complex Analysis` 直接当库内相对路径用，
+    会在库里真的建出 `Math/Complex Analysis/…`（`data/notes/Math/Math/…`）。
+    """
+    assert notelib.folder_of(lib, "Complex Analysis") == "Complex Analysis"
+    assert notelib.folder_of(lib, "T/Complex Analysis") == "Complex Analysis"
+    assert notelib.folder_of(lib, "T") == ""
+    assert notelib.folder_of(lib, "/T/子/孙/") == "子/孙"
+    assert notelib.folder_of(lib, "") == ""
+
+
+def test_mkdir_and_move_land_where_they_say(lib: notelib.Library):
+    """新建 = 真的 mkdir，搬家 = 真的 move，位置与说的**一致**（不多出一层库名）。"""
+    assert notelib.mkdir(lib, "素材")["path"] == "素材"
+    assert (lib.root / "素材").is_dir()
+
+    notelib.mkdir(lib, "T/素材/子")            # 带库名的写法也不该建出 `T/`
+    assert (lib.root / "素材" / "子").is_dir()
+    assert not (lib.root / "T").exists()
+
+    notelib.move_note(lib, "A.md", "T/素材")
+    assert (lib.root / "素材" / "A.md").is_file()
+    assert not (lib.root / "T").exists()
+
+
+def test_mkdir_moves_refuse_what_would_bite(lib: notelib.Library):
+    """越界与重名都得拦住 —— 这是用户的真实文件夹，静默出错代价很大。"""
+    with pytest.raises(notelib.NoteError):
+        notelib.mkdir(lib, "../跑出去")
+    notelib.mkdir(lib, "已有")
+    with pytest.raises(notelib.NoteError):
+        notelib.mkdir(lib, "已有")

@@ -144,6 +144,13 @@ def create(body: dict) -> dict:
     return _run(notelib.create_note, lib, _text(body, "folder"), _text(body, "title"), kind=kind)
 
 
+@router.post("/folder")
+def folder(body: dict) -> dict:
+    """新建一个目录（树上的"新建文件夹"）。真的 mkdir —— 组织树就是磁盘上的目录树。"""
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.mkdir, lib, _text(body, "folder"))
+
+
 @router.post("/rename")
 def rename(body: dict) -> dict:
     """改名，并**把引用它的地方一起改**（旧编辑器 `alwaysUpdateLinks` 那条）。"""

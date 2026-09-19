@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -262,6 +263,57 @@ class Entry:
 
 
 # ------------------------------------------------------------------ 扫描
+
+
+def within(root: Path, target: Path) -> Path:
+    """把绝对路径钉在根内 —— 这是**用户的真实文件夹**，写操作必须挡住越界。
+
+    与 `notelib.safe_path` 同一个讲究：路径来自 HTTP，`..` 或绝对路径都能构造出
+    根外面的位置，一个手滑就动了别处的文件。
+    """
+    resolved = Path(target).expanduser().resolve()
+    base = Path(root).expanduser().resolve()
+    if resolved != base and base not in resolved.parents:
+        raise LibraryError(f"这个位置不在资料根里：{target}")
+    return resolved
+
+
+def mkdir(root: Path, dir_path: str) -> str:
+    """在根下新建一个目录 —— **真的 mkdir**。
+
+    组织树画的就是磁盘上的目录树，所以"新建文件夹"这件事没有中间层：
+    建完它就是用户文件夹里真实存在的目录（用别的文件管理器也看得见）。
+    """
+    base = Path(root).expanduser().resolve()
+    target = within(root, Path(dir_path))
+    if target.exists():
+        raise LibraryError(f"已经有了：{target.name}")
+    target.mkdir(parents=True)
+    return target.relative_to(base).as_posix()
+
+
+def move(root: Path, path: str, to_dir: str) -> str:
+    """把一个文件（或目录）挪进另一个目录 —— **真的 move**。
+
+    拒绝三件事，都是真会咬人的：挪到根外、把目录挪进它自己里面、目标位置已存在同名。
+    同名不覆盖：这一层的文件是用户的，静默覆盖等于替他删东西。
+    """
+    base = Path(root).expanduser().resolve()
+    src = within(root, Path(path))
+    if not src.exists():
+        raise LibraryError(f"找不到：{path}")
+    dst_dir = within(root, Path(to_dir))
+    if not dst_dir.is_dir():
+        raise LibraryError(f"这儿不是目录：{to_dir}")
+    if dst_dir == src.parent:
+        return src.relative_to(base).as_posix()
+    if src.is_dir() and (dst_dir == src or src in dst_dir.parents):
+        raise LibraryError("不能把一个目录挪进它自己里面")
+    dst = dst_dir / src.name
+    if dst.exists():
+        raise LibraryError(f"目标位置已经有同名的：{src.name}")
+    shutil.move(str(src), str(dst))
+    return dst.relative_to(base).as_posix()
 
 
 def walk(root: Path) -> list[Path]:
