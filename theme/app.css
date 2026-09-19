@@ -1327,6 +1327,10 @@ kbd {
 .form__section + .form__section { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
 .form__sectiontitle { font-size: 12.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg3); margin-bottom: 14px; }
 .form__note { font-size: 12px; color: var(--fg3); line-height: 1.65; }
+/* 弹层里的一个字段：标签 + 输入 + 说明 */
+.form__field { display: flex; flex-direction: column; gap: 6px; }
+.form__field .input { width: 100%; }
+.form__hint { margin: 0; font-size: 12px; line-height: 1.65; color: var(--fg3); }
 .form__note code { font-family: var(--font-mono); color: var(--pri); }
 
 .switchrow { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 9px 0; }

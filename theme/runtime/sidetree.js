@@ -566,10 +566,60 @@
     });
   }
 
+  /** 把一个**真实文件夹**挂成笔记库 —— 之后在树上新建 / 改名 / 搬家都落在它里面。 */
+  function addVault() {
+    var input = h('input.input', {
+      type: 'text',
+      placeholder: '文件夹的完整路径，例如 F:\\Vaults\\Math',
+    });
+    var box = ui.modal({
+      title: '添加笔记库',
+      body: h(
+        'div.form__field',
+        null,
+        input,
+        h('p.form__hint', {
+          text: '这个目录会被当成一个笔记库：在树上新建、改名、搬家都直接落在它里面。只写进库清单，不动其中已有的文件。',
+        })
+      ),
+      actions: [
+        { label: '取消', kind: 'ghost' },
+        {
+          label: '添加',
+          kind: 'primary',
+          onClick: function () {
+            var value = input.value.trim();
+            if (!value) return false;                       // 没填就别关
+            api.post('/notes/roots', { action: 'add', path: value })
+              .then(function () {
+                ui.toast('挂上了：' + value);
+                paint();
+              })
+              .catch(function (err) { toastErr('没挂上', err); });
+            return true;
+          },
+        },
+      ],
+    });
+    setTimeout(function () { input.focus(); }, 30);
+    return box;
+  }
+
+  function removeVault(lib) {
+    ui.confirmDialog(
+      '把「' + lib.name + '」从库清单里去掉？',
+      { okLabel: '去掉', danger: true, title: '从清单去掉（不动文件）' }
+    ).then(function (ok) {
+      if (!ok) return;
+      api.post('/notes/roots', { action: 'remove', path: lib.root })
+        .then(function () { ui.toast('去掉了：' + lib.name); paint(); })
+        .catch(function (err) { toastErr('没去掉', err); });
+    });
+  }
+
   function paintVaults(box) {
-    api.get('/notes/stats').then(function (data) {
+    return api.get('/notes/stats').then(function (data) {
       var libs = (data && data.libraries) || [];
-      if (!libs.length) { err(box, '还没有笔记库'); return; }
       libs.forEach(function (lib) {
         box.appendChild(group(1, {
           key: 'vault:' + lib.name,
@@ -577,11 +627,29 @@
           iconSlot: true,
           // 库这一行本身就是**库根目录**：能接拖放（搬回来）、能在根上新建
           drop: { kind: 'note', lib: lib.name, dir: '', label: lib.name },
-          actions: function () { return folderActions({ kind: 'note', lib: lib.name, dir: '' }); },
+          actions: function () {
+            var items = folderActions({ kind: 'note', lib: lib.name, dir: '' });
+            // 导入进来的库不给移除（那是数据的一部分），只给用户自己挂进来的
+            if (lib.external) {
+              items.push({
+                label: '从清单去掉（不动文件）',
+                run: function () { removeVault(lib); },
+              });
+            }
+            return items;
+          },
           count: lib.notes || lib.count || null,
           load: function (body) { paintVault(body, lib); },
         }));
       });
+      // 挂一个真实文件夹当库 —— 用户的原话是"一开始要求用户选择一个文件夹"
+      var add = leaf(2, {
+        label: '添加笔记库…',
+        icon: 'plus',
+        title: '挑一个真实文件夹当笔记库（笔记本体就存在那里）',
+      });
+      add.addEventListener('click', function () { addVault(); }, true);
+      box.appendChild(add);
     }).catch(function () { err(box, '读不到笔记库'); });
   }
 
