@@ -280,6 +280,10 @@
       .get('/notes/tree?' + q({ lib: state.lib }))
       .then(function (tree) {
         state.tree = tree;
+        // **保住滚动位置**：点开靠底下那一篇时树要重画一次（高亮得换行），不保位置的话
+        // 视口会跳回最上面（用户报的正是这个："点击最下面的笔记，管理器滚轮会跳到最上面"）。
+        // 重画之后行数可能变少，浏览器自己会夹住，所以直接写回同一个值即可。
+        var keepTop = el.tree.scrollTop;
         ui.clear(el.tree);
         ui.clear(el.treebar);
         el.treebar.appendChild(
@@ -330,6 +334,7 @@
         (tree.files || []).forEach(function (file) {
           el.tree.appendChild(fileNode(file, 1));
         });
+        el.tree.scrollTop = keepTop;
       })
       .catch(fail);
   }
@@ -450,25 +455,7 @@
       file.color ? h('span.ntree__color', { style: { background: file.color } }) : null,
       file.icon ? h('span.ntree__icon', { text: file.icon }) : null,
       h('span.ntree__label', { text: label }),
-      dirtyHere ? h('span.ntree__dirty', { title: '还没保存' }) : null,
-      // **看得见的菜单入口**：删除、重命名、归档原先只在右键菜单里 ——
-      // 用户的原话是"目前的笔记无法在管理器中删除"（菜单点得出来，但没人会去猜
-      // 右键）。悬停时右边浮出一颗「…」，点它就是同一个菜单。
-      (function () {
-        var more = h('span.ntree__more', {
-          role: 'button',
-          tabindex: '-1',
-          html: ICONS.more,
-          title: '更多（删除 / 重命名 / 归档…）'
-        });
-        more.addEventListener('click', function (ev) {
-          ev.stopPropagation();
-          ev.preventDefault();
-          var box = more.getBoundingClientRect();
-          showMenuAt(box.right - 8, box.bottom + 2, fileMenu(file));
-        });
-        return more;
-      })()
+      dirtyHere ? h('span.ntree__dirty', { title: '还没保存' }) : null
     );
     return node;
   }
@@ -480,7 +467,13 @@
     showMenuAt(ev.clientX, ev.clientY, items);
   }
 
-  /** 按坐标弹菜单（右键与"行尾那颗「…」"共用同一条路） */
+  /** 菜单里那枚小图标：本页自有的先查（`ICONS`），没有就借 ui 的那一套。 */
+  function menuIcon(name) {
+    if (ICONS[name]) return ICONS[name];
+    return ui.icon(name, 14);
+  }
+
+  /** 按坐标弹菜单 */
   function showMenuAt(x, y, items) {
     closeMenu();
     if (!items.length) return;
@@ -491,14 +484,21 @@
         return;
       }
       menu.appendChild(
-        h('button.nctx__item' + (item.danger ? '.nctx__item--danger' : ''), {
-          type: 'button',
-          text: item.label,
-          onClick: function () {
-            closeMenu();
-            item.run();
-          }
-        })
+        h(
+          'button.nctx__item' + (item.danger ? '.nctx__item--danger' : ''),
+          {
+            type: 'button',
+            title: item.hint || item.label,
+            onClick: function () {
+              closeMenu();
+              item.run();
+            },
+          },
+          // **图标 + 文字**（用户："右键菜单是图标+文字说明"）：图标一秒认出是哪一类
+          // 动作，文字说清是哪一件 —— 单有文字要一行行读，单有图标要一个个猜。
+          item.icon ? h('span.nctx__ico', { html: menuIcon(item.icon) }) : null,
+          h('span.nctx__label', { text: item.label })
+        )
       );
     });
     document.body.appendChild(menu);
@@ -533,21 +533,23 @@
     var folder = file.path.split('/').slice(0, -1).join('/');
     var stem = file.name.replace(/\.md$/i, '');
     return [
-      { label: '新建同级笔记', run: function () { createNote(folder, ''); } },
+      { label: '新建同级笔记', icon: 'plus', run: function () { createNote(folder, ''); } },
       {
         label: '新建子笔记',
+        icon: 'plus',
         run: function () {
           // 子笔记落在"以这篇命名"的目录里（Obsidian 的 folder note 惯例）
           createNote(folder ? folder + '/' + stem : stem, '');
         }
       },
       '-',
-      { label: '重命名', run: function () { startInlineRename(file.path); } },
-      { label: '复制双链 [[…]]', run: function () { copyText('[[' + (file.title || stem) + ']]', '双链'); } },
-      { label: '复制路径', run: function () { copyText(file.path, '路径'); } },
+      { label: '重命名', icon: 'type', hint: '双击标题也一样', run: function () { startInlineRename(file.path); } },
+      { label: '复制双链 [[…]]', icon: 'links', run: function () { copyText('[[' + (file.title || stem) + ']]', '双链'); } },
+      { label: '复制路径', icon: 'props', run: function () { copyText(file.path, '路径'); } },
       '-',
       {
         label: file.archived ? '取消归档' : '归档',
+        icon: 'flag',
         run: function () {
           api
             .post('/notes/meta', {
@@ -564,6 +566,7 @@
       },
       {
         label: '删除（进回收站）',
+        icon: 'trash',
         danger: true,
         run: function () {
           ui.confirm('把「' + (file.title || stem) + '」移到回收站？文件不会被真删。', { okLabel: '移到回收站' }).then(
@@ -590,15 +593,16 @@
 
   function dirMenu(dir) {
     return [
-      { label: '在这里新建笔记', run: function () { createNote(dir.path, ''); } },
+      { label: '在这里新建笔记', icon: 'plus', run: function () { createNote(dir.path, ''); } },
       {
-        label: dirFolded[dir.path] ? '展开' : '折叠',
+        label: dirFolded[dir.path] ? '展开这一支' : '折叠这一支',
+        icon: dirFolded[dir.path] ? 'unfoldAll' : 'foldAll',
         run: function () {
           dirFolded[dir.path] = !dirFolded[dir.path];
           loadTree();
         }
       },
-      { label: '复制路径', run: function () { copyText(dir.path, '路径'); } }
+      { label: '复制路径', icon: 'props', run: function () { copyText(dir.path, '路径'); } }
     ];
   }
 
@@ -661,8 +665,11 @@
         // 打开一篇进**默认**视图：它既能读又能写，是最常用的那一档。
         // 想纯读就按「阅读」，想改原始 markdown 就按「源码」（⌘E 在默认与阅读之间切）。
         state.mode = state.note.kind === 'outline' ? 'outline' : 'live';
-        renderMain();
-        renderSide();
+        // 换笔记 = 整块正文换掉：给一次过渡（自动重画不走这里，见 ui.swap 的注释）
+        ui.swap(function () {
+          renderMain();
+          renderSide();
+        }, el.main);
         loadTree();
       })
       .catch(fail);
@@ -1020,7 +1027,8 @@
                 if (state.mode === pair[0]) return;
                 if (state.dirty) saveNow(true);
                 state.mode = pair[0];
-                renderMain();
+                // 源码 / 默认 / 阅读之间切换：同一篇笔记换一种排版，也是一次"换内容"
+                ui.swap(renderMain, el.main);
               }
             }
           );
@@ -1856,6 +1864,11 @@
         var node = QF.md.render(raw);
         var holder = h('div');
         holder.appendChild(node);
+        // **callout 那道后处理也要跑**：阅读模式是把整篇渲染完再统一扫一遍
+        // （`decorateCallouts`），而这里是**一块一块渲染**的 —— 少这一步，
+        // 同一篇笔记在「阅读」里是漂亮的提示框，在「默认」里就是一行字面量
+        // `[!info]`（用户："你的默认编辑模式要和阅读模式一样美观"）。
+        decorateCallouts(holder);
         return holder.innerHTML;
       }
     } catch (err) {

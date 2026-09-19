@@ -3717,8 +3717,12 @@
         state.picks = {}; // 默认跟最新那一支
         state.live = null;
         renderAside();
-        paintThread();
-        updateComposer();
+        // 换对话 = 整条消息流换掉：给它一次淡出淡入（用户："不同对话…之间的切换都太过生硬"）。
+        // 只淡消息流那一栏：左边的会话列表不动。
+        ui.swap(function () {
+          paintThread();
+          updateComposer();
+        }, threadEl.parentElement || threadEl);
       })
       .catch(function (err) {
         ui.toast(err.message, 'error');

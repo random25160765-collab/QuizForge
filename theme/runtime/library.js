@@ -344,9 +344,12 @@
     state.viewing = false;
     if (state.citekey === citekey && state.detail) return;
     state.citekey = citekey;
-    renderList();
-    renderMain();
-    renderSide();
+    // 换条目：三栏一起换内容，做一次过渡
+    ui.swap(function () {
+      renderList();
+      renderMain();
+      renderSide();
+    }, el.root);
     loadDetail(citekey);
   }
 
