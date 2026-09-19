@@ -8,6 +8,11 @@
  * 所有选择器都带 body[data-page='chat'] 前缀，避免影响别的页。
  * ========================================================================= */
 
+body[data-page='chat'] .chat__aside {
+  /* 留着 DOM（aside 里的渲染逻辑还在跑），但不再占位置 */
+  display: none;
+}
+
 body[data-page='chat'] .view {
   /* 聊天是两栏，比阅读型的 880px 宽一些更合适；用户自己的 maxWidth 仍管正文宽度 */
   max-width: min(1180px, 100%);
@@ -15,7 +20,10 @@ body[data-page='chat'] .view {
 
 body[data-page='chat'] .chat {
   display: grid;
-  grid-template-columns: 268px minmax(0, 1fr);
+  /* 一列，不再是"会话列表 + 对话"两列：会话列表已经在**左边那棵资源树**里了
+     （对话 / 资料 / 文档三个根），再在页面里摆一份就是同一件事出现两遍 ——
+     而且只有这一页多一列，与其它页面不一致（用户指出过）。 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: stretch;
   /* 撑满一屏：消息流内部滚动，输入框永远在视口里。

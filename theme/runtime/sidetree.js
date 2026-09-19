@@ -140,13 +140,24 @@
   function paintConversations(box) {
     api.get('/chat/conversations').then(function (res) {
       var list = (res && res.conversations) || [];
-      if (!list.length) { err(box, '还没有对话'); return; }
+      // 「新对话」放在最前：会话列表挪进左栏之后，这儿就成了唯一的入口
+      var fresh = leaf(2, { label: '新对话', icon: 'plus', title: '开一条新对话' });
+      fresh.addEventListener('click', function () {
+        api.post('/chat/conversations', {}).then(function (out) {
+          var id = out && out.conversation && out.conversation.id;
+          location.href = id ? 'chat.html?c=' + encodeURIComponent(id) : 'chat.html';
+        }).catch(function (err2) {
+          ui.toast('开不了新对话：' + ((err2 && err2.message) || err2), 'error');
+        });
+      }, true);
+      box.appendChild(fresh);
       list.forEach(function (one) {
         box.appendChild(leaf(2, {
           label: one.title || '未命名对话',
           icon: 'robot',
           title: (one.preview || '') + (one.count ? '\n' + one.count + ' 条消息' : ''),
-          href: 'chat.html',        // 对话页自己管会话切换；将来做成标签时把这里换成 send('chat', …)
+          // 带 id 过去：对话页认这个参数，落到那一条上
+          href: 'chat.html?c=' + encodeURIComponent(one.id),
         }));
       });
     }).catch(function () { err(box, '读不到对话列表'); });

@@ -61,6 +61,31 @@
 
   /* ------------------------------------------------------------------ 标签 */
 
+  /**
+   * 把老形状的叶子升级成新形状。
+   *
+   * 踩过：叶子从"一个视图"（`{view, opts}`）改成"一串标签"（`{tabs, at}`）时，
+   * 我漏了**启动那份默认布局**还是老写法 —— 结果工作台一打开，两个窗格一个标签
+   * 都没有，只剩个「+」，看着像空的。所以这里统一兜住：凡是 `view` 有、`tabs` 没有的，
+   * 就当成"一个标签"补上（顺便把早先存下来的布局也一起兼容了）。
+   */
+  function normalize(node) {
+    if (!node || typeof node !== 'object') return node;
+    if (node.kind === 'split') {
+      normalize(node.a);
+      normalize(node.b);
+      return node;
+    }
+    if (node.kind === 'stage' && !Array.isArray(node.tabs)) {
+      var one = makeTab(node.view || 'blank', node.opts, node.title);
+      node.tabs = [one];
+      node.at = 0;
+      delete node.view;
+      delete node.opts;
+    }
+    return node;
+  }
+
   /** 一个标签的身份：同一样东西开两次，应当**切到已有那个**而不是再开一个。 */
   function tabKey(view, opts) {
     var def = views[view];
@@ -500,6 +525,17 @@
       });
       strip.appendChild(node);
     });
+    // 标签末尾那个「+」：参考图里就这么一个（浏览器式标签栏的标配），
+    // 点开是"这一格要装什么"的菜单。空白处双击同样能开。
+    var plus = h('button.panes__newtab', { type: 'button', title: '新开一个标签', 'aria-label': '新开一个标签' });
+    plus.innerHTML = ui.icon('plus', 13);
+    plus.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      state.active = leaf.id;
+      openPicker(leaf, plus);
+    });
+    strip.appendChild(plus);
+
     // 空白处双击＝再开一个标签（与"新建标签页"一个意思）
     strip.addEventListener('dblclick', function (ev) {
       if (ev.target.closest('.panes__tab')) return;
@@ -657,14 +693,14 @@
       try {
         var got = JSON.parse(raw);
         if (got && got.root && got.root.kind) {
-          state.root = got.root;
+          state.root = normalize(got.root);
           state.zoomed = findLeaf(got.zoomed) ? got.zoomed : null;
           state.active = findLeaf(got.active) ? got.active : leaves()[0].id;
           return;
         }
       } catch (e) { /* 坏掉的布局不如不要，退回默认 */ }
     }
-    state.root = defaultLayout || stage('blank');
+    state.root = normalize(defaultLayout) || stage('blank');
     state.active = leaves()[0].id;
     state.zoomed = null;
   }
@@ -694,7 +730,7 @@
     hostEl = host;
     host.classList.add('panes');
     if (options && options.layout) {
-      state.root = options.layout;
+      state.root = normalize(options.layout);
       state.active = leaves()[0].id;
     } else {
       load(options && options.default);

@@ -237,6 +237,12 @@ svg { display: block; }
 
 .mainnav { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .mainnav::-webkit-scrollbar { display: none; }
+
+/* 没有子导航的页面要把它整个收掉。
+   踩过：脚本里用 `nav.hidden = true`，可 UA 的 `[hidden]{display:none}` 打不过
+   上面那条 `display:flex` —— 于是顶栏里一直横着一个**看不见但占满宽**的空项，
+   把右侧动作挤到边上，看着像"顶栏空了一大块"。 */
+#mainnav[hidden] { display: none; }
 .nav-item {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 7px 12px;

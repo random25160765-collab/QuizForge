@@ -449,13 +449,26 @@
 
   /* ------------------------------------------------------------------ 装配 */
 
+  // 首次打开的布局：左边一块画布、右边一个空窗格。
+  // 注意叶子的形状是 `tabs`（一串标签），不是老写法 `view/opts` ——
+  // 写错形状的后果是"标签一个都不渲染"，引擎那边另有一层 normalize 兜底。
   var DEFAULT_LAYOUT = {
     kind: 'split',
     id: 's-boot',
     dir: 'row',
     ratio: 0.55,
-    a: { kind: 'stage', id: 'p-boot-a', view: 'canvas', opts: {} },
-    b: { kind: 'stage', id: 'p-boot-b', view: 'blank', opts: {} },
+    a: {
+      kind: 'stage',
+      id: 'p-boot-a',
+      at: 0,
+      tabs: [{ key: 'canvas:', view: 'canvas', opts: {}, title: '' }],
+    },
+    b: {
+      kind: 'stage',
+      id: 'p-boot-b',
+      at: 0,
+      tabs: [{ key: 'blank:{}', view: 'blank', opts: {}, title: '' }],
+    },
   };
 
   function boot() {

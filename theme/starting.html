@@ -92,7 +92,7 @@
             if (paint(payload)) {
               if (!stay) {
                 settled = true;
-                location.replace('chat.html');
+                location.replace('workbench.html');
               }
               return;
             }
@@ -104,7 +104,7 @@
       }
 
       // 有 fail 时也让人进 —— 少一个能力不该把人拦在门外（按钮点了就照样进）
-      enter.addEventListener('click', function () { location.replace('chat.html'); });
+      enter.addEventListener('click', function () { location.replace('workbench.html'); });
       tick();
     })();
   </script>

@@ -1575,6 +1575,12 @@
       .then(function (res) {
         state.list = (res && res.conversations) || [];
         renderAside();
+        if (!wantedOnce) {
+          wantedOnce = 1;
+          var want = '';
+          try { want = new URLSearchParams(location.search).get('c') || ''; } catch (e) { want = ''; }
+          if (want && state.list.some(function (one) { return one.id === want; })) openConversation(want);
+        }
       })
       .catch(function (err) {
         ui.toast(err.message, 'error');
@@ -3619,6 +3625,9 @@
       return state.current;
     });
   }
+
+  // 从资源树点一条会话过来时带着 `?c=<id>`；只认一次，免得后面每次刷新列表都跳回去
+  var wantedOnce = 0;
 
   function openConversation(id) {
     // 大题面板是**某一道题**，不是页面级的常驻物：不关掉的话，换一条对话它还杵在那儿
