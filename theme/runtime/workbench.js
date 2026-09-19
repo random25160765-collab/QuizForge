@@ -285,7 +285,7 @@
     });
   }
 
-  /* ------------------------------------------------------------------ 文档图谱 */
+  /* ------------------------------------------------------------------ 笔记图谱 */
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -380,7 +380,7 @@
 
   function registerNoteGraph() {
     QF.panes.register('notegraph', {
-      title: '文档图谱',
+      title: '笔记图谱',
       icon: 'target',
       key: function (opts) { return opts.lib || ''; },
       mount: function (host, opts) {

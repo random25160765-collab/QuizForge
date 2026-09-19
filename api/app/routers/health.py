@@ -35,6 +35,17 @@ def _build_info() -> dict:
         return {"stamp": "", "detail": "build.json 读不出来"}
 
 
+@router.get("/build")
+def build() -> dict:
+    """只报构建信息：读产物根下那份 `build.json`，**不碰数据库**。
+
+    前端每几秒问它一次，用来判断"我手里这一页是不是旧的"（改了 `theme/` 之后
+    已经打开的那一页不会自己知道）。所以它必须够轻 —— `/health` 要数题、
+    要比题库指纹，不能拿来轮询。
+    """
+    return _build_info()
+
+
 @router.get("/health")
 def health(db: Session = Depends(get_db)) -> dict:
     settings = get_settings()
