@@ -79,7 +79,7 @@
     if (persist !== false) {
       try { localStorage.setItem(SIDE_KEY, open ? '1' : '0'); } catch (e) { /* 无痕模式忽略 */ }
     }
-    var btn = document.querySelector('#rail-nav .rail__btn[data-key="side"]');
+    var btn = document.querySelector('#rail-nav .rail__btn[href$="workbench.html"]');
     if (btn) {
       btn.classList.toggle('is-on', open);
       btn.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -118,8 +118,21 @@
     // （实测 1000px 宽时正好压在画布那两行字上，看着像"内容被裁了"）
     setSide(!drawerMode() && saved !== '0', false);
 
-    // 活动栏那颗不再是"收起资源栏"（它是进资源页的链接，见 RAIL），
-    // 所以这里只接资源栏自己头上那颗
+    // 活动栏那颗「资源」：**在资源页里它得能开合资源栏**。
+    // 踩过：窄屏（抽屉模式）默认收起资源栏，而这颗按钮只是个"跳到本页"的链接 ——
+    // 已经在本页时点了等于没反应，用户看到的就是"根本没法正常打开资源管理器"。
+    // 别的页上它仍然是"去资源页"的链接（那里根本没有资源栏可开）。
+    var rail = document.querySelector('#rail-nav .rail__btn[href$="workbench.html"]');
+    if (rail && !rail.dataset.sideBound) {
+      rail.dataset.sideBound = '1';
+      rail.addEventListener('click', function (ev) {
+        if ((QF.config && QF.config.page) !== 'workbench') return;
+        ev.preventDefault();
+        setSide(!sideOpen());
+      });
+    }
+
+    // 资源栏自己头上那颗收起
     var fold = document.getElementById('side-fold');
     if (fold && !fold.dataset.bound) {
       fold.dataset.bound = '1';
@@ -138,6 +151,22 @@
       if (!ev.altKey || ev.ctrlKey || ev.metaKey) return;
       if (ev.key === 'b' || ev.key === 'B') { ev.preventDefault(); setSide(!sideOpen()); }
     });
+    // 抽屉模式下点面板外面就收起 —— 浮层不该一直压着内容（抽屉的常规行为）。
+    // 点面板**里面**不动它：点资源、拖东西都在里面发生。
+    // 两个细节都是用实测换来的：
+    //  * **捕获阶段**（第三个参数 true）：画布那边自己的处理器会 stopPropagation，
+    //    冒泡阶段收不到；
+    //  * 听 `mousedown` 而不是 `click`：在画布上按下时**根本不生成 click 事件**
+    //    （实测 mousedown / mouseup 都有、click 没有 —— 画布那侧在按下时会改动 DOM，
+    //    down 与 up 的目标不是同一个元素，浏览器就不发 click 了）。按下即收起也更利落。
+    document.addEventListener('mousedown', function (ev) {
+      if (!drawerMode() || !sideOpen()) return;
+      var side = document.querySelector('.side');
+      if (side && side.contains(ev.target)) return;
+      var railBtn = ev.target.closest ? ev.target.closest('#rail-nav .rail__btn') : null;
+      if (railBtn) return;          // 由上面那颗按钮自己开合，别两边都动
+      setSide(false);
+    }, true);
   }
 
   function hrefFor(view) {

@@ -323,6 +323,24 @@ def delete(body: dict) -> dict:
     return _run(notelib.delete_note, lib, _text(body, "path"))
 
 
+@router.get("/trash")
+def trash(lib: str = Query(..., description="库名，例如 Math")) -> dict:
+    """回收站里有什么（删掉的笔记都在这儿，可以恢复）。
+
+    「删除是移到回收站」这件事原先只在后端成立：界面上一删，文件从树里消失，
+    用户没有任何地方能看到它还在 —— 于是只能以为真没了。这个接口是那颗
+    垃圾桶按钮的眼睛。
+    """
+    return {"items": _run(notelib.trash_list, _lib(lib))}
+
+
+@router.post("/restore")
+def restore(body: dict) -> dict:
+    """从回收站捞回来。`folder` 可指定放回哪个子目录，默认回库根。"""
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.restore_from_trash, lib, _text(body, "name"), _text(body, "folder") or "")
+
+
 @router.post("/move")
 def move(body: dict) -> dict:
     """把一篇挪进另一个目录（树里拖拽就是这个）。按路径写的引用会一起改。"""

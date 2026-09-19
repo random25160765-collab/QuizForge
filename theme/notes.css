@@ -249,6 +249,39 @@ body[data-page='notes'] .view {
 }
 
 /* 左边那颗开合按钮：收/展两个朝向之间**转过去**（不是换一张图那样闪一下） */
+.ntrash__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 46vh;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+
+.ntrash__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.ntrash__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ntrash__when {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
 .ntabs__fold svg {
   transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
@@ -314,11 +347,29 @@ body[data-page='notes'] .view {
   gap: 2px;
 }
 
-/* 全是图标的一颗按钮：两个图标叠着，靠透明度 + 旋转换（用户要的"丝滑转换"） */
+/* 全是图标的一颗按钮：两个图标叠着，靠透明度 + 旋转换（用户要的"丝滑转换"）。
+ * **不要圆角矩形**（用户："这个收起图标太丑不符合整体风格。不要用圆角矩形，
+ * 直接图标"）—— 它是树栏上的一颗工具图标，不该长得像一颗按钮；
+ * 悬停给一层淡底，与资源树那几颗同一个语言。 */
 .nbtn--icon {
   position: relative;
-  width: 26px;
+  width: 24px;
+  height: 24px;
   padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg3);
+}
+
+.nbtn--icon:hover {
+  border: 0;
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.nbtn--icon.is-on {
+  color: var(--fg2);
 }
 
 .nfold__icon {
@@ -1649,7 +1700,11 @@ body[data-page='notes'] {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 7.5px;
+  /* 11.5 = 格宽的一半(8) + 行内 gap(4) - 半个线宽(0.5)。
+   * 那 4px 是**行里那个 gap**：箭头的实际位置是"格子之后 gap 再放箭头"，
+   * 所以箭头中心比格子中心右 4px —— 线要跟着右移同样的距离，才与上一级的箭头
+   * 成一条竖线。挪一次对**所有层**都成立（每层都是同一个常量偏移）。 */
+  left: 11.5px;
   width: 1px;
   background: var(--line);
 }
