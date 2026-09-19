@@ -1982,7 +1982,8 @@ body[data-side='closed'] .side > * { display: none; }
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
+  /* 26 而不是 24：一屏几十行，行距多 2px 整棵树就从"密"变成"能读" */
+  min-height: 26px;
   padding: 2px 8px 2px 0;
   color: var(--fg2);
   font-size: 13px;
