@@ -318,3 +318,29 @@ def test_mkdir_moves_refuse_what_would_bite(lib: notelib.Library):
     notelib.mkdir(lib, "已有")
     with pytest.raises(notelib.NoteError):
         notelib.mkdir(lib, "已有")
+
+
+def test_extra_roots_become_libraries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """挂一个**真实文件夹**当库：写进清单、能列出来、清单去掉时文件一个不少。"""
+    monkeypatch.setenv("QF_DATA_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    notelib.reset_index()
+
+    outside = tmp_path / "外面"
+    outside.mkdir()
+    (outside / "X.md").write_text("---\ntitle: X\n---\n\n正文\n", encoding="utf-8")
+
+    notelib.set_extra_roots([outside])
+    names = [item.name for item in notelib.libraries()]
+    assert "外面" in names
+    got = notelib.library("外面")
+    assert got.root == outside
+    assert got.external is True and got.notes == 1
+
+    # 去掉只改清单 —— 目录里的文件不动（用户的东西）
+    notelib.set_extra_roots([])
+    assert "外面" not in [item.name for item in notelib.libraries()]
+    assert (outside / "X.md").is_file()
+
+    get_settings.cache_clear()
+    notelib.reset_index()

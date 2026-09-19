@@ -13,6 +13,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from pathlib import Path
+
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from .. import canvas as canvaslib
@@ -57,6 +59,40 @@ def _text(body: dict, key: str, default: str = "") -> str:
 def stats() -> dict:
     """体检数字：几个库、多少篇、多少条引用、多少条找不到目标。"""
     return _run(notelib.stats)
+
+
+@router.get("/roots")
+def roots() -> dict:
+    """额外挂进来的库目录（用户自己挑的文件夹）。"""
+    return {"roots": [str(path) for path in notelib.extra_roots()]}
+
+
+@router.post("/roots")
+def edit_roots(body: dict) -> dict:
+    """加一个 / 去掉一个**外部的笔记库目录**。
+
+    加之前必须确认它是个目录：这一挂之后应用会往里写文件（新建、改名、搬家），
+    路径写错了就是在别处建东西。去掉只改清单，**不动任何文件**。
+    """
+    action = str(body.get("action") or "add")
+    raw = str(body.get("path") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="得给一个目录")
+    target = Path(raw).expanduser()
+    current = notelib.extra_roots()
+    if action == "add":
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail=f"这个目录不存在：{raw}")
+        resolved = target.resolve()
+        if any(path.resolve() == resolved for path in current):
+            return {"roots": [str(path) for path in current], "added": False}
+        current = current + [target]
+    elif action == "remove":
+        current = [path for path in current if path.resolve() != target.resolve()]
+    else:
+        raise HTTPException(status_code=400, detail=f"不认识的动作：{action}")
+    notelib.set_extra_roots(current)
+    return {"roots": [str(path) for path in current], "added": action == "add"}
 
 
 @router.get("/tree")

@@ -77,12 +77,18 @@ class NoteNotFound(NoteError):
 # ------------------------------------------------------------------ 结构
 
 
+#: 额外库根清单的文件名（放在笔记根下，与 `.trash` / `.snapshots` 同级）
+ROOTS_FILE = ".roots"
+
+
 @dataclass
 class Library:
     name: str
     root: Path
     notes: int = 0
     canvases: int = 0
+    #: 是不是用户自己挂进来的目录（界面上要能移除它；导入进来的不能）
+    external: bool = False
 
 
 @dataclass
@@ -168,17 +174,69 @@ def _scan(root: Path) -> tuple[int, int]:
     return notes, canvases
 
 
-def libraries() -> list[Library]:
-    """有哪些库：笔记根目录下的一级子目录（`Math` / `Tech` / …）。"""
-    root = notes_root()
-    if not root.is_dir():
+def roots_file() -> Path:
+    """额外库根的清单文件（一行一个绝对路径）。"""
+    return notes_root() / ROOTS_FILE
+
+
+def extra_roots() -> list[Path]:
+    """用户自己挂进来的库目录。
+
+    为什么落文件而不是设置表：`library()` 被十几处调用、只传一个库名、拿不到数据库
+    会话，而每一处都要能独立回答"有哪些库"。笔记本身以文件为权威，库清单同理。
+    """
+    path = roots_file()
+    if not path.is_file():
         return []
+    out: list[Path] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        candidate = Path(text).expanduser()
+        if candidate.is_dir():
+            out.append(candidate)
+    return out
+
+
+def set_extra_roots(paths: list[Path]) -> None:
+    """写回清单（目录不存在的也照写 —— 外接盘没插上时，用户的选择不该被悄悄抹掉）。"""
+    path = roots_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "# 用户挂进来的笔记库目录（一行一个绝对路径，由界面维护）\n"
+    body += "".join(f"{Path(item).expanduser()}\n" for item in paths)
+    path.write_text(body, encoding="utf-8")
+    reset_index()
+
+
+def libraries() -> list[Library]:
+    """有哪些库：笔记根的一级子目录（`Math` / `Tech` / …）＋ 用户挂进来的目录。
+
+    挂进来的那个名字取**目录名**（与导入进来的一致）；重名时后面的让位 ——
+    库名是树的键，不能重复。
+    """
     found: list[Library] = []
-    for path in sorted(root.iterdir()):
-        if not path.is_dir() or path.name.startswith("."):
+    seen: set[str] = set()
+    root = notes_root()
+    if root.is_dir():
+        for path in sorted(root.iterdir()):
+            if not path.is_dir() or path.name.startswith("."):
+                continue
+            notes, canvases = _scan(path)
+            found.append(Library(name=path.name, root=path, notes=notes, canvases=canvases))
+            seen.add(path.name)
+
+    for path in extra_roots():
+        name = path.name
+        if name in seen:
+            name = f"{name}（{path.parent.name}）"
+        if name in seen:
             continue
         notes, canvases = _scan(path)
-        found.append(Library(name=path.name, root=path, notes=notes, canvases=canvases))
+        found.append(
+            Library(name=name, root=path, notes=notes, canvases=canvases, external=True)
+        )
+        seen.add(name)
     return found
 
 
