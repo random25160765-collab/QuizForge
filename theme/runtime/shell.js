@@ -20,6 +20,7 @@
   var QF = (window.QF = window.QF || {});
   var ui = QF.ui;
   var h = ui.h;
+  var api = QF.api;
   var store = QF.store;
   var ai = QF.ai;
   var D = QF.data;
@@ -342,6 +343,8 @@
       h('div.form__sectiontitle', { text: '外观' }),
       switchRow('浅色主题', '长时间阅读公式与代码时，可切换到低强度浅色配色。', conf.theme === 'light', function (value) {
         ui.theme.set(value ? 'light' : 'dark');
+        // 和旁边那几行一样走设置仓库：只写本机的话，下次进页面会被服务端那份按回去
+        if (store) store.saveSettings({ theme: ui.theme.current() });
       }),
       field('字号缩放', null, fontScale),
       field('内容最大宽度（像素）', null, maxWidth));
@@ -465,6 +468,37 @@
     renderNav(opts);
   }
 
-  QF.shell = { mount: mount };
+  /* ------------------------------------------------------- 设置（主题等） */
+
+  var settingsPull = null;
+
+  /**
+   * 把服务端那份设置取回来 —— **每个页面取一次**，拿回来之后主题才定。
+   *
+   * 练习中心 / 错题本 / 对话这三页不用调：`boot.js` 的 `GET /progress` 顺手就把
+   * 设置灌进来了。其余几页没有 `boot.js`，不自己取就会退回兜底值 ——
+   * 兜底是 `dark`，于是"练习中心浅色、工作台深色"这种同一浏览器两副面孔。
+   *
+   * 取不到（服务挂了、离线）也不闹：用本机那一份，页面照常画。
+   */
+  function pullSettings() {
+    if (settingsPull) return settingsPull;
+    settingsPull = api
+      .get('/progress')
+      .then(function (snapshot) {
+        if (store && store.hydrateSettings) store.hydrateSettings(snapshot);
+        return true;
+      })
+      .catch(function () {
+        return false;
+      })
+      .then(function (ok) {
+        ui.theme.init();
+        return ok;
+      });
+    return settingsPull;
+  }
+
+  QF.shell = { mount: mount, pullSettings: pullSettings };
   QF.settings = { open: openSettings };
 })();

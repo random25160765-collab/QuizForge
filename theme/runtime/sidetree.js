@@ -41,7 +41,7 @@
 
   function caret(open) {
     var node = h('span.stree__caret');
-    node.innerHTML = ui.icon(open ? 'chevronR' : 'chevronR', 12);
+    node.innerHTML = ui.icon('chevronR', 12);
     if (open) node.style.transform = 'rotate(90deg)';
     return node;
   }
@@ -59,6 +59,10 @@
       var mark = h('span.stree__icon');
       mark.innerHTML = ui.icon(opts.icon, 13);
       node.appendChild(mark);
+    } else if (opts.iconSlot) {
+      // 只留位置不画东西：目录行不配图标（一级就有十几个，同款图标重复十几遍是噪音，
+      // 参考图那棵树也是不给目录配图标），但名字要和带图标的兄弟行对齐
+      node.appendChild(h('span.stree__icon.stree__icon--slot'));
     }
     node.appendChild(h('span.stree__label', { text: opts.label }));
     if (opts.count != null) node.appendChild(h('span.stree__count', { text: String(opts.count) }));
@@ -72,6 +76,7 @@
     var head = row(level, {
       label: opts.label,
       icon: opts.icon,
+      iconSlot: opts.iconSlot,
       count: opts.count,
       caret: true,
       open: open,
@@ -89,8 +94,15 @@
       body.hidden = !isOpen;
       if (isOpen && opts.load && !body.dataset.loaded) {
         body.dataset.loaded = '1';
-        body.appendChild(h('p.stree__hint', { text: '正在读…' }));
-        opts.load(body);
+        var hint = h('p.stree__hint', { text: '正在读…' });
+        body.appendChild(hint);
+        // 读完（或读完失败）就摘掉。踩过：它只挂不摘，于是每个展开过的组下面都
+        // 永久挂着一行孤零零的"正在读…"，列表越长越扎眼。
+        // 同步的 load 也走这里 —— 它们同帧就摘，不会闪。
+        var drop = function () { if (hint.parentNode) hint.parentNode.removeChild(hint); };
+        var done = opts.load(body);
+        if (done && done.then) done.then(drop, drop);
+        else drop();
       }
     }
 
@@ -138,7 +150,7 @@
   /* ------------------------------------------------------------------ 三个根 */
 
   function paintConversations(box) {
-    api.get('/chat/conversations').then(function (res) {
+    return api.get('/chat/conversations').then(function (res) {
       var list = (res && res.conversations) || [];
       // 「新对话」放在最前：会话列表挪进左栏之后，这儿就成了唯一的入口
       var fresh = leaf(2, { label: '新对话', icon: 'plus', title: '开一条新对话' });
@@ -163,28 +175,76 @@
     }).catch(function () { err(box, '读不到对话列表'); });
   }
 
+  /* 条目图标按类型分 —— 一列全是一样的书，等于没有图标 */
+  var KIND_ICON = {
+    paper: 'print',
+    book: 'book',
+    manual: 'list',
+    spec: 'cpu',
+    report: 'flag',
+    slides: 'play',
+    code: 'grip',
+    note: 'bulb',
+    webpage: 'info',
+    blog: 'info',
+  };
+
+  /** 资料按**目录**分层。
+   *  条目自己带着相对路径（`cuda/layout_algebra.pdf`），拿它当文件夹用即可 ——
+   *  原先 70 多条平铺成一坨，只能靠滚，和「文档」那边的形状也不一致。 */
   function paintItems(box) {
-    api.get('/library/items?limit=600').then(function (res) {
+    return api.get('/library/items?limit=600').then(function (res) {
       var list = (res && res.items) || [];
       if (!list.length) { err(box, '资料目录里还没扫出条目'); return; }
+      var root = { dirs: {}, files: [] };
       list.forEach(function (one) {
-        var bits = [];
-        if (one.year) bits.push(one.year);
-        if (one.kind) bits.push(one.kind);
-        box.appendChild(leaf(2, {
-          label: one.title || one.citekey,
-          icon: 'book',
-          count: one.year || null,
-          title: (bits.join(' · ') || '') + '\n' + (one.citekey || ''),
-          kind: 'doc',
-          ref: { citekey: one.citekey },
-        }));
+        var parts = String(one.rel || one.citekey || '').split('/').filter(Boolean);
+        parts.pop();                        // 最后一段是文件名，不进目录树
+        var node = root;
+        parts.forEach(function (seg) {
+          node.dirs[seg] = node.dirs[seg] || { dirs: {}, files: [] };
+          node = node.dirs[seg];
+        });
+        node.files.push(one);
       });
+      paintItemNode(box, root, 2, '');
     }).catch(function () { err(box, '读不到资料条目'); });
   }
 
+  function paintItemNode(box, node, level, prefix) {
+    Object.keys(node.dirs).sort().forEach(function (name) {
+      var child = node.dirs[name];
+      var path = prefix ? prefix + '/' + name : name;
+      box.appendChild(group(level, {
+        key: 'libdir:' + path,
+        label: name,
+        iconSlot: true,
+        count: countItems(child),
+        load: function (body) { paintItemNode(body, child, level + 1, path); },
+      }));
+    });
+    node.files.forEach(function (one) {
+      box.appendChild(leaf(level, {
+        label: one.title || one.citekey,
+        icon: KIND_ICON[one.kind] || 'book',
+        count: one.year || null,
+        // 悬停看得见出处：类型 · 引用键 · 相对路径
+        title: [one.kind, one.citekey, one.rel].filter(Boolean).join('\n'),
+        kind: 'doc',
+        ref: { citekey: one.citekey },
+      }));
+    });
+  }
+
+  /** 这个目录下一共有多少条目（目录行右侧那个数字） */
+  function countItems(node) {
+    var n = node.files.length;
+    Object.keys(node.dirs).forEach(function (name) { n += countItems(node.dirs[name]); });
+    return n;
+  }
+
   function paintVault(box, lib) {
-    api.get('/notes/tree?lib=' + encodeURIComponent(lib.name)).then(function (tree) {
+    return api.get('/notes/tree?lib=' + encodeURIComponent(lib.name)).then(function (tree) {
       var root = h('div');
       box.appendChild(root);
       paintNode(root, tree, 2, lib.name);
@@ -198,7 +258,7 @@
       var sub = group(level, {
         key: 'dir:' + lib + '/' + name,
         label: name,
-        icon: 'list',
+        iconSlot: true,
         load: function (body) { paintNode(body, dirs[name], level + 1, lib); },
       });
       box.appendChild(sub);
@@ -233,7 +293,7 @@
         box.appendChild(group(1, {
           key: 'vault:' + lib.name,
           label: lib.name,
-          icon: 'list',
+          iconSlot: true,
           count: lib.notes || lib.count || null,
           load: function (body) { paintVault(body, lib); },
         }));
@@ -275,7 +335,7 @@
       label: '文档图谱',
       icon: 'target',
       load: function (body) {
-        api.get('/notes/stats').then(function (data) {
+        return api.get('/notes/stats').then(function (data) {
           var libs = (data && data.libraries) || [];
           if (!libs.length) { err(body, '还没有笔记库'); return; }
           libs.forEach(function (lib) {
