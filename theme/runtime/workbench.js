@@ -474,6 +474,15 @@
   function boot() {
     var root = document.getElementById('workbench-root');
     if (!root) return;
+
+    // 设置（主题、工具挂载）在服务端那份里，而这一页不加载 boot.js ——
+    // 不取回来就退回写死的兜底值：干净浏览器里表现为"工作台深色、练习中心浅色"。
+    // 取回来再画，免得更明显：先画一帧深色、再跳成浅色。
+    var ready = QF.shell && QF.shell.pullSettings ? QF.shell.pullSettings() : Promise.resolve();
+    ready.then(function () { paint(root); });
+  }
+
+  function paint(root) {
     ui.clear(root);
     registerBlank();
     registerCanvas();
@@ -485,8 +494,6 @@
 
     // 主题必须显式初始化：`ui.theme.current()` 的兜底是 dark，
     // 不调这一句，整页（含顶栏）会是深色 —— app.js / chat.js / wrongbook.js 各自都调了
-    ui.theme.init();
-
     // 顶栏是 shell.js 的事：不传 onPick 就渲染成带 hash 的链接（跳去刷题页那四态）
     if (QF.shell && QF.shell.mount) QF.shell.mount({});
 

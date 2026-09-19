@@ -490,6 +490,9 @@ body[data-page='workbench'] .view {
 
 .stree__icon { display: inline-flex; flex: none; color: var(--fg3); }
 
+/* 图标位：留出宽度但不画东西（目录行用，好让名字和带图标的兄弟行对齐） */
+.stree__icon--slot { width: 13px; }
+
 .stree__label {
   flex: 1 1 auto;
   min-width: 0;

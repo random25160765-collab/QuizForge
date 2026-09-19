@@ -72,6 +72,8 @@
   // ------------------------------------------------------------------ 启动
 
   function boot() {
+    // 这一页不加载 boot.js：设置（主题、工具挂载、资料根）得自己取一次
+    if (QF.shell && QF.shell.pullSettings) QF.shell.pullSettings();
     try {
       QF.shell.mount({});
     } catch (err) {

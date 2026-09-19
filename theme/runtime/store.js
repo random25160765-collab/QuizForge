@@ -138,6 +138,10 @@
   function saveSettings(patch) {
     settingsCache = deepMerge(settings(), patch || {});
     writeJSON(K.settings, settingsCache);
+    // 本机一改就**当场**抬 rev —— 这样"服务端那份比本机新吗"才有得比。
+    // 不抬的话：在没加载 boot.js 的页面（工作台 / 笔记 / 资料 / 图谱）改完主题，
+    // 下次进页面照样会被服务端那份旧设置覆盖回去，表现为「改了白改」。
+    bumpSettingsRev();
     markSettingsDirty();
     return settingsCache;
   }
@@ -347,9 +351,34 @@
       writeJSON(K.days, table);
     }
 
+    hydrateSettings(snapshot);
+
+    return { records: Object.keys(merged).length, keptLocal: keepLocal };
+  }
+
+  /**
+   * 只灌「设置」那一段（主题 / 工具挂载 / 资料根 …）。
+   *
+   * 拆出来是因为：**不加载 boot.js 的那几页**（工作台 / 笔记 / 资料 / 图谱）走不到
+   * `hydrate()`，于是读不到服务端那份设置、退回写死的兜底值。症状是同一个浏览器里
+   * 两副面孔：练习中心浅色、工作台深色（启动页现在正是工作台）。它们现在自己调这个。
+   */
+  function hydrateSettings(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+
+    // 本机那份更新（刚改过、还没推上去）就留着，只标脏等同步器推 ——
+    // 与 records 的合并规则一个道理：本地的热改动不该被服务端的旧值按回去。
+    var theirsRev = typeof snapshot.settingsRev === 'number' ? snapshot.settingsRev : 0;
+    if (settingsRev() > theirsRev) {
+      if (snapshot.settings) markSettingsDirty();
+      return false;
+    }
+
+    var got = false;
     if (snapshot.settings && typeof snapshot.settings === 'object') {
       settingsCache = deepMerge(DEFAULT_SETTINGS, snapshot.settings);
       writeJSON(K.settings, settingsCache);
+      got = true;
     }
 
     // 这里必须取较大值，不能直接覆盖。
@@ -358,8 +387,7 @@
     if (typeof snapshot.settingsRev === 'number') {
       rawSet(K.settingsRev, String(Math.max(settingsRev(), snapshot.settingsRev)));
     }
-
-    return { records: Object.keys(merged).length, keptLocal: keepLocal };
+    return got;
   }
 
   /** 按日期合并两份每日统计：逐字段取较大值（time 与 topics 都要） */
@@ -1084,6 +1112,7 @@
     settings: settings,
     // 云端同步（离线模式下 QF.sync 为 null，这些函数不会被用到）
     hydrate: hydrate,
+    hydrateSettings: hydrateSettings,
     settingsRev: settingsRev,
     bumpSettingsRev: bumpSettingsRev,
     // 待上传的作答流水与重置基线，由 sync.js 取走并回执删除
