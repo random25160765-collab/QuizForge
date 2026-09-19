@@ -1930,7 +1930,12 @@ body[data-side='closed'] .side > * { display: none; }
 
   body[data-side='closed'] .side {
     display: flex;
-    transform: translateX(-108%);
+    /* 收起时要**完全**让开图标条：原先只挪自身宽度的 108%，右缘仍压着图标条
+       左边 25px —— 而抽屉的 z-index(70) 比图标条高，于是窄屏下"收起之后就点不开"，
+       那颗"资源"按钮被抽屉自己盖住了（实测点击被拦，30 秒超时）。
+       pointer-events 一起关掉，收起状态不该接任何点击。 */
+    transform: translateX(calc(-100% - var(--rail-w, 46px)));
+    pointer-events: none;
   }
 
   body[data-side='closed'] .side > * { display: flex; }
