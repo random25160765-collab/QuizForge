@@ -65,6 +65,7 @@ from .. import ai_gateway as gateway
 from .. import attachments as attach
 from .. import parts as msgparts
 from .. import mounts
+from ..db import as_json
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
 from ..models import Attachment, Conversation, ConversationFolder, Message
 
@@ -180,6 +181,8 @@ def _message_out(m: Message) -> dict:
         "error": m.error,
         "finishReason": m.finish_reason,
         "model": m.model,
+        # 这一轮挂载了哪几组工具（老消息是空列表：那时还没记这一项）
+        "mounts": [str(one) for one in as_json(m.mounts, []) or []],
         "promptTokens": m.prompt_tokens,
         "completionTokens": m.completion_tokens,
         "latencyMs": m.latency_ms,
@@ -1079,6 +1082,9 @@ def post_message(
             role="user",
             content=content[:MAX_CONTENT],
             status="ok",
+            # 快照"这一刻的模式"：开关是随时会改的，事后再也推不出当时挂了几组。
+            # 对话树就是靠它画出"对话过程里模式变过几次、各是什么"。
+            mounts=json.dumps(sorted(mounts.effective(db, user.id)), ensure_ascii=False),
         )
         # 附件：先上传、后引用（见 upload_attachment 的说明）。
         # 只接受**本人**的、且还没挂到别的消息上的那些 —— 别人传的 id 猜不出来，

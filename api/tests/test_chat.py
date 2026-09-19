@@ -1409,3 +1409,36 @@ def test_folder_path_is_cleaned(client) -> None:  # noqa: ANN001
     assert resp.json()["path"] == "考研/数学"
     client.patch(f"/api/chat/conversations/{cid}", json={"folder": "a/../b"}, headers=_headers(client))
     assert _one(client, cid)["folder"] == "a/b"
+
+
+# ------------------------------------------------------------------ 模式
+
+
+def test_message_carries_the_mode_snapshot(client, monkeypatch) -> None:  # noqa: ANN001
+    """每条用户消息记下**发送那一刻挂载了哪几组工具**（对话树据此画模式变化）。
+
+    模式是随时可改的：改完之后"当时是怎么问的"就再也推不出来了 ——
+    而回看对话时那恰恰是最要紧的一半（同一句话，挂了资料库与只有极简模式，
+    答案的口径完全不同）。所以判据是"与上一条不同"，不是"当前是什么"。
+    """
+    _ready(client)
+    _stub(monkeypatch, _happy_stream())
+    cid = _new_conversation(client)
+
+    mounted = client.get("/api/chat/mounts").json()["mounted"]
+    assert mounted, "前提：默认（没配过）是全都挂上"
+
+    _send(client, cid, content="第一句")
+    messages = client.get(f"/api/chat/conversations/{cid}").json()["messages"]
+    first = next(one for one in messages if one["role"] == "user")
+    assert sorted(first["mounts"]) == sorted(mounted)
+
+    # 切成极简模式再问一句：两条的模式必须不一样，否则"变化"画不出来
+    resp = client.post("/api/chat/mounts", json={"groups": []}, headers=_headers(client))
+    assert resp.status_code == 200, resp.text
+    _send(client, cid, content="第二句")
+
+    users = [one for one in client.get(f"/api/chat/conversations/{cid}").json()["messages"] if one["role"] == "user"]
+    assert len(users) == 2
+    assert users[0]["mounts"] != users[1]["mounts"]
+    assert users[1]["mounts"] == []

@@ -1224,6 +1224,13 @@ body[data-page='chat'] .chat {
 }
 
 /* 用户消息的动作：**不藏在 hover 里** —— 藏起来的入口等于没有入口 */
+/* 模式变了：这一轮用的是什么（与对话树里那行同源） */
+.chatmsg__mode {
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
 .chatmsg__useractions {
   display: flex;
   gap: 12px;
@@ -1410,6 +1417,12 @@ body[data-page='chat'] .chat {
 
 .ctnode.is-user .ctnode__who {
   fill: var(--pri);
+}
+
+/* 对话树里那行模式：比正文小一号、颜色淡一点，但它是一条**分界** */
+.ctnode__mode {
+  fill: var(--fg3);
+  font-size: 10.5px;
 }
 
 .ctnode__line {

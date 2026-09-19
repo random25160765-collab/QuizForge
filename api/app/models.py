@@ -840,6 +840,13 @@ class Message(Base):
     __tablename__ = "messages"
 
     id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
+    #: **这一轮用的是哪套模式** —— 发送那一刻挂载了哪几组工具，存成 JSON 列表。
+    #:
+    #: 为什么要落库：模式是用户随时在改的（那排开关），改完之后"当时是怎么问的"
+    #: 就再也推不出来了 —— 而它恰恰是回看对话时最要紧的一半（同一句话，
+    #: 挂了资料库和只带极简模式，答案的口径完全不同）。对话树据此画出过程中的变化。
+    #: 空字符串 = 这条消息早于这个字段（老消息），前端据此不画标记。
+    mounts: Mapped[str] = mapped_column(Text, default="", nullable=False)
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
