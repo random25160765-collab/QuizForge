@@ -559,3 +559,22 @@ body[data-page='workbench'] .view {
 }
 
 .ngraph__foot { padding: 8px 12px 12px; }
+
+/* 标签栏末尾的「+」：比标签矮一点、平时淡，悬停才亮 */
+.panes__newtab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+}
+
+.panes__newtab:hover { background: var(--bg3); color: var(--fg); }
