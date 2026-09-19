@@ -977,7 +977,7 @@ def create_note(lib: Library, folder: str, title: str, *, kind: str = "note") ->
     """
     suffix = OUTLINE_SUFFIX if kind == "outline" else MD_SUFFIX
     clean = _BAD_NAME.sub(" ", title).strip()
-    folder_rel = (folder or "").replace("\\", "/").strip("/")
+    folder_rel = folder_of(lib, folder)
     if not clean:
         clean, series = "未命名", 2
         while True:
@@ -1015,6 +1015,40 @@ def _link_style(target: str, new_rel: str) -> str:
     if Path(target).suffix:
         return new_rel
     return bare if "/" in target else Path(bare).name
+
+
+def folder_of(lib: Library, folder: str) -> str:
+    """把调用方给的"目标目录"规整成**库内相对路径**。
+
+    树上那个目录节点的 `path` 是**库名打头**的（`Math/Complex Analysis`，见 `tree()`），
+    而库内的真实相对路径是 `Complex Analysis`。原先把前者直接当相对路径用，于是
+    "拖到 Complex Analysis"会在库里真的建出 `Math/Complex Analysis/…` —— 多一层 `Math`
+    目录（实测：`data/notes/Math/Math/Complex Analysis/…`）。
+    这里统一剥掉库名那一截，两种写法都接受 —— 调用方不用先想清楚该传哪种。
+    """
+    cleaned = (folder or "").replace("\\", "/").strip("/")
+    prefix = lib.name.strip("/")
+    if cleaned == prefix:
+        return ""
+    if cleaned.startswith(prefix + "/"):
+        return cleaned[len(prefix) + 1 :]
+    return cleaned
+
+
+def mkdir(lib: Library, rel: str) -> dict[str, Any]:
+    """在库里新建一个目录（树上的"新建文件夹"）—— **真的 mkdir**。
+
+    越界由 `safe_path` 挡（它已经在做这件事），这里不再判一遍。
+    """
+    folder = folder_of(lib, rel)
+    if not folder:
+        raise NoteError("得给一个目录名")
+    path = safe_path(lib, folder)
+    if path.exists():
+        raise NoteError(f"已经有了：{folder}")
+    path.mkdir(parents=True)
+    _invalidate(lib)
+    return {"path": folder}
 
 
 def rename_note(lib: Library, rel: str, new_rel: str) -> dict[str, Any]:
@@ -1162,7 +1196,7 @@ def move_note(lib: Library, rel: str, folder: str) -> dict[str, Any]:
     与改名走**同一套**：两者都改路径，所以都要重写"按路径写的引用"。
     只按文件名写的双链（`[[标题]]`）不受影响 —— 那正是 Obsidian 习惯的好处。
     """
-    folder = folder.strip("/")
+    folder = folder_of(lib, folder)
     target_rel = f"{folder}/{Path(rel).name}" if folder else Path(rel).name
     if target_rel == rel:
         return read_note(lib, rel)

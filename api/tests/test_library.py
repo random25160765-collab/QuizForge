@@ -577,3 +577,43 @@ def test_view_and_file_endpoints(tmp_path: Path, monkeypatch):
 
     assert client.get("/api/library/file", params={"citekey": key, "index": 9}).status_code == 404
     assert client.get("/api/library/file", params={"citekey": "没这个"}).status_code == 404
+
+
+# ------------------------------------------------------------------ 落盘操作（真的动磁盘）
+
+
+def test_mkdir_and_move_really_touch_the_disk(root: Path):
+    """资料的组织树也是磁盘上的目录树：新建 = mkdir，移动 = move。"""
+    assert lib.mkdir(root, str(root / "新目录")) == "新目录"
+    assert (root / "新目录").is_dir()
+
+    moved = lib.move(root, str(root / "cuda" / "2205.14135v2.pdf"), str(root / "新目录"))
+    assert moved == "新目录/2205.14135v2.pdf"
+    assert (root / "新目录" / "2205.14135v2.pdf").is_file()
+    assert not (root / "cuda" / "2205.14135v2.pdf").exists()
+
+    # 拖到自己本来就在的目录：算成功，别报错（这是常见误操作）
+    same = lib.move(root, str(root / "新目录" / "2205.14135v2.pdf"), str(root / "新目录"))
+    assert same == "新目录/2205.14135v2.pdf"
+
+
+def test_mkdir_move_refuse_what_would_bite(root: Path):
+    """会咬人的三件事：越界、同名覆盖、把目录挪进它自己里面。"""
+    outside = root.parent / "别处"
+    outside.mkdir()
+    with pytest.raises(lib.LibraryError):
+        lib.mkdir(root, str(outside / "偷建"))
+    with pytest.raises(lib.LibraryError):
+        lib.move(root, str(root / "cuda" / "notes.md"), str(outside))
+
+    lib.mkdir(root, str(root / "已存在"))
+    with pytest.raises(lib.LibraryError):
+        lib.mkdir(root, str(root / "已存在"))
+
+    (root / "已存在" / "Trefethen-Bau.pdf").write_bytes(b"x")
+    with pytest.raises(lib.LibraryError):
+        lib.move(root, str(root / "cuda" / "Trefethen-Bau.pdf"), str(root / "已存在"))
+
+    (root / "已存在" / "里头").mkdir()
+    with pytest.raises(lib.LibraryError):
+        lib.move(root, str(root / "已存在"), str(root / "已存在" / "里头"))
