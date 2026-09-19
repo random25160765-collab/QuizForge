@@ -2,7 +2,9 @@
 
 三件必须说清的边界：
 
-* **源目录只读**。这里没有任何"往资料根里写"的接口 —— 只有元数据与派生缓存可写。
+* **往资料根里写的只有三个动作，都得用户明确做**：新建文件夹（`/mkdir`）、
+  移动条目（`/move`）、把拖进来的文件放进某个目录（`/upload`）。三者都钉在根内、
+  都不覆盖同名（同名自动编号）。除此之外源目录只读 —— 元数据与派生缓存才随时可写。
 * **元数据一冻结就不被覆盖**。索引动作只给"还没有元数据"的条目补一份，
   人改过的（`origin: manual`）与模型填过的（`llm`）一律不动 —— 不然跑一次索引
   就把人手工补的作者冲掉了，而且没有任何提示。
@@ -15,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .. import attachments as attach
@@ -184,6 +186,65 @@ def move(body: dict, user: CurrentUser, db: DbSession) -> dict:
     # 目标也要在同一根内，否则就是把文件挪出资料库
     _root_of(roots, Path(to_dir))
     return {"rel": _run(lib.move, root, path, to_dir)}
+
+
+#: 一次上传的上限。超了就回滚删掉半个文件 —— 别把磁盘和内存一起吃掉。
+MAX_UPLOAD_BYTES = 256 * 1024 * 1024
+
+
+@router.post("/upload")
+async def upload(
+    user: CurrentUser,
+    db: DbSession,
+    dir: str = Form(""),
+    file: UploadFile = File(...),
+) -> dict:
+    """把**系统里拖进来的文件**放进指定目录 —— 真的落盘。
+
+    为什么按目录而不是按"库"：用户的心智是"把这个 PDF 放进 cuda 那个文件夹"，
+    与树上的位置一一对应。所以这里要的是**目标目录的绝对路径**（树上那个节点知道），
+    再校验它确实在某个资料根里。
+
+    流式写：一次 1MB。大 PDF 走这条路不会把整个文件读进内存。
+    """
+    raw = str(dir or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="得给一个目标目录")
+    roots = roots_for(_settings_row(db, user.id))
+    root = _root_of(roots, Path(raw))
+    folder = _run(lib.within, root, Path(raw))
+    if not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f"这儿不是目录：{raw}")
+
+    dest = _run(lib.unique_in, folder, _run(lib.safe_name, file.filename or ""))
+    written = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"这个文件太大了（上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB）",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)   # 别留半个文件在用户的目录里
+        raise
+    except OSError as exc:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"写不进去：{exc}") from exc
+
+    base = Path(root).expanduser().resolve()
+    return {
+        "name": dest.name,
+        "path": str(dest),
+        "rel": dest.relative_to(base).as_posix(),
+        "bytes": written,
+    }
 
 
 @router.get("/items")

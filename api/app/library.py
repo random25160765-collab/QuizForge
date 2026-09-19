@@ -316,6 +316,32 @@ def move(root: Path, path: str, to_dir: str) -> str:
     return dst.relative_to(base).as_posix()
 
 
+def safe_name(name: str) -> str:
+    """把拖进来的文件名弄干净：只取最后一段、不留路径分隔与 .. 。
+
+    名字来自浏览器，不能直接当路径用（`../../x` 这种在本地应用里照样会咬人）。
+    """
+    base = Path(str(name or "").replace("\\", "/")).name.strip()
+    base = base.replace("/", "_").strip()
+    if not base or base in (".", ".."):
+        raise LibraryError("文件名不合法")
+    return base
+
+
+def unique_in(folder: Path, name: str) -> Path:
+    """同名**不覆盖**：`x.pdf` 已有就写 `x 2.pdf`、`x 3.pdf` …
+
+    这是用户的文件。静默覆盖等于替他删东西 —— 与 `move` 那边同一条讲究。
+    """
+    stem, suffix = Path(name).stem, Path(name).suffix
+    target = folder / name
+    series = 2
+    while target.exists():
+        target = folder / f"{stem} {series}{suffix}"
+        series += 1
+    return target
+
+
 def walk(root: Path) -> list[Path]:
     """遍历一个根下**值得看的**文件（跳过隐藏/缓存目录与中间产物）。
 
