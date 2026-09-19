@@ -109,6 +109,62 @@
   }
 
   /** 节点上那几行字：先按字数硬折，超了就把最后一行打省略号。 */
+  /* ------------------------------------------------- 模式（能力挂载）的变化 */
+
+  /** 这条消息当时挂载了哪几组工具。**老消息没有这个字段** → 空数组 = 不知道。 */
+  function modeKeys(message) {
+    return Array.isArray(message.mounts) ? message.mounts.slice().sort() : [];
+  }
+
+  /** 组名：`asr` 这种 key 是给程序看的，树里要写人话（取自挂载那排开关的同一份数据）。
+   *  顺序也**按那排开关的次序**排 —— 按字母排会读成"图谱 + 资料 + 笔记"，
+   *  与用户眼前那排图标的顺序对不上。 */
+  function modeLabel(keys) {
+    if (!keys.length) return '极简（不挂工具）';
+    var groups = (QF.mounts && QF.mounts.state && QF.mounts.state.groups) || [];
+    var byKey = {};
+    var order = [];
+    groups.forEach(function (one) {
+      byKey[one.key] = one.label;
+      order.push(one.key);
+    });
+    return keys
+      .slice()
+      .sort(function (a, b) {
+        return order.indexOf(a) - order.indexOf(b);
+      })
+      .map(function (key) {
+        return byKey[key] || key;
+      })
+      .join(' + ');
+  }
+
+  /**
+   * 这一条是不是"模式变了"的那一条。
+   *
+   * 判据是**与前一条用户消息比**：一轮对话用的是按下发送那一刻的挂载集，
+   * 所以模式的变化只可能发生在用户消息上（助手消息继承它父节点那一轮）。
+   * 挂了什么、改了几次，回看时全靠它 —— 同一句话，挂了资料库和只有极简模式，
+   * 答案的口径完全不同。
+   *
+   * 第一次记录（前一条没有这个字段）也算"变了"：那是这套记录的开始，值得标出来。
+   */
+  function modeChanged(message) {
+    if (message.role !== 'user' || !Array.isArray(message.mounts)) return false;
+    var prev = null;
+    state.messages.forEach(function (one) {
+      if (one.role !== 'user' || !one.id || one.id >= message.id) return;
+      if (!prev || one.id > prev.id) prev = one;
+    });
+    if (!prev || !Array.isArray(prev.mounts)) return true;
+    return modeKeys(prev).join(',') !== modeKeys(message).join(',');
+  }
+
+  /** 这一条节点上要写的那行模式说明（没变化就是空串） */
+  function modeNote(message) {
+    return modeChanged(message) ? '◆ 模式：' + modeLabel(modeKeys(message)) : '';
+  }
+
   function treeLines(message) {
     var text = String(message.content || '').replace(/\s+/g, ' ').trim();
     if (!text) {
@@ -154,7 +210,8 @@
   }
 
   function treeNodeHeight(message) {
-    return 30 + treeLines(message).length * 15;
+    // 模式那一行也算进高度：不算的话它会被压在节点框外面（或者被裁掉）
+    return 30 + treeLines(message).length * 15 + (modeNote(message) ? 16 : 0);
   }
 
   /** 把整棵树算成 { nodes, edges }（纯几何，不含 DOM）。 */
@@ -212,6 +269,7 @@
         message: message,
         depth: depth,
         lines: treeLines(message),
+        mode: modeNote(message),
         h: height,
         across: center, // 同层里的位置（横排时是 y，竖排时是 x）
         onPath: !!onPath[message.id],
@@ -446,6 +504,14 @@
           ])
         );
       });
+      // 模式那一行画在正文下面、框内最后一格：一眼看得出"从这一轮起换了模式"
+      if (node.mode) {
+        group.appendChild(
+          sv('text', { class: 'ctnode__mode', x: 12, y: 36 + node.lines.length * 15 }, [
+            document.createTextNode(node.mode),
+          ])
+        );
+      }
 
       // 点节点 = 切到那条分支（与原实现一致）
       group.addEventListener('click', function (event) {
@@ -1705,6 +1771,14 @@
       // 正文是投影，零件才是真相：旧消息没有 parts 时按正文兜一个
       body.appendChild(
         partsNode(m.parts && m.parts.length ? m.parts : [{ type: 'text', text: m.content || '' }])
+      );
+    }
+    // 模式变了就在这一条上标出来 —— 与对话树里那行是同一件事的两个视角
+    // （树看全局，这里看当下这一轮）
+    if (modeChanged(m)) {
+      body.insertBefore(
+        h('div.chatmsg__mode', { text: '本轮模式：' + modeLabel(modeKeys(m)) }),
+        body.firstChild || null
       );
     }
     var row = h(
