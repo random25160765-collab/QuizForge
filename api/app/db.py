@@ -141,6 +141,39 @@ def sqlite_rowid_pk_problems(db_path: Path) -> list[str]:
         return _rowid_pk_problems(conn)
 
 
+#: 「加法列」：模型里有、老库里还没有的那些。
+#:
+#: 只有**能安全就地补上**的列才配进这张表 —— `ALTER TABLE … ADD COLUMN` 只加一列，
+#: 不改已有行的语义（给个默认值即可）。改类型 / 加约束 / 删列都不行，那种事
+#: 仍然只能重建库（SQLite 改不了列类型，`_rowid_pk_problems` 那段注释讲了为什么）。
+_ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("conversations", "folder", "VARCHAR(240) NOT NULL DEFAULT ''"),
+)
+
+
+def _ensure_columns(conn) -> list[str]:  # noqa: ANN001
+    """把缺的加法列补上，返回**补了哪些**（给日志与测试看）。
+
+    为什么要这一道：`create_all` **不改已有的表**。所以在"已经用了一阵"的库上
+    加一列，表现是"代码里读得到、库里根本没有" —— 崩在第一次写的时候，
+    而测试每次建新库，永远绿。所以应用每次开引擎都顺手补一次。
+    """
+    added: list[str] = []
+    tables = {
+        str(row[0])
+        for row in _run(conn, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+    }
+    for table, column, ddl in _ADDITIVE_COLUMNS:
+        if table not in tables:
+            continue  # 表还没建（新库）：create_all 会用模型里的完整定义建它
+        have = {str(row[1]) for row in _run(conn, f'PRAGMA table_info("{table}")')}
+        if column in have:
+            continue
+        _run(conn, f'ALTER TABLE "{table}" ADD COLUMN "{column}" {ddl}')
+        added.append(f"{table}.{column}")
+    return added
+
+
 def ensure_schema(engine: Engine) -> None:
     """把表建出来（幂等），并**当场**报告库结构问题。
 
@@ -156,8 +189,12 @@ def ensure_schema(engine: Engine) -> None:
     Base.metadata.create_all(engine)
 
     if engine.dialect.name == "sqlite":
-        with engine.connect() as conn:
+        with engine.begin() as conn:
+            # 先补加法列，再体检（补完才谈得上"结构对不对"）
+            added = _ensure_columns(conn)
             problems = _rowid_pk_problems(conn)
+        if added:
+            logging.getLogger("quizforge").info("库结构已就地补上：%s", "、".join(added))
         if problems:
             logging.getLogger("quizforge").warning(
                 "库结构是旧的：%s。这意味着写过会失败 —— 重建一份："
@@ -187,9 +224,11 @@ def get_engine() -> Engine:
         _engine = create_engine(url, **kwargs)
         if path is not None:
             _configure_sqlite(_engine)
-        if fresh:
-            # 库文件是刚建出来的 —— 顺手把表建好（只在第一次发生）
-            ensure_schema(_engine)
+        # **每次开引擎都过一遍**，不只是"库文件是新建的"那一次。
+        # 原先只在 fresh 时跑，后果是：往已有的库里加一张表 / 加一列，代码读得到、
+        # 库里根本没有 —— 崩在第一次写的时候。`create_all` 是幂等的（已存在的表跳过），
+        # 所以每次跑一遍的代价只是一次 sqlite_master 查询。
+        ensure_schema(_engine)
     return _engine
 
 

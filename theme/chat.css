@@ -8,10 +8,11 @@
  * 所有选择器都带 body[data-page='chat'] 前缀，避免影响别的页。
  * ========================================================================= */
 
-body[data-page='chat'] .chat__aside {
-  /* 留着 DOM（aside 里的渲染逻辑还在跑），但不再占位置 */
-  display: none;
-}
+/* 会话选择区**回到这一页**。
+ * 前一版把它藏起来（理由：会话列表在左边那棵资源树里已经有了）。但这一页现在是
+ * 独立的页面，用户的原话是"这个对话界面是独立的，但是你把它本来左边的那个对话
+ * 选择区删掉了" —— 独立页面就该自带选择区：在这儿翻会话不用先回资源页。
+ * 资源页那棵树继续管"分组、搬家"，两边各司其职。 */
 
 body[data-page='chat'] .view {
   /* 铺满：对话是**应用面**，不该像阅读列那样被 max-width 缩起来
@@ -34,10 +35,10 @@ body[data-page='chat'] #app-root {
 
 body[data-page='chat'] .chat {
   display: grid;
-  /* 一列，不再是"会话列表 + 对话"两列：会话列表已经在**左边那棵资源树**里了
-     （对话 / 资料 / 文档三个根），再在页面里摆一份就是同一件事出现两遍 ——
-     而且只有这一页多一列，与其它页面不一致（用户指出过）。 */
-  grid-template-columns: minmax(0, 1fr);
+  /* 会话列表 + 对话：两列（见上面那条注释）。264px 与资源树的缩进节奏接近，
+     再宽就喧宾夺主 —— 正文是主角。 */
+  grid-template-columns: 264px minmax(0, 1fr);
+  gap: 0;
   /* **一行**，且不留 gap：这一格里还有几个隐藏的浮层（对话树 / 演示 / 便签 / 大题），
      它们也是栅格子项 —— 每个空行照样吃掉一条 16px 的 gap，五条就是 64px，
      于是"输入框下面总有一段空白"（实测 .chat 900、.chat__main 只有 836）。 */
@@ -63,8 +64,9 @@ body[data-page='chat'] .chat {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 0 2px 8px;
+  gap: 8px;
+  /* 与输入框之间多给 4px：这一条（能力开关）原先像贴在输入框上 */
+  padding: 0 2px 12px;
 }
 
 .chat__modes:empty { display: none; }
@@ -224,13 +226,15 @@ body[data-page='chat'] .chat {
   min-height: 0;
 }
 
+/* 间距统一放舒展一档（用户原话"间距贴太紧了，稍微舒展一点"）。
+ * 只动"块与块"，行内不动 —— 行距一松，一屏能读的字就少一截。 */
 .chat__thread {
   flex: 1;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 9px 6px 2px 2px;
+  gap: 18px;
+  padding: 12px 8px 4px 2px;
   scroll-behavior: smooth;
 }
 
@@ -243,7 +247,7 @@ body[data-page='chat'] .chat {
 .chatmsg {
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
-  gap: 10px;
+  gap: 12px;
 }
 
 .chatmsg__who {
@@ -273,7 +277,8 @@ body[data-page='chat'] .chat {
 .chatmsg__body {
   min-width: 0;
   font-size: 14.5px;
-  line-height: 1.72;
+  /* 与正文渲染器（markdown.css 的 1.78）对齐，读起来是一套东西 */
+  line-height: 1.78;
 }
 
 .chatmsg__text {
@@ -285,7 +290,7 @@ body[data-page='chat'] .chat {
 .chatmsg--user .chatmsg__body {
   background: var(--bg3);
   border-radius: var(--r-md);
-  padding: 9px 12px;
+  padding: 11px 14px;
 }
 
 .chatmsg.is-error .chatmsg__body {
@@ -566,8 +571,8 @@ body[data-page='chat'] .chat {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 10px;
+  margin-top: 10px;
   font-size: 11.5px;
   color: var(--fg2);
 }
@@ -1221,8 +1226,8 @@ body[data-page='chat'] .chat {
 /* 用户消息的动作：**不藏在 hover 里** —— 藏起来的入口等于没有入口 */
 .chatmsg__useractions {
   display: flex;
-  gap: 10px;
-  margin-top: 5px;
+  gap: 12px;
+  margin-top: 8px;
 }
 
 .chatmsg__action:hover {

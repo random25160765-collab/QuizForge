@@ -33,8 +33,7 @@
     treebar: document.getElementById('notes-treebar'),
     main: document.getElementById('notes-main'),
     side: document.getElementById('notes-side'),
-    vault: document.getElementById('notes-vault'),
-    collapse: document.getElementById('notes-collapse')
+    vault: document.getElementById('notes-vault')
   };
 
   var state = {
@@ -50,6 +49,7 @@
     savedAt: '',
     tabs: [],           // 打开过的笔记（标签页）—— 库大、目录深，没有它就得来回找
     side: 'open',       // open | closed
+    files: 'open',      // open | closed —— 左边那个文件面板（原先只有右栏能收，它收不起来）
     panel: 'outline'    // 侧栏当前面板：outline | links | props | history
   };
 
@@ -68,7 +68,11 @@
     history: svgIcon('<path d="M12 7v5l3 2"/><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5V10H9"/>'),
     tidy: svgIcon('<path d="M5 4v4M3 6h4"/><path d="M17 16v5M14.5 18.5h5"/><path d="M13 4.5 9.5 11h3L9 17.5"/>'),
     type: svgIcon('<path d="M5 19h6M11 19h8"/><path d="M12 4v15"/>'),
-    side: svgIcon('<path d="M4 5h16v14H4z"/><path d="M15 5v14"/>')
+    side: svgIcon('<path d="M4 5h16v14H4z"/><path d="M15 5v14"/>'),
+    // 目录折叠的箭头：与外壳资源树同一枚（右向 chevron，展开时转 90° 朝下）
+    chev: svgIcon('<path d="m9 6 6 6-6 6"/>'),
+    plus: svgIcon('<path d="M12 5v14M5 12h14"/>'),
+    x: svgIcon('<path d="M6 6l12 12M18 6 6 18"/>')
   };
   var folded = {};      // 大纲折叠
   var dirFolded = {};   // 目录折叠
@@ -146,16 +150,23 @@
       if (savedSide === 'closed' || savedSide === 'open') state.side = savedSide;
       var savedPanel = window.localStorage.getItem('qf.notes.panel');
       if (savedPanel) state.panel = savedPanel;
+      var savedFiles = window.localStorage.getItem('qf.notes.files');
+      if (savedFiles === 'open' || savedFiles === 'closed') state.files = savedFiles;
     } catch (err) {
       /* 读不到就用默认 */
     }
     rootEl.setAttribute('data-side', state.side);
+    rootEl.setAttribute('data-files', state.files);
     applyTypography();
     bind();
     loadLibs();
   }
 
   function bind() {
+    // 面板上这两颗用文字字形（＋ / ×）时，光学中心和圆角矩形对不上（全角字符尤其明显），
+    // 一律换成内联 SVG —— 与工具条上那几颗同一套画法。
+    if (el.newBtn) el.newBtn.innerHTML = ICONS.plus;
+    if (el.clear) el.clear.innerHTML = ICONS.x;
     el.lib.addEventListener('change', function () {
       if (state.dirty) saveNow(true);
       state.lib = el.lib.value;
@@ -247,21 +258,35 @@
             'div.ntree__head',
             null,
             h('span', { text: (tree.count || 0) + ' 条目' }),
-            h('button.nbtn', {
-              type: 'button',
-              text: '全部展开/收起',
-              title: '把目录全折起来',
-              onClick: function () {
-                var anyOpen = Object.keys(dirFolded).some(function (k) {
-                  return !dirFolded[k];
-                });
-                dirFolded = {};
-                Object.keys(collectDirs(tree)).forEach(function (p) {
-                  dirFolded[p] = !anyOpen;
-                });
-                loadTree();
-              }
-            })
+            (function () {
+              var all = Object.keys(collectDirs(tree));
+              // 判据要落在**目录的实际展开态**上，而不是"dirFolded 里有没有值"：
+              // dirFolded 是"被我折起来的那些"的集合，空集合恰恰表示**全都展开着**。
+              // 用后者当过判据，一进来文案就写成"全部展开"（明明已经全展开），
+              // 点一下也什么都不发生 —— 和用户那句"一个只能收起不能展开"同源。
+              var anyOpen = all.some(function (p) {
+                return !dirFolded[p];
+              });
+              // 文案说清"点下去会发生什么"，不再是让人猜的"全部展开/收起"
+              return h('button.nbtn', {
+                type: 'button',
+                text: anyOpen ? '全部收起' : '全部展开',
+                title: anyOpen ? '把目录全折起来' : '把目录全展开',
+                onClick: function () {
+                  // 踩过：这里原先写 `dirFolded[p] = !anyOpen`，而"全折起来"之后
+                  // anyOpen 恰好是 false —— 第二次点算出来还是 true，于是**折了就再也
+                  // 展不开**（用户原话"一个只能收起不能展开"）。
+                  // 展开用"清空"而不是"逐条写 false"：默认态就是展开，清空最干净。
+                  dirFolded = {};
+                  if (anyOpen) {
+                    all.forEach(function (p) {
+                      dirFolded[p] = true;
+                    });
+                  }
+                  loadTree();
+                }
+              });
+            })()
           )
         );
         (tree.dirs || []).forEach(function (dir) {
@@ -309,7 +334,11 @@
         }
       },
       indentGuides(depth),
-      h('span.ntree__caret' + (isFolded ? '.ntree__caret--folded' : ''), { text: '▾' }),
+      h('span.ntree__caret', {
+        html: ICONS.chev,
+        // 展开时朝下（转 90°）、折起时朝右 —— 与外壳资源树同一套语义
+        style: isFolded ? null : { transform: 'rotate(90deg)' }
+      }),
       h('span.ntree__label', { text: dir.name }),
       h('span.ntree__count', { text: String(dir.count || 0) })
     );
@@ -691,6 +720,14 @@
       h(
         'div.ntabs__tools',
         null,
+        h('button.nicon.nicon--mini' + (state.files === 'open' ? '.is-on' : ''), {
+          type: 'button',
+          // 右栏那枚图标翻过来当"左栏"用：同一套语言，一眼知道它管哪一边
+          html: ICONS.side,
+          style: { transform: 'scaleX(-1)' },
+          title: state.files === 'open' ? '收起文件栏' : '展开文件栏',
+          onClick: toggleFiles
+        }),
         h('button.nicon.nicon--mini', {
           type: 'button',
           html: ui.icon('target', 16),
@@ -699,7 +736,7 @@
         }),
         h('button.nicon.nicon--mini', {
           type: 'button',
-          text: '＋',
+          html: ICONS.plus,
           title: '新建笔记（⌘O 同级 / ⌘P 子级）',
           onClick: function () {
             createNote('', '');
@@ -714,6 +751,19 @@
       )
     );
     return bar;
+  }
+
+  /** 收起 / 展开左边的文件面板。与右栏同一套：状态记本机，栅格换一列。
+   *  原先它收不起来 —— 用户原话"这个目录现在收不起来，加一个收起按钮"。 */
+  function toggleFiles(to) {
+    state.files = to === 'open' || to === 'closed' ? to : (state.files === 'open' ? 'closed' : 'open');
+    rootEl.setAttribute('data-files', state.files);
+    try {
+      window.localStorage.setItem('qf.notes.files', state.files);
+    } catch (err) {
+      /* 存不下就只在这次生效 */
+    }
+    renderMain();
   }
 
   function toggleSide(to) {

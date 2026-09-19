@@ -1960,10 +1960,17 @@ body[data-side='closed'] .side > * { display: none; }
 
 .stree__caret--none { width: 14px; }
 
-.stree__icon { display: inline-flex; flex: none; color: var(--fg3); }
-
-/* 图标位：留出宽度但不画东西（目录行用，好让名字和带图标的兄弟行对齐） */
-.stree__icon--slot { width: 13px; }
+/* 图标与箭头**同宽同位**（都 14px、都居中）：同一层的"目录箭头"与"条目图标"
+ * 落在同一条竖线上，树干的分支点才连得起来（用户提过两次的对齐）。 */
+.stree__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--fg3);
+}
 
 .stree__label {
   flex: 1 1 auto;
@@ -1994,7 +2001,9 @@ body[data-side='closed'] .side > * { display: none; }
   flex: none;
   width: 18px;
   height: 18px;
-  margin-left: 2px;
+  /* 推到行尾：这一行是 [箭头][名字][数字][＋]，「＋」该在右上角那个位
+     （用户给的样子就是右上角一个方框），而不是紧跟在名字后面 */
+  margin-left: auto;
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
@@ -2006,6 +2015,13 @@ body[data-side='closed'] .side > * { display: none; }
 }
 
 .stree__row:hover .stree__more { opacity: 1; }
+
+/* 「＋」常驻：对话那一支用它当**唯一入口**，藏起来等于没有（要悬停才知道有它，
+ * 而"要开一条新对话"恰恰是这一支最常见的动作）。 */
+.stree__more--on {
+  opacity: 1;
+  background: var(--bg3);
+}
 
 .stree__more:hover { background: var(--bg3); color: var(--fg); }
 

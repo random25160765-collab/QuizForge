@@ -46,6 +46,13 @@
     return node;
   }
 
+  /** 一枚图标：宽度与箭头槽相同（14px），落在**箭头那一列**上。 */
+  function mark(name) {
+    var node = h('span.stree__icon');
+    node.innerHTML = ui.icon(name, 13);
+    return node;
+  }
+
   function row(level, opts) {
     var node = h('div.stree__row' + (opts.cls ? '.' + opts.cls : ''), {
       title: opts.title || opts.label,
@@ -53,17 +60,14 @@
       'data-level': String(level),
     });
     node.style.paddingLeft = (8 + level * 12) + 'px';
+    // 箭头列与图标列**是同一列**（都 14px，都居中）。
+    // 踩过：原先目录行画箭头、条目行先空一个箭头位再画图标，同一层里
+    // "目录的箭头"与"条目的图标"差 20px —— 树干上的点连不成一条竖线
+    // （用户原话：文件树的图标应该和左侧的第一个字符/图标对齐）。
+    // 规则：有箭头就画箭头；条目把图标画在箭头的位置上；两者都没有才留空位。
     if (opts.caret) node.appendChild(caret(!!opts.open));
-    else node.appendChild(h('span.stree__caret.stree__caret--none'));
-    if (opts.icon) {
-      var mark = h('span.stree__icon');
-      mark.innerHTML = ui.icon(opts.icon, 13);
-      node.appendChild(mark);
-    } else if (opts.iconSlot) {
-      // 只留位置不画东西：目录行不配图标（一级就有十几个，同款图标重复十几遍是噪音，
-      // 参考图那棵树也是不给目录配图标），但名字要和带图标的兄弟行对齐
-      node.appendChild(h('span.stree__icon.stree__icon--slot'));
-    }
+    if (opts.icon) node.appendChild(mark(opts.icon));
+    else if (!opts.caret) node.appendChild(h('span.stree__caret.stree__caret--none'));
     node.appendChild(h('span.stree__label', { text: opts.label }));
     if (opts.count != null) node.appendChild(h('span.stree__count', { text: String(opts.count) }));
     return node;
@@ -76,7 +80,6 @@
     var head = row(level, {
       label: opts.label,
       icon: opts.icon,
-      iconSlot: opts.iconSlot,
       count: opts.count,
       caret: true,
       open: open,
@@ -88,14 +91,17 @@
     box.appendChild(body);
     if (opts.actions) {
       // 「＋」平时不出现，悬停才亮 —— 目录行上常驻一个按钮会让整棵树变吵
-      var more = h('button.stree__more', {
+      var more = h('button.stree__more' + (opts.plusAlways ? '.stree__more--on' : ''), {
         type: 'button',
-        title: '新建…',
-        'aria-label': '新建',
+        title: opts.plusTitle || '新建…',
+        'aria-label': opts.plusTitle || '新建',
         html: ui.icon('plus', 13),
       });
       more.addEventListener('click', function (ev) {
         ev.stopPropagation();
+        // `plusRun` 给了就直接干：常用的那件事不该藏进一层菜单里
+        // （用户："'新对话'那个做成图标放在右上角的框里" —— 点一下就该开一条）
+        if (opts.plusRun) { opts.plusRun(); return; }
         openMenu(more, opts.actions());
       });
       head.appendChild(more);
@@ -145,10 +151,19 @@
       icon: opts.icon,
       count: opts.count,
       title: opts.title || opts.label,
-      drag: !!opts.kind,
+      // 能搬的东西就要能拖：会话没有 `kind`（点击是跳页，不是送进窗格），
+      // 但它有 `move` —— 只认 kind 的话，对话行根本拖不动，分组就成了摆设。
+      drag: !!(opts.kind || opts.move),
     });
     node.classList.add('stree__row--leaf');
     if (opts.dim) node.classList.add('is-dim');
+    if (opts.menu) {
+      node.addEventListener('contextmenu', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openMenu(node, opts.menu());
+      });
+    }
     node.addEventListener('click', function () {
       if (opts.href) { location.href = opts.href; return; }
       if (opts.kind) send(opts.kind, opts.ref, opts.label);
@@ -188,13 +203,15 @@
 
   function doMove(from, to) {
     if (!from || !to || from.kind !== to.kind) {
-      ui.toast('只能在同一类里挪：笔记归笔记、资料归资料', 'warn');
+      ui.toast('只能在同一类里挪：笔记归笔记、资料归资料、对话归对话', 'warn');
       return;
     }
     if (from.dir === to.dir) return;        // 已经在这个文件夹里了
-    var call = from.kind === 'note'
-      ? api.post('/notes/move', { lib: from.lib, path: from.path, folder: to.dir })
-      : api.post('/library/move', { path: from.path, to: to.dir });
+    var call = from.kind === 'chat'
+      ? api.patch('/chat/conversations/' + from.id, { folder: to.dir })
+      : from.kind === 'note'
+        ? api.post('/notes/move', { lib: from.lib, path: from.path, folder: to.dir })
+        : api.post('/library/move', { path: from.path, to: to.dir });
     call.then(function () {
       ui.toast('挪好了：' + (from.title || ''));
       paint();
@@ -202,9 +219,9 @@
   }
 
   /** 起个名字（新建文件夹 / 新建笔记都是先问名字，再落盘） */
-  function askName(title, placeholder) {
+  function askName(title, placeholder, value, okLabel) {
     return new Promise(function (resolve) {
-      var input = h('input.input', { type: 'text', placeholder: placeholder || '' });
+      var input = h('input.input', { type: 'text', placeholder: placeholder || '', value: value || '' });
       var done = false;
       function finish(value) {
         if (done) return;
@@ -216,7 +233,7 @@
         body: h('div.form__field', null, input),
         actions: [
           { label: '取消', kind: 'ghost', onClick: function () { finish(''); } },
-          { label: '建', kind: 'primary', onClick: function () { finish(input.value.trim()); } },
+          { label: okLabel || '建', kind: 'primary', onClick: function () { finish(input.value.trim()); } },
         ],
       });
       input.addEventListener('keydown', function (ev) {
@@ -224,13 +241,25 @@
         finish(input.value.trim());
         box.close();
       });
-      setTimeout(function () { input.focus(); }, 30);
+      setTimeout(function () {
+        input.focus();
+        // 预填时全选：改名多半是"只改一小段"，不该逼人从头敲
+        if (value) input.select();
+      }, 30);
     });
   }
 
   function doCreate(where, kind) {
     askName(kind === 'folder' ? '新建文件夹' : '新建笔记', '名字').then(function (name) {
       if (!name) return;
+      // 对话的分组只活在库里（不是磁盘目录），所以它走 chat 那套接口
+      if (where.kind === 'chat') {
+        api.post('/chat/folders', { path: joinRel(where.dir, name) }).then(function () {
+          ui.toast('建好了：' + name);
+          paint();
+        }).catch(function (err) { toastErr('没建成', err); });
+        return;
+      }
       var call = where.kind === 'note'
         ? (kind === 'folder'
           ? api.post('/notes/folder', { lib: where.lib, folder: joinRel(where.dir, name) })
@@ -366,30 +395,143 @@
 
   /* ------------------------------------------------------------------ 三个根 */
 
+  /* 一级内容从第 1 层起（根是第 0 层）。
+   * 原先对话与资料都从**第 2 层**起 —— 一进根就缩进 24px，比笔记那边深一格，
+   * 用户的原话是"下面的对话往左收一点"。三个根现在同一套缩进。 */
+  var CHILD_LEVEL = 1;
+
+  /** 开一条新对话。组头那个「＋」和菜单共用它。 */
+  function newConversation() {
+    api.post('/chat/conversations', {}).then(function (out) {
+      var id = out && out.conversation && out.conversation.id;
+      location.href = id ? 'chat.html?c=' + encodeURIComponent(id) : 'chat.html';
+    }).catch(function (err2) {
+      ui.toast('开不了新对话：' + ((err2 && err2.message) || err2), 'error');
+    });
+  }
+
+  function createChatFolder(parent) {
+    askName('新建分组', '可以用 / 分层，例如 考研/数学').then(function (name) {
+      if (!name) return;
+      doCreate({ kind: 'chat', dir: parent || '' }, 'folder');
+    });
+  }
+
+  function renameChatFolder(path) {
+    askName('分组改名 / 搬家', '新名字（含 / 就是换一层）', path, '改').then(function (name) {
+      if (!name || name === path) return;
+      api.patch('/chat/folders', { path: path, to: name }).then(function () {
+        ui.toast('改好了：' + name);
+        paint();
+      }).catch(function (err) { toastErr('没改成', err); });
+    });
+  }
+
+  function deleteChatFolder(path) {
+    // 后端在里面还有东西时会拒绝 —— 所以这里不需要再吓唬用户一次
+    api.del('/chat/folders?path=' + encodeURIComponent(path)).then(function () {
+      ui.toast('删掉了：' + path);
+      paint();
+    }).catch(function (err) { toastErr('没删成', err); });
+  }
+
+  /** 分组行的右键菜单：手边这几件 */
+  function chatFolderActions(path) {
+    return [
+      { label: '新建对话', run: newConversation },
+      { label: '新建子分组', run: function () { createChatFolder(path); } },
+      { label: '改名 / 搬家', run: function () { renameChatFolder(path); } },
+      { label: '删掉这个分组', run: function () { deleteChatFolder(path); } },
+    ];
+  }
+
+  /** 会话行的右键菜单 */
+  function chatActions(one) {
+    return [
+      {
+        label: one.pinned ? '取消置顶' : '置顶',
+        run: function () {
+          api.patch('/chat/conversations/' + one.id, { pinned: !one.pinned }).then(function () {
+            paint();
+          }).catch(function (err) { toastErr('没改成功', err); });
+        },
+      },
+      {
+        label: '改个名字',
+        run: function () {
+          askName('改个名字', '对话标题', one.title || '', '改').then(function (name) {
+            if (!name || name === one.title) return;
+            api.patch('/chat/conversations/' + one.id, { title: name }).then(function () {
+              paint();
+            }).catch(function (err) { toastErr('没改成', err); });
+          });
+        },
+      },
+      {
+        label: '移到根目录',
+        run: function () {
+          if (!one.folder) return;
+          api.patch('/chat/conversations/' + one.id, { folder: '' }).then(function () {
+            ui.toast('挪到最外面了');
+            paint();
+          }).catch(function (err) { toastErr('没挪成', err); });
+        },
+      },
+    ];
+  }
+
   function paintConversations(box) {
     return api.get('/chat/conversations').then(function (res) {
       var list = (res && res.conversations) || [];
-      // 「新对话」放在最前：会话列表挪进左栏之后，这儿就成了唯一的入口
-      var fresh = leaf(2, { label: '新对话', icon: 'plus', title: '开一条新对话' });
-      fresh.addEventListener('click', function () {
-        api.post('/chat/conversations', {}).then(function (out) {
-          var id = out && out.conversation && out.conversation.id;
-          location.href = id ? 'chat.html?c=' + encodeURIComponent(id) : 'chat.html';
-        }).catch(function (err2) {
-          ui.toast('开不了新对话：' + ((err2 && err2.message) || err2), 'error');
+      var paths = (res && res.folders) || [];
+      // 目录树：后端给的分组（含空的）+ 每条会话自己的 folder
+      var root = { dirs: {}, files: [] };
+      function nodeAt(path) {
+        var cur = root;
+        String(path || '').split('/').filter(Boolean).forEach(function (seg) {
+          cur.dirs[seg] = cur.dirs[seg] || { dirs: {}, files: [] };
+          cur = cur.dirs[seg];
         });
-      }, true);
-      box.appendChild(fresh);
-      list.forEach(function (one) {
-        box.appendChild(leaf(2, {
-          label: one.title || '未命名对话',
-          icon: 'robot',
-          title: (one.preview || '') + (one.count ? '\n' + one.count + ' 条消息' : ''),
-          // 带 id 过去：对话页认这个参数，落到那一条上
-          href: 'chat.html?c=' + encodeURIComponent(one.id),
-        }));
-      });
+        return cur;
+      }
+      paths.forEach(function (one) { nodeAt(one); });
+      list.forEach(function (one) { nodeAt(one.folder || '').files.push(one); });
+
+      if (!list.length && !paths.length) {
+        err(box, '还没有对话。右上角那个「＋」开一条。');
+        return;
+      }
+      paintChatNode(box, root, CHILD_LEVEL, '');
     }).catch(function () { err(box, '读不到对话列表'); });
+  }
+
+  /** 对话这一支的一层：先分组、后会话（与资料那边同一个形状）。 */
+  function paintChatNode(box, node, level, prefix) {
+    Object.keys(node.dirs).sort().forEach(function (name) {
+      var child = node.dirs[name];
+      var path = prefix ? prefix + '/' + name : name;
+      box.appendChild(group(level, {
+        key: 'chatdir:' + path,
+        label: name,
+        count: countItems(child),
+        // 拖到分组上 = 把这条对话挪进去（底层就是改 conversations.folder）
+        drop: { kind: 'chat', dir: path, label: name },
+        actions: function () { return chatFolderActions(path); },
+        load: function (body) { paintChatNode(body, child, level + 1, path); },
+      }));
+    });
+    node.files.forEach(function (one) {
+      box.appendChild(leaf(level, {
+        label: one.title || '未命名对话',
+        // 置顶的换一枚星：一排同样的机器人头看不出哪条是我钉住的
+        icon: one.pinned ? 'star' : 'robot',
+        title: (one.preview || '') + (one.count ? '\n' + one.count + ' 条消息' : ''),
+        // 带 id 过去：对话页认这个参数，落到那一条上
+        href: 'chat.html?c=' + encodeURIComponent(one.id),
+        move: { kind: 'chat', id: one.id, dir: one.folder || '', title: one.title || '' },
+        menu: function () { return chatActions(one); },
+      }));
+    });
   }
 
   /* 条目图标按类型分 —— 一列全是一样的书，等于没有图标 */
@@ -440,17 +582,19 @@
       // 只有一个根时不留"根"这一层（现在的样子），多根才分
       state.libRoot = buckets.length === 1 ? buckets[0].root : '';
       buckets.forEach(function (b) {
+        // 层级与对话、笔记两边对齐：根是第 0 层，根里的第一层内容是 CHILD_LEVEL。
+        // （原先这里写死 2，一进根就缩 24px —— 用户说"往左收一点"。）
         if (buckets.length === 1) {
-          paintItemNode(box, b.tree, 2, b.root);
+          paintItemNode(box, b.tree, CHILD_LEVEL, b.root);
           return;
         }
-        box.appendChild(group(2, {
+        box.appendChild(group(CHILD_LEVEL, {
           key: 'libroot:' + b.root,
           label: b.name,
-            count: countItems(b.tree),
+          count: countItems(b.tree),
           drop: { kind: 'doc', dir: b.root, label: b.name },
           actions: function () { return folderActions({ kind: 'doc', dir: b.root }); },
-          load: function (body) { paintItemNode(body, b.tree, 3, b.root); },
+          load: function (body) { paintItemNode(body, b.tree, CHILD_LEVEL + 1, b.root); },
         }));
       });
     }).catch(function () { err(box, '读不到资料条目'); });
@@ -661,6 +805,13 @@
       key: 'root:chat',
       label: '对话',
       icon: 'robot',
+      // 组头右上角那个「＋」= 开一条新对话（用户要求把它做成图标放在那儿）；
+      // 分组相关的几件事在右键菜单里，同一个 actions 也挂在组头上
+      plusRun: newConversation,
+      plusTitle: '新建对话',
+      plusAlways: true,
+      drop: { kind: 'chat', dir: '', label: '对话' },
+      actions: function () { return chatFolderActions(''); },
       load: paintConversations,
     }));
     box.appendChild(group(0, {

@@ -1314,3 +1314,98 @@ def test_stale_streaming_is_healed_on_read(client, db_session) -> None:  # noqa:
     body = client.get(f"/api/chat/conversations/{cid}").json()
     assert body["messages"][-2]["status"] == "partial"
     assert body["messages"][-1]["status"] == "streaming", "刚开的那条要留着继续收"
+
+
+# ------------------------------------------------------------------ 分组
+#
+# 用户的诉求原话是"让对话也能像文件一样可以放文件夹里"。这里钉住四件事：
+# 分组能建、会话能挪进去、改名时整棵子树跟着走、以及**里面还有东西不许删**。
+
+
+def _folders(client) -> dict:  # noqa: ANN001
+    return client.get("/api/chat/conversations").json()
+
+
+def _one(client, cid: str) -> dict:  # noqa: ANN001
+    return next(c for c in _folders(client)["conversations"] if c["id"] == cid)
+
+
+def test_folder_round_trip(client) -> None:  # noqa: ANN001
+    """建分组 → 会话挪进去 → 改名，整棵子树（含会话）跟着走。"""
+    _register(client)
+    cid = _new_conversation(client)
+
+    resp = client.post("/api/chat/folders", json={"path": "考研/数学"}, headers=_headers(client))
+    assert resp.status_code == 200, resp.text
+    # 父级要一起建：只建 `a/b` 的话，树里会多出一层没有名字的中间层
+    assert _folders(client)["folders"][:2] == ["考研", "考研/数学"]
+
+    moved = client.patch(f"/api/chat/conversations/{cid}", json={"folder": "考研/数学"}, headers=_headers(client))
+    assert moved.status_code == 200, moved.text
+    assert _one(client, cid)["folder"] == "考研/数学"
+
+    renamed = client.patch(
+        "/api/chat/folders", json={"path": "考研", "to": "2027 考研"}, headers=_headers(client)
+    )
+    assert renamed.status_code == 200, renamed.text
+    listed = _folders(client)
+    assert "2027 考研/数学" in listed["folders"]
+    # 会话也跟着走了 —— 只改分组记录不改会话，是这里最容易漏的一半
+    assert _one(client, cid)["folder"] == "2027 考研/数学"
+
+
+def test_empty_folder_survives(client) -> None:  # noqa: ANN001
+    """空分组要留在列表里。
+
+    只从会话反推目录的话，"新建分组"点完界面上什么都没有 —— 用户只会以为坏了。
+    """
+    _register(client)
+    assert client.post("/api/chat/folders", json={"path": "待整理"}, headers=_headers(client)).status_code == 200
+    assert "待整理" in _folders(client)["folders"]
+
+
+def test_folder_refuses_to_swallow_another(client) -> None:  # noqa: ANN001
+    """改成已存在的分组名：**拒绝**，不悄悄合并（并完用户就找不到东西了）。"""
+    _register(client)
+    for name in ("A", "B"):
+        assert client.post("/api/chat/folders", json={"path": name}, headers=_headers(client)).status_code == 200
+    resp = client.patch("/api/chat/folders", json={"path": "A", "to": "B"}, headers=_headers(client))
+    assert resp.status_code == 409, resp.text
+
+
+def test_folder_cannot_move_into_itself(client) -> None:  # noqa: ANN001
+    """`A` 挪进 `A/B` 会让整棵子树从界面上消失（自己成了自己的孩子）。"""
+    _register(client)
+    assert client.post("/api/chat/folders", json={"path": "A/B"}, headers=_headers(client)).status_code == 200
+    resp = client.patch("/api/chat/folders", json={"path": "A", "to": "A/B"}, headers=_headers(client))
+    assert resp.status_code == 400, resp.text
+
+
+def test_folder_delete_refuses_when_not_empty(client) -> None:  # noqa: ANN001
+    """删分组：里面还有东西就拒绝（会话是最贵的产物，一个误点不该带走一堆）。"""
+    _register(client)
+    cid = _new_conversation(client)
+    client.post("/api/chat/folders", json={"path": "有东西"}, headers=_headers(client))
+    client.patch(f"/api/chat/conversations/{cid}", json={"folder": "有东西"}, headers=_headers(client))
+
+    resp = client.delete("/api/chat/folders", params={"path": "有东西"}, headers=_headers(client))
+    assert resp.status_code == 400, resp.text
+    assert "有东西" in _folders(client)["folders"]
+    # 清空之后才删得掉
+    client.patch(f"/api/chat/conversations/{cid}", json={"folder": ""}, headers=_headers(client))
+    assert client.delete("/api/chat/folders", params={"path": "有东西"}, headers=_headers(client)).status_code == 200
+    assert "有东西" not in _folders(client)["folders"]
+
+
+def test_folder_path_is_cleaned(client) -> None:  # noqa: ANN001
+    """`..` / 空段 / 首尾斜杠一律清掉 —— 不许在树里长出一个叫 `..` 的目录。
+
+    这一层只是字符串（不是真文件系统），留着它只会在界面上多一个谁也说不清的层级。
+    """
+    _register(client)
+    cid = _new_conversation(client)
+    resp = client.post("/api/chat/folders", json={"path": " /考研//..//数学/ "}, headers=_headers(client))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["path"] == "考研/数学"
+    client.patch(f"/api/chat/conversations/{cid}", json={"folder": "a/../b"}, headers=_headers(client))
+    assert _one(client, cid)["folder"] == "a/b"

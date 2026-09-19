@@ -57,7 +57,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
 from .. import agent_loop, tools
@@ -66,7 +66,7 @@ from .. import attachments as attach
 from .. import parts as msgparts
 from .. import mounts
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
-from ..models import Attachment, Conversation, Message
+from ..models import Attachment, Conversation, ConversationFolder, Message
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -191,6 +191,22 @@ def _message_out(m: Message) -> dict:
     }
 
 
+def _ensure_folder(db, user_id, path: str) -> None:  # noqa: ANN001
+    """保证这个分组**及其各级父分组**都登记在册（幂等；不提交）。"""
+    if not path:
+        return
+    parts = path.split("/")
+    for i in range(1, len(parts) + 1):
+        one = "/".join(parts[:i])
+        exists = db.execute(
+            select(func.count())
+            .select_from(ConversationFolder)
+            .where(ConversationFolder.user_id == user_id, ConversationFolder.path == one)
+        ).scalar()
+        if not exists:
+            db.add(ConversationFolder(user_id=user_id, path=one))
+
+
 def _conversation_out(c: Conversation, count: int, preview: str) -> dict:
     return {
         "id": str(c.id),
@@ -198,6 +214,8 @@ def _conversation_out(c: Conversation, count: int, preview: str) -> dict:
         "messageCount": count,
         "preview": " ".join((preview or "").split())[:80],
         "pinned": bool(c.pinned),
+        # 所属分组（路径，`''` = 根）。前端拿它把会话摆进目录树里
+        "folder": c.folder or "",
         "createdAt": c.created_at.isoformat() if c.created_at else None,
         "updatedAt": c.updated_at.isoformat() if c.updated_at else None,
         "updatedAtMs": int(c.updated_at.timestamp() * 1000) if c.updated_at else 0,
@@ -532,7 +550,145 @@ def list_conversations(user: CurrentUser, db: DbSession) -> dict:
         row.cid: row.content
         for row in db.execute(select(ranked.c.cid, ranked.c.content).where(ranked.c.rank == 1))
     }
-    return {"conversations": [_conversation_out(c, int(n or 0), last.get(c.id, "")) for c, n in rows]}
+    # 分组：表里那些（含**空**分组）+ 会话自己带的那些（老数据可能没登记过）。
+    # 一次请求全给出去：左栏那棵树要"目录 + 会话"一起才画得出来。
+    names = {
+        str(row[0])
+        for row in db.execute(select(ConversationFolder.path).where(ConversationFolder.user_id == user.id))
+    }
+    for c, _n in rows:
+        if c.folder:
+            names.add(c.folder)
+            # 父级也要在：`a/b` 存在就说明 `a` 也是分组（可能是搬迁留下来的）
+            parts = c.folder.split("/")
+            for i in range(1, len(parts)):
+                names.add("/".join(parts[:i]))
+
+    return {
+        "conversations": [_conversation_out(c, int(n or 0), last.get(c.id, "")) for c, n in rows],
+        "folders": sorted(names),
+    }
+
+
+# ------------------------------------------------------------------ 分组
+
+
+MAX_FOLDER_LEN = 240
+
+
+def _clean_folder(raw) -> str:  # noqa: ANN001
+    """把用户给的名字/路径整理成一个干净的路径：去掉空段与 `.`/`..`，限长。
+
+    `.` 与 `..` 必须去掉 —— 在这一层它们只是**字符串**（不是真文件系统），
+    留着只会在界面上长出一个叫 `..` 的目录，谁也说不清它是什么意思。
+    """
+    text = str(raw or "").replace("\\", "/")
+    parts = [p.strip() for p in text.split("/")]
+    return "/".join(p for p in parts if p and p not in (".", ".."))[:MAX_FOLDER_LEN]
+
+
+def _folder_rows(db, user_id, path: str):  # noqa: ANN001, ANN202
+    """这个分组**及其子树**（按路径前缀认子树）。"""
+    return (
+        db.execute(
+            select(ConversationFolder).where(
+                ConversationFolder.user_id == user_id,
+                or_(ConversationFolder.path == path, ConversationFolder.path.like(path + "/%")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+@router.post("/folders")
+def create_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
+    """新建一个分组（连同它的各级父分组）。**幂等**：同名再点一次不报错。
+
+    父级一起建：`a/b` 建出来而 `a` 不在的话，树里会凭空多出一层没有名字的中间层。
+    """
+    path = _clean_folder((payload or {}).get("path"))
+    if not path:
+        raise HTTPException(400, "分组名不能为空")
+    _ensure_folder(db, user.id, path)
+    db.commit()
+    return {"ok": True, "path": path}
+
+
+@router.patch("/folders")
+def rename_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
+    """改名 / 搬家：整个子树一起走（分组记录 + 里面的会话）。
+
+    目标已存在时**拒绝**，不合并：两个分组悄悄并成一个，用户回头会找不到东西。
+    """
+    body = payload or {}
+    old = _clean_folder(body.get("path"))
+    new = _clean_folder(body.get("to"))
+    if not old or not new:
+        raise HTTPException(400, "分组名不能为空")
+    if new == old:
+        return {"ok": True, "path": new}
+    if new.startswith(old + "/"):
+        raise HTTPException(400, "不能把分组挪进它自己里")
+    exists = db.execute(
+        select(func.count())
+        .select_from(ConversationFolder)
+        .where(ConversationFolder.user_id == user.id, ConversationFolder.path == new)
+    ).scalar()
+    if exists:
+        raise HTTPException(409, "已经有这个分组了")
+
+    # 前缀替换：`old` 与 `old/...` 一律换成 `new` 开头（会话与分组记录两边都要）
+    for conv in (
+        db.execute(
+            select(Conversation).where(
+                Conversation.user_id == user.id,
+                or_(Conversation.folder == old, Conversation.folder.like(old + "/%")),
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        conv.folder = new + (conv.folder or "")[len(old):]
+    for folder in _folder_rows(db, user.id, old):
+        folder.path = new + folder.path[len(old):]
+    # 先把上面的改名**落库**，再问"新名字在不在"。
+    # 踩过：会话是 `autoflush=False`，不 flush 的话 `_ensure_folder` 数的还是改名前的
+    # 库（数到 0）→ 又插一条新名字 → 提交时撞 UNIQUE（子树自己已经占着那个名字了）。
+    db.flush()
+    _ensure_folder(db, user.id, new)
+    db.commit()
+    return {"ok": True, "path": new}
+
+
+@router.delete("/folders")
+def delete_folder(path: str, user: AuthenticatedWriter, db: DbSession) -> dict:
+    """删一个分组。**里面还有东西就拒绝** —— 与 `rmdir` 一样。
+
+    用户的会话是最贵的产物，一个误点不该连带删掉一堆；想清空就先自己挪出来。
+    """
+    target = _clean_folder(path)
+    if not target:
+        raise HTTPException(400, "分组名不能为空")
+    rows = _folder_rows(db, user.id, target)
+    if not rows:
+        raise HTTPException(404, "没有这个分组")
+    if len(rows) > 1:
+        raise HTTPException(400, "这个分组里还有子分组")
+    inside = db.execute(
+        select(func.count())
+        .select_from(Conversation)
+        .where(
+            Conversation.user_id == user.id,
+            or_(Conversation.folder == target, Conversation.folder.like(target + "/%")),
+        )
+    ).scalar()
+    if inside:
+        raise HTTPException(400, "这个分组里还有 " + str(inside) + " 个对话")
+    for folder in rows:
+        db.delete(folder)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/search")
@@ -644,6 +800,11 @@ def rename_conversation(cid: uuid.UUID, payload: dict, user: AuthenticatedWriter
 
     if isinstance(body.get("pinned"), bool):
         conv.pinned = body["pinned"]
+
+    if "folder" in body:
+        # 挪进某个分组：目标分组顺手登记一次（拖放时用户常常没先建过它）
+        conv.folder = _clean_folder(body.get("folder"))
+        _ensure_folder(db, user.id, conv.folder)
 
     # 这里**不碰** `updated_at`：改名与置顶不是"活动"，列表的"最近"排序
     # 只该被消息推动（模型上的注释解释了为什么那一列没有 `onupdate`）。

@@ -37,6 +37,20 @@ body[data-page='notes'] .view {
   display: none;
 }
 
+/* 文件面板收起：正文独占 —— 和右栏同一套写法。
+ * 有四个组合（文件栏开/收 × 右栏开/收），四条都写出来，最后一条最具体、排在最后。 */
+.notes[data-files='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr) 304px;
+}
+
+.notes[data-files='closed'] .nfiles {
+  display: none;
+}
+
+.notes[data-files='closed'][data-side='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
 /* ============================================================ 外框
  *
  * 图标栏 / 文件面板 / 标签页 / 面包屑 / 状态栏 / 侧栏 —— 照 Obsidian 的骨架，
@@ -574,16 +588,23 @@ body[data-page='notes'] .view {
   background: var(--pri);
 }
 
+/* 箭头槽：**每一行同宽同位**，靠 inline-flex 居中 —— 目录的 ▾、文件的 ◇/≡、
+ * 没有记号的空位，全都在同一列的正中。原先宽度随字形浮动（目录 16px、文件 12px），
+ * 于是同级目录和文件的文字起点也对不上。 */
 .ntree__caret {
   flex: none;
-  width: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
   font-size: 9.5px;
   color: var(--fg3);
   transition: transform var(--dur, 140ms) var(--ease, ease-out);
 }
 
-.ntree__caret--folded {
-  transform: rotate(-90deg);
+.ntree__caret svg {
+  transition: transform var(--dur, 140ms) var(--ease, ease-out);
 }
 
 .ntree__label {
@@ -1435,10 +1456,23 @@ body[data-page='notes'] {
   flex: none;
 }
 
+/* 缩进格：**宽度 = 箭头槽宽**（16px），线画在格的**正中**。
+ * 原先宽 13px 且线贴左边缘，于是"线"永远从上一级箭头的左边缘穿下去，
+ * 看着就是点和线各走各的（用户原话"文件树的点和线没有对齐"）。 */
 .ntree__indent {
-  width: 13px;
+  position: relative;
+  width: 16px;
   flex: none;
-  border-left: 1px solid var(--line);
+}
+
+.ntree__indent::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7.5px;
+  width: 1px;
+  background: var(--line);
 }
 
 /* ---- 编辑工具：图标 ---- */

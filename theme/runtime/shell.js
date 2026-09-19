@@ -29,7 +29,7 @@
   /* 这四个是**视图**（刷题页内部的四种状态），不是四个页面。
      所以在刷题页点它是原地切换，在别的页面点是带着 hash 回刷题页。 */
   var NAV = [
-    { view: 'home', label: '工作台', icon: 'cpu' },
+    { view: 'home', label: '个人中心', icon: 'cpu' },
     { view: 'practice', label: '练习', icon: 'play' },
     { view: 'paper', label: '组卷', icon: 'list' },
     { view: 'review', label: '复习', icon: 'refresh', badge: true },
