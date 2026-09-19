@@ -64,7 +64,9 @@
     detail: null,
     indexing: false,
     kinds: [],
-    status: ''
+    status: '',
+    // 左右两栏的开合（open | closed）。这是"我的习惯"不是"这次的状态" → 记本机。
+    panels: { list: 'open', side: 'open' }
   };
 
   var el = {};
@@ -91,6 +93,18 @@
     el.classifyBtn = document.getElementById('library-classify');
     el.main = document.getElementById('library-main');
     el.side = document.getElementById('library-side');
+    el.tools = document.getElementById('library-tools');
+
+    // 上次怎么摆的，这次照旧
+    try {
+      var saved = JSON.parse(window.localStorage.getItem('qf.library.panels') || '{}') || {};
+      if (saved.list === 'open' || saved.list === 'closed') state.panels.list = saved.list;
+      if (saved.side === 'open' || saved.side === 'closed') state.panels.side = saved.side;
+    } catch (err) {
+      /* 读不到就用默认（两栏都开着） */
+    }
+    applyPanels();
+    renderTools();
 
     el.search.addEventListener('input', ui.debounce(function () {
       state.query = el.search.value.trim();
@@ -334,6 +348,54 @@
     renderMain();
     renderSide();
     loadDetail(citekey);
+  }
+
+  /** 左右两栏：收起不是"删掉"，是栅格那一列变 0 宽（栏本身留在 DOM 里、只是看不见）。
+   *  踩过同款坑：用 `display: none` 收起来会让栅格子项少一个，后面那一列整体前移
+   *  —— 主区会被塞进 0 宽那一格里（笔记页实测正文只剩 16px）。 */
+  function applyPanels() {
+    if (!el.root) return;
+    el.root.setAttribute('data-lib-list', state.panels.list);
+    el.root.setAttribute('data-lib-side', state.panels.side);
+  }
+
+  function togglePanel(which) {
+    state.panels[which] = state.panels[which] === 'open' ? 'closed' : 'open';
+    applyPanels();
+    renderTools();
+    try {
+      window.localStorage.setItem('qf.library.panels', JSON.stringify(state.panels));
+    } catch (err) {
+      /* 存不下就只在这次生效 */
+    }
+  }
+
+  /** 工具条上那两颗：左边管左栏、右边管右栏，位置就是它们管的那个方向。
+   *  两个状态两个朝向，之间是**转过去**的（不是换一张图那样闪一下）。 */
+  function panelBtn(which, label) {
+    var open = state.panels[which] === 'open';
+    // 左栏那颗：开着时箭头朝左（点它 = 把它往左边收），收起时反过来
+    var base = which === 'list' ? 'chevronL' : 'chevronR';
+    var btn = h('button.lib__fold' + (open ? '.is-on' : ''), {
+      type: 'button',
+      html: ui.icon(base, 15),
+      style: open ? null : { transform: 'rotate(180deg)' },
+      title: (open ? '收起' : '展开') + label,
+      'aria-label': (open ? '收起' : '展开') + label,
+      'aria-expanded': open ? 'true' : 'false',
+      onClick: function () {
+        togglePanel(which);
+      }
+    });
+    return btn;
+  }
+
+  function renderTools() {
+    if (!el.tools) return;
+    ui.clear(el.tools);
+    el.tools.appendChild(panelBtn('list', '文件列表'));
+    el.tools.appendChild(h('span.lib__toolssp'));
+    el.tools.appendChild(panelBtn('side', '引用与出处'));
   }
 
   function renderMain() {

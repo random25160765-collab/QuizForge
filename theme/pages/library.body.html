@@ -40,8 +40,14 @@
       </footer>
     </aside>
 
-    <!-- 中：条目详情（元数据可补，正文只读） -->
-    <main class="lib__main" id="library-main"></main>
+    <!-- 中：条目详情（元数据可补，正文只读）。
+         外面裹一层是因为左右两栏的**开合按钮必须常驻**：把按钮放进各栏自己头上，
+         栏一收起来按钮就跟着没了 —— 用户明确要求"注意收起要做收起+展开还有图标变换"，
+         所以按钮得在主区这一侧（它两边都不收）。 -->
+    <section class="lib__col">
+      <div class="lib__tools" id="library-tools"></div>
+      <main class="lib__main" id="library-main"></main>
+    </section>
 
     <!-- 右：引用与出处 -->
     <aside class="lib__side" id="library-side" aria-label="引用与出处"></aside>

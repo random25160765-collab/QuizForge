@@ -408,3 +408,31 @@ def test_splice_body_keeps_the_original_header_byte_for_byte():
     new = splice_body(text, "新正文\n")
     assert new.startswith("---\ntitle: A\ntags: [x]   # 作者自己写的风格\n---\n\n新正文\n")
     assert head_block(text) == "---\ntitle: A\ntags: [x]   # 作者自己写的风格\n---\n"
+
+
+def test_reveal_only_opens_a_registered_library(client, monkeypatch) -> None:  # noqa: ANN001
+    """`/notes/reveal` 只认**已登记的库**，不吃客户端传的路径。
+
+    这是唯一一处我们会去启动别的程序：一旦它接受任意路径，就成了一个
+    "按请求打开任意目录"的口子。所以判据是——给个路径当库名必须被拒，
+    而且**任何东西都不许被启动**。
+    """
+    from app import desktop
+
+    started: list[list[str]] = []
+
+    class Fake:
+        def __init__(self, cmd, **kwargs):  # noqa: ANN003
+            started.append(list(cmd))
+
+    monkeypatch.setattr(desktop.subprocess, "Popen", Fake)
+
+    bad = client.post("/api/notes/reveal", json={"lib": "/etc"})
+    assert bad.status_code >= 400, bad.text
+    assert started == []
+
+    libs = client.get("/api/notes/roots").json()["roots"]
+    if not libs:
+        return  # 这台机器还没挂过外部库：守卫那条已经测到了
+    ok = client.post("/api/notes/reveal", json={"lib": libs[0]})
+    assert ok.status_code == 200, ok.text

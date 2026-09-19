@@ -34,7 +34,9 @@ body[data-page='notes'] .view {
 }
 
 .notes[data-side='closed'] .nside {
-  display: none;
+  /* 同左边那一栏：收起也留着位置（不然栅格会错位），只是看不见、点不到 */
+  overflow: hidden;
+  visibility: hidden;
 }
 
 /* 文件面板收起：正文独占 —— 和右栏同一套写法。
@@ -44,7 +46,11 @@ body[data-page='notes'] .view {
 }
 
 .notes[data-files='closed'] .nfiles {
-  display: none;
+  /* **不能**用 `display: none` 收起来：栅格子项少一个之后，后面的元素会整体前移
+   * 一格 —— 主区落到"0 宽"那一列上（实测正文只剩 16px，整页像坏了）。
+   * 留着它、把宽度让给主区，内容靠裁切与不可见收掉。 */
+  overflow: hidden;
+  visibility: hidden;
 }
 
 .notes[data-files='closed'][data-side='closed'] {
@@ -168,6 +174,49 @@ body[data-page='notes'] .view {
   border-top: 1px solid var(--line);
 }
 
+.nfiles__lib--foot {
+  height: 26px;
+  font-size: 12px;
+}
+
+/* 三个视图的图标按钮：形状与资源页那排图标按钮同宽 */
+.seg__item--icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  padding: 4px 0;
+}
+
+.seg__item--icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 行尾那颗「…」：平时不出现，悬停才亮 —— 与资源树那几颗同一条规矩 */
+.ntree__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-left: auto;
+  border-radius: var(--r-sm);
+  color: var(--fg3);
+  opacity: 0;
+}
+
+.ntree__more svg {
+  width: 14px;
+  height: 14px;
+}
+
+.ntree__file:hover .ntree__more,
+.ntree__dir:hover .ntree__more {
+  opacity: 1;
+  background: var(--bg3);
+}
+
 .nfiles__vault {
   flex: 1;
   min-width: 0;
@@ -191,26 +240,38 @@ body[data-page='notes'] .view {
 .ntabs {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   flex: none;
-  padding: 6px 8px 0;
+  padding: 6px 8px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--line);
+  /* 底下那条线由面包屑那一行给（资源页也是这个关系），两条会挤出一条双线 */
+  border-bottom: 0;
 }
 
+/* 左边那颗开合按钮：收/展两个朝向之间**转过去**（不是换一张图那样闪一下） */
+.ntabs__fold svg {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ntabs__fold.is-on {
+  color: var(--fg2);
+}
+
+/* 标签的形状**与资源页那排标签对齐**（用户："顶部的 tab 样式和资源页 tab 的样式
+ * 对齐"）：资源页那边是圆角药丸 + hover 底色 + 选中用主色淡底，而不是浏览器那种
+ * "顶上有圆角、底下没边框"的页签。两页是同一套骨架，长得不一样会让人以为是两个应用。 */
 .ntab {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 220px;
-  padding: 6px 6px 6px 10px;
-  color: var(--fg2);
+  padding: 3px 6px 3px 8px;
+  color: var(--fg3);
   background: none;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: var(--r-sm) var(--r-sm) 0 0;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   white-space: nowrap;
   cursor: pointer;
 }
@@ -222,8 +283,7 @@ body[data-page='notes'] .view {
 
 .ntab.is-on {
   color: var(--fg);
-  background: var(--bg);
-  border-color: var(--line);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
 }
 
 .ntab__label {
@@ -252,7 +312,39 @@ body[data-page='notes'] .view {
   display: flex;
   align-items: center;
   gap: 2px;
-  padding-bottom: 6px;
+}
+
+/* 全是图标的一颗按钮：两个图标叠着，靠透明度 + 旋转换（用户要的"丝滑转换"） */
+.nbtn--icon {
+  position: relative;
+  width: 26px;
+  padding: 0;
+}
+
+.nfold__icon {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  transition:
+    opacity 160ms ease,
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* 默认（有目录展开着）：显示"收起来"那对，另一对缩着藏着 */
+.nfold__icon--expand {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.7);
+}
+
+.nbtn--icon.is-on .nfold__icon--collapse {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.7);
+}
+
+.nbtn--icon.is-on .nfold__icon--expand {
+  opacity: 1;
+  transform: none;
 }
 
 .ncrumb {
@@ -880,6 +972,93 @@ body[data-page='notes'] .view {
 }
 
 /* ---- 阅读区 ---- */
+
+/* **实时编辑区**（「默认」那一档）。
+ *
+ * 这一块原先在 CSS 里**一次都没出现过** —— 于是它是"铺满整个面板、顶着左边缘"写的：
+ * 阅读视图有 30px 内距 + 74ch 栏宽，这里一点都没有。用户报的"默认状态的文字渲染
+ * 不正常：callout 还有文字的向左偏移"就是这个：同一篇笔记，切一下视图整段就往左跳。
+ * 所以这里照阅读视图那一套来（内距、栏宽、字号、行高），只多两件"可编辑"的线索。 */
+.nlive {
+  padding: 24px 30px 40vh;
+}
+
+.nlive__block {
+  position: relative;
+  max-width: 74ch;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  line-height: 1.82;
+  color: var(--fg);
+}
+
+/* 悬停给一层极淡的底：不然"哪一块会被点开编辑"只能靠试 */
+.nlive__block:hover {
+  background: var(--bg2);
+}
+
+/* 正在编辑的那一块：底色更实 + 左边一道主色，眼睛知道自己在哪一段里 */
+.nlive__block.is-editing {
+  background: var(--bg3);
+  box-shadow: inset 2px 0 0 var(--pri);
+}
+
+.nlive__area {
+  width: 100%;
+  min-height: 1.82em;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.82;
+  resize: none;
+  outline: none;
+}
+
+.nlive__empty {
+  max-width: 74ch;
+  padding: 10px 8px;
+  color: var(--fg3);
+  font-size: 13px;
+  cursor: text;
+}
+
+/* 末尾那条"加一段"：平时几乎看不见，鼠标进到这一块才浮出来。
+ * 原先是一根常驻的「＋ 新的一段」按钮 —— 用户说"意义不明"：屏幕上一根孤零零的
+ * 按钮，没人知道"一段"是什么单位、加在哪。现在它是一条**带说明的虚线带**，
+ * 而且位置就在"末尾"本身，点它就是在这里加。 */
+.nlive__add {
+  display: block;
+  width: 100%;
+  max-width: 74ch;
+  margin-top: 6px;
+  padding: 7px 8px;
+  border: 1px dashed transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg3);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: text;
+  opacity: 0;
+  transition:
+    opacity 140ms ease,
+    border-color 140ms ease;
+}
+
+.nlive:hover .nlive__add {
+  opacity: 1;
+  border-color: var(--line);
+}
+
+.nlive__add:hover {
+  color: var(--fg2);
+  border-color: var(--line-strong, var(--line));
+}
 
 .nread {
   padding: 24px 30px 40vh;
