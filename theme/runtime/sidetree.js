@@ -687,30 +687,9 @@
       icon: 'list',
       load: paintVaults,
     }));
-    // 笔记图谱：一间库一张图（笔记为节点、双链为边）。
-    // 入口留在左栏（用户的原话"文档站的知识图谱就放左栏"），图本身开在右边窗格里 ——
-    // 左栏只有 240px 宽，真画起来没法看。
-    box.appendChild(group(0, {
-      key: 'root:notegraph',
-      label: '笔记图谱',
-      icon: 'target',
-      load: function (body) {
-        return api.get('/notes/stats').then(function (data) {
-          var libs = (data && data.libraries) || [];
-          if (!libs.length) { err(body, '还没有笔记库'); return; }
-          libs.forEach(function (lib) {
-            body.appendChild(leaf(2, {
-              label: lib.name + ' 的双链',
-              icon: 'target',
-              count: lib.notes || lib.count || null,
-              title: '把这一库的笔记双链画成图（开在右边窗格里）',
-              kind: 'notegraph',
-              ref: { lib: lib.name },
-            }));
-          });
-        }).catch(function () { err(body, '读不到笔记库'); });
-      },
-    }));
+    // 笔记图谱**不在这儿**了：它是笔记的东西，入口归笔记页（用户："笔记的图谱去
+    // 专门的笔记页！不要和其他的在一个树里"）。渲染那份代码在 notegraph.js，
+    // 资源页要开图谱另有窗格视图（workbench.js 里注册的 'notegraph'）。
   }
 
   function boot() {

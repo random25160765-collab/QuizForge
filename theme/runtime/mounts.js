@@ -1,4 +1,8 @@
-/* 顶栏中部的枢纽图标组：工具挂载开关。
+/* 对话页输入框上方的那条**能力选择栏**：工具挂载开关。
+ *
+ * 它管的是"这一版对话能调哪些模块"—— 与 coding agent 的 ask / plan / craft 是同一类
+ * 东西（用户的原话），所以它属于**对话**，长在输入框上方；原先挂在活动栏里，
+ * 那里是"去哪个页面"的地方，两件事混在一列里。
  *
  * 用户的话是"亮起即挂载、熄灭即独立、全部熄灭即极简模式"。
  * 三条刻意的取舍：
@@ -31,7 +35,8 @@
   };
 
   function host() {
-    return document.getElementById('tool-hubs');
+    // 只有对话页有这条选择栏 —— 别的页面拿不到宿主，整个模块静默不画（不报错）
+    return document.getElementById('chat-modes');
   }
 
   function title(one) {
@@ -44,28 +49,34 @@
     if (!box || !h) return;
     QF.ui.clear(box);
     state.groups.forEach(function (one) {
-      var node = h('button.hub' + (one.mounted ? '.is-on' : ''), {
+      // 带字：这一排的语义是"我能用哪些模块"，光靠五个线条图标说不清（用户："意义不明"）
+      var node = h('button.hubchip' + (one.mounted ? '.is-on' : ''), {
         type: 'button',
         title: title(one),
         'aria-pressed': one.mounted ? 'true' : 'false',
         'aria-label': one.label + (one.mounted ? '（已挂载）' : '（未挂载）'),
         onclick: function () {
           flip(one.key);
-        }
+        },
+        html:
+          '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+          'stroke-width="' + (one.mounted ? '2.1' : '1.8') + '" stroke-linecap="round" stroke-linejoin="round">' +
+          (PATHS[one.key] || '') +
+          '</svg>' +
+          '<span class="hubchip__label"></span>'
       });
-      node.innerHTML =
-        '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" ' +
-        'stroke-width="' + (one.mounted ? '2.1' : '1.8') + '" stroke-linecap="round" stroke-linejoin="round">' +
-        (PATHS[one.key] || '') +
-        '</svg>';
+      node.querySelector('.hubchip__label').textContent = one.label;
       box.appendChild(node);
     });
     if (state.minimal) {
       box.appendChild(
-        h('span.hubs__note', { text: '极简', title: '五组都熄灭了：这一版 AI 不调用任何模块，只聊天' })
+        h('span.hubnote', {
+          text: '极简模式',
+          title: '五组都熄灭了：这一版 AI 不调用任何模块，只聊天',
+        })
       );
     } else if (state.failed) {
-      box.appendChild(h('span.hubs__note.is-bad', { text: '没存上', title: state.failed }));
+      box.appendChild(h('span.hubnote.is-bad', { text: '没存上', title: state.failed }));
     }
     box.title = '这一版 AI 能调 ' + state.declared + ' 个工具';
   }
@@ -140,11 +151,15 @@
     draw();
   }
 
+  var loading = false;
+
   function load() {
-    var box = host();
-    if (!box || !QF.api) return;
-    // 挂在活动栏上之后就是**全站可见**的：它管的是"AI 能碰到哪几块"，
-    // 与当前在看哪个页面无关（原来那句"只在对话页出现"随顶栏一起撤了）
+    if (!QF.api || loading) return;
+    // **不要因为"宿主还没建出来"就退出**：外壳先 mount，对话页的骨架（含这条选择栏）
+    // 是 mount 之后才建的。原先在这里直接 return，于是状态一次都没取回来，
+    // 选择栏空着（实测：容器在、子节点 0、标题写着"能调 0 个工具"）。
+    // 画不画由 `draw()` 自己看有没有宿主决定。
+    loading = true;
     QF.api
       .get('/chat/mounts')
       .then(function (data) {
@@ -160,7 +175,8 @@
       });
   }
 
-  QF.mounts = { load: load, state: state };
+  // `render` 给"宿主刚建好"的调用方用（对话页骨架建完就调一次）
+  QF.mounts = { render: draw, load: load, state: state };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', load);
   else load();

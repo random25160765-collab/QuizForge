@@ -529,6 +529,24 @@
 
   /* ------------------------------------------------------------ 打开笔记 */
 
+  /** 打开**这一库的双链图谱**。
+   *
+   *  它不是文件（也不是资源页那种窗格视图），就是这一页里的一个"标签" ——
+   *  用户的原话是"笔记的图谱去专门的笔记页！不要和其他的在一个树里"。
+   *  渲染那份代码在 `notegraph.js`，资源页的窗格用的是同一份。
+   */
+  function openGraph() {
+    if (state.dirty) saveNow(true);
+    if (QF.canvas && QF.canvas.unmount) QF.canvas.unmount();
+    state.note = { kind: 'graph', lib: state.lib, path: '图谱', title: '笔记图谱' };
+    addTab(state.note);
+    state.selected = -1;
+    state.dirty = false;
+    state.mode = 'read';
+    renderMain();
+    renderSide();
+  }
+
   function openNote(path, line) {
     if (!path) return;
     if (state.note && state.note.path === path) return;
@@ -562,11 +580,18 @@
   function renderMain() {
     ui.clear(el.main);
     el.main.appendChild(renderTabs());
-    if (!isNote() && !(state.note && state.note.kind === 'canvas')) {
+    var special = state.note && (state.note.kind === 'canvas' || state.note.kind === 'graph');
+    if (!isNote() && !special) {
       el.main.appendChild(emptyState());
       return;
     }
     el.main.appendChild(renderBar());
+    if (state.note.kind === 'graph') {
+      var graphHost = h('div.note__pane.note__pane--graph', { id: 'notes-graph' });
+      el.main.appendChild(graphHost);
+      QF.notegraph.mount(graphHost, { lib: state.note.lib || state.lib });
+      return;
+    }
     if (state.note.kind === 'canvas') {
       // 画布**自己管视口与保存**（它有自己的坐标系、工具条与攒批策略）——
       // 塞进编辑器那一套会两头打架：一个想管滚动、一个想管 transform。
@@ -666,6 +691,12 @@
       h(
         'div.ntabs__tools',
         null,
+        h('button.nicon.nicon--mini', {
+          type: 'button',
+          html: ui.icon('target', 16),
+          title: '这一库的双链图谱（开成一个标签）',
+          onClick: openGraph,
+        }),
         h('button.nicon.nicon--mini', {
           type: 'button',
           text: '＋',
@@ -778,7 +809,7 @@
         // 一个笔记三个视图：源码 / 默认 / 阅读。源码与默认都能改 —— 默认就是
         // "块级实时渲染 + 就地编辑"，把原先"分栏"那两栏并成了一块。
         // 画布没有"阅读/默认/源码"这回事（它是一块平面），不给它摆这排按钮。
-        (state.note.kind === 'canvas'
+        (state.note.kind === 'canvas' || state.note.kind === 'graph'
           ? []
           : state.note.kind === 'outline'
             ? [['outline', '大纲'], ['mindmap', '思维导图']]
@@ -2581,6 +2612,24 @@
 
   function renderSide() {
     ui.clear(el.side);
+    if (state.note && state.note.kind === 'graph') {
+      // 图谱不是笔记：大纲/连接/属性/历史那几个面板读的是"这一篇的正文"
+      el.side.appendChild(
+        h(
+          'div.nside__scroll',
+          null,
+          h(
+            'section.npanel',
+            null,
+            h('div.npanel__title', { text: '这一库的双链图谱' }),
+            h('div.npanel__hint', {
+              text: '图谱是整库的视图，不挂在某篇笔记上 —— 右边这几个面板（大纲 / 连接 / 属性 / 历史）读的是单篇正文，对它没有意义。',
+            })
+          )
+        )
+      );
+      return;
+    }
     if (!state.note) {
       // 没打开笔记时也把它填满：一条空栏比一句说明更让人以为坏了
       el.side.appendChild(

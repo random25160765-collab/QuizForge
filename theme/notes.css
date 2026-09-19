@@ -763,6 +763,12 @@ body[data-page='notes'] .view {
   overflow: auto;
 }
 
+.note__pane--graph {
+  /* 图谱自己画满这一块（SVG 按容器尺寸算），别给滚动条 */
+  display: flex;
+  overflow: hidden;
+}
+
 .note__pane--split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

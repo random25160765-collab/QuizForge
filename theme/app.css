@@ -1683,61 +1683,9 @@ body[data-page='wrongbook'] .part {
    亮起＝描边加重 + 主色；熄灭＝次级色。过渡 140ms ease-out（计划里定的是 120–160ms），
    只动颜色与一点点缩放，不动布局尺寸。 */
 
-.hubs {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: 14px;
-  padding-left: 12px;
-  border-left: 1px solid var(--line);
-}
+/* 这里原先有一族 `.hub` / `.hubs`（活动栏里的挂载开关芯片）。
+   那排开关搬到对话页输入框上方了（`.hubchip`，见 chat.css）。 */
 
-.hubs:empty {
-  display: none;
-}
-
-.hub {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  color: var(--fg3);
-  background: none;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: color 140ms ease-out, background 140ms ease-out, transform 140ms ease-out;
-}
-
-.hub:hover {
-  color: var(--fg);
-  background: var(--bg3);
-}
-
-.hub.is-on {
-  color: var(--pri);
-  background: color-mix(in srgb, var(--pri) 12%, transparent);
-}
-
-.hub.is-on:hover {
-  transform: scale(1.08);
-}
-
-.hub:active {
-  transform: scale(0.94);
-}
-
-.hubs__note {
-  margin-left: 6px;
-  font-size: 11.5px;
-  color: var(--fg3);
-}
-
-.hubs__note.is-bad {
-  color: #d9534f;
-}
 
 /* ================================================================= 外壳骨架
  *
@@ -2094,3 +2042,69 @@ body[data-side='closed'] .side > * { display: none; }
 }
 
 .stree__menu-item:hover { background: var(--bg3); }
+
+/* ===========================================================================
+ * 页面之间的边界（四个页面不相互嵌套）
+ *
+ * 用户的原话："对话/笔记/资料就是纯粹的对话/笔记/资料页面，资源页面（工作台）
+ * 提供全局浏览和窗格组合的能力"。所以：
+ *   * 资源栏（那棵大树）**只在资源页**出现 —— 别处再摆一棵，就成了二重目录树
+ *   * 顶栏只在"真的有子导航"的页面出现（练习中心那一族）；别的页面留着它是一条空 bar
+ * ========================================================================= */
+
+body:not([data-page='workbench']) {
+  --side-w: 0px;
+}
+
+body:not([data-page='workbench']) .side { display: none; }
+
+/* 三块显式指定列号：`.side` 一 `display:none` 就退出栅格流，
+   `.stage` 会被自动塞进那个 0px 的第二列 —— 整页宽度变 0（实测 view 宽 0）。
+   显式列号之后，谁来谁走都不影响别人。 */
+.rail { grid-column: 1; }
+.side { grid-column: 2; }
+.stage { grid-column: 3; }
+
+/* 顶栏：页面没给子导航时由 shell.js 打上 data-topbar='off'，整条收掉。
+   高度一并归零 —— 几处 `calc(100vh - var(--topbar-h))` 靠它自动适配。 */
+body[data-topbar='off'] { --topbar-h: 0px; }
+
+body[data-topbar='off'] .topbar { display: none; }
+
+/* ---------------- 笔记图谱（双链） ---------------- */
+
+.ngraph {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ngraph__svg {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+}
+
+.ngraph__edge {
+  stroke: color-mix(in srgb, var(--fg) 22%, transparent);
+  stroke-width: 1;
+}
+
+.ngraph__node {
+  fill: color-mix(in srgb, var(--pri) 55%, var(--bg));
+  stroke: var(--pri);
+  stroke-width: 1;
+  cursor: pointer;
+  transition: fill var(--dur, 160ms) var(--ease, ease-out);
+}
+
+.ngraph__node:hover { fill: var(--pri); }
+
+/* 一个链接都没有的笔记：淡一点，但**留着** —— 它们正好是"该补链接"的清单 */
+.ngraph__node.is-lone {
+  fill: color-mix(in srgb, var(--fg) 18%, var(--bg));
+  stroke: color-mix(in srgb, var(--fg) 30%, transparent);
+}
+
+.ngraph__foot { padding: 8px 12px 12px; }

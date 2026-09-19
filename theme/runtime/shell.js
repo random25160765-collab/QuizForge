@@ -47,7 +47,11 @@
      而且每个页面还会各自把顶栏改成自己的样子），现在归到这儿 ——
      顶栏于是能瘦下来，把位置让给"打开的标签"。 */
   var RAIL = [
-    { key: 'side', label: '资源', icon: 'grip', hint: '收起 / 展开资源栏（Alt+B）' },
+    // 第一项是**进入资源页**的入口，不是"收起资源栏" ——
+    // 用户的原话："点击资源那个按钮，直接就跳转到资源的组合页面"。
+    // 资源栏自己的收起在它头上那颗（而资源栏只在资源页出现）。
+    { href: 'workbench.html', label: '资源', icon: 'grip', page: 'workbench',
+      hint: '全局浏览 + 窗格组合' },
     { href: 'quiz.html', label: '练习中心', icon: 'play', pages: ['quiz', 'graph'],
       hint: '练习 · 组卷 · 复习 · 图谱' },
     { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
@@ -114,15 +118,12 @@
     // （实测 1000px 宽时正好压在画布那两行字上，看着像"内容被裁了"）
     setSide(!drawerMode() && saved !== '0', false);
 
-    var box = document.getElementById('rail-nav');
-    if (box && !box.dataset.sideBound) {
-      box.dataset.sideBound = '1';
-      box.addEventListener('click', function (ev) {
-        var btn = ev.target && ev.target.closest ? ev.target.closest('[data-key="side"]') : null;
-        if (!btn) return;
-        ev.preventDefault();
-        setSide(!sideOpen());
-      });
+    // 活动栏那颗不再是"收起资源栏"（它是进资源页的链接，见 RAIL），
+    // 所以这里只接资源栏自己头上那颗
+    var fold = document.getElementById('side-fold');
+    if (fold && !fold.dataset.bound) {
+      fold.dataset.bound = '1';
+      fold.addEventListener('click', function () { setSide(false); });
     }
     // 拖窗口跨过断点（并排 <-> 抽屉）时重新摆一次：抽屉模式一进入就收起，
     // 免得"并排时开着、缩窄后变成一块盖住内容的浮层"
@@ -178,9 +179,13 @@
     // 同一件事出现两遍就是这个毛病。
     if (!opts || !opts.view) {
       nav.hidden = true;
+      // 顶栏整条收掉（见 app.css 的 `body[data-topbar='off']`）：
+      // 空着一条 bar 在对话/笔记/资料页上，用户的原话是"这个 bar 是多余的"。
+      document.body.dataset.topbar = 'off';
       return;
     }
     nav.hidden = false;
+    document.body.dataset.topbar = 'on';
     NAV.forEach(function (item) { nav.appendChild(navItem(item, opts)); });
   }
 

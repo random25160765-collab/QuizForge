@@ -14,8 +14,22 @@ body[data-page='chat'] .chat__aside {
 }
 
 body[data-page='chat'] .view {
-  /* 聊天是两栏，比阅读型的 880px 宽一些更合适；用户自己的 maxWidth 仍管正文宽度 */
-  max-width: min(1180px, 100%);
+  /* 铺满：对话是**应用面**，不该像阅读列那样被 max-width 缩起来
+     （用户："对话界面贴到右边去，不要多余间距"）。滚动交给消息流自己。 */
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+  /* 高度必须**确定**：`.chat` 用的是 height:100%，父级高度是 auto 的话百分比落空，
+     它会按内容长高（实测高度 5148px），底部于是又出现一条会变的空白。 */
+  height: calc(100vh - var(--topbar-h));
+  min-height: 0;
+}
+
+/* 高度链的中间那一层：`.view` 已经是确定高度，`#app-root` 也得跟上 ——
+   否则 `.chat` 的 `height:100%` 对着一个 auto 高度的父级算，等于没写。 */
+body[data-page='chat'] #app-root {
+  height: 100%;
+  min-height: 0;
 }
 
 body[data-page='chat'] .chat {
@@ -24,14 +38,66 @@ body[data-page='chat'] .chat {
      （对话 / 资料 / 文档三个根），再在页面里摆一份就是同一件事出现两遍 ——
      而且只有这一页多一列，与其它页面不一致（用户指出过）。 */
   grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
+  /* **一行**，且不留 gap：这一格里还有几个隐藏的浮层（对话树 / 演示 / 便签 / 大题），
+     它们也是栅格子项 —— 每个空行照样吃掉一条 16px 的 gap，五条就是 64px，
+     于是"输入框下面总有一段空白"（实测 .chat 900、.chat__main 只有 836）。 */
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
   align-items: stretch;
   /* 撑满一屏：消息流内部滚动，输入框永远在视口里。
      不减状态栏那 46px：聊天页的状态栏是**空的**（只有练习/组卷才往里塞统计），
      留着它等于在底部摆一条死区 —— 实测聊天区因此比视口矮 53px。 */
-  height: calc(100vh - var(--topbar-h) - 44px);
-  min-height: 460px;
+  /* 高度交给父级（`.view` 已经是满高的一格）。
+     原先写的是 `calc(100vh - var(--topbar-h) - 44px)` —— 那个 44 是手算的补偿，
+     窗口一矮、内容一长，底部就露一条**会变的**空白（用户的原话："下面的这个间距
+     会随着对话长度的变化而变化"）。现在消息流自己滚、输入框永远贴底。 */
+  height: 100%;
+  min-height: 0;
 }
+
+/* ------------------------------------------------- 能力选择栏（工具挂载） */
+
+/* 输入框上方那条：这一版对话能调哪些模块。
+   与 coding agent 的 ask / plan / craft 是同一类东西 —— 约束 AI 这一版能碰到什么。 */
+.chat__modes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px 8px;
+}
+
+.chat__modes:empty { display: none; }
+
+.hubchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg2);
+  color: var(--fg3);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+    border-color var(--dur) var(--ease);
+}
+
+.hubchip:hover { color: var(--fg); border-color: var(--line-strong); }
+
+/* 亮着＝这一版 AI 能调这一块（与原先那排图标同一个语义） */
+.hubchip.is-on {
+  color: var(--pri);
+  border-color: color-mix(in srgb, var(--pri) 45%, transparent);
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+}
+
+.hubnote { font-size: 12px; color: var(--fg3); margin-left: 2px; }
+
+.hubnote.is-bad { color: var(--danger, #d9534f); }
 
 /* ---------------------------------------------------------------- 左栏 */
 
@@ -1894,14 +1960,15 @@ body[data-page='chat'] .chat {
 }
 
 .chat__box {
+  /* 圆角矩形拉大：输入是这一页最高频的动作，给它更多地方（用户："圆角矩形拉大"） */
+  border-radius: 20px;
   display: flex;
   /* 居中：图标、输入区、发送键在圆角矩形里各居其位 ——
      原先 flex-end 让左边那几个图标贴在底边，看着"浮在上面" */
   align-items: center;
   gap: 10px;
-  padding: 7px 9px 8px;
+  padding: 10px 12px 11px;
   border: 1px solid var(--line);
-  border-radius: var(--r-lg);
   background: var(--bg2);
 }
 
@@ -1911,7 +1978,7 @@ body[data-page='chat'] .chat {
 
 .chat__input {
   flex: 1;
-  min-height: 21px;
+  min-height: 27px;
   max-height: 220px;
   padding: 1px 3px;
   border: none;

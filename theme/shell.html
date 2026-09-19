@@ -47,11 +47,9 @@
        它替代了原先挤在顶栏里那排页面按钮 —— 顶栏于是能瘦下来给"打开的标签"用。 -->
   <nav class="rail" aria-label="活动栏">
     <div class="rail__group" id="rail-nav"></div>
-    <div class="rail__sep" aria-hidden="true"></div>
-    <!-- 工具挂载：亮起＝AI 能调这一块，熄灭＝两边各自独立，全部熄灭＝极简聊天模式。
-         它管的是"AI 能碰到什么"，与上面那排页面入口是两回事，所以单独一组。
-         内容由运行时脚本 mounts.js 填充（新增脚本已登记 RUNTIME_ORDER）。 -->
-    <div class="hubs" id="tool-hubs" role="group" aria-label="工具挂载"></div>
+    <!-- 工具挂载开关**不在这儿**：它是"对话这一版能调哪些模块"，属于对话服务的一种
+         模式（用户的原话："类似 coding agent 的 ask/plan/craft"），所以搬到对话页
+         输入框上方那条选择栏里（mounts.js 现在画进 `#chat-modes`）。 -->
     <div class="rail__spacer"></div>
     <button class="rail__btn" id="btn-theme" type="button" title="切换浅色/深色主题" aria-label="切换主题">
       <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -84,6 +82,13 @@
         </span>
       </a>
       <span class="side__title" id="side-title">资源</span>
+      <!-- 收起这颗资源栏（活动栏那颗改成"进入资源页"了，所以这儿不再重复） -->
+      <button class="side__fold" id="side-fold" type="button" title="收起资源栏（Alt+B）" aria-label="收起资源栏">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14.5 6 8.5 12l6 6"></path>
+        </svg>
+      </button>
       <!-- 这里原先还有一个「收起资源栏」的箭头 —— 活动栏里那颗 `side` 按钮做的就是
            同一件事，两处并存容易让人以为它们收的不是同一样东西。用户说"只留左边"，删掉。 -->
     </div>
