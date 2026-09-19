@@ -13,10 +13,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from .. import canvas as canvaslib
+from .. import library as lib
 from .. import notelib
+
+#: 与资料侧同一个上限（见 routers/library.py 的说明）。
+MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
 
@@ -142,6 +146,45 @@ def create(body: dict) -> dict:
     if kind not in ("note", "outline"):
         raise HTTPException(status_code=400, detail=f"不认识的 kind：{kind}")
     return _run(notelib.create_note, lib, _text(body, "folder"), _text(body, "title"), kind=kind)
+
+
+@router.post("/upload")
+async def upload(
+    file: UploadFile = File(...),
+    lib_name: str = Form(""),
+    folder: str = Form(""),
+) -> dict:
+    """把系统里拖进来的文件放进库里某个目录 —— 它的用途是**附件**（图片、PDF…）。
+
+    注意树里**不列**附件（它们跟着笔记走，见 `notelib.tree` 只收 note/canvas）——
+    所以界面上放完要说明一句"放哪儿了"，否则看着像什么都没发生。
+    """
+    library = _lib(lib_name)
+    target = _run(notelib.dir_of, library, folder)
+    name = _run(lib.safe_name, file.filename or "")
+    dest = _run(lib.unique_in, target, name)
+    written = 0
+    try:
+        with dest.open("wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"这个文件太大了（上限 {MAX_UPLOAD_BYTES // 1024 // 1024}MB）",
+                    )
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"写不进去：{exc}") from exc
+    notelib.reset_index()
+    return {"name": dest.name, "path": str(dest), "bytes": written}
 
 
 @router.post("/folder")

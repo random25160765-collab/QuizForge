@@ -1035,6 +1035,18 @@ def folder_of(lib: Library, folder: str) -> str:
     return cleaned
 
 
+def dir_of(lib: Library, folder: str) -> Path:
+    """库内某个目录的真实路径（`''` 就是库根）。
+
+    拖进来的附件要落在用户看得见的那个目录里，所以目录不存在就建出来 ——
+    路径越界由 `safe_path` 挡。
+    """
+    rel = folder_of(lib, folder)
+    path = lib.root.resolve() if not rel else safe_path(lib, rel)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def mkdir(lib: Library, rel: str) -> dict[str, Any]:
     """在库里新建一个目录（树上的"新建文件夹"）—— **真的 mkdir**。
 

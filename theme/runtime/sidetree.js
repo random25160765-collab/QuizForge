@@ -292,26 +292,75 @@
     return (dir || '').replace(/[\\/]+$/, '') + '/' + name;
   }
 
-  /** 让一个目录行接受拖放：落上来就是"挪进这个目录"。 */
+  /** 上层把文件拖进来时的落点。`where` 来自 drop 目标（见 bindDrop），
+   *  里面带着"往哪个目录写"的绝对路径/库内相对路径。 */
+  function uploadInto(where, files) {
+    if (!where) {
+      ui.toast('先落在一个目录上（把文件拖到某个文件夹那一行）', 'warn');
+      return;
+    }
+    var list = Array.prototype.slice.call(files || []);
+    if (!list.length) return;
+    var where2 = where.dir === '' ? '根目录' : (where.label || '这个目录');
+    ui.toast('正在放进「' + where2 + '」：' + list.length + ' 个文件…');
+    var done = 0;
+    var chain = Promise.resolve();
+    list.forEach(function (one) {
+      chain = chain.then(function () {
+        var path = where.kind === 'note' ? '/notes/upload' : '/library/upload';
+        var fields = where.kind === 'note'
+          ? { lib_name: where.lib, folder: where.dir || '' }
+          : { dir: where.dir };
+        return api.upload(path, one, fields).then(function () { done += 1; });
+      });
+    });
+    chain
+      .then(function () {
+        // 资料那侧放完就能在树里看到（它是扫出来的）；笔记库里附件不进树
+        ui.toast(
+          where.kind === 'note'
+            ? '放进去了 ' + done + ' 个文件（在「' + where2 + '」的目录里，附件不进树）'
+            : '放进去了 ' + done + ' 个文件'
+        );
+        paint();
+      })
+      .catch(function (err) { toastErr('没放进去', err); paint(); });
+  }
+
+  /** 让一个目录行接受拖放：树内的条目落上来是"挪进这个目录"，
+   *  **从系统拖来的文件**落上来是"放进这个目录"（真的写进那个文件夹）。 */
   function bindDrop(node, target) {
+    function targetNow() { return typeof target === 'function' ? target() : target; }
     node.addEventListener('dragover', function (ev) {
-      var types = ev.dataTransfer ? ev.dataTransfer.types : null;
-      if (!types || Array.prototype.indexOf.call(types, MOVE_MIME) < 0) return;
+      var dt = ev.dataTransfer;
+      var types = dt ? dt.types : null;
+      if (!types) return;
+      var hasFile = Array.prototype.indexOf.call(types, 'Files') >= 0;
+      var hasMove = Array.prototype.indexOf.call(types, MOVE_MIME) >= 0;
+      if (!hasFile && !hasMove) return;
       ev.preventDefault();
-      ev.dataTransfer.dropEffect = 'move';
+      dt.dropEffect = hasFile ? 'copy' : 'move';
       node.classList.add('is-drop');
     });
     node.addEventListener('dragleave', function () { node.classList.remove('is-drop'); });
     node.addEventListener('drop', function (ev) {
       node.classList.remove('is-drop');
-      var raw = ev.dataTransfer && ev.dataTransfer.getData(MOVE_MIME);
+      var dt = ev.dataTransfer;
+      if (!dt) return;
+      if (dt.files && dt.files.length) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        uploadInto(targetNow(), dt.files);
+        return;
+      }
+      var raw = dt.getData(MOVE_MIME);
       if (!raw) return;      // 不是"树内搬家"（可能是别处拖来的东西），不接
       ev.preventDefault();
       ev.stopPropagation();
       var from = null;
       try { from = JSON.parse(raw); } catch (e2) { from = null; }
       // target 可以是函数：多根时"资料"那一行该落到哪个根，得等数据回来才知道
-      doMove(from, typeof target === 'function' ? target() : target);
+      doMove(from, targetNow());
     });
   }
 
@@ -400,7 +449,7 @@
           label: b.name,
           iconSlot: true,
           count: countItems(b.tree),
-          drop: { kind: 'doc', dir: b.root },
+          drop: { kind: 'doc', dir: b.root, label: b.name },
           actions: function () { return folderActions({ kind: 'doc', dir: b.root }); },
           load: function (body) { paintItemNode(body, b.tree, 3, b.root); },
         }));
@@ -418,7 +467,7 @@
         label: name,
         iconSlot: true,
         count: countItems(child),
-        drop: { kind: 'doc', dir: dir },
+        drop: { kind: 'doc', dir: dir, label: name },
         actions: function () { return folderActions({ kind: 'doc', dir: dir }); },
         load: function (body) { paintItemNode(body, child, level + 1, dir); },
       }));
@@ -484,7 +533,7 @@
         // `count` 是含子目录的总数（后端算好的），比自己数一遍可靠
         count: child.count || null,
         iconSlot: true,
-        drop: { kind: 'note', lib: lib, dir: rel },
+        drop: { kind: 'note', lib: lib, dir: rel, label: name },
         actions: function () { return folderActions({ kind: 'note', lib: lib, dir: rel }); },
         load: function (body) { paintNode(body, child, level + 1, lib, rel); },
       });
@@ -527,7 +576,7 @@
           label: lib.name,
           iconSlot: true,
           // 库这一行本身就是**库根目录**：能接拖放（搬回来）、能在根上新建
-          drop: { kind: 'note', lib: lib.name, dir: '' },
+          drop: { kind: 'note', lib: lib.name, dir: '', label: lib.name },
           actions: function () { return folderActions({ kind: 'note', lib: lib.name, dir: '' }); },
           count: lib.notes || lib.count || null,
           load: function (body) { paintVault(body, lib); },
@@ -556,7 +605,9 @@
       icon: 'book',
       // 只有一个根时，这一行就是个目录（根本身）：能接拖放、能在根上建
       // 多根时 state.libRoot 是空串，落到这一行就自然不接（两个根的同名目录混不起）
-      drop: function () { return state.libRoot ? { kind: 'doc', dir: state.libRoot } : null; },
+      drop: function () {
+        return state.libRoot ? { kind: 'doc', dir: state.libRoot, label: '资料' } : null;
+      },
       actions: function () {
         return state.libRoot ? folderActions({ kind: 'doc', dir: state.libRoot }) : [];
       },

@@ -220,10 +220,14 @@
     del: function (path, options) {
       return request('DELETE', path, options);
     },
-    /** 上传一个文件：走 multipart（附件接口用） */
-    upload: function (path, file) {
+    /** 上传一个文件：走 multipart（附件接口用）。
+     *  `fields` 是随文件一起上去的普通字段（落哪个目录要知道，见资料/笔记的 upload 接口）。 */
+    upload: function (path, file, fields) {
       var form = new FormData();
       form.append('file', file, file.name || 'file');
+      if (fields) {
+        Object.keys(fields).forEach(function (key) { form.append(key, String(fields[key])); });
+      }
       return request('POST', path, { form: form });
     },
   };

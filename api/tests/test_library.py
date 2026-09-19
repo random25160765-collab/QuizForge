@@ -617,3 +617,20 @@ def test_mkdir_move_refuse_what_would_bite(root: Path):
     (root / "已存在" / "里头").mkdir()
     with pytest.raises(lib.LibraryError):
         lib.move(root, str(root / "已存在"), str(root / "已存在" / "里头"))
+
+
+def test_safe_name_and_unique_in(root: Path):
+    """拖进来的文件名要净化，同名要编号 —— 都是"别动用户已有文件"这条线。"""
+    assert lib.safe_name("论文.pdf") == "论文.pdf"
+    assert lib.safe_name("../../etc/passwd") == "passwd"
+    assert lib.safe_name("a/b/c.pdf") == "c.pdf"
+    with pytest.raises(lib.LibraryError):
+        lib.safe_name("..")
+
+    folder = root / "新目录"
+    folder.mkdir()
+    assert lib.unique_in(folder, "x.pdf").name == "x.pdf"
+    (folder / "x.pdf").write_bytes(b"x")
+    assert lib.unique_in(folder, "x.pdf").name == "x 2.pdf"
+    (folder / "x 2.pdf").write_bytes(b"x")
+    assert lib.unique_in(folder, "x.pdf").name == "x 3.pdf"
