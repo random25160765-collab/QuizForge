@@ -427,10 +427,10 @@
       var title = one.title || one.citekey;
       box.appendChild(leaf(level, {
         label: title,
-        icon: KIND_ICON[one.kind] || 'book',
-        count: one.year || null,
-        // 悬停看得见出处：类型 · 引用键 · 相对路径
-        title: [one.kind, one.citekey, one.rel].filter(Boolean).join('\n'),
+        // 统一**不配图标、不带年份**：同一层里一人一个图标 + 有的有年份有的没有，
+        // 整列全是碎块（用户："还是很辣眼睛"）。类型与年份在悬停提示里，一个不少。
+        // 缩进与目录行的箭头对齐 —— 目录靠箭头、文件靠缩进，节奏就出来了。
+        title: [one.kind, one.year || '', one.citekey, one.rel].filter(Boolean).join('\n'),
         kind: 'doc',
         ref: { citekey: one.citekey },
         move: { kind: 'doc', path: String(one.path || ''), dir: absDir, title: title },
@@ -507,7 +507,8 @@
       if (file.kind !== 'note') return;    // 附件不进树（它们跟着笔记走）
       box.appendChild(leaf(level, {
         label: title,
-        icon: 'book',
+        // 同上：普通笔记不配图标（一列几十个同样的书本图标＝噪音）；
+        // 画布保留它那个 `grip` —— 它确实是另一种东西，值得一眼看出来
         title: file.path,
         kind: 'note',
         ref: { lib: lib, path: file.path },
