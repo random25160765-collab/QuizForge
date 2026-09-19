@@ -447,8 +447,7 @@
         box.appendChild(group(2, {
           key: 'libroot:' + b.root,
           label: b.name,
-          iconSlot: true,
-          count: countItems(b.tree),
+            count: countItems(b.tree),
           drop: { kind: 'doc', dir: b.root, label: b.name },
           actions: function () { return folderActions({ kind: 'doc', dir: b.root }); },
           load: function (body) { paintItemNode(body, b.tree, 3, b.root); },
@@ -465,7 +464,6 @@
       box.appendChild(group(level, {
         key: 'libdir:' + dir,
         label: name,
-        iconSlot: true,
         count: countItems(child),
         drop: { kind: 'doc', dir: dir, label: name },
         actions: function () { return folderActions({ kind: 'doc', dir: dir }); },
@@ -532,7 +530,6 @@
         label: name,
         // `count` 是含子目录的总数（后端算好的），比自己数一遍可靠
         count: child.count || null,
-        iconSlot: true,
         drop: { kind: 'note', lib: lib, dir: rel, label: name },
         actions: function () { return folderActions({ kind: 'note', lib: lib, dir: rel }); },
         load: function (body) { paintNode(body, child, level + 1, lib, rel); },
@@ -624,8 +621,7 @@
         box.appendChild(group(1, {
           key: 'vault:' + lib.name,
           label: lib.name,
-          iconSlot: true,
-          // 库这一行本身就是**库根目录**：能接拖放（搬回来）、能在根上新建
+            // 库这一行本身就是**库根目录**：能接拖放（搬回来）、能在根上新建
           drop: { kind: 'note', lib: lib.name, dir: '', label: lib.name },
           actions: function () {
             var items = folderActions({ kind: 'note', lib: lib.name, dir: '' });

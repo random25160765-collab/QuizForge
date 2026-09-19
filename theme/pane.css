@@ -434,6 +434,43 @@ body[data-page='workbench'] .view {
   padding: 18px 22px 40px;
 }
 
+/* 资料窗格：原件（PDF/图片/网页…）占主位，元数据与抽取的正文折在下面 */
+.panes__doc {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.panes__docfile {
+  flex: 1 1 auto;
+  min-height: 220px;
+  display: flex;
+  overflow: hidden;
+}
+
+.panes__docfile > .docv { flex: 1 1 auto; min-height: 0; }
+
+.panes__docinfo {
+  flex: 0 0 auto;
+  max-height: 46%;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+}
+
+.panes__docinfo > summary {
+  padding: 8px 14px;
+  color: var(--fg3);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.panes__docinfo[open] > summary { border-bottom: 1px solid var(--line); }
+
+.panes__docbody { padding: 10px 14px 16px; }
+
+.panes__doctitle { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+
 .panes__doc h1 { font-size: 19px; font-weight: 600; margin: 0 0 10px; }
 
 .panes__meta {
