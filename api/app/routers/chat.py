@@ -751,9 +751,17 @@ def _snippet(content: str, query: str, span: int = 40) -> str:
 
 @router.post("/conversations")
 def create_conversation(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
-    """新建一个空会话。标题留空，等第一条消息自动生成。"""
-    title = str((payload or {}).get("title") or "").strip()[:120]
+    """新建一个空会话。标题留空，等第一条消息自动生成。
+
+    可以带 `folder` 指定它落在哪个分组里 —— 在某个分组上右键「新建对话」时，
+    新建的那条就该在那个分组里；只在根上开、再让用户自己拖进去是多余的一步。
+    """
+    body = payload or {}
+    title = str(body.get("title") or "").strip()[:120]
     conv = Conversation(user_id=user.id, title=title)
+    if body.get("folder"):
+        conv.folder = _clean_folder(body.get("folder"))
+        _ensure_folder(db, user.id, conv.folder)
     db.add(conv)
     db.commit()
     db.refresh(conv)

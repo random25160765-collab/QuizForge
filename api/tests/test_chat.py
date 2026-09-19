@@ -1442,3 +1442,16 @@ def test_message_carries_the_mode_snapshot(client, monkeypatch) -> None:  # noqa
     assert len(users) == 2
     assert users[0]["mounts"] != users[1]["mounts"]
     assert users[1]["mounts"] == []
+
+
+def test_new_conversation_lands_in_its_folder(client) -> None:  # noqa: ANN001
+    """在分组上新建的对话就该在那个分组里（不必"建在根上再拖进去"）。
+
+    分组也顺带登记 —— 否则左栏树里那个分组会时隐时现（树是"分组表 + 会话的
+    folder"一起才画得出来的）。
+    """
+    _register(client)
+    resp = client.post("/api/chat/conversations", json={"folder": "考研/数学"}, headers=_headers(client))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["conversation"]["folder"] == "考研/数学"
+    assert "考研/数学" in _folders(client)["folders"]

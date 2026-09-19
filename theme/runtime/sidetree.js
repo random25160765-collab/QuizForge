@@ -400,9 +400,9 @@
    * 用户的原话是"下面的对话往左收一点"。三个根现在同一套缩进。 */
   var CHILD_LEVEL = 1;
 
-  /** 开一条新对话。组头那个「＋」和菜单共用它。 */
-  function newConversation() {
-    api.post('/chat/conversations', {}).then(function (out) {
+  /** 开一条新对话。组头那个「＋」和菜单共用它（在分组上开就落进那个分组）。 */
+  function newConversation(dir) {
+    api.post('/chat/conversations', { folder: dir || '' }).then(function (out) {
       var id = out && out.conversation && out.conversation.id;
       location.href = id ? 'chat.html?c=' + encodeURIComponent(id) : 'chat.html';
     }).catch(function (err2) {
@@ -438,7 +438,7 @@
   /** 分组行的右键菜单：手边这几件 */
   function chatFolderActions(path) {
     return [
-      { label: '新建对话', run: newConversation },
+      { label: '新建对话', run: function () { newConversation(path); } },
       { label: '新建子分组', run: function () { createChatFolder(path); } },
       { label: '改名 / 搬家', run: function () { renameChatFolder(path); } },
       { label: '删掉这个分组', run: function () { deleteChatFolder(path); } },
