@@ -781,7 +781,36 @@ class Conversation(Base):
         UtcDateTime, server_default=func.now(), nullable=False
     )
 
+    #: 所属分组 —— 一个**路径**（`''` = 根，`考研/数学` = 两层）。
+    #:
+    #: 为什么是路径而不是 `parent_id`：树是"给人看的一条线"，而路径让
+    #: "整个子树搬走 / 改名"变成一次前缀替换；`parent_id` 要递归改一串行，
+    #: 还得防环。分组不深（是人自己分的），路径的代价只是字符串长一点。
+    folder: Mapped[str] = mapped_column(String(240), default="", nullable=False)
+
     __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)
+
+
+class ConversationFolder(Base):
+    """对话分组 —— 一条**目录**（会话的归属写在 `Conversation.folder` 上）。
+
+    为什么除了 `folder` 列还要一张表：**空分组也得存在**。
+    只从会话反推目录的话，新建一个分组、还没往里放东西时它会立刻消失 ——
+    用户点完「新建分组」界面上什么都没发生，只会以为坏了。
+
+    它同时是"这个分组存在"的凭据，和"这个分组有几级"的来源。
+    """
+
+    __tablename__ = "conversation_folders"
+
+    id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    path: Mapped[str] = mapped_column(String(240), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (Index("ix_conv_folders_user_path", "user_id", "path", unique=True),)
 
 
 class Message(Base):

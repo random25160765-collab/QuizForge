@@ -98,3 +98,41 @@ def test_the_real_database_passes() -> None:
     if not path.is_file():
         return  # 还没建库（用例自己会建）
     assert sqlite_rowid_pk_problems(path) == []
+
+
+def test_additive_column_is_patched_in_place(tmp_path) -> None:  # noqa: ANN001
+    """老库里缺的**加法列**：应用就地补上，且一行数据都不动。
+
+    这条是"加了列但老库没有"的真实路径：`create_all` 不改已有的表，测试又每次建新库，
+    所以只有"拿一个老结构的库跑一遍补列"才测得到。对话分组（`conversations.folder`）
+    就是靠它落到已经用了一阵的库上的。
+    """
+    from sqlalchemy import create_engine, text
+
+    from app.db import _ensure_columns  # noqa: PLC0415
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT)"))
+        conn.execute(text("INSERT INTO conversations (id, title) VALUES ('a', '旧会话')"))
+
+    with engine.begin() as conn:
+        added = _ensure_columns(conn)
+        again = _ensure_columns(conn)      # 幂等：第二次什么都不补
+
+    assert any("conversations.folder" in one for one in added)
+    assert again == []
+    with engine.begin() as conn:
+        rows = [tuple(row) for row in conn.execute(text("SELECT id, title, folder FROM conversations"))]
+    assert rows == [("a", "旧会话", "")]   # 老数据还在，新列拿到默认值
+
+
+def test_additive_column_skips_missing_table(tmp_path) -> None:  # noqa: ANN001
+    """表还没建（新库）时不该报错 —— 那种情况交给 `create_all` 用完整定义建。"""
+    from sqlalchemy import create_engine
+
+    from app.db import _ensure_columns  # noqa: PLC0415
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
+    with engine.begin() as conn:
+        assert _ensure_columns(conn) == []
