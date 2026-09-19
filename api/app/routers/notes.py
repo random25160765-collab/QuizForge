@@ -18,6 +18,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from .. import canvas as canvaslib
+from .. import desktop
 from .. import library as lib
 from .. import notelib
 
@@ -93,6 +94,18 @@ def edit_roots(body: dict) -> dict:
         raise HTTPException(status_code=400, detail=f"不认识的动作：{action}")
     notelib.set_extra_roots(current)
     return {"roots": [str(path) for path in current], "added": action == "add"}
+
+
+@router.post("/reveal")
+def reveal_lib(body: dict) -> dict:
+    """在**系统文件管理器**里打开这个笔记库的位置。
+
+    路径**由服务端从已登记的库里取**（`lib.root`），不接受客户端传路径 ——
+    否则这就成了一个"按请求打开任意目录"的口子。打不开不算失败：没装 `xdg-open`、
+    SSH 会话、容器里都很正常，返回 `opened: False`，界面上给一句人话即可。
+    """
+    lib = _lib(_text(body, "lib"))
+    return desktop.reveal(lib.root)
 
 
 @router.get("/tree")

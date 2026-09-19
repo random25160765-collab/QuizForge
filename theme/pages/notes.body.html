@@ -20,7 +20,6 @@
     <!-- 文件面板：库 → 搜索 → 树 → 页脚（库名与设置） -->
     <aside class="nfiles" id="notes-files" aria-label="笔记列表">
       <header class="nfiles__head">
-        <select class="nfiles__lib" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
         <button class="nicon" id="notes-new" type="button" title="新建笔记（⌘O 同级 / ⌘P 子级）"
                 aria-label="新建笔记">＋</button>
       </header>
@@ -35,9 +34,14 @@
       <div class="nfiles__bar" id="notes-treebar"></div>
       <div class="nfiles__scroll" id="notes-tree" role="tree"></div>
       <footer class="nfiles__foot">
-        <!-- 这里原先还有一颗「⇅ 全部展开/收起」：它**没有任何处理器**（点了不动），
-             而上面树栏里已经有一颗同样作用的。删掉，只留树上那一颗。 -->
-        <span class="nfiles__vault" id="notes-vault">—</span>
+        <!-- 库选择从头部挪到这里（用户："Math 这个地方是用户选定的 vault，
+             这个的选择移到下面"）—— 它是"当前在哪一间库"，属于面板的底座，
+             不是每写一个字都要碰的东西，占着头一行不值得。
+             名字里也不带条目数了（原先写「Math（91）」）：那个数字在树栏里已经有了。 -->
+        <select class="nfiles__lib nfiles__lib--foot" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
+        <button class="nicon nicon--mini" id="notes-reveal" type="button"
+                title="在系统文件管理器中显示这个库的位置"
+                aria-label="在系统文件管理器中显示"></button>
       </footer>
     </aside>
 

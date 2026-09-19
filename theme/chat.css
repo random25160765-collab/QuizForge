@@ -103,19 +103,22 @@ body[data-page='chat'] .chat {
 
 /* ---------------------------------------------------------------- 左栏 */
 
+/* 侧栏（会话选择区）。间距这一版**整体放舒展**（用户指着图圈了几处"贴太紧"）：
+ * 原先 `padding: 0 12px 0 0` —— 顶上一点内距都没有，「新对话」那颗按钮直接贴在
+ * 页面顶边（实测 top = 0）；列表项之间只隔 6px，几行标题看着挤成一坨。 */
 .chat__aside {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
   min-height: 0;
   border-right: 1px solid var(--line);
-  padding-right: 12px;
+  padding: 12px 12px 12px 0;
 }
 
 .chat__asidehead {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .chat__new {
@@ -143,7 +146,7 @@ body[data-page='chat'] .chat {
 .chatlist {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
 
 .chatlist__item {
@@ -1932,7 +1935,7 @@ body[data-page='chat'] .chat {
 /* ---------------------------------------------------------------- 输入 */
 
 .chat__composer {
-  margin-top: 12px;
+  margin-top: 16px;
   /* 常驻视口底部。
      窄窗口下 .chat 会变成单栏、高度 auto（见文末断点），页面因此可以滚动；
      长输出把内容越推越长时，输入框（以及流式时的「停止」）会被推到视口外 ——
@@ -1941,7 +1944,7 @@ body[data-page='chat'] .chat {
   position: sticky;
   bottom: 0;
   z-index: 5;
-  padding: 8px 0 4px;
+  padding: 12px 0 6px;
   background: linear-gradient(to bottom, transparent, var(--bg) 26%);
 }
 
@@ -2011,7 +2014,7 @@ body[data-page='chat'] .chat {
 
 .chat__hint {
   min-height: 16px;
-  margin-top: 6px;
+  margin-top: 9px;
   font-size: 11.5px;
   color: var(--fg3);
 }

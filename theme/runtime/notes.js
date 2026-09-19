@@ -33,7 +33,7 @@
     treebar: document.getElementById('notes-treebar'),
     main: document.getElementById('notes-main'),
     side: document.getElementById('notes-side'),
-    vault: document.getElementById('notes-vault')
+    reveal: document.getElementById('notes-reveal')
   };
 
   var state = {
@@ -72,7 +72,20 @@
     // 目录折叠的箭头：与外壳资源树同一枚（右向 chevron，展开时转 90° 朝下）
     chev: svgIcon('<path d="m9 6 6 6-6 6"/>'),
     plus: svgIcon('<path d="M12 5v14M5 12h14"/>'),
-    x: svgIcon('<path d="M6 6l12 12M18 6 6 18"/>')
+    x: svgIcon('<path d="M6 6l12 12M18 6 6 18"/>'),
+    // 全部收起 / 全部展开：两对 chevron（朝内收 / 朝外展）。两个图标叠在一颗按钮里，
+    // 靠透明度 + 旋转换过去 —— 用户要的"丝滑转换"就是这一下。
+    foldAll: svgIcon('<path d="m7 14 5-5 5 5"/><path d="m7 9 5-5 5 5"/>'),
+    unfoldAll: svgIcon('<path d="m7 10 5 5 5-5"/><path d="m7 15 5 5 5-5"/>'),
+    // 三个视图：源码 / 默认（就地编辑）/ 阅读
+    code: svgIcon('<path d="m9 6-5 6 5 6"/><path d="m15 6 5 6-5 6"/>'),
+    inline: svgIcon('<path d="M4 20h16"/><path d="M14.5 4.5 19 9 9 19H4.5V14.5Z"/>'),
+    page: svgIcon('<path d="M5 4.5h9L19 9.5v10H5z"/><path d="M14 4.5v5h5"/><path d="M8 13h8M8 16.5h5"/>'),
+    // 在系统文件管理器里显示：一个"打开的文件夹"
+    folder: svgIcon('<path d="M3.5 19V6.5h5l2 2.5h5.5v3"/><path d="M3.5 19h13l3-7h-13z"/>'),
+    more: svgIcon('<path d="M6 12h.01M12 12h.01M18 12h.01"/>'),
+    // 思维导图：一根主干 + 两片叶子
+    mind: svgIcon('<path d="M6 4v16"/><path d="M6 9h5M6 15h5"/><circle cx="15" cy="9" r="2.2"/><circle cx="15" cy="15" r="2.2"/>')
   };
   var folded = {};      // 大纲折叠
   var dirFolded = {};   // 目录折叠
@@ -167,6 +180,16 @@
     // 一律换成内联 SVG —— 与工具条上那几颗同一套画法。
     if (el.newBtn) el.newBtn.innerHTML = ICONS.plus;
     if (el.clear) el.clear.innerHTML = ICONS.x;
+    if (el.reveal) {
+      el.reveal.innerHTML = ICONS.folder;
+      el.reveal.addEventListener('click', function () {
+        // 路径由服务端从**已登记的库**里取（接口不接受客户端传路径）
+        api.post('/notes/reveal', { lib: state.lib }).then(function (out) {
+          if (out && out.opened) toast('已在系统文件管理器里打开', 'ok');
+          else toast('打不开系统文件管理器：' + ((out && out.why) || '这个环境没有桌面'), 'warn');
+        }).catch(fail);
+      });
+    }
     el.lib.addEventListener('change', function () {
       if (state.dirty) saveNow(true);
       state.lib = el.lib.value;
@@ -230,11 +253,12 @@
           return;
         }
         state.libs.forEach(function (item) {
-          el.lib.appendChild(h('option', { value: item.name, text: item.name + '（' + item.notes + '）' }));
+          // 只写名字，不写条目数（用户："不要显示（91）"）：条目数在树栏里有了
+          el.lib.appendChild(h('option', { value: item.name, text: item.name }));
         });
         state.lib = state.libs[0].name;
         el.lib.value = state.lib;
-        if (el.vault) el.vault.textContent = state.lib;
+        // （页脚那个写库名的 span 随"库选择下移"一起删了：选择框自己就写着名字）
         // 启动时也得画一次主区 —— 不然中间是一片空白，看着像坏了
         // （空态那句"左边挑一篇，或者新建一篇"就是在这里出来的）
         renderMain();
@@ -267,11 +291,14 @@
               var anyOpen = all.some(function (p) {
                 return !dirFolded[p];
               });
-              // 文案说清"点下去会发生什么"，不再是让人猜的"全部展开/收起"
-              return h('button.nbtn', {
+              // 图标按钮（用户："全部收起和展开这个做成图标按钮，注意收起和展开的
+              // 图标要不一样，且要有丝滑转换"）：两个图标叠在一颗按钮里，
+              // 靠透明度 + 旋转换过去 —— 一次点击里"折起来"这件事是看得见的。
+              // 提示与 aria-label 仍写成人话（图标只说得出"方向"，说不出"范围"）。
+              return h('button.nbtn.nbtn--icon' + (anyOpen ? '.is-on' : ''), {
                 type: 'button',
-                text: anyOpen ? '全部收起' : '全部展开',
                 title: anyOpen ? '把目录全折起来' : '把目录全展开',
+                'aria-label': anyOpen ? '全部收起' : '全部展开',
                 onClick: function () {
                   // 踩过：这里原先写 `dirFolded[p] = !anyOpen`，而"全折起来"之后
                   // anyOpen 恰好是 false —— 第二次点算出来还是 true，于是**折了就再也
@@ -285,7 +312,10 @@
                   }
                   loadTree();
                 }
-              });
+              },
+                h('span.nfold__icon.nfold__icon--collapse', { html: ICONS.foldAll }),
+                h('span.nfold__icon.nfold__icon--expand', { html: ICONS.unfoldAll })
+              );
             })()
           )
         );
@@ -409,7 +439,25 @@
       file.color ? h('span.ntree__color', { style: { background: file.color } }) : null,
       file.icon ? h('span.ntree__icon', { text: file.icon }) : null,
       h('span.ntree__label', { text: label }),
-      dirtyHere ? h('span.ntree__dirty', { title: '还没保存' }) : null
+      dirtyHere ? h('span.ntree__dirty', { title: '还没保存' }) : null,
+      // **看得见的菜单入口**：删除、重命名、归档原先只在右键菜单里 ——
+      // 用户的原话是"目前的笔记无法在管理器中删除"（菜单点得出来，但没人会去猜
+      // 右键）。悬停时右边浮出一颗「…」，点它就是同一个菜单。
+      (function () {
+        var more = h('span.ntree__more', {
+          role: 'button',
+          tabindex: '-1',
+          html: ICONS.more,
+          title: '更多（删除 / 重命名 / 归档…）'
+        });
+        more.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          ev.preventDefault();
+          var box = more.getBoundingClientRect();
+          showMenuAt(box.right - 8, box.bottom + 2, fileMenu(file));
+        });
+        return more;
+      })()
     );
     return node;
   }
@@ -418,6 +466,11 @@
   function showMenu(ev, items) {
     ev.preventDefault();
     ev.stopPropagation();
+    showMenuAt(ev.clientX, ev.clientY, items);
+  }
+
+  /** 按坐标弹菜单（右键与"行尾那颗「…」"共用同一条路） */
+  function showMenuAt(x, y, items) {
     closeMenu();
     if (!items.length) return;
     var menu = h('div.nctx', { id: 'notes-context' });
@@ -439,8 +492,8 @@
     });
     document.body.appendChild(menu);
     var box = menu.getBoundingClientRect();
-    menu.style.left = Math.min(ev.clientX, window.innerWidth - box.width - 8) + 'px';
-    menu.style.top = Math.min(ev.clientY, window.innerHeight - box.height - 8) + 'px';
+    menu.style.left = Math.min(x, window.innerWidth - box.width - 8) + 'px';
+    menu.style.top = Math.min(y, window.innerHeight - box.height - 8) + 'px';
     setTimeout(function () {
       document.addEventListener('click', closeMenu, { once: true });
       document.addEventListener('contextmenu', closeMenu, { once: true });
@@ -692,6 +745,11 @@
 
   function renderTabs() {
     var bar = h('div.ntabs');
+    // **最左边这颗**：收起/展开文件面板。
+    // 用户的原话："收起左侧栏的开关跑到了右边。你把它移到左边，注意要做收起和展开
+    // 两个逻辑，而不是收起之后找不到展开按钮。" —— 它管的是左边那一栏，就摆在左边
+    // 那一栏的头顶上；而且它**在两种状态里都在这**（收起来之后还能展开回来）。
+    bar.appendChild(filesToggle());
     state.tabs.forEach(function (tab) {
       var active = state.note && state.note.path === tab.path;
       var node = h(
@@ -720,14 +778,6 @@
       h(
         'div.ntabs__tools',
         null,
-        h('button.nicon.nicon--mini' + (state.files === 'open' ? '.is-on' : ''), {
-          type: 'button',
-          // 右栏那枚图标翻过来当"左栏"用：同一套语言，一眼知道它管哪一边
-          html: ICONS.side,
-          style: { transform: 'scaleX(-1)' },
-          title: state.files === 'open' ? '收起文件栏' : '展开文件栏',
-          onClick: toggleFiles
-        }),
         h('button.nicon.nicon--mini', {
           type: 'button',
           html: ui.icon('target', 16),
@@ -751,6 +801,22 @@
       )
     );
     return bar;
+  }
+
+  /** 文件面板的开合按钮：两个朝向，转过去而不是闪一下。 */
+  function filesToggle() {
+    var open = state.files === 'open';
+    var btn = h('button.nicon.nicon--mini.ntabs__fold' + (open ? '.is-on' : ''), {
+      type: 'button',
+      html: ICONS.chev,
+      // 开着时箭头朝左（点它 = 把它往左边收）；收起时朝右（点它 = 拉回来）
+      style: open ? { transform: 'rotate(180deg)' } : null,
+      title: open ? '收起文件栏' : '展开文件栏',
+      'aria-label': open ? '收起文件栏' : '展开文件栏',
+      'aria-expanded': open ? 'true' : 'false',
+      onClick: toggleFiles
+    });
+    return btn;
   }
 
   /** 收起 / 展开左边的文件面板。与右栏同一套：状态记本机，栅格换一列。
@@ -862,13 +928,24 @@
         (state.note.kind === 'canvas' || state.note.kind === 'graph'
           ? []
           : state.note.kind === 'outline'
-            ? [['outline', '大纲'], ['mindmap', '思维导图']]
-            : [['source', '源码'], ['live', '默认'], ['read', '阅读']]).map(function (pair) {
+            ? [
+                ['outline', '大纲', ICONS.props, '大纲（逐行折起来）'],
+                ['mindmap', '思维导图', ICONS.mind, '思维导图（按层级画开）']
+              ]
+            : [
+                ['source', '源码', ICONS.code, '源码（Markdown 原文）'],
+                ['live', '默认', ICONS.inline, '默认（就地改写，逐块渲染）'],
+                ['read', '阅读', ICONS.page, '阅读（渲染后的样子）']
+              ]).map(function (pair) {
           return h(
-            'button.seg__item' + (state.mode === pair[0] ? '.is-on' : ''),
+            'button.seg__item.seg__item--icon' + (state.mode === pair[0] ? '.is-on' : ''),
             {
               type: 'button',
-              text: pair[1],
+              html: pair[2],
+              // 图标只说得出"哪一档"，说不出"这一档是什么" —— 所以提示与
+              // aria-label 都写全（对着图标猜"这双眼镜是源码还是阅读"没道理）
+              title: pair[3],
+              'aria-label': pair[3],
               onClick: function () {
                 if (state.mode === pair[0]) return;
                 if (state.dirty) saveNow(true);
@@ -1662,11 +1739,15 @@
     blocks.forEach(function (block) {
       box.appendChild(liveBlock(block));
     });
+    // 原先这里是「＋ 新的一段」—— 用户的原话是"这个新的一段是什么？意义不明"。
+    // 它确实说不清：屏幕上一根孤零零的按钮，没人知道"一段"是什么单位、加在哪。
+    // 现在换成**正文末尾那条提示带**：平时几乎不出现，鼠标进入这一块才浮出来，
+    // 而且把话说全（"在末尾加一段"）。它同时就是那片可点区域本身。
     box.appendChild(
       h('button.nlive__add', {
         type: 'button',
-        text: '＋ 新的一段',
-        title: '在末尾加一段（也可以点正文下面的空白处）',
+        text: '＋ 在末尾加一段',
+        title: '在末尾加一段（点正文下面的空白处也一样）',
         onClick: function () { appendBlock(); }
       })
     );

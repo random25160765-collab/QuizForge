@@ -18,9 +18,87 @@ body[data-page='library'] {
 .lib {
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr) 300px;
-  height: calc(100vh - var(--topbar-h, 48px) - var(--statusbar-h, 26px));
+  /* **别把"没显示的状态栏"也减掉**：状态栏是按需出现的（`body[data-sb='on']` 才显示），
+   * 这里原先无条件减了 46px —— 于是资料页底部永久空着一条（用户："这个界面的下方有留白"）。
+   * 实测那条正好 46px，等于 --statusbar-h。 */
+  height: calc(100vh - var(--topbar-h, 48px));
   min-height: 0;
   background: var(--bg);
+}
+
+body[data-sb='on'] .lib {
+  height: calc(100vh - var(--topbar-h, 48px) - var(--statusbar-h, 26px));
+}
+
+/* 左右两栏收起：栅格那一列变 0 宽，栏本身**留在 DOM 里**（少一个子项会让主区
+ * 前移一格，落在 0 宽那一列上 —— 笔记页踩过这个坑，正文只剩 16px）。 */
+.lib[data-lib-list='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr) 300px;
+}
+
+.lib[data-lib-side='closed'] {
+  grid-template-columns: 300px minmax(0, 1fr) 0;
+}
+
+.lib[data-lib-list='closed'][data-lib-side='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr) 0;
+}
+
+.lib[data-lib-list='closed'] .lib__list,
+.lib[data-lib-side='closed'] .lib__side {
+  /* `min-width: 0` 不能少：栅格子项默认 `min-width: auto`，缩不到比自己内容更窄
+     —— 列已经是 0 了，它还会撑出 25px 顶到右边缘外面（实测），页面就能横向滚了。 */
+  min-width: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+/* 主区那一列：上面一条常驻工具条 + 下面内容 */
+.lib__col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.lib__tools {
+  display: flex;
+  align-items: center;
+  flex: none;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.lib__toolssp {
+  flex: 1;
+}
+
+/* 开合按钮：两个朝向之间转过去，而不是换一张图那样闪一下 */
+.lib__fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  background: none;
+  color: var(--fg3);
+  cursor: pointer;
+  transition:
+    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.lib__fold:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.lib__fold.is-on {
+  color: var(--fg2);
 }
 
 /* ---- 左：列表 ---- */
