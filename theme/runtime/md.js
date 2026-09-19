@@ -80,14 +80,37 @@
       return token;
     }
 
+    /**
+     * 块级公式的正文清洗：**每行开头的引用前缀不是公式的一部分**。
+     *
+     * 踩过：Obsidian 里把公式写在提示框里是常规写法 ——
+     *     > $$
+     *     > L(x,y,\lambda) = f(x,y) + \lambda\varphi(x,y)
+     *     > $$
+     * 而块级抽取是拿 `$$…$$` 一夹，把中间连前缀一起收进去的。于是 TeX 里多了两个
+     * `>`，KaTeX 解析失败、**直接把源码吐出来**（用户截图里那个
+     * `> L(x,y,λ) = f(x,y) + λφ(x,y) >` 就是它）。
+     */
+    function cleanTex(tex) {
+      return tex
+        .split('\n')
+        .map(function (line) {
+          return line.replace(/^\s*>\s?/, '');
+        })
+        .join('\n')
+        .trim();
+    }
+
     var text = src;
 
     // 块级：$$ ... $$ 与 \[ ... \]（允许跨行）
     text = text.replace(/\$\$([\s\S]+?)\$\$/g, function (whole, tex) {
-      return tex.trim() ? push(tex.trim(), true) : whole;
+      var clean = cleanTex(tex);
+      return clean ? push(clean, true) : whole;
     });
     text = text.replace(/\\\[([\s\S]+?)\\\]/g, function (whole, tex) {
-      return tex.trim() ? push(tex.trim(), true) : whole;
+      var clean = cleanTex(tex);
+      return clean ? push(clean, true) : whole;
     });
 
     // 行内：$ ... $ 与 \( ... \)

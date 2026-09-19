@@ -634,7 +634,52 @@
   // 之后所有「圆角容器里的文字」都靠 --ink-shift 落到几何中心。
   calibrateInkShift();
 
+  /**
+   * 换内容时做一次淡入淡出。
+   *
+   * 何时用：**用户按下某个东西、一整块内容换掉**的时候（换笔记、换对话、换条目、换标签）。
+   * 何时不用：自动发生的重画（自动保存后重画状态栏、流式吐字、窗口尺寸变化）——
+   * 那些一秒好几次，加了就是一直在闪。
+   *
+   * 做法是 CSS 淡出 → 换 → 淡入（110ms 一下），**刻意不用 View Transitions**：
+   * 实测同一个文档里只要用过一次 `startViewTransition`，跨页那次（app.css 里
+   * `@view-transition { navigation: auto }`，项目里早就有的那套）就会被拒，
+   * 并在控制台留一条 "ViewTransition opt-in disabled"。跨页那套覆盖面更大，
+   * 所以让路的是这一套。
+   *
+   * `host` 是要淡的那一块（默认整页内容 `#app-root`）。像笔记页那种"只换正文、
+   * 左边树别动"，就把主区传进来。系统里关掉了动效的**直接换** —— 这只是顺滑，
+   * 不该成为可用性的一部分。
+   */
+  function swap(run, host) {
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var box = host || document.getElementById('app-root');
+    if (reduce || !box) {
+      run();
+      return;
+    }
+    // 同一块上连着换（点得快）：后来那次说了算，别让前一个定时器把内容定格在透明里
+    var token = (box.__qfSwap || 0) + 1;
+    box.__qfSwap = token;
+    box.style.transition = 'opacity 110ms ease';
+    box.style.opacity = '0';
+    window.setTimeout(function () {
+      if (box.__qfSwap !== token) return;
+      run();
+      // 换完**隔两帧**再淡回来：同一帧里改回去等于没改（不会触发过渡）
+      window.requestAnimationFrame(function () {
+        window.requestAnimationFrame(function () {
+          if (box.__qfSwap !== token) return;
+          box.style.opacity = '';
+          box.style.transition = '';
+        });
+      });
+    }, 110);
+  }
+
+
   QF.ui = {
+    swap: swap,
     h: h,
     clear: clear,
     viewSwap: viewSwap,

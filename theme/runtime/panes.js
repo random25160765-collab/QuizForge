@@ -258,7 +258,9 @@
       if (item.key === key) leaf.at = i;
     });
     state.active = leaf.id;
-    render();
+    // 换标签 = 换一整块内容（用户："不同页面…之间的切换都太过生硬"）。
+    // 只淡窗格那一片：左边的资源树不动。
+    ui.swap(render, document.querySelector('.panes'));
     save();
   }
 
@@ -275,7 +277,7 @@
       leaf.tabs = [fresh];
       leaf.at = 0;
     }
-    render();
+    ui.swap(render, document.querySelector('.panes'));
     save();
   }
 
