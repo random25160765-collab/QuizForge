@@ -98,14 +98,23 @@ def edit_roots(body: dict) -> dict:
 
 @router.post("/reveal")
 def reveal_lib(body: dict) -> dict:
-    """在**系统文件管理器**里打开这个笔记库的位置。
+    """在**系统文件管理器**里打开这个位置（库根，或 `path` 指定的那一项）。
 
-    路径**由服务端从已登记的库里取**（`lib.root`），不接受客户端传路径 ——
+    路径**不直接采信客户端**：传了 `path` 也要经 `safe_path` 解析、且必须落在这个库里 ——
     否则这就成了一个"按请求打开任意目录"的口子。打不开不算失败：没装 `xdg-open`、
     SSH 会话、容器里都很正常，返回 `opened: False`，界面上给一句人话即可。
     """
     lib = _lib(_text(body, "lib"))
-    return desktop.reveal(lib.root)
+    rel = _text(body, "path")
+    if not rel:
+        return desktop.reveal(lib.root)
+    try:
+        target = notelib.safe_path(lib, rel)
+    except Exception:  # noqa: BLE001 —— 解析不出来就当"库根"，不把异常抛给界面
+        return desktop.reveal(lib.root)
+    if not target.exists():
+        return desktop.reveal(lib.root)
+    return desktop.reveal(target)
 
 
 @router.get("/tree")
@@ -126,8 +135,9 @@ def note(lib: str, path: str) -> dict:
 
 
 @router.get("/search")
-def search(q: str, lib: str = "", limit: int = 50) -> dict:
-    return {"items": _run(notelib.search, q, lib_name=lib, limit=limit)}
+def search(q: str, lib: str = "", limit: int = 50, folder: str = "") -> dict:
+    """`folder` 一给，就只在这个目录里面找（树上的"在文件夹中搜索"）。"""
+    return {"items": _run(notelib.search, q, lib_name=lib, limit=limit, folder=folder)}
 
 
 @router.get("/tags")
@@ -247,7 +257,7 @@ def folder(body: dict) -> dict:
 def rename(body: dict) -> dict:
     """改名，并**把引用它的地方一起改**（旧编辑器 `alwaysUpdateLinks` 那条）。"""
     lib = _lib(_text(body, "lib"))
-    return _run(notelib.rename_note, lib, _text(body, "path"), _text(body, "to"))
+    return _run(notelib.rename_path, lib, _text(body, "path"), _text(body, "to"))
 
 
 def _suggester():
@@ -318,9 +328,12 @@ def canvas_apply(body: dict) -> dict:
 
 @router.post("/delete")
 def delete(body: dict) -> dict:
-    """删除一篇 —— **移到回收站**（`.trash/`），不是真删。见 `notelib.delete_note`。"""
+    """删除一项（笔记或目录）—— **移到回收站**（`.trash/`），不是真删。
+
+    见 `notelib.delete_path`：目录也走同一条路，且回收站**能把它恢复回来**。
+    """
     lib = _lib(_text(body, "lib"))
-    return _run(notelib.delete_note, lib, _text(body, "path"))
+    return _run(notelib.delete_path, lib, _text(body, "path"))
 
 
 @router.get("/trash")
@@ -345,7 +358,14 @@ def restore(body: dict) -> dict:
 def move(body: dict) -> dict:
     """把一篇挪进另一个目录（树里拖拽就是这个）。按路径写的引用会一起改。"""
     lib = _lib(_text(body, "lib"))
-    return _run(notelib.move_note, lib, _text(body, "path"), _text(body, "folder"))
+    return _run(notelib.move_path, lib, _text(body, "path"), _text(body, "folder"))
+
+
+@router.post("/copy")
+def copy(body: dict) -> dict:
+    """复制一份（Obsidian 的 Make a copy）：笔记复制成 `<名> 1.md`，目录整棵复制成 `<名> 1`。"""
+    lib = _lib(_text(body, "lib"))
+    return _run(notelib.copy_path, lib, _text(body, "path"))
 
 
 @router.get("/trash")

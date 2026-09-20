@@ -30,6 +30,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -182,7 +183,7 @@ def _sources(db, point: KnowledgePoint) -> list[dict]:  # noqa: ANN001
 
 
 def _questions_of(  # noqa: ANN001
-    db, point_keys: list[str], limit: int, include_answer: bool, layer: str = ""
+    db, point_keys: list[str], limit: int, include_answer: bool, layer: str = "", qtype: str = ""
 ) -> list[dict]:
     if not point_keys:
         return []
@@ -198,6 +199,11 @@ def _questions_of(  # noqa: ANN001
     # 模型据此得出"题库里没有 problem"（错的，而且错得理直气壮）。
     if layer:
         stmt = stmt.where(Question.layer == layer)
+    # 题型同理，**同样在 limit 之前**。这一条是同一个坑的第二次：两条通道原先
+    # 都没暴露题型，而候选是按 id 排序取的 —— single 的 id 更小，永远排在
+    # problem 前面，于是"34 道大题一道都推不到、也读不到"（2026-09-20 实测）。
+    if qtype:
+        stmt = stmt.where(Question.type == qtype)
     rows = db.execute(stmt.order_by(Question.id).limit(limit)).all()
     out = []
     for question, point_key in rows:
@@ -208,11 +214,22 @@ def _questions_of(  # noqa: ANN001
             "layer": question.layer,
             "wing": question.wing,
             "difficulty": question.difficulty,
-            "stem": _stem(question),
+            # 题干：**讲解场景**（includeAnswer）给完整的 —— 模型是照着题干讲的，
+            # 截到 120 字等于让它讲一半（用户实测："拿不到完整题干"）。
+            # 平时仍截短，省上下文。
+            "stem": _stem(question, 2000 if include_answer else 120),
         }
         if include_answer:
             payload = question.payload or {}
             item["answer"] = str(payload.get("answer") or payload.get("answers") or "")[:300]
+            # 大题没有 `answer`（答案是每问的 reference），给个不空的：
+            subs = payload.get("parts") or payload.get("questions") or []
+            if not item["answer"] and isinstance(subs, list) and subs:
+                item["answer"] = "；".join(
+                    str(sub.get("reference") or "").strip()
+                    for sub in subs
+                    if isinstance(sub, dict) and str(sub.get("reference") or "").strip()
+                )[:600]
         out.append(item)
     return out
 
@@ -302,6 +319,7 @@ def _concept_detail(db, concept: Concept) -> dict:  # noqa: ANN001
 def get_existing_questions(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     point_key = str(args.get("pointKey") or "").strip()
     layer = str(args.get("layer") or "").strip()
+    qtype = str(args.get("type") or "").strip()
     include_answer = bool(args.get("includeAnswer"))
     limit = _clamp(args.get("limit"), 1, 20, 5)
 
@@ -318,7 +336,7 @@ def get_existing_questions(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         ).all()
         keys = [row[0] for row in rows]
 
-    items = _questions_of(db, keys, limit, include_answer, layer=layer)
+    items = _questions_of(db, keys, limit, include_answer, layer=layer, qtype=qtype)
     return {
         "items": items,
         # 顺带把**题库的形状**报出来：类型 × 层 各有多少。
@@ -326,7 +344,8 @@ def get_existing_questions(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         # 这是可以让数据库直接回答的问题，不该让它猜。
         "bank": _bank_shape(db),
         "note": "answer 默认不给（推题时剧透）；要讲解就把 includeAnswer 设为 true。"
-        "items 是**抽样**，要判「题库里有没有某类题」请看 bank（那是全量统计）。",
+        "items 是**抽样**，要判「题库里有没有某类题」请看 bank（那是全量统计）。"
+        "指定 `type`（如 problem）可以只取某一类 —— 不指定时按 id 排，前面的可能总是同一类。",
     }
 
 
@@ -459,9 +478,15 @@ def get_due_reviews(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 题卡
 
 
-# 能推成卡片的题型。**大题（problem）不在其中**：它有小问结构与小问级判分，
-# 那是另一套界面（刷题页有），塞进一张卡里会变成一个半成品。
-CARD_TYPES = ("single", "multi", "blank", "short")
+# 能推成卡片的题型。**大题（problem）也在其中**：卡片按"每问一个输入区"渲染
+#（见前端 `cardInput` 的 problem 分支），每问的参考答案与评分要点不进卡
+#（见 `_card_payload`）。
+#
+# 原先这里把它排除在外，理由是"那是另一套界面"—— 现在不这么分了：题库里的大题
+# 与临时大题走**同一条路**（推成一张卡、在本页作答、答完交给本页的模型批改），
+# 那条"独立子窗口 + 专职子代理"的路因此退役
+#（用户："目前题库里的大题是单独界面单独子代理——这个改成和临时大题一样的配置"）。
+CARD_TYPES = ("single", "multi", "blank", "short", "problem")
 
 
 def _card_payload(question: Question) -> dict:
@@ -499,6 +524,23 @@ def _card_payload(question: Question) -> dict:
         # 填空只给"几个空"与作答方式，每个空的接受答案不给
         card["blankMode"] = str(payload.get("blankMode") or "")
         card["blankCount"] = len(payload.get("answer") or [])
+
+    if question.type == "problem":
+        # 大题：只带**小问的题面**（题号 / 标题 / 那一问在问什么）。
+        # 每问的 `reference`（参考答案）与 `rubric`（评分要点）**必须剥掉** ——
+        # 卡片会进模型上下文、也会被渲染出来，留在卡里就等于把答案摆在眼前。
+        # 要对答案就点提交（前端本地题库里有完整题面与答案）；要讨论就让模型
+        # 自己去 `get_existing_questions(includeAnswer)` 取。
+        subs = payload.get("parts") or payload.get("questions") or []
+        card["questions"] = [
+            {
+                "index": int(sub.get("index") or position + 1),
+                "title": str(sub.get("title") or ""),
+                "stem": str(sub.get("stem") or ""),
+            }
+            for position, sub in enumerate(subs)
+            if isinstance(sub, dict)
+        ]
 
     return card
 
@@ -543,8 +585,16 @@ def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     point_key = str(args.get("pointKey") or "").strip()
     layer = str(args.get("layer") or "").strip()
     wing = str(args.get("wing") or "").strip()
+    qtype = str(args.get("type") or "").strip()
+    if qtype and qtype not in CARD_TYPES:
+        return {"card": None, "note": "题型只有这些：" + " / ".join(CARD_TYPES)}
 
     stmt = select(Question).where(Question.retired_at.is_(None), Question.type.in_(CARD_TYPES))
+    if qtype:
+        # **点名要大题就给大题**。原先这条通道没有题型参数，而下面按 id 排序取 ——
+        # single 的 id 更小，永远排在前面，34 道 problem 一道都推不到
+        #（2026-09-20 实测：给了 pointKey，那个点上确实同时挂着 problem，仍然推 single）。
+        stmt = stmt.where(Question.type == qtype)
     if layer:
         stmt = stmt.where(Question.layer == layer)
     if wing:
@@ -795,6 +845,265 @@ function report(ok) {
 </script></body></html>"""
 
 
+#: **常驻运行壳**：一个页面启动一次，之后反复收代码执行。
+#:
+#: 为什么要有它（上面那份"一段脚本一个壳"是旧做法）：Pyodide 的启动是**每次都要重来**的
+#: —— 下载 wasm、初始化解释器、再 import numpy/scipy，实测第一段脚本要一秒多，换一段又要
+#: 重来一次。用户的话是"跑 python 脚本非常慢，你研究一下"。壳常驻之后，那份成本只付**一次**
+#: （页面打开时），后面每次运行就只剩执行本身。
+#:
+#: 协议（与宿主之间）：
+#:   * 壳 → 宿主：`{qfReady: true}`     —— 运行时 + 依赖都就绪，可以派活了
+#:   * 宿主 → 壳：`{qfRun, qfCode}`     —— 请跑这段代码
+#:   * 壳 → 宿主：`{qfRun, ok, text}`   —— 这一次的输出（与旧壳同形状，宿主那条回填不用改）
+#:
+#: 每次运行**清掉上一段留下的顶层名字**：脚本之间不该互相看见对方的变量
+#: （同一个人在同一个壳里连着跑两段，第二段能看到第一段的 `A`、`B` 只会造成误判）。
+_PYODIDE_SHELL = r"""<!doctype html>
+<html lang="zh"><head><meta charset="utf-8">
+<title>Python 运行壳</title>
+<script src="__INDEX__pyodide.js"></script>
+<script>
+/* 常驻运行壳：启动一次，之后按消息执行。它**不出现在画面上**（宿主把它放成 1×1）。 */
+var QUEUE = [];        // 还没就绪时先排着
+var PY = null;         // 就绪后的 Pyodide
+var CHUNKS = [];       // 当前这次运行的输出
+var CURRENT = '';      // 当前这次运行的 runId
+
+function send(payload) {
+  try { parent.postMessage(payload, '*'); } catch (err) { /* 不在 iframe 里就算了 */ }
+}
+
+function write(text) { CHUNKS.push(text); }
+
+/** 这一轮画出来的图（matplotlib）——壳自己收走，不用脚本 savefig。
+ *
+ * 为什么这么做：面板只能显示文本，而"把 PNG 打成 base64 再 print"对模型是灾难
+ *（一屏几千个字符的乱码）。让壳在图省下来的地方收，模型那边只看到"画了几张"。
+ *
+ * **只在 import 过 matplotlib 时才动**：否则每次运行都白 import 它（几百毫秒）。
+ * 最多 3 张：base64 会跟着回传、存进库，多了不合适。
+ */
+function collect_figures() {
+  var out = [];
+  try {
+    if (!PY.runPython('"matplotlib" in __import__("sys").modules')) return out;
+    out = PY.runPython(
+      'import base64, io\n' +
+      'import matplotlib.pyplot as plt\n' +
+      '_imgs = []\n' +
+      'for _n in plt.get_fignums()[:3]:\n' +
+      '    _b = io.BytesIO()\n' +
+      '    plt.figure(_n).savefig(_b, format="png", dpi=110, bbox_inches="tight")\n' +
+      '    _imgs.append(base64.b64encode(_b.getvalue()).decode("ascii"))\n' +
+      'plt.close("all")\n' +
+      '_imgs'
+    ).toJs();
+  } catch (err) {
+    /* 出图失败不影响这一轮的输出：图没了，字还在 */
+    out = [];
+  }
+  return out || [];
+}
+
+async function execute(job) {
+  CURRENT = String(job.qfRun || '');
+  CHUNKS = [];
+  var code = String(job.qfCode || '');
+  // 跑之前先记下顶层有哪些名字，跑完把**新出现的**删掉：两段脚本不共享变量。
+  var before = [];
+  try { before = PY.runPython('list(globals().keys())').toJs(); } catch (err) { before = []; }
+  try {
+    var t0 = performance.now();
+    // **按 import 现装包**：`loadPackagesFromImports` 扫代码里的 import 语句，
+    // 本机 indexURL 旁边有的（pandas / matplotlib 那一拨）就当场装上；
+    // lock 里没有的（比如 torch）它静默跳过，等真正执行时报错，报错也更准。
+    // 没用到的人一个字节都不下 —— 这正是"用到再下"那条规矩的落点。
+    try {
+      await PY.loadPackagesFromImports(code);
+    } catch (err) {
+      /* 装不上不在这里断：让脚本照跑，import 自己会报出清楚的错 */
+    }
+    // 点名要装的（动态导入那种扫不出 import 的写法）——`packages` 参数走这条路
+    var asked = job.qfPackages || [];
+    if (asked.length) await PY.loadPackage(asked);
+    // **让 matplotlib 用 Agg 后端**再让脚本 import 它。
+    //
+    // Pyodide 默认给的 canvas 后端要把画布插进**页面 DOM**，而壳是 1×1 的隐藏
+    // iframe —— 实测它连 `plt.close("all")` 都会抛
+    // `AttributeError: 'NoneType' object has no attribute 'parentNode'`，
+    // 图也就收不上来。Agg 是纯内存渲染，`savefig` 直接出 PNG，正合收图的路子。
+    //
+    // 只在**这一轮真的用到** matplotlib 时才动（扫一遍代码）：不用它的脚本
+    // 不该为此多花一次 import。必须在脚本 import 之前设 —— import 之后就改不动了。
+    if (/matplotlib|pyplot|mpl\./.test(code)) {
+      try {
+        PY.runPython(
+          'import sys\n' +
+          'if "matplotlib" not in sys.modules:\n' +
+          '    import matplotlib\n' +
+          '    matplotlib.use("Agg")'
+        );
+      } catch (err) { /* 没装上就算了：脚本自己 import 时会报出真正的错 */ }
+    }
+    await PY.runPythonAsync(code);
+    // **回传的 text 里只放脚本自己的 stdout/stderr**：壳的内部账（执行耗时、
+    // 环境自述、启动开销）一个字都不许混进来 —— 那是壳的事，不是这段脚本的输出。
+    //（用户："python 沙箱的输出里面怎么会有这个？""这个东西也不该出现在输入里"。）
+    // 计时照旧算，但作为 `ms` 单独回传：要显示也由面板在**它自己的位置**显示。
+    var images = collect_figures();
+    send({
+      qfRun: CURRENT,
+      ok: true,
+      text: CHUNKS.join(''),
+      ms: Math.round(performance.now() - t0),
+      images: images,
+    });
+  } catch (err) {
+    write(String((err && err.message) || err) + '\n');
+    send({ qfRun: CURRENT, ok: false, text: CHUNKS.join('') });
+  } finally {
+    delete_names(before);
+    CURRENT = '';
+    CHUNKS = [];
+  }
+}
+
+/* 清掉这次运行新加的顶层名字（不动 import 进来的模块名，那些是运行时自己的）。 */
+function delete_names(before) {
+  try {
+    var now = PY.runPython('list(globals().keys())').toJs();
+    var keep = {};
+    for (var i = 0; i < before.length; i++) keep[before[i]] = 1;
+    var doomed = [];
+    for (var j = 0; j < now.length; j++) {
+      var name = String(now[j]);
+      if (keep[name] || name.indexOf('_') === 0) continue;
+      doomed.push(name);
+    }
+    if (doomed.length) {
+      PY.runPython('for _n in ' + JSON.stringify(doomed) + ':\n    globals().pop(_n, None)');
+    }
+  } catch (err) { /* 清理失败不影响结果：下一次运行只是多带一个旧名字 */ }
+}
+
+window.addEventListener('message', function (event) {
+  var data = event.data || {};
+  if (!data.qfCode) return;
+  if (!PY) { QUEUE.push(data); return; }
+  execute(data);
+});
+
+(async () => {
+  var t0 = performance.now();
+  PY = await loadPyodide({ indexURL: '__INDEX__' });
+  PY.setStdout({ batched: function (s) { write(s + '\n'); } });
+  PY.setStderr({ batched: function (s) { write(s + '\n'); } });
+
+  // **压掉两类噪音警告**（都实测撞过）：
+  //   * DeprecationWarning —— 写给库作者看的（每次 import pandas 一坨 PyArrow 预告）；
+  //   * 「Matplotlib is currently using agg … cannot show the figure」—— 脚本里
+  //     写了 plt.show() 就会冒出来。图本来就由壳收走贴在面板上（见 collect_figures），
+  //     show 在这个环境里没有意义，这条提示对用户也毫无价值。
+  // 只压这两类：真正的错误是异常，不走 warning 通道，一个字都不会被吃掉。
+  try {
+    PY.runPython(
+      'import warnings\n' +
+      'warnings.filterwarnings("ignore", category=DeprecationWarning)\n' +
+      'warnings.filterwarnings("ignore", message=".*non-GUI backend.*")'
+    );
+  } catch (err) { /* 压不掉就算了，不影响跑 */ }
+
+  var want = __PACKAGES__;
+  var packMs = 0;
+  var packWarning = '';
+  if (want.length) {
+    var t1 = performance.now();
+    try {
+      await PY.loadPackage(want);
+    } catch (err) {
+      /* 装不上要**报出来**：悄悄降级的代价是"看起来装了、其实 import 失败"。
+       * 攒着跟"就绪"一起发（提前发会让宿主收到两次就绪，见下面那段注释）。 */
+      packWarning = '依赖加载失败：' + want.join('、') + ' —— ' + String((err && err.message) || err);
+    }
+    packMs = performance.now() - t1;
+  }
+
+  // **lock 之外的额外包**（schemdraw：画电路图那个）。
+  //
+  // `loadPackage` 找不到它们 —— Pyodide 只认自己 lock 里那 310 个。所以 `make vendor`
+  // 把这些 wheel 放在**同一个目录**，这里用 micropip 从**本机** URL 装：仍然不联网，
+  // 与别的包一个规矩。装在预载之后、自述之前，所以"这次到底装上了没有"当场就知道。
+  var extra = __EXTRA__;
+  var extraWarning = '';
+  if (extra.length) {
+    var t2 = performance.now();
+    try {
+      // **micropip 自己也得先装上**：它在 lock 里（本机就有），但不默认加载 ——
+      // 直接 `import micropip` 会 ModuleNotFoundError（实测就栽在这儿）。
+      await PY.loadPackage('micropip');
+      await PY.runPythonAsync(
+        'import micropip\n' +
+        'await micropip.install(' +
+        JSON.stringify(extra.map(function (n) { return '__INDEX__' + n; })) +
+        ')'
+      );
+    } catch (err) {
+      // 装不上要**报出来**（悄悄降级的代价是"看起来有、import 时才发现没有"），
+      // 但**不在这里发 qfReady** —— 记号攒着跟自述一起发，不然宿主那边会收到两次
+      // "就绪"、状态乱掉（实测：第二次把 info 覆盖成 undefined）。
+      extraWarning = '额外包没装上：' + extra.join('、') + ' —— ' + String((err && err.message) || err);
+    }
+    packMs += performance.now() - t2;
+  }
+
+  // 把环境报给宿主（它会把这几行摆进第一次运行的输出里）——模型因此知道
+  // 这个沙箱里有什么、版本多少，不必猜。
+  var info = '';
+  try {
+    info = PY.runPython(
+      'import sys\n' +
+      '_bits = ["Python " + sys.version.split()[0]]\n' +
+      'for _name in __CHECK__:\n' +
+      '    try:\n' +
+      '        _m = __import__(_name)\n' +
+      '        _bits.append(_name + " " + getattr(_m, "__version__", "?"))\n' +
+      '    except Exception:\n' +
+      '        _bits.append(_name + " 未就绪")\n' +
+      '" · ".join(_bits)'
+    );
+  } catch (err) {
+    info = String((err && err.message) || err);
+  }
+  send({
+    qfReady: true,
+    info: info,
+    bootMs: Math.round(performance.now() - t0),
+    packMs: Math.round(packMs),
+    // 两条警告（预载失败 / 额外包失败）攒到这里一起报 —— 只发一次"就绪"
+    warning: (packWarning + (packWarning && extraWarning ? '；' : '') + extraWarning) || undefined,
+  });
+
+  // 就绪前排队的那几段，现在补跑
+  while (QUEUE.length) execute(QUEUE.shift());
+})();
+</script></head><body></body></html>"""
+
+
+def shell_page() -> str:
+    """常驻运行壳的那份 HTML（宿主拿去做隐藏 iframe 的 `srcdoc`）。"""
+    return (
+        # 壳启动时只装**预载**那一拨；按需的那拨由壳在执行前看 import 现装
+        #（`loadPackagesFromImports`）—— 所以两张名单注入的都是预载这一份：
+        # 一份给 `loadPackage`，一份给启动时那句"版本自述"（报的是**已经装好的**）。
+        _PYODIDE_SHELL.replace("__INDEX__", pyodide_base() or "")
+        .replace("__PACKAGES__", json.dumps(list(PRELOAD_PACKAGES), ensure_ascii=False))
+        .replace("__CHECK__", json.dumps(list(PRELOAD_PACKAGES), ensure_ascii=False))
+        # lock 之外的额外 wheel（壳里用 micropip 从本机装，见 EXTRA_WHEELS）
+        .replace("__EXTRA__", json.dumps(list(EXTRA_WHEELS), ensure_ascii=False))
+    )
+
+
 def _python_page(title: str, code: str, packages: list[str], run_id: str) -> str:
     return (
         _PYODIDE_PAGE.replace("__TITLE__", html.escape(title)[:80])
@@ -817,22 +1126,49 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     ## 能跑什么、跑不了什么
 
     * 标准库、纯计算、文本输出：没问题。
-    * `numpy` / `scipy`：**本机已经装好**（连同 openblas），`packages` 里点名即可，
-      不用联网、不用等下载。
-    * **跑不了**：要编译或依赖系统库的（`torch`、某些 `pandas` 依赖）、
-      要读本机文件或连数据库的 —— 沙箱里没有文件系统，也没有用户的数据。
-    * **没有 matplotlib**：要画图得先接 canvas，这里没接。要图就用 JS 画，
-      或者把数据 print 出来。
+    * `numpy` / `scipy`：**本机已经装好**（连同 openblas），开箱即用，不用等下载。
+    * `pandas` / `matplotlib`：**也能用**，本机备着 —— 但**用到了才装**（壳看你的
+      `import` 现装）。所以**第一次** import 它们会多等几秒（十几 MB 要从本机取一次），
+      之后就现成了。写 `import pandas as pd` / `import matplotlib.pyplot as plt`
+      这种**正常写法**就行，别用 `__import__("...")` 动态导入（那样壳扫不出来，
+      得在 `packages` 里点名）。
+    * **画图直接画** ✓：`plt.plot(...)` / `plt.hist(...)` 之后**不用** `savefig`、
+      也不用 base64 —— 壳会把图收走贴在面板上给用户看（最多 3 张）。
+      下面这两行是踩过的坑，照抄：图里**别写中文**（这台运行时没装中文字体，
+      会变成一串豆腐块），图例与标题用英文。
+    * **电路图用 `schemdraw`**（本机装好了，专治"手算元件坐标"那种笨活）——
+      网表式地拼：给元件与连接，它负责排版与符号。**别用 plt.plot 手画电阻**，
+      那种图又难看、改一个参数就得重排。照这个骨架写：
 
-    ## 你看不到输出（这条最要紧）
+          import schemdraw
+          import schemdraw.elements as elm
+          d = schemdraw.Drawing()
+          d += elm.Resistor().right().label('R1 = 10k')     # 锯齿是 ANSI 风
+          d += elm.Capacitor().down().label('C1')
+          d += elm.Ground()
+          d.draw()
 
-    输出落在面板上，**不会回到你的上下文里**。所以：
+      要 IEC 的**矩形**电阻就换 `elm.ResistorIEC()`（国内教材多用它）。
+      库很全：电阻/电容/电感/二极管/三极管(BJT/MOS)/运放/受控源/开关/变压器…
+      出图与 matplotlib 一样 —— **不用 savefig**，壳会自己收走贴在面板上。
+    * **符号推导用 `sympy`**（本机有）：模电里"把 A_v(s) 化简成标准二阶形式"
+      这种活计，数值算给不出一支带参数的表达式，符号算才行。参数别太多
+      （四五个以内），多了它化简不出来、比手推还难看。
+    * **跑不了**：要编译或依赖系统库的（`torch`）、要读本机文件或连数据库的 ——
+      沙箱里没有文件系统，也没有用户的数据。
 
-    * 别说"跑出来了，结果是 X" —— 你没看到，那就是编的（实测发生过：
-      声称 numpy 可用，而面板上写着 No module named 'numpy'）。
-    * 说"我写了一段验证 XX 的代码，跑一下"就够。输出会**自动回填**到那条消息上
-      （界面直接显示），并且在你**下一轮**说话时进你的上下文 —— 那时再下结论。
-      不要让他复制粘贴，也不要问他"结果是什么"。
+    ## 输出会**等它跑完**再回到你手里（这条最要紧）
+
+    这次工具调用**不会立刻返回**：它会等页面把脚本跑完（几毫秒到几秒），
+    输出就作为这次调用的结果交给你 —— 所以：
+
+    * **拿到输出再说话**：直接看结果下结论，那是真跑出来的东西。
+    * **不许**说"我已经交进去跑了""跑完我下一轮看看""你那边看面板"这类话 ——
+      那一轮就是现在，输出几秒内就到（实测模型说过这种话，用户的原话是：
+      "让 agent 等命令返回了再说话"）。
+    * 也**不许**在没有输出的情况下声称结果（实测发生过：声称 numpy 可用，
+      而面板上写着 No module named 'numpy'）。要是这条结果里写着"没等到沙箱的输出"，
+      就如实说没等到。
     """
     code = str(args.get("code") or "").strip()
     if not code:
@@ -854,12 +1190,13 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         }
 
     asked = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]
-    # 装什么：numpy 总是装（12MB，几乎每段脚本都用）；scipy 是 47MB ——
-    # **代码里真的提到它**（或模型点名）时才装。常见的"纯计算 + numpy"因此
-    # 不必先等 63MB。代价是动态导入（`__import__("scipy")`）会被漏掉 ——
-    # 这条写在工具说明里了。
-    hint = " ".join([code] + asked).lower()
-    packages = [name for name in PYODIDE_PACKAGES if name == "numpy" or name in hint]
+    # `packages` 的语义现在是"**保证这几个装上**"，而且只在名单里挑。
+    #
+    # 原先这里还按代码里的**字样**猜（出现 "scipy" 就装 47MB）—— 现在壳里有
+    # `loadPackagesFromImports`，真 import 什么就装什么，比猜准得多，所以猜的那步
+    # 退休了。`packages` 只留给"动态导入"（`__import__("scipy")`）这种壳扫不出来的写法。
+    asked_keys = [name.lower().strip().split(".")[0] for name in asked]
+    packages = [name for name in PYODIDE_PACKAGES if name in asked_keys]
 
     # 名单外的剔掉并告诉模型。Pyodide 能不能装某个包是**写死的事实**，猜不出来，
     # 而猜错的代价是"看起来装上了、跑起来 No module named"（实测发生过）。
@@ -872,26 +1209,41 @@ def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     title = str(args.get("title") or "").strip()[:80] or "Python 运行结果"
     run_id = uuid.uuid4().hex[:12]
     note = (
-        "代码已经挂上，面板里真跑。**不要**把源码贴进正文，"
-        "**也不要**声称你已经看到输出 —— 你此刻看不到，它跑在沙箱里。"
-        "正文里说清这段在验证什么就够了；跑完的输出会**自动回填到那条消息上**，"
-        "而且**在你下一轮说话时进你的上下文** —— 所以不必让他复制粘贴，"
-        "也不必问他结果是什么。"
-        "沙箱固定带这几个包：" + "、".join(PYODIDE_PACKAGES) + "（不必再点名，"
-        "面板开头会报出实际版本）。numpy 每次都装，scipy 只在代码里出现它时才装 —— "
-        "**用 `__import__(\"scipy\")` 这种动态写法时请在 packages 里点名**。"
+        "代码已经交出去跑了，**这一次调用会等它跑完**（几毫秒到几秒）——"
+        "输出会作为这次调用的结果给你，所以**拿到结果再说话**，可以直接下结论。"
+        "**不要**把源码贴进正文，**也别说**「已经交进去跑了」「下一轮再看」这类话"
+        "（那一轮就是现在）；更不许在没有输出的情况下声称跑出了什么。"
+        "沙箱能用的包：" + "、".join(PYODIDE_PACKAGES) + "。"
+        "其中 " + "、".join(PRELOAD_PACKAGES) + " **开箱就有**；"
+        "另有 " + "、".join(OPTIONAL_PACKAGES) + " —— 本机备着，**你的 import 用到哪个"
+        "就装哪个**（所以第一次 import 它们会多等几秒，之后现成）。"
+        "别用 `__import__(\"...\")` 那种动态写法（壳扫不出 import，装不上）——"
+        "要这种写法就在 `packages` 里点名。"
+        "**画图直接 `plt.plot(...)` 就行**：壳会把图收走贴在面板上，"
+        "不用 savefig、不用 base64；图里**别写中文**（没装中文字体，会糊成方块），"
+        "标题图例用英文。"
     )
     if skipped:
         note += (
             " 你要的 " + "、".join(skipped) + " 不在这个子集里，**没有装** —— "
             "换名单里的包，或者用标准库自己实现；也可以如实告诉他这个沙箱装不了。"
         )
+    # 交给**常驻运行壳**（见 `_PYODIDE_SHELL`）：这里不再生成"一段脚本一个页面"。
+    # 零件只带 runId，脚本原文走工具入参（宿主从那里取），宿主把 code post 给那个壳、
+    # 壳跑完回传。老消息里的零件仍然带 `html`（那时是一段脚本一个壳）——宿主对
+    # 那一种走兼容路径，所以 `_python_page` 与 `PYODIDE_PACKAGES` 都还得留着。
+    #
+    # `await_run`：让 agent 循环**停下来等**这次运行（见 agent_loop 里那段注释）。
+    # 只在这一条上打开 —— 别的工具（查资料、推题）都是自己就出结果的，不需要等。
     return {
         "demo": {
             "title": title,
-            "html": _python_page(title, code, packages, run_id),
             "runId": run_id,
+            # 点名要装的包（`packages` 参数那条路）——宿主会把它连同代码一起交给壳
+            #（壳里叫 `qfPackages`）。壳自己还会按 import 现装别的，不靠这一项。
+            "packages": packages,
         },
+        "await_run": True,
         "note": note,
     }
 
@@ -928,7 +1280,39 @@ DEMO_SERVED_KIT = Path(__file__).resolve().parents[1] / "web" / "assets" / "demo
 #
 # 与 `tools/vendor.py` 的 `PYODIDE_PACKAGES` 对应：那边负责取回（含依赖，
 # 如 scipy → numpy + openblas），这边负责加载。
-PYODIDE_PACKAGES = ("numpy", "scipy")
+#: 壳**启动时就装好**的包 —— 现在是**全部**（用户："所有的 python 包都务必在运行壳里
+#: 自动静默预加载"）。
+#:
+#: 原先 pandas / matplotlib 是"脚本 import 到了才装"：省流量，但第一次 import 要等
+#: 3.5 秒左右 —— 实测就是用户说的"这次执行速度有点慢"。壳常驻，这笔钱整个会话
+#: 只付一次，索性一起装在前面（壳启动那 2~3 秒里顺带完成，用户感知不到多出来的部分）。
+PRELOAD_PACKAGES = (
+    "numpy",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    # sympy / networkx：本机 lock 里就有（纯 Python）。加它们是因为 EE 那类课要的东西
+    # 与"算个数"不同 —— 模电里大量动作是**推导**（小信号等效 → KCL/KVL → A_v(s) 化简
+    # 成标准二阶形式），数值算给不出一支带参数的表达式。networkx 顺手给网表/图论用。
+    "sympy",
+    "networkx",
+)
+
+#: 本机备着、**真用到才装**的包 —— 现在是空的（都进预载了）。
+#: 留这条是因为那条机制还在（壳里的 `loadPackagesFromImports`）：哪天想放回去，
+#: 把名字挪过来就行。
+OPTIONAL_PACKAGES: tuple[str, ...] = ()
+
+#: 沙箱里**能用**的全部包 = 预载 + 按需。`packages` 参数与工具说明都认这一份。
+PYODIDE_PACKAGES = PRELOAD_PACKAGES + OPTIONAL_PACKAGES
+
+#: **lock 里没有、但我们要的包**（打包好的 wheel 文件名，`make vendor` 会放到
+#: indexURL 旁边）。Pyodide 的 `loadPackage` 只认它 lock 里那 310 个，所以这些得
+#: 走 `micropip` 从**本机** URL 装 —— 壳里就是这么干的（见 `_PYODIDE_SHELL`）。
+#:
+#: `schemdraw` = 画电路图（元件符号 / 连线 / 节点标号，网表式地拼，不用手算坐标）。
+#: 版本跟 `tools/vendor.py` 的 `EXTRA_WHEELS` 是**同一份名单**，改的时候两处一起改。
+EXTRA_WHEELS: tuple[str, ...] = ("schemdraw-0.23-py3-none-any.whl",)
 PYODIDE_PACKAGE_URL = {"numpy": "https://pyodide.org/en/stable/usage/packages-in-pyodide.html"}
 
 
@@ -1781,8 +2165,52 @@ GROUP_HINTS: dict[str, str] = {key: hint for key, _, hint in GROUPS}
 ALL_GROUPS: tuple[str, ...] = tuple(key for key, _, _ in GROUPS)
 
 
+#: 权限档 —— 把一个工具"能动什么"分成四档，**模式就是"组 × 档"的组合**。
+#:
+#: * `read`    只看：查了不改变任何东西（找笔记、读材料、看掌握度）
+#: * `propose` 只提案：界面上出一张凭条，**他点了才生效**（收藏、标掌握）
+#: * `write`   直接写：调用即改数据（追加笔记、写答题记录）
+#: * `exec`    执行：跑代码、渲染能动的演示
+#:
+#: 为什么非要有这一层：光靠"组"筛不出"只读模式"—— 组内读写是混装的
+#: （`quiz` 组里 `get_mastery` 是只读、`grade_problem` 直接写库、`mark_mastered` 只提案）。
+#: 用户的原话是"access 必须加，实际上是做一个软件内部的简单 MCP"。
+ACCESS_LEVELS: tuple[str, ...] = ("read", "propose", "write", "exec")
+
+#: **元能力**：不属于任何一块工具，但"这一版挂了任何工具"时就该在（见 `specs`）。
+#: 现在只有 `run_subagent` —— 它自己不读材料、不写记录，只是把一条长工具链
+#: 派出去（见 `app/subagent.py`）。极简模式（空集）里它不出现：那会儿连查都查不了。
+META_TOOLS: tuple[str, ...] = ("run_subagent",)
+
+
+def run_subagent(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """把一条长工具链派给子代理（实现见 `app/subagent.py`）。
+
+    **权限照抄当前这一份**（`ctx` 里的 `mounts` / `allow`，由 `call` 顺手放进来的）——
+    子代理不比主对话多一分权：查询模式派出去的也只能读。
+
+    为什么要有它：主对话的上下文要维持"他是谁、聊到哪了"，而"把这件事查清楚"
+    往往要十几轮工具调用 —— 那些中间过程对主线毫无用处，只会把要紧的东西挤出去。
+    派活之后主线只看到这一次调用，中间过程一条都不进。
+    """
+    from . import subagent  # 延迟导入：它要回调这边的工具模块，放顶层会成环
+
+    return subagent.run(
+        db,
+        user,
+        task=str(args.get("task") or ""),
+        wants=str(args.get("wants") or ""),
+        mounts=(ctx or {}).get("mounts"),
+        allow=(ctx or {}).get("allow"),
+        tool_context=ctx,
+        tools=sys.modules[__name__],
+    )[1]
+
+
+
 REGISTRY = {
     "search_notes": {
+        "access": "read",
         "group": "notes",
         "fn": search_notes,
         "description": "在**用户自己的笔记**里按内容找（跨所有笔记库）。"
@@ -1800,6 +2228,7 @@ REGISTRY = {
         },
     },
     "write_note": {
+        "access": "write",
         "group": "notes",
         "fn": write_note,
         "description": "把一段话**追加到某篇笔记的末尾**。用户说\"记到我的笔记里\""
@@ -1816,6 +2245,7 @@ REGISTRY = {
         },
     },
     "attach_material": {
+        "access": "read",
         "group": "library",
         "fn": attach_material,
         "description": "把资料库里的一份资料读进来：给它的元数据与一段正文，"
@@ -1831,6 +2261,7 @@ REGISTRY = {
         },
     },
     "search_knowledge": {
+        "access": "read",
         "group": "graph",
         "fn": search_knowledge,
         "description": "在知识空间里按关键词找概念与知识点。用户问到一个术语、"
@@ -1846,6 +2277,7 @@ REGISTRY = {
         },
     },
     "get_point_detail": {
+        "access": "read",
         "group": "graph",
         "fn": get_point_detail,
         "description": "取一个知识点或概念的详情：它是什么、在哪份材料的哪几行出现、"
@@ -1859,6 +2291,7 @@ REGISTRY = {
         },
     },
     "get_existing_questions": {
+        "access": "read",
         "group": "quiz",
         "fn": get_existing_questions,
         "description": "题库里已有的题（默认不含答案，避免推题时剧透）。"
@@ -1868,12 +2301,18 @@ REGISTRY = {
             "properties": {
                 "pointKey": {"type": "string", "description": "限定某个知识点的 key，可省略"},
                 "layer": {"type": "string", "description": "识记 / 理解 / 应用 / 迁移，可省略"},
+                "type": {
+                    "type": "string",
+                    "description": "题型：single / multi / blank / short / problem，可省略。"
+                    "想看大题就传 problem —— 不传时按 id 排，抽样里可能一道大题都没有。",
+                },
                 "limit": {"type": "integer", "description": "最多几道，默认 5"},
-                "includeAnswer": {"type": "boolean", "description": "讲解时设为 true"},
+                "includeAnswer": {"type": "boolean", "description": "讲解时设为 true（同时给完整题干）"},
             },
         },
     },
     "get_mastery": {
+        "access": "read",
         "group": "quiz",
         "fn": get_mastery,
         "description": "用户在各知识点上的掌握度与档位（new/learning/familiar/mastered）。"
@@ -1890,6 +2329,7 @@ REGISTRY = {
         },
     },
     "get_due_reviews": {
+        "access": "read",
         "group": "quiz",
         "fn": get_due_reviews,
         "description": "按间隔重复算法到期该复习的题。用户问「今天该复习什么」时用它。",
@@ -1899,6 +2339,7 @@ REGISTRY = {
         },
     },
     "run_python": {
+        "access": "exec",
         "group": "sandbox",
         "fn": run_python,
         "description": "在沙箱里**真跑**一段 Python（Pyodide：浏览器里跑 CPython）。"
@@ -1933,6 +2374,7 @@ REGISTRY = {
         },
     },
     "render_demo": {
+        "access": "exec",
         "group": "sandbox",
         "fn": render_demo,
         "description": "产出一个**能动的演示**（跑在沙箱 iframe 里）。"
@@ -1981,6 +2423,7 @@ REGISTRY = {
         },
     },
     "explore_graph": {
+        "access": "read",
         "group": "graph",
         "fn": explore_graph,
         "description": "从一个概念/知识点出发，走**语义关系**看邻域：前置、后继、组成部分、易混、实现。"
@@ -2008,6 +2451,7 @@ REGISTRY = {
         },
     },
     "search_material": {
+        "access": "read",
         "group": "library",
         "fn": search_material,
         "description": "在**材料原文**里做字面检索，返回命中的行区间与原文片段。"
@@ -2026,6 +2470,7 @@ REGISTRY = {
         },
     },
     "read_material": {
+        "access": "read",
         "group": "library",
         "fn": read_material,
         "description": "读材料原文的某几行（默认从 startLine 起 60 行）。"
@@ -2045,6 +2490,7 @@ REGISTRY = {
         },
     },
     "grade_problem": {
+        "access": "write",
         "group": "quiz",
         "fn": grade_problem,
         "description": "把一次**大题批改**的逐问判定写进答题记录（掌握度与间隔重复因此"
@@ -2074,6 +2520,7 @@ REGISTRY = {
         },
     },
     "flag_question": {
+        "access": "propose",
         "group": "quiz",
         "fn": flag_question,
         "description": "提议把某道题加入/移出**收藏夹**（=「这题值得再看」的标记，刷题页里叫收藏夹）。"
@@ -2089,6 +2536,7 @@ REGISTRY = {
         },
     },
     "mark_mastered": {
+        "access": "propose",
         "group": "quiz",
         "fn": mark_mastered,
         "description": "提议把某道题标成**已掌握**（错题本里不再催它）或取消这个标记。"
@@ -2105,13 +2553,15 @@ REGISTRY = {
         },
     },
     "push_question": {
+        "access": "read",
         "group": "quiz",
         "fn": push_question,
         "description": "推一道题给他做（返回一张**可作答的题卡**，不含答案）。"
         "他说「考考我」「来道题」「练一道」时用它；你刚讲完一段机制、想确认他确实懂了时也可以主动推。"
         "题卡由界面渲染、他答完结果会自动进答题记录 —— 所以**不要**报答案，也不要替他念选项。"
-        "**大题（problem）不在这张卡里** —— 它有多问、要写推导，由界面上的「大题」"
-        "子窗口负责（那边有专职的子代理批改，题库里也确实有大题）。"
+        "大题（problem）**也能推**：卡片会按「每问一个输入区」渲染，他答完可以点"
+        "「发送给 AI」把作答发给你批改 —— 所以推了大题之后就等他这一步，"
+        "**不要**自己先把推导念出来。"
         "**别凭印象说题库里有没有某类题**：`get_existing_questions` 会连全量统计一起返回。",
         "parameters": {
             "type": "object",
@@ -2122,11 +2572,18 @@ REGISTRY = {
                 },
                 "layer": {"type": "string", "description": "识记 / 理解 / 应用 / 迁移"},
                 "wing": {"type": "string", "description": "基础 / 应用 / 综合 / 创新"},
+                "type": {
+                    "type": "string",
+                    "description": "题型：single / multi / blank / short / problem。"
+                    "**要大题就传 problem**（题库里 34 道，全在应用层）—— "
+                    "不传的话按 id 排序取，推出来的多半是选择题。",
+                },
                 "maxDifficulty": {"type": "integer", "description": "难度上限 1–5"},
             },
         },
     },
     "create_question": {
+        "access": "read",
         "group": "quiz",
         "fn": create_question,
         "description": "**自己出一道题**给他做（挂成一张**临时题卡**：能直接作答，默认不进题单）。"
@@ -2152,6 +2609,48 @@ REGISTRY = {
             "required": ["question"],
         },
     },
+    # ---- 元能力：不属于任何一块（见 META_TOOLS），挂了任何工具时都在 ----
+    "run_subagent": {
+        "access": "read",
+        "group": "",
+        "fn": run_subagent,
+        "description": (
+            "把**一条长工具链**派给子代理：它拿一个任务，在**自己的上下文**里跑完"
+            "（查几次、换什么词、几时收手由它自己定），只交回一份结果 ——"
+            "中间那些工具调用**一条都不进你的上下文**。\n"
+            "**什么时候该用**：你要做的这件事是**串行的多步查询** ——"
+            "试一个查询词、零命中、换词再试；把一个概念展开成前置链再逐段找原文；"
+            "笔记 / 材料 / 图谱几路都要查一遍再对账 —— 或者中间过程很长而你只要结论。"
+            "你自己一步步调也一样能查到，但每一步的原文与试错都会堆进你的上下文，"
+            "把真正要紧的东西挤出去。\n"
+            "**什么时候别用**：一句话就查得到的事（直接调 search_* 更快）；"
+            "以及**要你判断的事** —— 讲什么、判对错、出什么题、怎么评价，"
+            "这些留在你这边，别让子代理替你下结论：它只会**找**、只**报**。\n"
+            "**它的规矩**：只读（它也没有沙箱，`run_python` 用不了）、不许再派子代理、"
+            "冲突要两条都报、查不到要带 `scanned/total` 说清是「真没有」还是「词没给对」。\n"
+            "调用形状是**任务描述**，不是工具名清单：说清要达成什么、回来时你想看到什么形状。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": (
+                        "任务：要它达成什么、背景是什么、该去哪里找。"
+                        "写得像给一个能干的同事派活，而不是给一个搜索框下命令。"
+                    ),
+                },
+                "wants": {
+                    "type": "string",
+                    "description": (
+                        "期望回来的形状（可省）：比如「前置链 + 每级最实的原文段 + 行号」、"
+                        "「两条来源的对照表」"
+                    ),
+                },
+            },
+            "required": ["task"],
+        },
+    },
 }
 
 
@@ -2160,12 +2659,20 @@ def group_of(name: str) -> str:
     return str((REGISTRY.get(name) or {}).get("group") or "")
 
 
-def specs(mounts: set[str] | None = None) -> list[dict]:
+def specs(
+    mounts: set[str] | None = None,
+    allow: tuple[str, ...] | set[str] | None = None,
+) -> list[dict]:
     """OpenAI 兼容的工具声明。
 
     `mounts` 是这次挂载了哪几组；**`None` = 全都挂上**（没配过的默认）。
     空集合是合法输入，而且正是"极简模式"：一条声明都不给模型，它就只剩聊天。
+
+    `allow` 是这次允许的**权限档**（见 ACCESS_LEVELS）；`None` = 四档全放。
+    两个条件是**与**关系：组要对得上，档也要够得着 —— 于是"查询模式"（挂三组、
+    只放 read）拿到的是"找笔记 / 读材料 / 走图谱"，一条写操作都不会出现在声明里。
     """
+    levels = None if allow is None else set(allow)
     return [
         {
             "type": "function",
@@ -2176,8 +2683,21 @@ def specs(mounts: set[str] | None = None) -> list[dict]:
             },
         }
         for name, spec in REGISTRY.items()
-        if mounts is None or str(spec.get("group") or "") in mounts
+        if (
+            mounts is None
+            or str(spec.get("group") or "") in mounts
+            # 元能力（`run_subagent`）：不属于任何一块，但"这一版挂了任何工具"时都该在。
+            # **极简模式除外** —— 那会儿连查都查不了，派子代理没有意义
+            #（空集在这里是假，所以它天然不出现）。
+            or (name in META_TOOLS and mounts)
+        )
+        and (levels is None or str(spec.get("access") or "read") in levels)
     ]
+
+
+def access_of(name: str) -> str:
+    """某个工具的权限档（认不出来的当只读处理）。"""
+    return str((REGISTRY.get(name) or {}).get("access") or "read")
 
 
 def call(
@@ -2188,6 +2708,7 @@ def call(
     ctx: dict | None = None,
     *,
     mounts: set[str] | None = None,
+    allow: tuple[str, ...] | set[str] | None = None,
 ) -> tuple[bool, dict]:  # noqa: ANN001
     """执行一次工具调用。**永远不抛**：失败也是给模型的一条结果。
 
@@ -2203,6 +2724,12 @@ def call(
     # 纵深防御：**没挂载的模块，即使模型把名字报出来也不执行**。
     # 光靠"不声明"是不够的 —— 上下文里可能还留着上一轮的痕迹、
     # 或者模型就是会猜一个名字出来试。
+    # 元能力（`run_subagent`）只在"挂了任何工具"时可用 —— 与 `specs` 的放行规则一致：
+    # 极简模式里它也不该能调（那会儿连查都查不了，没有活可派）。
+    if name in META_TOOLS and mounts is not None and not mounts:
+        return False, {
+            "error": "这一版没有任何工具（极简模式），没有可派给子代理的活。"
+        }
     group = group_of(name)
     if mounts is not None and group and group not in mounts:
         label = GROUP_LABELS.get(group, group)
@@ -2210,8 +2737,22 @@ def call(
             "error": f"「{label}」这个模块这次没有挂载，我这边调不动它。"
             f"（顶栏那个图标可以把它亮起来；或者你直接把需要的内容贴给我。）"
         }
+    # 纵深防御之二：**这一档没开，报出名字也不执行**。与组那道是同一个道理 ——
+    # "只读模式"里模型仍然可能猜到 `grade_problem` 这个名字（上下文里见过、或者就是会猜）。
+    if allow is not None:
+        level = access_of(name)
+        if level not in set(allow):
+            return False, {
+                "error": "这个工具当前这一版没有开（权限档：" + level + "），我这边调不动它。"
+                "需要的话让他把模式切到能改记录的那一档。"
+            }
     try:
-        return True, spec["fn"](db, user, args or {}, ctx or {})
+        # **顺手把"这次挂在什么范围里"也交给工具**：`run_subagent` 要照抄一份给子代理
+        #（不放权 —— 见 subagent.py 的说明）。别的工具用不上就放着，不打扰。
+        scope = dict(ctx or {})
+        scope.setdefault("mounts", mounts)
+        scope.setdefault("allow", allow)
+        return True, spec["fn"](db, user, args or {}, scope)
     except Exception as exc:  # noqa: BLE001
         return False, {"error": type(exc).__name__ + ": " + str(exc)[:200]}
 
@@ -2226,6 +2767,14 @@ def output_text(payload: dict) -> str:
     因此涨到 90 秒撞上超时。给模型留一张"身份证"就够了：
     它知道推了哪道题、什么层什么翼，要讲题时自己会去取。
     """
+    # 子代理的回报**原样交出去**：那本来就是写给模型看的 Markdown（结论 / 依据 /
+    # 原文摘录 / 试过什么）。塞进 JSON 会把它转义成一大团 `\n` 与 `\"` ——
+    # 读起来更费劲、还更费 token。
+    sub = payload.get("subagent")
+    if isinstance(sub, dict) and not payload.get("error"):
+        head = str(payload.get("note") or "子代理的回报：")
+        return head + "\n\n" + str(sub.get("report") or "（它没交回正文）")
+
     trimmed = {key: value for key, value in payload.items() if key not in ("card", "draft")}
 
     # 草稿卡（`create_question`）同理，但**答案要留**：它给用户讲评"为什么选 B"时得看答案；

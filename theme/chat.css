@@ -37,8 +37,9 @@ body[data-page='chat'] .chat {
   display: grid;
   /* 会话列表 + 对话：两列（见上面那条注释）。264px 与资源树的缩进节奏接近，
      再宽就喧宾夺主 —— 正文是主角。 */
-  grid-template-columns: 264px minmax(0, 1fr);
-  gap: 0;
+  /* 宽度只认 `--chat-aside-w` 这一个变量（会右拖动时由 JS 写它）。
+   * 248px 是没拖过时的默认值 —— 与资源树的缩进节奏接近，再宽就喧宾夺主。 */
+  grid-template-columns: var(--chat-aside-w, 248px) minmax(0, 1fr);
   /* **一行**，且不留 gap：这一格里还有几个隐藏的浮层（对话树 / 演示 / 便签 / 大题），
      它们也是栅格子项 —— 每个空行照样吃掉一条 16px 的 gap，五条就是 64px，
      于是"输入框下面总有一段空白"（实测 .chat 900、.chat__main 只有 836）。 */
@@ -51,68 +52,445 @@ body[data-page='chat'] .chat {
   /* 高度交给父级（`.view` 已经是满高的一格）。
      原先写的是 `calc(100vh - var(--topbar-h) - 44px)` —— 那个 44 是手算的补偿，
      窗口一矮、内容一长，底部就露一条**会变的**空白（用户的原话："下面的这个间距
-     会随着对话长度的变化而变化"）。现在消息流自己滚、输入框永远贴底。 */
+     会随着对话长度的变化而变化"）。现在消息流自己滚、输入框永远贴底。
+
+     ⚠️ 这几条**必须留在 `.chat` 上**：被挪到下面那条侧栏规则里过（插选择器时
+     收尾的 `}` 一起被带走了），后果是 `.chat` 退回 auto 高度、按内容长到 1518px，
+     再被 `.view` 的 `overflow: hidden` 裁掉 —— 整页没有一个可滚动容器，
+     **滚轮完全没反应**（实测：视口 720 / `.chat` 1518.69 / `.chat__thread`
+     `scrollHeight == clientHeight`）。改动这一段时先看这条注释。 */
   height: 100%;
   min-height: 0;
 }
 
-/* ------------------------------------------------- 能力选择栏（工具挂载） */
-
-/* 输入框上方那条：这一版对话能调哪些模块。
-   与 coding agent 的 ask / plan / craft 是同一类东西 —— 约束 AI 这一版能碰到什么。 */
-.chat__modes {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  /* 与输入框之间多给 4px：这一条（能力开关）原先像贴在输入框上 */
-  padding: 0 2px 12px;
+/* 会话栏收起：那一列变 0 宽，栏本身**留在 DOM 里**、只是看不见。
+ * （用 `display: none` 会让栅格少一个子项，主区会前移一格落到 0 宽那列上 ——
+ * 笔记页踩过这个坑。） */
+body[data-page='chat'] .chat[data-aside='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr);
 }
 
-.chat__modes:empty { display: none; }
+body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
+  min-width: 0;
+  /* 内距与右边框一起归零：只留 visibility 的话，那 13px（12 内距 + 1 边框）
+     仍然占着宽度、压在正文左边缘上（实测侧栏收起来还有 13px）。 */
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
 
-.hubchip {
+/* 工作台那一格里的对话（`QF.panes.register('chat')`，见 runtime/workbench.js）。
+ *
+ * 上面那三条布局规则都带 `body[data-page='chat']` 前缀 —— 那是**整页**的排法
+ * （`.view` / `#app-root` 一路把确定高度传下来）。窗格里没有那一条链：高度由
+ * `.panes__host` 给（pane.css：`height: 100%` + `overflow: auto`，实测 824px）。
+ * 所以这里要**自己再来一份**，否则 `.chat` 退回 `display: block`、按内容长到
+ * 2708px（实测），被格子裁掉：会话列表铺成一长条、消息流不滚、输入框看不见 ——
+ * 用户报的"主页的对话显示不正常"就是这个。
+ *
+ * 用 `.panes__host > .chat` 而不是 `body[data-page='workbench'] .chat`：
+ * 判据是"它在一格里"，不是"它在哪一页"—— 别的页面将来要开对话窗格也一样成立
+ * （docview.css 的 `.panes__host > .docv` 是同一条规矩）。 */
+.panes__host > .chat {
+  display: grid;
+  grid-template-columns: var(--chat-aside-w, 264px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
+}
+
+.panes__host > .chat[data-aside='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+.panes__host > .chat[data-aside='closed'] .chat__aside {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+/* ------------------------------------------------- 能力选择栏（工具挂载） */
+
+/* 模式药丸的槽：在 `.chat__box` 的**第二行**（输入框下方那排按钮里）、深度思考右边。
+ * 这里原先是一条横贯输入框上方的分段控件，占掉整整一行 —— 那一行现在是消息区的
+ *（用户："这三个按钮合并到下面的输入框左侧，做成一个扁的长的药丸，点击会有一个选择栏。
+ * 它占用的一整块地方都给上面吧"）。 */
+.chat__modes {
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* **三个模式三种颜色**（用户："这个模式的指示，给它三种颜色"）。
+ * 颜色都在 app.css 里定义（深浅两套主题各一份），这里只认 `--mode-color`。
+ * 认不出来的模式（`custom`）落到中性灰 —— 不硬塞一个色号进去。 */
+.modepill,
+.modepick__row,
+.chat__box,
+.chatmsg__edit,
+.chatmsg__led {
+  --mode-color: var(--fg2);
+}
+
+.modepill[data-mode='minimal'],
+.modepick__row[data-mode='minimal'],
+.chat__box[data-mode='minimal'],
+.chatmsg__edit[data-mode='minimal'],
+.chatmsg__led[data-mode='minimal'] {
+  --mode-color: var(--mode-minimal, var(--fg3));
+}
+
+.modepill[data-mode='query'],
+.modepick__row[data-mode='query'],
+.chat__box[data-mode='query'],
+.chatmsg__edit[data-mode='query'],
+.chatmsg__led[data-mode='query'] {
+  --mode-color: var(--mode-query, var(--blue));
+}
+
+.modepill[data-mode='study'],
+.modepick__row[data-mode='study'],
+.chat__box[data-mode='study'],
+.chatmsg__edit[data-mode='study'],
+.chatmsg__led[data-mode='study'] {
+  --mode-color: var(--mode-study, var(--pri-3));
+}
+
+/* 信息准备这一侧：**发送键**用当前模式的色（用户："信息准备框的这边你可以用这个
+ * 发送按钮的颜色来做指示"）。它原本是主色渐变（= 学习那一档的颜色），现在跟着模式走：
+ * 极简 = 灰、查询 = 蓝、学习 = 青。文字色沿用 `.btn--primary` 的深色（在三种底色上都够看）。 */
+.chat__box .chat__send {
+  background: var(--mode-color);
+  border-color: var(--mode-color);
+  box-shadow: 0 10px 26px -16px color-mix(in srgb, var(--mode-color) 95%, transparent);
+}
+
+/* **消息框右上角那盏信号灯**：这一条输入用的是哪个模式。
+ * 用户："我说的是发出来的消息框的右上角 —— 因为每次发送的模式都不一样。"
+ * 位置就在气泡右侧那 14px 的内距里（top 6 / right 7），因此不与正文抢地方。 */
+.chatmsg--user .chatmsg__body {
+  position: relative;
+}
+
+.chatmsg__led {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--mode-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mode-color) 18%, transparent);
+}
+
+/* 药丸本体：扁（26px 高、两端全圆）+ 图标 + 名字 + 向下的小箭头。
+ * 名字后面那个箭头是关键 —— 没有它就只是一枚标签，看不出点得动。 */
+.modepill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 11px;
+  height: 26px;
+  padding: 0 10px;
+  /* 颜色落在**底**上（用户："不要改图标颜色，而是改背景颜色"）：一层模式色的实底，
+   * 字与图标用模式色本身，不再描边 —— 与那枚参考图（一块有色的圆角胶囊）一致。 */
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mode-color) 16%, transparent);
+  color: var(--mode-color);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.modepill:hover {
+  background: color-mix(in srgb, var(--mode-color) 24%, transparent);
+}
+
+/* 「深度思考」（输入框里那颗药丸，参考 DeepSeek 官网那颗）：
+ * 开 = 浅蓝底、蓝字蓝图标；关 = 透明底、灰字，悬浮才有淡底。
+ * 几何与旁边的 `.modepill` 一模一样（26 高、999 圆角、12px 字）——
+ * 两颗药丸并排在输入框里，尺寸必须是同一套的。
+ * 注：它管的是**请求**（带不带 thinking），顶栏那颗 `.chat__thinkbtn`
+ * 管的是**显示**（折叠块展不展开）—— 长相不同是故意的，别让人以为是一颗。 */
+.chat__deep {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px 0 8px;
+  /* 关态**描一个边**：没有底色、又没边界的时候，它看着像一段文字而不是按钮
+   *（用户："深度思考那个药丸，没有选中的时候没有边界"）。 */
   border: 1px solid var(--line);
   border-radius: 999px;
-  background: var(--bg2);
+  background: transparent;
   color: var(--fg3);
   font: inherit;
-  font-size: 12.5px;
-  line-height: 1.4;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
   cursor: pointer;
-  transition: color var(--dur) var(--ease), background var(--dur) var(--ease),
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
     border-color var(--dur) var(--ease);
 }
 
-.hubchip:hover { color: var(--fg); border-color: var(--line-strong); }
-
-/* 亮着＝这一版 AI 能调这一块（与原先那排图标同一个语义） */
-.hubchip.is-on {
-  color: var(--pri);
-  border-color: color-mix(in srgb, var(--pri) 45%, transparent);
-  background: color-mix(in srgb, var(--pri) 10%, transparent);
+.chat__deep:hover {
+  background: color-mix(in srgb, var(--fg3) 12%, transparent);
 }
 
-.hubnote { font-size: 12px; color: var(--fg3); margin-left: 2px; }
+.chat__deep.is-on {
+  /* 开态靠浅蓝底与蓝字说话，边框让位（不然两重边界显得毛糙） */
+  border-color: transparent;
+  background: color-mix(in srgb, var(--blue) 16%, transparent);
+  color: var(--blue);
+}
 
-.hubnote.is-bad { color: var(--danger, #d9534f); }
+.chat__deep.is-on:hover {
+  background: color-mix(in srgb, var(--blue) 26%, transparent);
+}
+
+/* 弹着的时候底色再压一档：让人知道"这颗药丸和我眼前那条选择栏是一伙的"。
+ * 用的仍然是**当前模式的色** —— 打开选择栏时不该换个颜色（那会让人以为模式变了）。 */
+.modepill[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--mode-color) 30%, transparent);
+}
+
+.modepill.is-bad {
+  color: var(--danger, #d9534f);
+  border-color: color-mix(in srgb, var(--danger, #d9534f) 45%, transparent);
+}
+
+.modepill:focus-visible {
+  outline: 2px solid var(--pri);
+  outline-offset: 1px;
+}
+
+.modepill__caret {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.75;
+}
+
+/* 图标与名字都上模式色 —— 一眼看出现在是哪一个。
+ * 那个向下的小箭头保持中性：它说的是"能点"，不是"现在是哪个模式"。 */
+.modepill > svg,
+.modepill__label {
+  color: var(--mode-color);
+}
+
+/* ---------------------------------------------------------------- 选择栏 */
+
+/* 点药丸弹出来的那条：贴着它**向上**弹（它在屏幕最下面，往下弹会被窗口截掉）。
+ * 每行 = 图标 + 名字 + 一句说明 + 右边"能调几个工具"，当前那个点亮（`is-on`）。 */
+.modepick {
+  position: fixed;
+  z-index: 60;
+  min-width: 262px;
+  max-width: 340px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg2);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.3);
+  /* 展开/回收的动效：初始是"收起态"（淡 + 微微下沉 + 缩一点点），挂上 `.is-in`
+   * 才回到原位；`.is-out` 是回收时那一帧（见 mounts.js 的 closePick）。
+   * 它 `position: fixed` 且贴着屏幕底部向上弹，所以位移只取 6px —— 不越界。 */
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+  transform-origin: bottom left;
+  transition: opacity 150ms var(--ease), transform 150ms var(--ease);
+}
+
+.modepick.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+.modepick.is-out {
+  opacity: 0;
+  transform: translateY(4px) scale(0.99);
+  pointer-events: none; /* 淡出这一下不该再吃点击 */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modepick {
+    transition: none;
+  }
+}
+
+.modepick__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--fg2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.modepick__row:hover {
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--fg);
+}
+
+.modepick__row.is-on {
+  color: var(--mode-color);
+}
+
+.modepick__ico {
+  flex: none;
+  display: inline-flex;
+  margin-top: 1px;
+  /* 选择栏里每行的图标用**那个模式自己的颜色** —— 三种颜色摆在一起，
+   * 与药丸上看到的那个色是同一个（不会"在列表里是蓝的、选完变绿"）。 */
+  color: var(--mode-color);
+}
+
+.modepick__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.modepick__name {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.modepick__row.is-on .modepick__name {
+  color: var(--mode-color);
+}
+
+.modepick__hint {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg3);
+}
+
+.modepick__meta {
+  flex: none;
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+.modepick__err {
+  margin: 4px 6px 2px;
+  font-size: 11.5px;
+  color: var(--danger, #d9534f);
+}
+
+/* 窄屏：药丸只留图标（名字省掉）—— 输入框那一行不该被它挤掉 */
+@media (max-width: 560px) {
+  .modepill__label {
+    display: none;
+  }
+  .modepill {
+    padding: 0 8px;
+  }
+}
 
 /* ---------------------------------------------------------------- 左栏 */
 
 /* 侧栏（会话选择区）。间距这一版**整体放舒展**（用户指着图圈了几处"贴太紧"）：
  * 原先 `padding: 0 12px 0 0` —— 顶上一点内距都没有，「新对话」那颗按钮直接贴在
  * 页面顶边（实测 top = 0）；列表项之间只隔 6px，几行标题看着挤成一坨。 */
+/* ------------------------------------------------- 对话管理器的几何（**一套数**）
+ *
+ * 观感不整齐的根子：每个元素各写各的尺寸 —— 分组行内距 `0 6px`、对话行 `0 4px 0 8px`、
+ * 两个 ⋯ 按钮一个 18 一个 22、对话行的 ⋯ 还是**绝对定位**（实测跑到 x=1366 去）、
+ * 缩进一个用 padding 一个用 margin。于是左边缘、右边缘、图标列各走各的：
+ * 实测分组行的 ⋯ 距栏右 25px、对话行的时间 23px、行高 38/28/26 三种。
+ *
+ * 用户的原话："整个对话管理器的界面元素都没有做对齐和间距处理，观感不整齐。"
+ * 收敛成这一套，后面再加东西（置顶标记、条数、按钮）都从这里算：
+ *
+ *   行高 28 · 左右内距 10 · 行内间距 6 · 图标按钮 20×20 · 一级缩进 16
+ */
 .chat__aside {
+  --cm-row-h: 28px;
+  --cm-pad-x: 10px;
+  --cm-gap: 6px;
+  --cm-btn: 20px;
+  --cm-indent: 16px;
+
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-height: 0;
   border-right: 1px solid var(--line);
-  padding: 12px 12px 12px 0;
+  /* 拖动手柄（`.chat__grip`）绝对定位在这条右边线上，所以这一栏是它的参照 */
+  position: relative;
+  /* 左右内距**取同一个数**：这一栏里的内容因此是**居中**的 —— 两边一样松。
+   *
+   * 中间的三次反复记在这里，免得以后又来回改：
+   *   1. 原先左边是 0，整栏焊在活动栏上 → 加内距（"不要和左侧边栏贴太紧"）；
+   *   2. 右边一度只有 12（实测内容离分隔线 13px），搜索框的圆角矩形看着贴线
+   *      → 右边单边加到 18（"整体和右边框贴太紧"）；
+   *   3. 于是左右变成 12 / 18 —— 用户："这个模块和两边的间距都太大，而且不一样。
+   *      然后要居中"，统一成 16；
+   *   4. 现在用户："这个东西和左边右边两个边界，间隔都太大了" → 对称收到 **10**
+   *      （与行内距 `--cm-pad-x` 同一个数，量级一致），仍然居中。 */
+  padding: 12px 10px;
+}
+
+/* ---------------------------------------------------------- 会话栏的右边界 */
+
+/* 那条右边线**可以左右拖**（用户："这个地方的右边线没法左右拖动"）。
+ *
+ * 手柄压在那条 1px 边框上（一半内、一半外，好抓），平时完全隐形 ——
+ * 它只提供光标与命中区，不改变那条线本来的观感；悬停或正在拖时才亮一道主色。
+ * 宽度写在 `--chat-aside-w` 上（两处栅格都读它），收起时那一列是 0、这里也跟着消失。 */
+.chat__grip {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 9px;
+  z-index: 4;
+  cursor: col-resize;
+  background: none;
+  /* 触屏上别把拖动当成滚动（不然一拖页面就滚走了） */
+  touch-action: none;
+}
+
+.chat__grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: var(--pri);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.chat__grip:hover::after,
+body.is-colresize .chat__grip::after {
+  opacity: 0.5;
+}
+
+/* 拖动期间：整页都是拖拽光标，且不许选中文字（选中的话整段会变蓝，像坏了） */
+body.is-colresize {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .chat__asidehead {
@@ -121,12 +499,18 @@ body[data-page='chat'] .chat {
   gap: 10px;
 }
 
+/* 这两颗按同一高度对齐（原先按钮 38、搜索框 38，但两者字号/内距不同，
+ * 一起看就是"一高一低"）。统一 34px。 */
 .chat__new {
   width: 100%;
+  height: 34px;
+  /* 文字保持**居中**（按钮本来的样子）。上一轮我把这里改成靠左，理解错了 ——
+   * 用户说的不是文字，是"那个框要居中"（见 .chat__aside 的左右内距，已改成对称）。 */
 }
 
 .chat__search {
   width: 100%;
+  height: 34px;
 }
 
 .chat__emptylist {
@@ -149,39 +533,186 @@ body[data-page='chat'] .chat {
   gap: 10px;
 }
 
-.chatlist__item {
-  position: relative;
-  padding: 9px 58px 9px 11px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg2);
-  cursor: pointer;
-  transition: border-color var(--dur) var(--ease);
+/* 会话行 = **最简列表**（用户："这种圆角矩形的设计就不要留了，搞成最简单的列表"）。
+ * 没有卡片：没有边框、圆角、底色、阴影。选中给一道左侧竖线 + 很轻的底，
+ * 与树行的规矩一致（不靠整块色块表达"选中"）。 */
+/* ------------------------------------------------------------ 左栏三个区 */
+
+/* 区标题（"置顶" / "归档"）：小字、灰 —— 与下面那些行的内距同一套几何，
+ * 所以标题文字和会话标题左边的图标是对齐的。 */
+.chatzone__head {
+  /* 一行 flex：标题在左，工具（归档区的排序按钮）在右。
+   * 左内距 **0**：区标题的文字要与**上下那条分隔线的左端**在同一条竖线上
+   *（用户："文字的左边界要和上面那条线的左端对齐，其他部分同理"）——
+   * 线画在 `.chatzone` 的边缘（= 栏内距 10 处），所以这里不能再加内距。 */
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg3);
 }
 
+.chatzone__headtext {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 拖一个对话悬在区标题上 = "移出所有文件夹"（见 renderZones 里那个落点） */
+.chatzone__head.is-drop {
+  background: color-mix(in srgb, var(--pri) 14%, transparent);
+  border-radius: var(--r-sm, 6px);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pri) 42%, transparent);
+}
+
+/* 区标题上的小图标按钮（归档区的排序） */
+.chatzone__headbtn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+}
+
+.chatzone__headbtn:hover {
+  background: var(--bg3);
+  color: var(--fg2);
+}
+
+/* 多选选中的行（归档区的文件管理）：**内描边方框** —— 与"当前打开"那条的
+ * 左侧竖线分得开，两个状态可以同时出现在同一条上 */
+.chatlist__item.is-picked {
+  background: color-mix(in srgb, var(--pri) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pri) 45%, transparent);
+}
+
+/* 批量操作条（多选时出现在左栏头部；见 renderPickBar） */
+.chatlist__pick {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  /* 左内距 0：与区标题、会话标题、分隔线同一条竖线（见 .chatzone__head 的说明）。
+   * 右边留 `--cm-pad-x`，与搜索框/新对话按钮的右边界一致。 */
+  padding: 8px var(--cm-pad-x) 2px 0;
+}
+
+.chatlist__pickcount {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+.chatlist__pickbtn {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chatlist__pickbtn:hover {
+  background: var(--bg3);
+}
+
+.chatlist__pickbtn.is-danger {
+  color: color-mix(in srgb, #d14343 72%, var(--fg));
+  border-color: color-mix(in srgb, #d14343 32%, var(--line));
+}
+
+/* 未归档区里的时间小标题（今天 / 昨天 / 7 天内 / 更早）——比区标题轻一档，
+ * 因为它只是"时间刻度"，不是分类。 */
+.chatzone__bucket {
+  padding: 8px var(--cm-pad-x) 3px;
+  font-size: 11px;
+  color: var(--fg3);
+  opacity: 0.85;
+}
+
+/* **一条线分割**（用户："用一条线分割就行了"）：区与区之间只此一件事，
+ * 不给它盒子、不给它底色 —— 分隔应该是能看见的最少的东西。 */
+.chatzone + .chatzone {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.chatlist__item {
+  display: flex;
+  align-items: center;
+  gap: var(--cm-gap);
+  height: var(--cm-row-h);
+  margin-bottom: 1px;
+  /* 右内距留 `--cm-pad-x`（`⋯` 与悬停底色需要留白），**左内距 0** ——
+   * 会话标题的文字要和上下那条**分隔线的左端**（= 栏内距 10 处）在同一条竖线上
+   *（用户："文字的左边界要和上面那条线的左端对齐，其他部分同理"）。
+   * 原先左右各 10，于是标题比区标题/时间小标题都往里缩了一格。 */
+  padding: 0 var(--cm-pad-x) 0 0;
+  position: relative;   /* ⋯ 是绝对定位的（见下），以这一行为参照 */
+  /* **直角通条**：原先这里是 8px 圆角，而行高 28、行间只隔 1px —— 圆角一多
+   * 相邻行的高亮互相咬在一起，看着像叠了两块圆角矩形（用户："hover 状态不要
+   * 用圆角矩形，现在这个已经重叠了"）。高亮走通条，也是文件管理器那一套。 */
+  border-radius: 0;
+  cursor: pointer;
+  transition: background var(--dur, 140ms) var(--ease, ease);
+}
+
+/* 置顶行**不再画图钉**（用户："置顶不需要有一个专门的图标，因为已经有一个置顶栏了！
+ * 把图标拿掉，文字往左挪"）。
+ *
+ * 原先每一行都留一个 20px 的槽、置顶时点亮图钉 —— 槽本身让**所有**行的标题
+ * 都往里缩了一截。现在整块撤掉：标题从行内距起头，与上面"置顶 / 归档"区标题
+ * 的左边界在同一条线上（它们用的是同一个 `--cm-pad-x`）。
+ * 是不是置顶，由**区标题**说明 —— 它已经在置顶区的标题里待着了。 */
+
 .chatlist__item:hover {
-  border-color: var(--line-strong);
+  background: var(--bg3);
 }
 
 .chatlist__item.is-on {
-  border-color: var(--pri);
-  box-shadow: var(--edge-hi);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  box-shadow: inset 2px 0 0 var(--pri);
 }
 
 .chatlist__title {
-  font-size: 13.5px;
-  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/*（置顶标记的样式在上面 —— 与对话行那一套几何放一起。这里原来还有一条
+ * `content: '📌 '` 的旧写法，位置更靠后会盖掉新的，已删。）*/
+
 .chatlist__meta {
+  flex: none;
   display: flex;
-  gap: 6px;
-  margin-top: 3px;
-  font-size: 11.5px;
-  color: var(--fg2);
+  gap: 5px;
+  font-size: 11px;
+  color: var(--fg3);
+  white-space: nowrap;
+}
+
+/* `⋯` 平时不出现（与树上"…"同一条规矩：别抢视线），悬停才亮 */
+.chatlist__more {
+  flex: none;
+  opacity: 0;
 }
 
 .chatlist__preview {
@@ -196,16 +727,29 @@ body[data-page='chat'] .chat {
 }
 
 /* ⋯ 只在悬停/聚焦时出现：它是低频动作，常驻会把标题挤窄 */
+/* 对话行的 ⋯：**绝对定位**（悬停才出现，且**不占布局**）。
+ *
+ * 为什么必须是绝对定位：它在流里的时候要占 20px + 两侧 6px 间距 = 26px，
+ * 于是时间条被迫停在离行右边缘 **36px** 的地方（实测），而标题那边只有 10px ——
+ * 用户："这个模块和两边的间距都太大，而且不一样……左边的标题和右边的 x 小时前 y 条
+ * 要拉开一点距离。然后要居中。" 让它脱离布局之后：标题左 10、时间条右 10，对称；
+ * 时间条也往右挪了 26px。
+ *
+ * 位置与分组行那颗 ⋯ 对齐（右边距 10 = 那一行的内距，它在那行是流内的）。 */
 .chatlist__more {
   position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 22px;
-  height: 22px;
+  top: 50%;
+  right: var(--cm-pad-x);
+  transform: translateY(-50%);
+  width: var(--cm-btn);
+  height: var(--cm-btn);
+  padding: 0;
   border: none;
   border-radius: var(--r-sm);
   background: none;
   color: var(--fg3);
+  font-size: 13px;
+  line-height: 1;
   cursor: pointer;
   opacity: 0;
   transition: opacity var(--dur) var(--ease);
@@ -216,6 +760,7 @@ body[data-page='chat'] .chat {
   opacity: 1;
 }
 
+/* 悬停时它压在时间条那一段上，所以给一个**不透明**的底（不然字会透出来） */
 .chatlist__more:hover {
   background: var(--bg3);
   color: var(--fg);
@@ -227,6 +772,14 @@ body[data-page='chat'] .chat {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* 正文列与左栏之间留一条**看得见**的通道。
+   * 原先左边距是 0（消息区自己只有 2px 左内距），于是消息与输入框直接贴在
+   * 左栏那条分隔线上 —— 实测贴线距离 2px（用户："又和旁边的线黏在一起了"）。
+   * 放在这一层而不是分别给消息区/输入框：它们本来就该**共用同一条左基线**。 */
+  padding-left: 14px;
+  /* 右边同理：不加的话输入框那个圆角矩形会**紧贴窗口右边**（用户："这个也是和
+   * 右边框紧贴的"）—— 左 14 右 14，两侧对称。 */
+  padding-right: 14px;
 }
 
 /* 间距统一放舒展一档（用户原话"间距贴太紧了，稍微舒展一点"）。
@@ -236,8 +789,13 @@ body[data-page='chat'] .chat {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 12px 8px 4px 2px;
+  /* 一条一条对话之间的间距。18 → 14 → **10**：后两次都是用户说"太大了"收下来的。
+   * 这一条同时是"助手消息上界"那个基准，与 `.chatmsg__foot` 的 margin-top、
+   * 线程底部内距（4 + 输入区外边距 6）保持同一个 10。 */
+  gap: 10px;
+  /* 底部 4：加上 `.chat__composer` 的 6px 外边距 = 10，与"消息之间"的 10 相等
+   *（用户先要三处相等，又要"间距太大了，收一点"：14 → 10）。 */
+  padding: 12px 8px 4px 0;
   scroll-behavior: smooth;
 }
 
@@ -250,7 +808,11 @@ body[data-page='chat'] .chat {
 .chatmsg {
   display: grid;
   grid-template-columns: 30px minmax(0, 1fr);
-  gap: 12px;
+  /* 列间距 12（署名与气泡之间）；行间距 10 —— 用户消息有两行：气泡 + 下面那行小图标
+   *（见 .chatmsg__useractions）。10 与"消息之间""到底线"是同一个数（用户要三处相等，
+   * 又说"间距太大了，收一点"：14 → 10）。 */
+  column-gap: 12px;
+  row-gap: 10px;
 }
 
 .chatmsg__who {
@@ -268,9 +830,8 @@ body[data-page='chat'] .chat {
 /* 动作行里的图标与第一行正文左对齐。
    按钮是 28px 的点击区、图标 16px 居中，所以**按钮的**左边框与文字齐了，
    **图标本身**还差 6px（半边留白）—— 抵消掉才是视觉上的一条线。 */
-.chatmsg__useractions {
-  margin-left: -6px;
-}
+/* （这里原来有一条 `margin-left: -6px` —— 那是这两颗按钮还在**气泡里**时，
+ * 用来抵消气泡左内距的。现在它们在气泡外面，负边距只会把它推歪。） */
 
 .chatmsg--assistant .chatmsg__who {
   border-color: var(--pri);
@@ -290,10 +851,35 @@ body[data-page='chat'] .chat {
 }
 
 /* 用户的提问给一块底色：一眼能分出「我说的」与「它说的」 */
+/* 用户那条与上面**多留一点距离**（用户："用户发的消息和上面稍微拉开一点距离"）。
+ * 线程里所有消息本来就隔着 `gap: 14px`，这里再加 8 —— 一轮提问的开头因此显得
+ * 清楚（AI 的答复与它上面那句是连着的，不该和别人的提问一样平）。
+ * flex 里 gap 与 margin 不折叠，所以实际是 14 + 8 = 22px。 */
+.chatmsg--user {
+  margin-top: 8px;
+}
+
 .chatmsg--user .chatmsg__body {
   background: var(--bg3);
-  border-radius: var(--r-md);
+  /* 气泡的圆角（用户："这个框的圆度加一点"）：12（--r-md）→ 18。
+   * 定义成变量是因为**编辑框要跟它一样** —— 进编辑时框的形状不该跟着变
+   *（编辑框是它的子节点，所以这里定义的变量能直接继承下去，见 .chatmsg__edit）。 */
+  --bubble-r: 18px;
+  border-radius: var(--bubble-r);
   padding: 11px 14px;
+}
+
+/* **编辑时只留一层框**（用户："编辑的时候有两层框，不要，只留一层"）：
+ * 气泡那层底色与内距都撤掉，剩下的就是 `.chatmsg__edit` 自己的那条边。 */
+.chatmsg--user.is-editing .chatmsg__body {
+  background: none;
+  padding: 0;
+}
+
+/* 信号灯跟着搬进编辑框的右上角（气泡没了之后，它原来那个 6/7 会压在输入的字上） */
+.chatmsg--user.is-editing .chatmsg__led {
+  top: 8px;
+  right: 10px;
 }
 
 .chatmsg.is-error .chatmsg__body {
@@ -331,14 +917,32 @@ body[data-page='chat'] .chat {
   display: flex;
   align-items: center;
   gap: 2px;
-  margin-bottom: 6px;
+  /* 这一条原来是**块级** flex：在这个一千多像素宽的栏里它撑满整行，两个箭头
+   * 被甩到左右两头（实测盒子 1040px 宽，截图里 `‹ …… 4 / 4 …… ›`），
+   * 看着像两个散件。让它按内容收紧 —— 一个"第几版/共几版"的控件本来就该
+   * 只有它那么大。
+   *
+   * **它现在住在"消息框下面那一行"里**（用户消息是 `.chatmsg__useractions`、
+   * 助手消息是 `.chatmsg__foot`，都在气泡下方、与右端那组图标同一行），
+   * 所以要**垂直居中**（`center`）而不是靠顶 —— 原先 `flex-start` 是给
+   * "挂在气泡上面"那种摆法用的，换行之后会让它比图标高半格。 */
+  width: fit-content;
+  align-self: center;
   font-size: 11.5px;
   color: var(--fg3);
 }
 
 .chatmsg__sib {
+  /* **字形要显式居中**：这颗是 20px 高的按钮，而 `line-height: 1`（14px）——
+   * 不加这几行，`‹`/`›` 这两个字形会落在盒子**顶部**，跟中间那个按行高居中的
+   * 数字对不齐（用户："‹› 和中间的 4/4 没有居中对齐"）。
+   * flex 居中 + line-height 归零，字形才和数字在同一条水平线上。 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 20px;
   height: 20px;
+  padding: 0;
   border: none;
   border-radius: var(--r-sm);
   background: none;
@@ -359,7 +963,12 @@ body[data-page='chat'] .chat {
 }
 
 .chatmsg__sibcount {
+  /* 与两侧箭头同一条水平线：显式给行高，别再靠继承来的 1.4 去撞运气 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 34px;
+  line-height: 1;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -397,12 +1006,20 @@ body[data-page='chat'] .chat {
   content: '▾ ';
 }
 
-.chatmsg__think > .md {
+/* 思考内容**比正文更轻**（用户："思考内容的字体样式 —— 颜色变灰，然后字体调小"）：
+ * 灰一档（fg3，与那行"思考过程"的小标题同色）、小一档半（12.5 对正文 14）。
+ * 它是要不要读由你决定的东西，视觉上就该退到背景里。
+ *
+ * 用**后代**选择器、不是直接子（`>`）：万一里面又被多包一层（`renderToString`
+ * 返回的字符串自带一个 `.md`，曾经外面再套一个 —— 见 `thinkNode`，已修），
+ * 只写 `>` 的话内层那个 `.md` 会用它自己的 15px / 正常前景色把段落整个截走。 */
+.chatmsg__think .md {
   margin-top: 6px;
   padding-left: 10px;
   border-left: 2px solid var(--line);
-  color: var(--fg2);
-  font-size: 13px;
+  color: var(--fg3);
+  font-size: 12.5px;
+  line-height: 1.7;
 }
 
 /* 工具调用：一行摘要 + 可展开的结果 */
@@ -575,6 +1192,9 @@ body[data-page='chat'] .chat {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+  /* 与"消息之间"（线程的 10px gap）、"到底线"（线程内距 4 + 输入区外边距 6 = 10）
+   * 取同一个数 —— 用户先要"这个上界、图标行、输入框下界"三处相等，后又说
+   * "间距太大了，收一点"：14 → 10。 */
   margin-top: 10px;
   font-size: 11.5px;
   color: var(--fg2);
@@ -1019,6 +1639,12 @@ body[data-page='chat'] .chat {
   border-bottom: 1px solid var(--line);
 }
 
+/* 关闭键推到最右边：标题在左、关闭在右 —— 这是所有浮层的通例，
+ * 挨在标题屁股后面会让人以为它是标题的一部分（用户："这个 X 放到右边"）。 */
+.chatdemo__head .chaticon {
+  margin-left: auto;
+}
+
 .chatdemo__title {
   font-size: 14px;
   font-weight: 600;
@@ -1134,6 +1760,9 @@ body[data-page='chat'] .chat {
 
 /* ---------------------------------------------------------------- 图标按钮 */
 
+/* 通用图标按钮：**透明边框、圆角方形**。消息行下面那几颗（复制 / 编辑并重发 /
+ * 重新回答 / 复制这条回答）用的是同一个类，所以形状的改动必须收在作用域里，
+ * 见下面的 `.chat__tools .chaticon`。 */
 .chaticon {
   display: inline-flex;
   align-items: center;
@@ -1146,12 +1775,27 @@ body[data-page='chat'] .chat {
   background: none;
   color: var(--fg3);
   cursor: pointer;
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    background var(--dur) var(--ease);
 }
 
 .chaticon:hover {
   color: var(--fg);
   border-color: var(--line);
+}
+
+/* **输入区那两颗**（附件 / 便签）：正圆 + 常态就有边框
+ *（用户："这两个按钮做成圆形，要有边框"）。
+ * 只写在这一层，是为了不动消息行下面那一组 —— 它们共用 `.chaticon`。 */
+.chat__tools .chaticon {
+  border-color: var(--line);
+  border-radius: 999px;
+}
+
+.chat__tools .chaticon:hover {
+  border-color: var(--fg3);
+  /* 有常驻边框之后，只换边框颜色变化太弱，再补一层淡底 */
+  background: color-mix(in srgb, var(--fg3) 10%, transparent);
 }
 
 .chaticon.is-on {
@@ -1199,10 +1843,50 @@ body[data-page='chat'] .chat {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* 下面留出呼吸：那条分隔线与第一条消息原先只隔 2px，顶栏像糊在正文上。
-     左边距与消息区对齐（16px 显得比正文往里缩了一格）。 */
-  padding: 8px 0 11px;
+  /* **这条线要撑到两端**：这一栏原来被 `.chat__main` 的 14px 内距内缩，于是那条
+   * 分隔线在离窗口两边各 14px 的地方就断了（实测栏 308–1426，而主列 294–1440；
+   * 用户："给它撑到两端，不要留白"）。负外边距把栏拉满，等量内距把按钮放回原位 ——
+   * 线满了，图标一个像素没动。 */
+  margin: 0 -14px;
+  padding: 0 14px;
+  /* 高度写死 + 上下对称：原来内距是 `8px 0 11px`（下多 3px），三个图标因此比
+   * 这条线与上边框之间的正中**偏高 4px**（实测图标上 13 / 下 17）。
+   * 用户："三个图标都要做到和这条线与上边框上下对齐"。 */
+  height: 44px;
   border-bottom: 1px solid var(--line);
+}
+
+/* 会话管理栏那颗开合按钮（在顶部条最左边） */
+/* 会话栏头部（含折叠按钮）不吃拖拽：从头上按下拖动时，浏览器会把这一块当
+ * "文字选择"拖成幽灵（用户截图：整栏被拖走）。列表里的对话标题仍可正常选中。 */
+.chat__asidehead {
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.chat__asidefold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  background: none;
+  color: var(--fg3);
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.chat__asidefold:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.chat__asidefold.is-on {
+  color: var(--fg2);
 }
 
 .chat__treebtn {
@@ -1234,10 +1918,15 @@ body[data-page='chat'] .chat {
   color: var(--fg3);
 }
 
+/* 气泡下面那行小图标：**贴着气泡的右下角**（用户给的参考图就是这个位置）。
+ * 行是 grid（30px + 正文两列），把它放在第 2 列、靠右 —— 于是它落在气泡正下方、
+ * 与气泡右边缘对齐，而不用改 DOM 结构。 */
 .chatmsg__useractions {
+  grid-column: 2;
+  justify-self: end;
   display: flex;
-  gap: 12px;
-  margin-top: 8px;
+  align-items: center;
+  gap: 10px;
 }
 
 .chatmsg__action:hover {
@@ -1245,45 +1934,91 @@ body[data-page='chat'] .chat {
 }
 
 /* 就地编辑 */
+/* **一个整框**：输入与右下角两颗按钮在同一个圆角框里（用户给的参考图就是这样）。
+ * 原先 textarea 自己带边框、按钮在框外 —— 看起来是两截东西。 */
 .chatmsg__edit {
+  /* 信号灯挂在**这个框**的右上角（它是 `absolute`，参照系就是这里）——
+   * 挂在外层 `.chatmsg__body` 上时，编辑态那份 `padding: 0` 会让它飘到框外
+   *（用户："信号灯也到外面去了"）。 */
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--line);
+  /* 与气泡同一个圆角（`--bubble-r` 由 `.chatmsg--user .chatmsg__body` 定义，
+   * 这里是它的子节点，直接继承）—— 进编辑时框的形状因此不变。 */
+  border-radius: var(--bubble-r, var(--r-md));
+  background: var(--bg);
+  transition: border-color var(--dur) var(--ease);
+}
+
+/* 焦点在框里就点亮整框（原先亮的是 textarea 自己那圈边框） */
+.chatmsg__edit:focus-within {
+  border-color: var(--pri);
 }
 
 .chatmsg__editarea {
   width: 100%;
-  min-height: 72px;
-  padding: 8px 10px;
-  border: 1px solid var(--pri);
-  border-radius: var(--r-md);
-  background: var(--bg);
+  /* 高度由 JS 按内容算（见 chat.js 的 fitArea）：这里**不写死最小高度** ——
+   * 原先的 `min-height: 64px` 让一句"你好！"也占四行（用户："现在是一行也很大空余"）。
+   * 上限由 height 那一侧管（320px），超了在这里内部滚动。 */
+  min-height: 0;
+  overflow-y: auto;
+  resize: none;
+  /* 边框与内距归外层那个框：这里是框**里面**的输入区 */
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
   color: var(--fg);
   font: inherit;
   font-size: 13.5px;
   line-height: 1.6;
-  resize: vertical;
+  /* 这里原来有一条 `resize: vertical` —— 它写在上面那条 `resize: none` **后面**，
+   * 于是赢的是它：文本框右下角一直挂着那个拖拉手柄（用户："那个高度调整的玩意删掉"）。
+   * 高度由 `fitArea` 按内容算，不需要手动拖。 */
+  resize: none;
   outline: none;
 }
 
 .chatmsg__editfoot {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
-.chatmsg__editcancel {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--fg3);
+/* 提示那一格占住剩余宽度 —— 于是「取消 / 发送」被顶到框的右下角 */
+.chatmsg__edithint {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 两颗按钮做成**药丸**（参考图里就是两个整圆角的胶囊），而且**比默认按钮小一档** ——
+ * 这是消息里的一行小操作，不该跟页面上那些主按钮一样大（用户："取消和发送按钮做小一点"）。
+ * 默认 .btn 是 `padding: 8px 15px` + 13.5px 字（约 34px 高）。 */
+.chatmsg__editfoot .btn {
+  border-radius: 999px;
+  height: 26px;
+  padding: 0 13px;
   font-size: 12px;
-  cursor: pointer;
 }
 
-.chatmsg__editcancel:hover {
-  color: var(--fg);
-  text-decoration: underline;
+/* 编辑框里那颗「发送」与主输入框那颗同一个规矩：底色 = **当前模式**色
+ *（用户："我在编辑输入状态下频繁改变模式，右上角的灯和下面的'发送'不会跟着
+ * 一起改变颜色"）。文字色仍走 `.btn--primary` 的深色 —— 三种底色上都够看。
+ * 选择器写足三截是为了压过 `.btn--primary` 的固定主色（同特异性时按文件顺序
+ * 不可靠，多一截就稳）。 */
+.chatmsg__editfoot .btn--primary.chatmsg__editsave {
+  background: var(--mode-color);
+  border-color: var(--mode-color);
+}
+
+/* 「取消」现在是**圆角矩形按钮**（`btn btn--ghost`，与「发送」同一套尺寸），
+ * 所以这里不再覆盖 border/background/padding —— 原先那几条（无框、无底、下划线 hover）
+ * 是按"裸文字"写的，留着会把 ghost 的边框和底抹掉。 */
+.chatmsg__editcancel {
+  font-size: 12.5px;
 }
 
 .chatmsg__edithint {
@@ -1403,6 +2138,27 @@ body[data-page='chat'] .chat {
 
 .ctnode.is-user .ctnode__box {
   fill: color-mix(in srgb, var(--pri) 9%, var(--bg2));
+}
+
+/* **节点的边框 = 这一条用的模式**（用户："在对话树的框里加一个显示模式的东西 ——
+ * 现在你就可以用颜色了。用边框颜色吧。输出的话边框颜色相同但是是虚线。"）。
+ *
+ * 色号来自前端注入的 `--mode-*`（唯一来源在后端，见 mounts.py 的 Mode.color）——
+ * 这里一个色号都不写。输入（`.is-user`）是实线，输出是同一色的虚线。 */
+.ctnode.mode-minimal .ctnode__box {
+  stroke: var(--mode-minimal, var(--fg3));
+}
+
+.ctnode.mode-query .ctnode__box {
+  stroke: var(--mode-query, var(--blue));
+}
+
+.ctnode.mode-study .ctnode__box {
+  stroke: var(--mode-study, var(--pri-3));
+}
+
+.ctnode.is-out .ctnode__box {
+  stroke-dasharray: 4 3;
 }
 
 .ctnode.is-error .ctnode__box {
@@ -1910,6 +2666,15 @@ body[data-page='chat'] .chat {
   display: none;
 }
 
+/* 输入框上方那条**系统提示**（目前只有一句：更早的消息没带进上下文）。
+ * 它不是模型说的话，所以做得很安静：小字、弱色、贴着输入框上方，
+ * 空着的时候整条隐藏（见上面那条 :empty）。 */
+.chat__notice:not(:empty) {
+  padding: 0 2px 6px;
+  color: var(--fg3);
+  font-size: 11.5px;
+}
+
 .chat__noticebox {
   display: flex;
   align-items: center;
@@ -1935,7 +2700,17 @@ body[data-page='chat'] .chat {
 /* ---------------------------------------------------------------- 输入 */
 
 .chat__composer {
-  margin-top: 16px;
+  /* 顶上曾经空出 36px：外边距 16 + 内距 12 + 一个**空的 8px 行**（`.chat__pending`
+   * 没内容也占着高度）。用户指着截图说"这个地方有个奇怪的留白，清掉"。 */
+  margin-top: 6px;
+  /* **明确的边线**（用户："下面这个东西也做一条明确的边线"）：原先靠一层
+   * 透明→背景色的渐变糊过去，看着像没有边界。现在和顶栏那条一模一样 ——
+   * `--line`、1px —— 于是消息区上下各有一条线夹着。
+   *
+   * 撑到两端的手法也照抄顶栏：负外边距把这一栏拉满（`.chat__main` 有 14px 内距，
+   * 不加就又是两端各断 14px 的老问题），等量内距把内容放回原位。 */
+  margin: 6px -14px 0;
+  border-top: 1px solid var(--line);
   /* 常驻视口底部。
      窄窗口下 .chat 会变成单栏、高度 auto（见文末断点），页面因此可以滚动；
      长输出把内容越推越长时，输入框（以及流式时的「停止」）会被推到视口外 ——
@@ -1944,19 +2719,40 @@ body[data-page='chat'] .chat {
   position: sticky;
   bottom: 0;
   z-index: 5;
-  padding: 12px 0 6px;
-  background: linear-gradient(to bottom, transparent, var(--bg) 26%);
+  padding: 6px 14px 5px;
+  /* 纯背景色（原来是 `linear-gradient(transparent, var(--bg) 26%)`）：
+   * 有了那条线就不需要靠渐变"暗示"边界了；而且实底更干净 —— 滚过去的正文
+   * 不会从半透明里透出来（那是渐变那一版最容易显得"糊"的地方）。 */
+  background: var(--bg);
+}
+
+/* `chat__pending` 平时是空的（只有流式/待发的时候才有内容），但它照样占 8px ——
+ * 那就是"奇怪的留白"里最上面那一截。空的就别占地方。 */
+.chat__pending:empty {
+  display: none;
 }
 
 /* 回到最新：浮在输入框上沿的右下角，离开底部才出现。
    它是个导航件，贴着底的时候不该占视线，所以用透明度显隐而不是 display。 */
 .chat__jump {
   position: absolute;
-  right: 0;
-  bottom: calc(100% - 6px);
+  /* 与下方那颗发送键**同心**（用户："这个东西和下方的发送键要居中对齐"）：
+   * 同尺寸（34，原先 32）+ 同右距（27 = 发送键实测的"距窗口右"）——
+   * 两个数一样，中心自然对齐。原先 32px + right 14，实测中心比发送键右偏 14px。
+   *
+   * （右距不是 0：`.chat__composer` 是**满宽**的（负外边距 + 14px 内距，为了让那条线
+   * 撑到两端），而绝对定位认边框内侧、不认内距。） */
+  right: 27px;
+  /* 从那根线上方起，留出 **8px** 的空（用户："再往上一点，和下边线保持适当距离"）。
+   *
+   * 17 这个数是量出来的，不是拍的：`bottom` 里的 `100%` 参照的是**内距盒**（不含那 1px
+   * 上边框），所以"8px 空隙"不能直接写成 8。实测映射是 1:1 的 ——
+   * `+8px` → 底边落在线下 1px（等于贴着线）、`+17px` → 线**上方** 8px。
+   * 原先写的是 `calc(100% - 6px)`：底边压在线上、还探进输入框 8px。 */
+  bottom: calc(100% + 17px);
   z-index: 6;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--line);
   border-radius: 50%;
   background: var(--bg2);
@@ -1983,14 +2779,27 @@ body[data-page='chat'] .chat {
 .chat__box {
   /* 圆角矩形拉大：输入是这一页最高频的动作，给它更多地方（用户："圆角矩形拉大"） */
   border-radius: 20px;
+  /* 信号灯（`.chat__led`）挂在这个角上 */
+  position: relative;
+  /* **传统两行**（用户："按钮多了，改成传统的两行。按钮放下面，输入放上面"）：
+   * 第一行是输入框（占满整宽），第二行才是图标、两颗药丸与发送键。
+   * 先前一行到底，按钮一多，输入框就被挤成一小段。 */
   display: flex;
-  /* 居中：图标、输入区、发送键在圆角矩形里各居其位 ——
-     原先 flex-end 让左边那几个图标贴在底边，看着"浮在上面" */
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px 11px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  /* 上下收窄（用户："整个输入框的上下边距缩窄"）：原来 10 / 11、后来 7 / 7 ——
+   * 现在多了第二行，上边给回 1px 让输入框不贴边。 */
+  padding: 8px 12px 7px;
   border: 1px solid var(--line);
   background: var(--bg2);
+}
+
+/* 输入框下面那一行：左端是图标与两颗药丸，右端是发送键（发送键靠 `margin-left: auto`）。 */
+.chat__tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .chat__box:focus-within {
@@ -1998,10 +2807,16 @@ body[data-page='chat'] .chat {
 }
 
 .chat__input {
-  flex: 1;
+  /* 纵向容器里的第一行：占满整宽（原先靠 `flex: 1` 在一行里分宽度）。
+   * **左内距 3px** —— 这个数试过两轮：先是 0（"文字与下面那行工具的第一个
+   * 图标对齐"），再是 6（"左边界往右边调一点"），用户看过之后说"往左一点"，
+   * 于是落在这里。3px 与图标那行只差半个字，看着像略缩进，又不脱开。
+   * **上内距 3px**（用户："往下调2px"）—— 文字从贴住上沿再往下挪 2px；
+   * 框高由 `min-height` 定，不跟着变。 */
+  width: 100%;
   min-height: 27px;
   max-height: 220px;
-  padding: 1px 3px;
+  padding: 3px 0 1px 3px;
   border: none;
   background: none;
   color: var(--fg);
@@ -2017,6 +2832,13 @@ body[data-page='chat'] .chat {
   margin-top: 9px;
   font-size: 11.5px;
   color: var(--fg3);
+}
+
+/* **空的时候不占地方**（用户："这个地方不占位置。贴到底。"）。
+ * 这一行原先常驻着"内测通道 · deepseek-chat"——那句话搬进设置了（见 shell.js），
+ * 于是它平时是空的；空着就不该占那一行的高度，输入框因此贴到最下面。 */
+.chat__hint:empty {
+  display: none;
 }
 
 /* ---------------------------------------------------------------- 窄屏 */
@@ -2157,12 +2979,16 @@ body[data-page='chat'] .chat {
 
 /* 发送键：正文只剩一个箭头，靠 padding 撑成方形（两态见 paintSend） */
 .chat__send {
+  /* 两个药丸与一排图标都在左端，发送键推到行的右端（传统输入框的样子） */
+  margin-left: auto;
   width: 34px;
   height: 34px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  /* 圆形（用户："这个改成圆形"）。它本来就是 34×34，只是圆角跟着 .btn 走的小圆角。 */
+  border-radius: 50%;
 }
 
 /* 对话树：图标 + 角标（信息还在，但不占一整行） */
@@ -2315,4 +3141,454 @@ body[data-page='chat'] .chat {
   display: inline-flex;
   align-items: center;
   color: var(--pri);
+}
+
+/* --------------------------------------------------- 对话树（分组 + 会话）
+ *
+ * 与资源页那棵树对齐的是**逻辑**（折叠持久化 / 缩进表达层级 / 拖到分组上即入组 /
+ * 分组有自己的右键菜单），视觉沿用左栏这一套颜色与高度节奏。
+ */
+.chattree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chattree__dir {
+  display: flex;
+  align-items: center;
+  gap: var(--cm-gap);
+  height: var(--cm-row-h);
+  /* 与对话行、＋新建分组同一套内距；**左内距 0** —— 行首那个展开箭头
+   * （以及"＋ 新建文件夹"的 ＋）要与分隔线的左端、会话标题在同一条竖线上
+   *（用户："文字的左边界要和上面那条线的左端对齐，其他部分同理"）。
+   * 缩进仍用 margin-left（见 walkChatTree 里那段），右内距留给 `⋯`。 */
+  padding: 0 var(--cm-pad-x) 0 0;
+  /* 直角通条：与对话行同一套（见 .chatlist__item 的说明） */
+  border-radius: 0;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--dur, 140ms) var(--ease, ease);
+}
+
+.chattree__dir:hover {
+  background: var(--bg3);
+}
+
+.chattree__dir.is-drop {
+  background: color-mix(in srgb, var(--pri) 16%, transparent);
+  outline: 1px dashed var(--pri);
+}
+
+/* 展开/收起按钮。原先是 12px 宽的 `<span>` + 9px 的灰字 —— 看不出能点。
+ *  现在是按钮：18px 的点击区、悬停才给一层很轻的底（深色主题也能看见，
+ *  用了中灰而不是黑），键盘聚焦时有描边。 */
+.chattree__caret {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cm-btn);
+  height: var(--cm-btn);
+  /* 这里原有一条 `margin-right: 2px` —— 行内已经有了统一的 `--cm-gap`，
+   * 多这 2px 会让分组行的名字比对话行的标题右偏 2px（实测 50 vs 48）。 */
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  /* 常驻一层很轻的底：用户那边"看不出来这儿有个按钮"（12px 的淡灰三角在浅色主题上
+   * 几乎不可见）。有底 = 一眼就是控件；悬停再加深一档。 */
+  background: rgba(127, 127, 127, 0.1);
+  cursor: pointer;
+  color: var(--fg);
+  font-size: 10px;
+  line-height: 1;
+  transition:
+    transform var(--dur, 140ms) var(--ease, ease-out),
+    background var(--dur, 140ms) var(--ease, ease-out);
+}
+
+.chattree__caretmark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* 图标本身也放一档：12 → 14px、线加粗，浅色主题上看得清。 */
+.chattree__caretmark svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+
+/* 一次 Python 运行：像一条命令。左边一条竖线当提示符区，
+ * 命令与输出都用等宽，失败时整块走危险色。 */
+.pyrun {
+  /* 运行壳 iframe 用绝对定位藏起来，所以这里必须是它的定位祖先 */
+  position: relative;
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--fg3);
+  border-radius: 8px;
+  background: var(--bg2);
+  overflow: hidden;
+}
+
+.pyrun.is-bad {
+  border-left-color: var(--bad, #c0392b);
+}
+
+/* 真正跑脚本的运行壳（一个 sandbox iframe）。它**必须在 DOM 里**，但不能占版面：
+ * 1×1、透明、不吃鼠标 —— 上一版整个漏掉它，结果脚本没人执行、界面永远"跑着呢…"。
+ * 不用 `display:none`：那种情况下 iframe 在某些浏览器里不启动文档，Python 就不跑了。 */
+.pyrun__runner {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+/* **常驻运行壳**：整页共用一个，挂在 body 上（不在任何消息里）。
+ * 和 .pyrun__runner 同一套藏法 —— 1×1、透明、不吃鼠标，但**必须在 DOM 里**：
+ * `display:none` 下有些浏览器不启动那个文档，Python 就不会跑。 */
+.pyrun__shell {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+.pyrun__bar {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--line);
+  /* `--font-mono` 是项目里唯一的等宽 token（JetBrains Mono，自带字体，见 app.css）。
+   * 我先前写的是 `--mono` —— **那个变量不存在**，于是整块退到系统等宽字体
+   *（Linux 上就是 DejaVu Sans Mono，用户："这个代码和返回字体是什么字体啊？太难看了"）。 */
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.pyrun__prompt {
+  color: var(--fg3);
+}
+
+.pyrun__title {
+  color: var(--fg);
+}
+
+.pyrun__codewrap {
+  border-bottom: 1px solid var(--line);
+}
+
+.pyrun__summary {
+  padding: 6px 10px;
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pyrun__code,
+.pyrun__out {
+  margin: 0;
+  padding: 9px 10px;
+  /* 与正文里的代码块、以及顶栏那些数字同一套等宽字体（见 .pyrun__bar 的说明）。 */
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  max-height: 340px;
+  overflow: auto;
+}
+
+.pyrun__code {
+  background: var(--bg);
+  color: var(--fg2);
+}
+
+.pyrun__out {
+  color: var(--fg);
+}
+
+.pyrun.is-bad .pyrun__out {
+  color: var(--bad, #c0392b);
+}
+
+/* 结果块：**输出 + 图**住在一起（一起收、一起展 —— 见 chat.js 的 resultNode）。
+ * 内距归这里管，里面的输出与图不再各加各的。 */
+.pyrun__result {
+  padding: 2px 0 4px;
+}
+
+/* **运行产出的图**（matplotlib 那种）：壳自己收走的（脚本不用 savefig），
+ * 见 chat.js 的 figsNode。给白底 —— matplotlib 默认画在白底上，
+ * 深色主题里直接贴上去会糊成一片。 */
+.pyrun__figs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 0 2px;
+}
+
+/* **默认调小**（用户："图太大了（目前是整个屏幕），默认情况调小一点"）：
+ * 限宽 + 限高，双击才看大图（见 chat.js 的 figsNode，与附件共用 zoomImage）。
+ * `object-fit: contain` 保证缩小时不变形。 */
+.pyrun__fig {
+  max-width: min(100%, 460px);
+  max-height: 320px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: #fff;
+  cursor: zoom-in;
+}
+
+/* 输出的"收起 / 展开"那层壳（长输出才有，见 chat.js 的 outNode） */
+.pyrun__outwrap {
+  margin-top: 2px;
+}
+
+.pyrun__outsum {
+  padding: 4px 10px;
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pyrun__outsum:hover {
+  color: var(--fg);
+}
+
+.pyrun__wait {
+  padding: 9px 10px;
+  color: var(--fg3);
+  font-size: 12px;
+}
+
+/* 分组行上的 ⋯：与对话行同一个位置感，悬停/聚焦才显形。 */
+.chattree__more {
+  flex: none;
+  /* 与对话行的 ⋯ **同一个尺寸**（原先这里 18、那边 22） */
+  width: var(--cm-btn);
+  height: var(--cm-btn);
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  color: var(--fg3);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity var(--dur, 140ms) var(--ease, ease-out);
+}
+
+.chattree__dir:hover .chattree__more,
+.chattree__dir:focus-within .chattree__more {
+  opacity: 1;
+}
+
+.chattree__more:hover {
+  background: rgba(127, 127, 127, 0.16);
+  color: var(--fg);
+}
+
+/* 树顶的"＋ 新建分组"：一直是显形的（它就是给"找不到入口"的人看的），
+ * 但**很轻** —— 平时别跟分组行抢注意力。 */
+.chattree__new {
+  display: flex;
+  align-items: center;
+  gap: var(--cm-gap);
+  /* 它也是"一行"，就按行来：同高、同内距 —— 原先 `4px 6px` + 上下外边距，
+   * 比分组行矮 2px、还多两处外边距，一列看下来就是歪的。 */
+  height: var(--cm-row-h);
+  margin-bottom: var(--cm-gap);
+  /* 左内距 0：那个 ＋ 与文件夹行的箭头、会话标题、分隔线左端同一条竖线 */
+  padding: 0 var(--cm-pad-x) 0 0;
+  /* 直角通条：与对话行同一套（见 .chatlist__item 的说明） */
+  border-radius: 0;
+  cursor: pointer;
+  color: var(--fg3);
+  font-size: 12.5px;
+}
+
+.chattree__new:hover {
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--fg);
+}
+
+/* 加号占**和箭头一样宽**的槽：不然它的文字落在 40，而分组行/对话行的文字在 48 ——
+ * 一列看下来这一行是往里缩的（实测差 8px）。 */
+.chattree__newplus {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--cm-btn);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.chattree__caret:hover {
+  background: rgba(127, 127, 127, 0.2);
+}
+
+.chattree__caret:focus-visible {
+  outline: 2px solid var(--pri);
+  outline-offset: 1px;
+}
+
+/* 展开时朝下、折起时朝右 —— 与资源树同一套语义 */
+.chattree__dir:not(.is-folded) .chattree__caret {
+  transform: rotate(90deg);
+}
+
+/* **箭头转起来**：旋转本身上面那条已经在做，缺的是过渡（原先一跳 90 度）。
+ * 用户："文件夹展开和收起，以及图标的变化，全部没有做动效"。 */
+.chattree__caret {
+  transition: transform 160ms var(--ease, ease);
+}
+
+/* **展开 / 收起的高度过渡**：子节点留在 DOM 里（见 walkChatTree —— 收起时也渲染），
+ * 用 `grid-template-rows: 1fr → 0fr` 把高度收掉。这是少数能给"自动高度"做过渡
+ * 的写法；`display: none` 与 `height: auto` 都不参与过渡。 */
+.chattree__kids {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 180ms var(--ease, ease);
+}
+
+.chattree__kids > .chattree__kidsinner {
+  min-height: 0; /* grid 子项默认 min-height:auto，不收掉的话收不到 0 */
+  overflow: hidden;
+}
+
+.chattree__dir.is-folded + .chattree__kids {
+  grid-template-rows: 0fr;
+}
+
+.chattree__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chattree__count {
+  flex: none;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.chattree__menu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 178px;
+  padding: 4px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+}
+
+/* 每条 = 图标 + 文字 +（可选）靠右的快捷键。
+ * 用户要的是"重命名，置顶，删除，都是图标 + 文字，删除做成红色"。 */
+.chattree__menuitem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--fg2);
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.chattree__menuitem:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.chattree__menuico {
+  flex: none;
+  display: inline-flex;
+  width: 15px;
+  color: var(--fg3);
+}
+
+.chattree__menuitem:hover .chattree__menuico {
+  color: inherit;
+}
+
+.chattree__menutext {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 快捷键靠右：`margin-left: auto` 而不是只靠上面那个 flex —— 前者在
+ * 文字很短时也把提示顶到右边（实测只给 flex 时它贴在字上）。 */
+.chattree__menuhint {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+/* 删除：红的（用户要求）。悬停的底也偏红，别让它看着跟别的项一样。 */
+.chattree__menuitem.is-danger,
+.chattree__menuitem.is-danger .chattree__menuico {
+  color: var(--bad, #e5484d);
+}
+
+.chattree__menuitem.is-danger:hover {
+  background: color-mix(in srgb, var(--bad, #e5484d) 14%, transparent);
+  color: var(--bad, #e5484d);
+}
+
+.chattree__ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chattree__input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.chattree__input:focus {
+  outline: none;
+  border-color: var(--pri);
+}
+
+.chattree__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }

@@ -16,8 +16,14 @@
     <aside class="lib__list" aria-label="资料条目">
       <header class="lib__head">
         <select class="lib__root" id="library-root-pick" title="资料根" aria-label="资料根"></select>
-        <button class="lib__icon" id="library-addroot" type="button" title="添加一个资料目录"
+        <button class="lib__icon" id="library-addroot" type="button"
+                title="添加一个资料目录（会弹出系统的文件夹选择器）"
                 aria-label="添加资料目录">＋</button>
+        <!-- 上传：**用户自己就能把文件丢进来**，然后这一页自动抓正文 + 让模型判元数据 -->
+        <button class="lib__icon" id="library-upload" type="button"
+                title="上传文件（可以一次选多个）：传完自动抽正文、并由模型判元数据"
+                aria-label="上传资料">↑</button>
+        <input class="lib__file" id="library-file" type="file" multiple hidden>
       </header>
       <div class="lib__searchrow">
         <input class="lib__search" id="library-search" type="search"
@@ -30,12 +36,19 @@
       <div class="lib__bar" id="library-bar"></div>
       <div class="lib__scroll" id="library-items" role="listbox" aria-label="资料条目列表"></div>
       <footer class="lib__foot">
+        <!-- 进度条：抓正文与判元数据都是分批循环，没有它就只能盯着一个数字猜
+             （用户："卡死了……做个进度条吧"）。空闲时整条隐藏，不占视觉。 -->
+        <div class="lib__progress" id="library-progress" hidden>
+          <div class="lib__progressfill" id="library-progressfill"></div>
+        </div>
         <span class="lib__count" id="library-count">—</span>
         <span class="lib__footbtns">
           <button class="lib__btn" id="library-classify" type="button"
-                  title="让模型判类型与主题（它给建议、你复核，写入时记为「模型填的」）">模型归类</button>
+                  title="让模型判类型与主题（它给建议、你复核）">模型归类</button>
           <button class="lib__btn" id="library-index" type="button"
                   title="抽正文（PDF 抽取较慢，分批推进，可随时停下）">抓正文</button>
+          <button class="lib__btn" id="library-meta" type="button"
+                  title="让模型判每一份的标题/作者/年份/类型/主题（并发问，可以随时停下）">判元数据</button>
         </span>
       </footer>
     </aside>

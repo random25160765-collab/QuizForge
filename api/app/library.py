@@ -242,7 +242,10 @@ class Entry:
             "year": self.meta.get("year") or 0,
             "kind": str(self.meta.get("kind") or self.item.kind),
             "topics": [str(tag) for tag in (self.meta.get("topics") or [])],
-            "origin": str(self.meta.get("origin") or "inferred"),
+            # 给界面看的来源要算**当前管线判过没有**，不能照抄存的 `origin`：
+            # 老数据里它写着 `llm`、内容却是规则法留下的（见 `library_meta.META_REV`），
+            # 照抄的话界面会说"判过了"，而列表里一眼就能看出没判。
+            "origin": _origin_for_display(self.meta),
             "path": str(self.item.path),
             "rel": self.item.rel,
             "bytes": self.item.size,
@@ -443,21 +446,96 @@ def _looks_like_prose(line: str) -> bool:
     return letters / max(1, len(text)) >= 0.78
 
 
+#: 目录里的点引线：`. . . . .`（PDF 抽出来常常是"点 + 空格"交替）
+_TOC_DOTS = re.compile(r"\.\s*\.\s*\.(\s*\.)?")
+#: 目录行开头的编号：`2.2`、`2.2.1`、`1`（后面跟标题）
+_TOC_NUMBER = re.compile(r"^\s*\d+(\.\d+)*\s+\S")
+#: 目录行的页码尾巴：标题后面一串点再跟一个数字
+_TOC_TAIL = re.compile(r"[.\s]{4,}\d{1,4}\s*$")
+
+
+def _looks_like_toc(line: str) -> bool:
+    """这一行是不是**目录里的一行**。
+
+    为什么要单认它：PDF 抽出来的第一页常常是"封面 + 目录"，而目录行既有很多逗号、
+    又有大写词，署名那套判据会把它当作者行（实测那份 CUDA 白皮书：标题被写成
+    一整片目录、作者被写成 `Assess, Parallelize, Optimize`）。
+
+    三条形状，任一条命中就算：点引线（`. . . .`）、"编号 + 标题"的开头、
+    "标题 …… 页码"的尾巴。
+    """
+    text = (line or "").rstrip()
+    if not text:
+        return False
+    if _TOC_DOTS.search(text):
+        return True
+    if _TOC_TAIL.search(text):
+        return True
+    return bool(_TOC_NUMBER.match(text)) and len(text) < 120
+
+
+#: 一个「人名对」：`Kiyoshi Honda`、`Yoshiaki Fukazawa` 这种「大写词 + 大写词」。
+#: 两个词都要求首字母大写、其余小写、长度合理 —— 全大写的机构名（`WASEDA UNIVERSITY`）
+#: 与带数字的目录行都不会命中。
+_NAME_PAIR = re.compile(r"\b[A-Z][a-z]{1,15}\s+[A-Z][a-z]{1,15}\b")
+
+
+def _name_pairs(line: str) -> list[str]:
+    """这一行里出现的所有人名对（`Kiyoshi Honda` 这种）。"""
+    return _NAME_PAIR.findall(line or "")
+
+
+def _looks_like_name_line(line: str) -> bool:
+    """这一行是不是**一串人名**（可能是没有逗号的署名行）。
+
+    为什么单独认：署名行不一定用逗号分隔 —— PDF 抽出来常常是
+    `Kiyoshi Honda Hironori Washizaki Yoshiaki Fukazawa`（空格隔开）。
+    这种行既过不了"必须有逗号"那条，又会被当成标题的后续行拼进去，
+    实测标题于是成了"标题 + 一串人名"。
+
+    判据：连着三个以上人名对、且这一行没有逗号（有逗号的走 `_looks_like_authors`）。
+    """
+    text = (line or "").strip()
+    if not text or "," in text or len(text) > 160:
+        return False
+    words = text.split()
+    if len(words) < 6:
+        return False
+    # 人名对必须**首尾相接**地铺满整行（`Kiyoshi Honda Hironori Washizaki Yoshiaki Fukazawa`）。
+    # 踩过：只看"三个以上人名对"会把 **Title Case 的标题**也认成署名行 ——
+    # `An Empirical Study on Predicting Software Development Bugs` 里有
+    # `Empirical Study`、`Predicting Software`、`Development Bugs` 三对，
+    # 于是标题行成了"署名行"、真正的作者行被跳过，结果作者一个都没留下
+    # （被 `test_infer_drops_place_names_from_a_real_signature_block` 抓到）。
+    # 标题里的大写词之间总夹着小写虚词（`Study **on** Predicting`），
+    # 所以"接不上就停"这一条能把两者分开。
+    at = 0
+    pairs = 0
+    while at + 1 < len(words) and _NAME_PAIR.fullmatch(words[at] + " " + words[at + 1]):
+        pairs += 1
+        at += 2
+    return pairs >= 3 and at >= len(words) - 1
+
+
 def _looks_like_authors(line: str) -> bool:
     """这一行像不像"作者署名"。
 
-    三条硬约束，都是踩出来的：
+    四条硬约束，都是踩出来的：
 
     * **必须有逗号** —— 作者是一串人名，几位之间用逗号分隔；
     * **不许有冒号** —— 论文标题常写成 `FlashAttention: Fast and … with IO-Awareness`，
       只看"有 and 有逗号"会把**标题**当成作者（实测就是这样把标题与作者写反的）；
     * **至少要两个像人名的片段** —— 版权页的 `COMPUTE EXPRESS LINK CONSORTIUM, INC.`
-      只有一个片段、而且全大写，不是作者。
+      只有一个片段、而且全大写，不是作者；
+    * **目录行不算** —— ` 2.2 Assess, Parallelize, Optimize, Deploy . . .` 两个条件都满足，
+      但它是目录（见 `_looks_like_toc`）。
 
     宁可返回 False（作者留空、等模型或人补）也不要写一个错的作者进元数据。
     """
     text = (line or "").strip()
     if not _looks_like_prose(text) or len(text) > 200:
+        return False
+    if _looks_like_toc(text):
         return False
     low = text.lower()
     if any(month in low for month in _MONTHS) or ":" in text:
@@ -474,7 +552,40 @@ def _looks_like_authors(line: str) -> bool:
 
 
 #: 机构后缀：`… Consortium, Inc.` 这种前导声明里全是这些词，不该当人名。
-_ORG_WORDS = frozenset({"inc", "ltd", "corp", "corporation", "consortium", "university", "institute", "llc", "gmbh"})
+_ORG_WORDS = frozenset({
+    "inc", "ltd", "corp", "corporation", "consortium", "university", "institute", "llc", "gmbh",
+    # 机构名的常见碎块（实测从"署名区块"里被切出来过）
+    "department", "faculty", "college", "school", "hospital", "laboratory", "centre", "center",
+    "medicine", "technology", "science", "sciences", "engineering", "research", "group",
+    # 出版社（实测 `O'Reilly Media`、`Springer` 被当过作者）
+    "media", "press", "publishing", "publishers", "books", "editions", "verlag",
+    "springer", "wiley", "manning", "packt", "oreilly", "oreillymedia", "apress", "addison",
+    # 地址后缀（实测 `Ambassador House` / `Concord Business Park` / `Threapwood Road`）
+    "house", "park", "road", "street", "avenue", "drive", "lane", "boulevard", "plaza",
+    "suite", "floor", "building", "floor",
+})
+
+#: 虚词：`Laws of` 这种"标题碎片"以它结尾，肯定不是人名。
+_FUNCTION_WORDS = frozenset({
+    "of", "and", "the", "for", "with", "in", "on", "at", "by", "to", "from", "vs", "via",
+    "into", "over", "under", "between", "through", "as", "or", "an", "a", "is", "are",
+})
+
+#: 中文机构标记：`授权人民邮电出版社出版` 这种片段（中文姓名没有空格，
+#: 所以"至少两个词"那条卡不住它，得靠这几个词认出来）。
+_CN_ORG = re.compile(r"(出版社|出版|公司|集团|大学|学院|研究所|研究院|图书馆|授权)")
+
+#: 这些词打头的"人名"是说明文字（`The`、`Figure`、`Thereafter`……）。
+_NOT_NAMES = frozenset({
+    "the", "this", "these", "that", "those", "there", "thereafter", "then", "than",
+    "figure", "fig", "table", "section", "chapter", "appendix", "references", "bibliography",
+    "abstract", "keywords", "contents", "index", "preface", "overview", "release", "version",
+    "draft", "revision", "note", "notes", "since", "when", "where", "while", "page", "vol",
+    "no", "et", "al", "see", "also", "however", "thus", "hence", "following", "under",
+})
+
+#: 中日韩字：中文姓名没有空格可分（`王小明`），不能拿"至少两个词"去卡它。
+_CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
 
 
 #: 地名与国家名：署名区块里紧跟着 institutions 的那些。
@@ -527,7 +638,23 @@ def _looks_like_a_person(piece: str, title: str = "") -> bool:
     words = text.split()
     if not (1 <= len(words) <= 3):
         return False
+    # 括号 / 斜杠 / 分号：那是机构、缩写或"GR/L"这种编号，不是人名
+    if re.search(r"[()\[\]/&;]", text):
+        return False
+    if _CN_ORG.search(text):
+        return False
+    if words[0].strip(".,").lower() in _NOT_NAMES:
+        return False
     if any(word.strip(".,").lower() in _ORG_WORDS for word in words):
+        return False
+    # 以虚词开头或结尾的（`Laws of`、`of the`）：标题碎片，不是人名
+    if words[0].strip(".,").lower() in _FUNCTION_WORDS:
+        return False
+    if words[-1].strip(".,").lower() in _FUNCTION_WORDS:
+        return False
+    # **英文姓名至少要两个词**：`Parallelize`、`Optimize`、`Medicine`、`Technology`
+    # 这类单个英文词曾被当成作者写进元数据（实测）。中文姓名没有空格可分，另行放过。
+    if len(words) < 2 and not _CJK.search(text):
         return False
     # **任一个词**是地名就否掉（不是"全都要是"）：`Ann Arbor` 里只有 `Arbor` 是地名，
     # 而 `Ann` 本身是常见名 —— 只看"全都是"就会把 Ann Arbor 当成人名。
@@ -562,6 +689,12 @@ def _pretty(stem: str) -> str:
 
 
 def infer(item: Item, *, head_text: str = "") -> dict[str, Any]:
+    """**已不在管线里** —— 元数据现在由 `library_meta` 问模型（用户要求"全部 llm"）。
+
+    留着它有两个用处：它记着这批语料的真实形状（那些注释与判据都是被具体文件打脸
+    之后补的），以及测试拿它当基准。**新代码不要再调它**：文件千奇百怪，
+    模式匹配是在跟无穷多种排版较劲。
+    """
     """推断元数据。**不猜的就不写** —— 宁可字段空着让界面标"待补"，也不要编一个错的。
 
     顺序：文件名里的确定性标识（arXiv 号 / 年份 / 报告号）→ PDF 首页正文 → 目录名当主题。
@@ -591,6 +724,9 @@ def infer(item: Item, *, head_text: str = "") -> dict[str, Any]:
         # 作者行先找：它顺带标出了"标题在上面"的边界
         author_at = -1
         for index, line in enumerate(lines[:22]):
+            # 目录页要整片跳过：它既不是署名，也不该被当成"署名行上面的标题"
+            if _looks_like_toc(line):
+                continue
             if _looks_like_authors(line):
                 author_at = index
                 authors = [
@@ -598,6 +734,11 @@ def infer(item: Item, *, head_text: str = "") -> dict[str, Any]:
                     for name in re.split(r",| and ", line)
                     if 2 < len(name.strip()) < 60
                 ][:8]
+                break
+            if _looks_like_name_line(line):
+                # 没有逗号的署名行：直接取里面的人名对
+                author_at = index
+                authors = _name_pairs(line)[:8]
                 break
 
         # 标题 = 作者行**上面那一段连续的散文行**，join 起来。
@@ -610,12 +751,19 @@ def infer(item: Item, *, head_text: str = "") -> dict[str, Any]:
             while index >= 0 and len(pieces) < 4 and _looks_like_prose(lines[index]):
                 if lines[index].startswith(("http", "arXiv:", "doi:")):
                     break
+                if _looks_like_toc(lines[index]) or _looks_like_name_line(lines[index]):
+                    break
                 pieces.insert(0, re.sub(r"\s+", " ", lines[index]))
                 index -= 1
             title = re.sub(r"\s+", " ", " ".join(pieces)).lstrip("#>*-").strip()[:180]
         if not title:
             for line in lines[:14]:
                 if line.startswith(("http", "arXiv:", "doi:")):
+                    continue
+                # 网址（`www.elsevier.com/locate/ipl`）不能当标题 —— 实测取到过
+                if "://" in line or re.search(r"\bwww\.|\.[a-z]{2,4}/", line, re.I):
+                    continue
+                if _looks_like_toc(line):
                     continue
                 if _looks_like_prose(line) and not _looks_like_authors(line):
                     # 剥掉行首的 Markdown 记号：实测 md 文件被当成"首页正文"喂进来时，
@@ -658,6 +806,20 @@ def _slug_words(text: str, *, words: int = 2, limit: int = 20) -> str:
         # `cmanual` 一眼认得出是哪一份，`doc-5fcb5d89` 认不出。
         picked = every[:words]
     return "".join(picked)[:limit]
+
+
+def _origin_for_display(meta: dict[str, Any]) -> str:
+    """界面上的"这条元数据是谁给的"。
+
+    `manual`（人定的）原样返回；其余按**当前管线**判过没有来分：
+    判过 = `llm`，没判过 = `pending`（界面显示"待判"）。
+    """
+    from . import library_meta  # noqa: PLC0415 —— 放在函数里，避免模块级循环导入
+
+    stored = str(meta.get("origin") or "")
+    if stored == "manual":
+        return "manual"
+    return "pending" if library_meta.looks_unjudged(meta) else (stored or "pending")
 
 
 def citekey_for(meta: dict[str, Any], *, fallback: str) -> str:
@@ -1077,14 +1239,21 @@ def extract_text(item: Item, text_dir: Path, citekey: str, *, force: bool = Fals
 def entry_for(item: Item, meta_dir: Path, text_dir: Path, meta: dict[str, Any] | None = None) -> Entry:
     """把一个主文件组装成条目。
 
-    元数据缺失时用**推断结果，但不落盘** —— 落盘是"冻结引用键"这个动作，
-    要显式索引或人点头才做（否则每次打开列表都会生成一堆没人确认过的元数据文件）。
+    元数据缺失时**只给机械信息**（文件名派生的标题、扩展名决定的类型），
+    标题/作者/年份/主题留给模型（`library_meta`）—— 用户明确要求"不要规则兜底，
+    全部 llm"。这里**不联网、也不读正文**：列表是一次点击就要出来的东西，
+    塞一次模型调用进去等于让目录页等一个网络往返。
+
+    落盘仍然要显式索引或人点头（否则每次打开列表都会生成一堆没人确认过的元数据文件）。
     """
     merged = dict(meta or {})
     if not merged:
-        guess_key = citekey_for(infer(item), fallback=item.rel)
-        head = head_text_for(item, text_dir, guess_key) if item.suffix == ".pdf" else ""
-        merged = infer(item, head_text=head)
+        merged = {
+            "title": _pretty(item.stem),
+            "kind": item.kind,
+            #: `pending` = 还没让模型判过。界面据此显示"待补"与"用模型重判"。
+            "origin": "pending",
+        }
     merged.setdefault("citekey", citekey_for(merged, fallback=item.rel))
     merged.setdefault("source", str(item.path))
     return Entry(

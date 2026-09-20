@@ -33,10 +33,15 @@ import json
 import time
 
 from . import ai_gateway as gateway
+from . import runs
 from .parts import clip
 
 MAX_TURNS = 6
-DEFAULT_BUDGET = 8000
+#: 没人给预算时用的兜底。**它不该是个小数字**：8000 那会儿一顿工具调用就装满了，
+#: 于是历史被悄悄截掉（用户看到的"更早的 N 条消息没有带进来"就是这么来的）。
+#: 现在的规矩是"按模型自己的窗口定"（见 `ai_gateway.budget_tokens`），
+#: 这里只给一条没人配置时的宽底线 —— 1M，与实例上限同一个量级。
+DEFAULT_BUDGET = 1_000_000
 # 单条历史消息的固定开销（角色、分隔符），粗估即可
 _MSG_OVERHEAD = 4
 
@@ -133,14 +138,12 @@ def build_messages(system: str, history: list[dict], budget: int) -> tuple[list[
         kept.pop(0)
 
     dropped = len(history) - len(kept)
-    head = system
-    if dropped:
-        head += (
-            "\n\n（这次对话更早的 "
-            + str(dropped)
-            + " 条消息因长度限制没有带进来，需要时可以请用户重述。）"
-        )
-    return [{"role": "system", "content": head}, *kept], dropped
+    # **不告诉模型"历史被截了"**。原来这里会往 system 尾巴上贴一句
+    # "（这次对话更早的 N 条消息因长度限制没有带进来，需要时可以请用户重述。）"，
+    # 结果模型把它当自己的话复述出来 —— 用户看到一句莫名其妙的报备
+    #（"更早的 16 条消息没有带进来"，原话：直接把这个告知删掉，不要再留）。
+    # 截断这件事我们自己知道就够了：`dropped` 照旧返回，调用方要不要上报自己定。
+    return [{"role": "system", "content": system}, *kept], dropped
 
 
 def _parse_args(raw) -> dict:  # noqa: ANN001
@@ -151,6 +154,53 @@ def _parse_args(raw) -> dict:  # noqa: ANN001
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+#: 沙箱那张图随的 user 消息上的名字 —— `_strip_images` 靠它认"这是我要处理的"。
+#: 用 `name` 这个**合法字段**做标记（不放自定义键：那会跟着请求发出去，
+#: 严格的网关会 400）。
+_FIGURE_NAME = "sandbox-figure"
+
+
+def _strip_images(messages: list[dict]) -> None:
+    """把**沙箱拍的旧图**从要发出去的消息里剥掉（原地改）。
+
+    为什么需要：沙箱的图以 base64 回来（一张几十 KB ≈ 上万 token）。当轮模型得
+    **看见**它（它有读图能力）—— 但下一轮再发时它就是"已经看过的东西"，
+    随历史一轮轮重放纯属白烧上下文。
+
+    **只认自己那一种**（`name == _FIGURE_NAME`）：附件里的图是用户发的、是历史的
+    一部分，每轮都该在（那条路另有一套用例钉着，不能被这里误伤）。
+
+    当轮刚拍到的那条还带 `_fresh`：留一次（顺手摘掉标记 —— 它不该出现在请求里），
+    下一轮再走到这里就换成一句"这里原本有一张图"，并把名字清掉（幂等）。
+    """
+    for one in messages:
+        content = one.get("content")
+        if not isinstance(content, list) or one.get("name") != _FIGURE_NAME:
+            continue
+        if one.pop("_fresh", False):
+            continue  # 本轮刚拍的：留着给模型看
+        kept = [
+            part
+            for part in content
+            if not (isinstance(part, dict) and part.get("type") == "image_url")
+        ]
+        kept.append({"type": "text", "text": "（这里原本有一张图，已经看过了。）"})
+        one["content"] = kept
+        # 换成普通消息：下一轮不再匹配，也就不会再包一层说明（幂等）
+        one.pop("name", None)
+
+
+def _specs_without(specs: list[dict], drop: tuple[str, ...]) -> list[dict]:
+    """把 `drop` 里那几个工具从声明里摘掉（子代理用它挡住"派给自己"）。"""
+    if not drop:
+        return specs
+    return [
+        one
+        for one in specs
+        if str(((one.get("function") or {}).get("name")) or "") not in drop
+    ]
 
 
 def run(  # noqa: ANN001
@@ -165,10 +215,13 @@ def run(  # noqa: ANN001
     budget=None,
     max_turns=MAX_TURNS,
     mounts: set[str] | None = None,
+    allow: tuple[str, ...] | set[str] | None = None,
+    drop: tuple[str, ...] = (),
+    thinking: bool = False,
 ):
     """驱动若干轮，产出事件字典（宿主按 kind 分发）：
 
-        {"kind":"note", ...}                        历史被截断
+        {"kind":"note", ...}                        一句系统提示（少数情况才有）
         {"kind":"text","text":...}                  正文增量
         {"kind":"think","text":...}                 推理增量
         {"kind":"tool_start","callId","name","args"}
@@ -177,15 +230,17 @@ def run(  # noqa: ANN001
         {"kind":"finish","reason","usage"}
     """
     budget = int(budget or conf.get("maxContextTokens") or DEFAULT_BUDGET)
-    messages, dropped = build_messages(system, history, budget)
-    if dropped:
-        yield {"kind": "note", "text": "更早的 " + str(dropped) + " 条消息没有带进来"}
+    # 历史照旧按预算裁剪（见 `build_messages`），但**不再往外说**
+    #（原来这里会产出一条"更早的 N 条消息没有带进来"的 note，界面在输入框上方
+    # 摆一行，占着间距而用户拿它没有办法）。`dropped` 因此无人使用，接下划线。
+    messages, _dropped = build_messages(system, history, budget)
 
     usage = {"promptTokens": 0, "completionTokens": 0}
     allow_tools = True
 
     for _turn in range(max_turns):
         chunks: list[str] = []
+        thoughts: list[str] = []
         calls: list[dict] = []
         finish = ""
         # 协议泄漏：模型把工具调用**写成了正文**（实测内测通道的 deepseek-chat 会这样，
@@ -228,10 +283,22 @@ def run(  # noqa: ANN001
                 #
                 # 条件写在调用处（而不是循环外算一次）：降级重试时 `allow_tools`
                 # 会变，算在外面的话重试还会带着工具上去，等于没降级。
+                # 发之前先把**旧图**剥掉（沙箱那张 base64 只给模型看一次，见 _strip_images）
+                _strip_images(messages)
                 for kind, value in gateway.stream_completion(
                     conf,
                     messages,
-                    tools=tools.specs(mounts) if (allow_tools and _turn < max_turns - 1) else None,
+                    tools=(
+                        _specs_without(tools.specs(mounts, allow), drop)
+                        if (allow_tools and _turn < max_turns - 1)
+                        else None
+                    ),
+                    # 思考开关（见 `gateway.thinking_params`）：**显式**写，两个方向
+                    # 都不依赖上游默认。谁要思考谁传 `thinking=True` —— 现在只有主对话
+                    # （由输入框那颗「深度思考」药丸决定，默认开）。子代理与大题批改
+                    # 不传：它们的产出是给主模型看的中间结果，思考只会更慢更贵，
+                    # 思维链也没人展示。
+                    params=gateway.thinking_params(str(conf.get("model") or ""), thinking),
                 ):
                     if kind == "delta":
                         if leaked:
@@ -253,6 +320,13 @@ def run(  # noqa: ANN001
                             chunks.append(safe)
                             yield {"kind": "text", "text": safe}
                     elif kind == "think":
+                        # 思维链：一路流给界面（它进"思考"折叠块），一路攒起来 ——
+                        # 下一轮请求要把它**原样回传**。DeepSeek 文档写得很硬：带 tools
+                        # 时若不回传 `reasoning_content`，上游直接 400（2026-09-20 查证）。
+                        # 实测：`deepseek-flash` 裸调就给思维链（思考模式默认开启、
+                        # 默认 effort=high），而 `deepseek-chat` 这个遗留名一个字节都不给。
+                        # 两种模型共用这条链：攒到就回传、攒不到就不带那个字段。
+                        thoughts.append(value)
                         yield {"kind": "think", "text": value}
                     elif kind == "tool_calls":
                         calls = value
@@ -297,23 +371,27 @@ def run(  # noqa: ANN001
 
         # 模型要工具：先把这一轮（它说的话 + 它要的调用）记进上下文，
         # 否则下一轮它看不到自己刚才要求过什么
-        messages.append(
-            {
-                "role": "assistant",
-                "content": "".join(chunks),
-                "tool_calls": [
-                    {
-                        "id": call["id"] or "call_" + str(index),
-                        "type": "function",
-                        "function": {
-                            "name": call["name"],
-                            "arguments": call["arguments"] or "{}",
-                        },
-                    }
-                    for index, call in enumerate(calls)
-                ],
-            }
-        )
+        turn_message: dict = {
+            "role": "assistant",
+            "content": "".join(chunks),
+            "tool_calls": [
+                {
+                    "id": call["id"] or "call_" + str(index),
+                    "type": "function",
+                    "function": {
+                        "name": call["name"],
+                        "arguments": call["arguments"] or "{}",
+                    },
+                }
+                for index, call in enumerate(calls)
+            ],
+        }
+        # 思维链跟着这一轮回传（见上面的 think 分支）：DeepSeek 带 tools 时缺了它
+        # 会 400。攒不到就**省掉这个字段** —— `deepseek-chat` 这类非思考入口永远
+        # 攒不到，请求因此与从前逐字节一致。
+        if thoughts:
+            turn_message["reasoning_content"] = "".join(thoughts)
+        messages.append(turn_message)
 
         for index, call in enumerate(calls):
             call_id = call["id"] or "call_" + str(index)
@@ -321,7 +399,14 @@ def run(  # noqa: ANN001
             yield {"kind": "tool_start", "callId": call_id, "name": call["name"], "args": args}
 
             started = time.perf_counter()
-            ok, payload = tools.call(db, user, call["name"], args, tool_context, mounts=mounts)
+            if call["name"] in drop:
+                # **纵深防御**：声明里已经不给了，报名字也不执行 ——
+                # 挡的是"子代理又派一个子代理"（递归一旦开口子，轮数预算就失控）。
+                ok, payload = False, {"error": "这个工具在这一次调用里不可用。"}
+            else:
+                ok, payload = tools.call(
+                    db, user, call["name"], args, tool_context, mounts=mounts, allow=allow
+                )
             elapsed = gateway.elapsed_ms(started)
             text = clip(tools.output_text(payload))
             yield {
@@ -336,7 +421,83 @@ def run(  # noqa: ANN001
                 # （题卡就是：模型看到题面，界面渲染成可作答的卡）
                 "payload": payload,
             }
+
+            # **跑脚本要等它跑完再说话。**
+            #
+            # `run_python` 的代码是在**页面**的沙箱（Pyodide）里执行的：上面那次
+            # `yield` 只是把零件发出去，此刻一个字都还没跑。用户的要求是
+            # "让 agent 等命令返回了再说话" —— 所以这里停住，等页面把输出报回来
+            # （几毫秒到几秒）。
+            #
+            # **顺序不能反**：这一停必须在 `yield` **之后** —— 页面正是拿到那个零件
+            # 才知道要跑哪段代码；先停后会互相等，直接死锁。
+            #
+            # 等到之后把输出并进工具结果：模型拿到的是**真跑出来的东西**，而不是
+            # "我已经交进去跑了、下一轮再看"这种空话（实测它就是这么说的）。没人报
+            # （页面没开、脚本死循环）就超时认输，并如实告诉它没等到 —— 不许它编。
+            demo = payload.get("demo") if isinstance(payload, dict) else None
+            run_id = ""
+            if isinstance(demo, dict):
+                run_id = str(demo.get("runId") or "")
+            outcome = None
+            if ok and run_id and isinstance(payload, dict) and payload.get("await_run"):
+                # 同步等待：只占住这一条请求的线程，页面那条上报由另一个线程接
+                # （理由写在 `runs.wait_blocking` 的注释里）。
+                outcome = runs.wait_blocking(run_id)
+                if outcome is None:
+                    text = clip(
+                        "**没等到沙箱的输出**（页面可能没开着，或者脚本卡住了）。"
+                        "这一轮**不要**声称跑出了什么 —— 只说没等到。\n\n" + text
+                    )
+                else:
+                    payload["run"] = outcome
+                    text = clip(
+                        "沙箱输出（这次工具调用**已经跑完**，这就是结果）：\n"
+                        + str(outcome.get("text") or "（没有输出）")
+                        + "\n\n" + text
+                    )
+                # 宿主据此把输出也存进那块零件（前端自己显示的那份只活在当前页面）
+                yield {"kind": "run_output", "callId": call_id, "runId": run_id, "run": outcome}
+
             messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
+
+            # **图交给模型看** —— 他有读图能力（用户："你要保证 matplotlib 的图能被
+            # llm 读到——它是有读图能力的"）。原先图只到面板，模型这边干瞪眼，
+            # 于是它只能说"我这边看不到图"。
+            #
+            # 协议上一个细节：`role:"tool"` 只能带文本，图得单独随一条 user 消息走
+            # （各家通用做法）。而且**只在模型真能读图时**才发 —— 给读不了图的上游
+            # 塞 image_url 会直接 400（`model_reads_images` 就是干这个判断的）。
+            #
+            # `_fresh` 标记不是给上游的：它让 `_strip_images` 知道"这张是本轮刚拍的，
+            # 留一次"，下一轮再发时就换成一句"这里原本有一张图"（base64 重放太贵）。
+            images = (outcome or {}).get("images") or []
+            if images and gateway.model_reads_images(str(conf.get("model") or "")):
+                messages.append(
+                    {
+                        "role": "user",
+                        # `name` 是**合法字段**（上游接受），也是 `_strip_images` 的记号：
+                        # 下一轮它就是"看过的那张"，换成一句说明
+                        "name": _FIGURE_NAME,
+                        "_fresh": True,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "（上面那次运行的图在下面 —— 你看得到就照着说，"
+                                    "看不到就直说看不到。）"
+                                ),
+                            },
+                            *[
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": "data:image/png;base64," + str(one)},
+                                }
+                                for one in images[:3]
+                            ],
+                        ],
+                    }
+                )
 
     # 轮数用尽：这是"模型在打转"，不是上游故障，所以要明确说出来
     yield {

@@ -97,7 +97,12 @@ PAGE_JS = {
     "chat": ["chat.js", "boot.js"],
     "notes": ["canvas.js", "notes.js"],  # canvas.js 要在 notes.js 前（后者用 QF.canvas）
     "library": ["library.js"],           # 资料页也自己启动（数据来自 /api/library）
-    "workbench": ["canvas.js", "workbench.js"],  # 工作台：窗格引擎 + 视图注册（canvas 先于 workbench，后者用 QF.canvas）
+    # 工作台：窗格引擎 + 视图注册（canvas 先于 workbench，后者用 QF.canvas）。
+    # chat.js 也在这儿：对话是一个**窗格种类**（点左栏的对话就地看，不跳页）。
+    # 它自带 `QF.chat.boot`，但只有 chat.html 会去调 —— 这一页只用到 `QF.chat.mount`。
+    # notes.js 也在：主页的笔记窗格要用它那套渲染零件（`QF.notesrt`）。
+    # 它自带自启动，但只有 notes.html 会真的启动（见文件末尾的 bootPage 守卫）。
+    "workbench": ["canvas.js", "chat.js", "notes.js", "workbench.js"],
 }
 
 PAGE_TITLE = {
@@ -123,12 +128,19 @@ PAGE_BODY = {
 # 页面专属样式：默认共用合并后的 app.css，只有图谱页、对话页与笔记页要再加一份
 # 工作台暂时带上 notes.css：画布那棵 DOM（`.ncanvas*`）的样式写在里面，
 # 等画布样式从 notes.css 里拆出来之后，这一行就该瘦回去
+#
+# 工作台也要 chat.css：对话是一个**窗格种类**（`QF.panes.register('chat')`，
+# 见 runtime/workbench.js），不带上这一份，那一格里的对话就是**没穿衣服**的
+# ——会话列表铺成一长条、消息流不滚（用户报的"主页的对话显示不正常"）。
+# 那份样式里除五条 `body[data-page='chat']` 的整页布局外全是类名作用域
+# （`.chat*` / `.hub*` / `.chatlist*` / `.chatmsg*` / `.ct*`），不会漏到别的页；
+# 窗格那一份布局在 chat.css 里另有一条 `.panes__host > .chat`。
 PAGE_CSS = {
     "graph": ["graph.css"],
     "chat": ["chat.css"],
     "notes": ["notes.css"],
     "library": ["library.css"],
-    "workbench": ["notes.css", "pane.css"],
+    "workbench": ["notes.css", "pane.css", "chat.css"],
 }
 
 # 应用样式合并成一份，避免每页重复下载
@@ -230,6 +242,13 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     (assets / "katex.css").write_text(katex_css_raw, encoding="utf-8")
     shutil.copy2(VENDOR_KATEX / "katex.min.js", assets / "katex.min.js")
 
+    # CodeMirror 6 内核（见 `vendor/cm6/` 与 `tools/build_cm6.mjs`）。
+    # 它是**构建期打好的产物**（CM6 是 ESM-only，前端没有打包链），拷进来即可；
+    # 缺失也能构建 —— 只是笔记页的编辑器用不了（与 hljs 同一条规矩：可选资源不挡构建）。
+    vendor_cm6 = ROOT / "vendor" / "cm6" / "cm6.js"
+    if vendor_cm6.is_file():
+        shutil.copy2(vendor_cm6, assets / "cm6.js")
+
     # 字体单独落地：katex.css 里写的是 url(fonts/xxx.woff2)，相对路径依旧成立，
     # 浏览器只下载真正用到的字形子集。
     font_count = 0
@@ -325,6 +344,8 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     }
     katex_js_url = _asset("katex.min.js", _digest(assets / "katex.min.js"))
     hljs_js_url = _asset("hljs.min.js", _digest(hljs_out)) if hljs_ready else ""
+    cm6_path = assets / "cm6.js"
+    cm6_js_url = _asset("cm6.js", _digest(cm6_path)) if cm6_path.is_file() else ""
     runtime_url = {name: _asset(f"runtime/{name}", _digest(runtime_out / name)) for name in scripts_to_copy}
 
     page_stamps: dict[str, str] = {}
@@ -339,6 +360,8 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
         scripts = [
             _config_script(api_base, page),
             f'<script src="{katex_js_url}"></script>',
+            # 只有笔记页要编辑器内核（577KB，别让别的页也背）
+            *([f'<script src="{cm6_js_url}"></script>'] if (page == "notes" and cm6_js_url) else []),
         ]
         # hljs 也要排在运行时之前：`QF.highlight` 在渲染代码块时就问它有没有到位
         if hljs_js_url:

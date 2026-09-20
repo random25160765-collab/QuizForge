@@ -1193,6 +1193,165 @@ def rename_note(lib: Library, rel: str, new_rel: str) -> dict[str, Any]:
 # ------------------------------------------------------------------ 回收站 / 移动
 
 
+# ------------------------------------------------------------------ 目录 / 复制
+#
+# 树上只有两样东西：**目录**与**笔记文件**。上一版只有笔记的那一套（rename/delete/
+# move 都先判 `is_file()`），于是目录什么都做不了 —— 有人就用"在一篇笔记下面挂一篇"
+# 绕过去了，那正是"子笔记"这个概念的来源。下面四个 `*_path` 是树上的统一入口：
+# 收到文件走原来那套（一字不改），收到目录走目录那套（同样重写"按路径写的"链接）。
+# 原来的 `*_note` 全部保留，别的调用点与测试不受影响。
+
+
+def is_dir(lib: Library, rel: str) -> bool:
+    """这个 rel 是不是目录（树上据此决定右键菜单给哪一套）。"""
+    return safe_path(lib, rel).is_dir()
+
+
+def _rewrite_dir_links(lib: Library, rel: str, new_rel: str) -> list[tuple[str, str, str]]:
+    """把**指向这个目录里面**的链接改到新前缀，返回 [(rel, 旧文本, 新文本)]。
+
+    只认"按路径写的"（`[[buffer/梯度]]`）：`.md` 后缀、别名、锚点都由 `rewrite_links`
+    原样保留。按名字写的（`[[梯度]]`）不动 —— 目录改名又没改笔记名。
+    """
+    old = rel.rstrip("/")
+    new = new_rel.rstrip("/")
+    plan: list[tuple[str, str, str]] = []
+    for entry in index(lib).entries():
+        if not entry.refs:
+            continue
+        path = safe_path(lib, entry.rel)
+        text = read_text(path)
+
+        def replace_target(target: str) -> str | None:
+            plain = target[: -len(MD_SUFFIX)] if target.endswith(MD_SUFFIX) else target
+            if plain == old or plain.startswith(old + "/"):
+                return new + target[len(old) :]
+            return None
+
+        new_text, count = rewrite_links(text, replace_target)
+        if count:
+            plan.append((entry.rel, text, new_text))
+    return plan
+
+
+def _move_tree(old: Path, new: Path) -> None:
+    """搬一棵树（父目录顺手建出来）。"""
+    new.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(old), str(new))
+
+
+def rename_path(lib: Library, rel: str, new_rel: str) -> dict[str, Any]:
+    """树上改名的统一入口：文件 / 目录都走这里。"""
+    if not is_dir(lib, rel):
+        return rename_note(lib, rel, new_rel)
+
+    old_path = safe_path(lib, rel)
+    new_path = safe_path(lib, new_rel)
+    if not old_path.is_dir():
+        raise NoteNotFound(f"没有这个目录：{rel}")
+    if new_path.exists():
+        raise NoteError(f"目标已存在：{new_rel}")
+    if new_rel == rel or new_rel.startswith(rel.rstrip("/") + "/"):
+        raise NoteError("不能把目录移进它自己里面")
+
+    plan = _rewrite_dir_links(lib, rel, new_rel)
+    written: list[tuple[str, str]] = []
+    try:
+        # 与 `rename_note` 同一个顺序：**先改引用者、最后才动目录名**，中途失败也不会
+        # 留下一堆指向不存在位置的链接。
+        for other, text, new_text in plan:
+            _save(lib, other, safe_path(lib, other), new_text, why="rename")
+            written.append((other, text))
+        _move_tree(old_path, new_path)
+        snap = _snapshot_dir(lib, rel)
+        if snap.is_dir():
+            _move_tree(snap, _snapshot_dir(lib, new_rel))
+    except OSError as exc:
+        for other, text in written:
+            _write_atomic(safe_path(lib, other), text.encode("utf-8"))
+        raise NoteError(f"改名失败，已回滚：{exc}") from exc
+
+    _invalidate(lib)
+    return {
+        "from": rel,
+        "to": new_rel,
+        "updated_notes": [item[0] for item in written],
+        "dir": True,
+    }
+
+
+def delete_path(lib: Library, rel: str) -> dict[str, Any]:
+    """树上删除的统一入口：统统进回收站 —— **目录也进，而且能捞回来**。
+
+    回收站里放目录这件事必须连恢复一起做：只把目录搬进 `.trash` 而恢复只认文件，
+    那就是"看着能恢复、其实恢复不了"，比不支持删除更坏。
+    """
+    if not is_dir(lib, rel):
+        return delete_note(lib, rel)
+
+    path = safe_path(lib, rel)
+    if not rel.strip("/"):
+        raise NoteError("不能删除整个库")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    trash = _trash_dir(lib)
+    trash.mkdir(parents=True, exist_ok=True)
+    target = trash / f"{stamp}__{path.name}"
+    _move_tree(path, target)
+    folder = _snapshot_dir(lib, rel)
+    if folder.is_dir():
+        _move_tree(folder, trash / f"{stamp}__{path.name}.snapshots")
+    _prune_empty_dirs(lib, path.parent)
+    _invalidate(lib)
+    return {"deleted": rel, "trash": target.name, "dir": True}
+
+
+def move_path(lib: Library, rel: str, folder: str) -> dict[str, Any]:
+    """树上移动的统一入口（目录也能移动）。"""
+    folder = folder_of(lib, folder)
+    name = Path(rel.rstrip("/")).name
+    target_rel = f"{folder}/{name}" if folder else name
+    if target_rel == rel:
+        return {"from": rel, "to": rel, "moved": False}
+    source_parent = safe_path(lib, rel).parent
+    out = rename_path(lib, rel, target_rel)
+    # 搬走最后一篇（或最后一个目录）之后把空目录收掉 —— 与删除同一个讲究
+    _prune_empty_dirs(lib, source_parent)
+    return {**out, "moved": True}
+
+
+def copy_path(lib: Library, rel: str) -> dict[str, Any]:
+    """复制一份（Obsidian 的 Make a copy）。
+
+    文件 → `<名> 1.md`；目录 → 整棵树复制成 `<名> 1`。序号从 1 往上找第一个空位，
+    **绝不覆盖**已有的东西。
+    """
+    path = safe_path(lib, rel)
+    if not path.exists():
+        raise NoteNotFound(f"找不到：{rel}")
+    parent = path.parent
+    is_folder = path.is_dir()
+    stem = path.name if is_folder else path.stem
+    suffix = "" if is_folder else path.suffix
+    target = None
+    for seq in range(1, 500):
+        candidate = parent / f"{stem} {seq}{suffix}"
+        if not candidate.exists():
+            target = candidate
+            break
+    if target is None:
+        raise NoteError("同名副本太多了，先清一清")
+    if is_folder:
+        shutil.copytree(path, target)
+    else:
+        shutil.copy2(path, target)
+    _invalidate(lib)
+    return {
+        "copied": rel,
+        "to": target.relative_to(lib.root).as_posix(),
+        "dir": is_folder,
+    }
+
+
 def _trash_dir(lib: Library) -> Path:
     return notes_root() / TRASH_DIR / lib.name
 
@@ -1228,15 +1387,18 @@ def trash_list(lib: Library) -> list[dict[str, Any]]:
         return []
     out: list[dict[str, Any]] = []
     for item in sorted(folder.iterdir(), reverse=True):
-        if not item.is_file():
+        name = item.name
+        # 快照目录是跟主文件一起搬过来的伴生品，不是一条独立的回收站条目
+        if name.endswith(".snapshots"):
             continue
         stat = item.stat()
         out.append(
             {
-                "name": item.name,
-                "title": item.name.split("__", 1)[-1],
+                "name": name,
+                "title": name.split("__", 1)[-1],
                 "at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
-                "bytes": stat.st_size,
+                "bytes": 0 if item.is_dir() else stat.st_size,
+                "is_dir": item.is_dir(),
             }
         )
     return out
@@ -1245,18 +1407,26 @@ def trash_list(lib: Library) -> list[dict[str, Any]]:
 def restore_from_trash(lib: Library, name: str, folder: str = "") -> dict[str, Any]:
     """从回收站捞回来。同名冲突时加序号，**不覆盖**现有笔记。"""
     source = _trash_dir(lib) / Path(name).name
-    if not source.is_file():
+    if not source.exists():
         raise NoteNotFound(f"回收站里没有这一份：{name}")
     base = Path(name.split("__", 1)[-1])
     dest_dir = safe_path(lib, folder) if folder else lib.root
     dest_dir.mkdir(parents=True, exist_ok=True)
     target = dest_dir / base.name
+    is_folder = source.is_dir()
     suffix = 2
     while target.exists():
-        target = dest_dir / f"{base.stem} {suffix}{base.suffix}"
+        # 目录没有"主名/后缀"可分，序号一律加在末尾
+        target = dest_dir / (f"{base.name} {suffix}" if is_folder else f"{base.stem} {suffix}{base.suffix}")
         suffix += 1
     shutil.move(str(source), str(target))
+    # 伴生的快照目录一起回来（不然恢复出来的笔记"历史"是空的）
+    snap = source.parent / f"{name}.snapshots"
+    if snap.is_dir():
+        _move_tree(snap, _snapshot_dir(lib, target.relative_to(lib.root).as_posix()))
     _invalidate(lib)
+    if is_folder:
+        return {"restored": target.relative_to(lib.root).as_posix(), "dir": True}
     return read_note(lib, target.relative_to(lib.root).as_posix())
 
 
@@ -1497,14 +1667,20 @@ def tree(lib: Library) -> dict[str, Any]:
 
     def finalize(node: dict[str, Any], prefix: str) -> dict[str, Any]:
         here = f"{prefix}/{node['name']}" if prefix else node["name"]
-        dirs = [finalize(child, here) for _, child in sorted(node["dirs"].items())]
+        # 往下传的必须是**这个节点自己的相对路径**，而不是 `here`。
+        # 根节点是"库本身"，它的相对路径是空的；早先传 `here`（= 库名）下去，子目录
+        # 就成了 `Math/buffer`，而文件路径是 `buffer/x.md` —— 两者不一致的代价实测三处：
+        # 往目录里新建笔记会建到 `Math/Math/buffer/…`、"在文件夹中搜索"永远搜不到、
+        # 拖拽移动的目标目录也不对。
+        mine = here if prefix or node["name"] != lib.name else ""
+        dirs = [finalize(child, mine) for _, child in sorted(node["dirs"].items())]
         # 自然序（Trilium 的 `sortNatural`）：`第 2 章` 排在 `第 10 章` 前面。
         # **不做手工排序**（它靠 branch.notePosition）—— 文件系统上那要么写进文件名、
         # 要么另开顺序文件，都是噪音；代价是不能拖拽排序同级条目，接受。
         files = sorted(node["files"], key=lambda item: _natural_key(item["title"] or item["name"]))
         return {
             "name": node["name"],
-            "path": here if prefix or node["name"] != lib.name else "",
+            "path": mine,
             "dirs": dirs,
             "files": files,
             "count": len(files) + sum(child["count"] for child in dirs),
@@ -1513,11 +1689,20 @@ def tree(lib: Library) -> dict[str, Any]:
     return finalize(root, "")
 
 
-def search(query: str, *, lib_name: str = "", limit: int = 50) -> list[dict[str, Any]]:
+def search(query: str, *, lib_name: str = "", limit: int = 50, folder: str = "") -> list[dict[str, Any]]:
+    """检索。给了 `folder` 就只在这个目录**里面**找（Obsidian 的 Search in folder）。
+
+    在结果那一层过滤、不改进索引 —— 索引进目录参数会把"索引与文件不同步"
+    那类 bug 引进来，而这个规模上过滤一遍的成本是零。
+    """
+    prefix = folder.strip("/")
     targets = [library(lib_name)] if lib_name else libraries()
     out: list[dict[str, Any]] = []
     for item in targets:
         for hit in index(item).search(query, limit=limit):
+            # 命中结果里的字段叫 `path`（`Index.search` 拼的是 `search_row`，见 `notes.py`）
+            if prefix and not str(hit.get("path") or "").startswith(prefix + "/"):
+                continue
             out.append({"lib": item.name, **hit})
             if len(out) >= limit:
                 return out

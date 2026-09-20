@@ -369,11 +369,13 @@ def test_proposal_for_an_unknown_question_says_so(client, db_session, imported_b
 # ------------------------------------------------------------------ 跑 Python
 
 
-def test_run_python_wraps_the_code_in_a_working_page(client, db_session) -> None:  # noqa: ANN001
-    """模型只交 Python，样板（加载 Pyodide、接 stdout、显示报错）由服务端负责。
+def test_run_python_hands_the_code_to_the_resident_shell(client, db_session) -> None:  # noqa: ANN001
+    """模型只交 Python，样板（加载运行时、接 stdout、回传）由服务端负责 ——
+    而且现在这份样板在**常驻运行壳**里（`tools.shell_page()`），零件只带 runId。
 
-    那部分让模型每次手写一遍，迟早有一次写错，而写错的表现是**一片空白** ——
-    用户看不出哪里坏了。所以这里要钉住：页面里有 Pyodide、有代码、有输出容器。
+    为什么样板不能让模型每次手写：写错一次的表现是**一片空白**，用户看不出哪里坏了。
+    为什么壳要常驻：Pyodide 每次启动都要重来（下载 + 初始化 + import 依赖），
+    一段脚本一个壳就是"每跑一次等一秒多"（用户："跑 python 脚本非常慢"）。
     """
     _register(client)
     user = db_session.get(User, uuid.UUID(_me_id(client)))
@@ -385,24 +387,35 @@ def test_run_python_wraps_the_code_in_a_working_page(client, db_session) -> None
         {"title": "斐波那契", "code": "print([1, 1, 2, 3])", "packages": ["numpy"]},
     )
     assert ok, payload
-    page = payload["demo"]["html"]
-    assert payload["demo"]["title"] == "斐波那契"
-    # 运行时优先用本机那一份（`make vendor` 取回、构建拷进 /assets）——
-    # 沙箱不该为了跑一段脚本去联网；没同步过时才退回 CDN。
-    # 本机那份的路径带 `__ORIGIN__` 占位符：沙箱页面里相对路径解析不了，
-    # 绝对地址只能由宿主填（见 `tools.pyodide_base`）。
+    demo = payload["demo"]
+    assert demo["title"] == "斐波那契"
+    assert demo["runId"], "零件要有身份：宿主靠它把输出认领回来"
+    assert "html" not in demo, "不再一段脚本一个页面（见 tools.py 的 _PYODIDE_SHELL）"
+
+    # 壳里该有的东西：运行时地址（本机那份优先）、预载、就绪信号、按 runId 执行
+    shell = tools.shell_page()
     base = tools.pyodide_base()
-    if base.startswith("__ORIGIN__") or base.startswith("/assets/"):
-        assert "/assets/pyodide/pyodide.js" in page
-        assert "__ORIGIN__/assets/pyodide/pyodide.js" in page, "占位符要留着给前端填"
-    else:
-        assert "cdn.jsdelivr.net/pyodide" in page
-    assert "loadPyodide" in page and "runPythonAsync" in page
-    assert '"print([1, 1, 2, 3])"' in page, "代码要原样嵌进去（JSON 转义过）"
-    # numpy 每次都装；这段代码没提到 scipy，所以不装它（省一次 47MB 的等待）
-    assert 'const want = ["numpy"]' in page
-    assert 'id="out"' in page, "要有输出容器，否则跑了也看不见"
-    assert "setStderr" in page, "报错也要显示出来"
+    if base:
+        assert base in shell
+    assert "loadPyodide" in shell and "loadPackage" in shell
+    assert "runPythonAsync" in shell, "真执行"
+    assert "qfCode" in shell, "收宿主派来的脚本"
+    assert "parent.postMessage" in shell and "qfRun" in shell and "qfReady" in shell
+    assert "setStderr" in shell, "报错也要显示出来"
+    assert "__INDEX__" not in shell and "__PACKAGES__" not in shell, "占位符都该替换掉"
+    # 按 import 现装包（pandas / matplotlib 那一拨）——不写 import 的人一个字节都不下
+    assert "loadPackagesFromImports" in shell
+    # matplotlib 必须走 Agg：Pyodide 默认的 canvas 后端要往页面 DOM 插画布，
+    # 而壳是 1×1 隐藏的 —— 实测它连 plt.close("all") 都会抛 AttributeError，
+    # 图也就收不上来。Agg 纯内存渲染，savefig 直接出 PNG。
+    assert 'matplotlib.use("Agg")' in shell
+    # 图由壳收走（脚本不用 savefig），随回传的 images 一起走
+    assert "collect_figures" in shell and "images" in shell
+    # 预载 = **全部**（用户："所有的 python 包都务必在运行壳里自动静默预加载"）：
+    # 壳常驻，这笔钱整个会话只付一次；而"用到才装"的代价是第一次 import 等 3.5 秒 ——
+    # 那正是用户说的"这次执行速度有点慢"
+    assert set(tools.PRELOAD_PACKAGES) == set(tools.PYODIDE_PACKAGES)
+    assert {"numpy", "scipy", "pandas", "matplotlib"} <= set(tools.PRELOAD_PACKAGES)
 
 
 def test_run_python_page_reports_its_output_back(client, db_session) -> None:  # noqa: ANN001
@@ -421,11 +434,12 @@ def test_run_python_page_reports_its_output_back(client, db_session) -> None:  #
     demo = payload["demo"]
     assert demo["runId"], "要有身份，宿主才认得出这是哪一次运行回传的"
 
-    page = demo["html"]
-    assert "parent.postMessage" in page
-    assert "qfRun" in page and demo["runId"] in page
-    # 报了运行结果之后才回传（不报 = 宿主永远在等）
-    assert page.count("report(") >= 3
+    # 回传这条路现在在常驻壳里：跑完（或报错）都要 send 一次，
+    # 否则宿主永远停在"运行中…"——那正是用户报过的样子。
+    shell = tools.shell_page()
+    assert "parent.postMessage" in shell
+    assert "qfRun" in shell
+    assert shell.count("send({") >= 3, "就绪、成功、失败三条都要回传"
 
 
 def test_run_python_loads_the_fixed_subset_and_refuses_others(client, db_session) -> None:  # noqa: ANN001
@@ -439,26 +453,41 @@ def test_run_python_loads_the_fixed_subset_and_refuses_others(client, db_session
     _register(client)
     user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    # 不点名：默认带上整个子集
+    # 壳启动时把**整份名单**装好（用户："所有的 python 包都务必在运行壳里自动静默
+    # 预加载"）——pandas / matplotlib 以前是"用到才装"，第一次 import 要等 3.5 秒。
     ok, payload = tools.call(db_session, user, "run_python", {"code": "import scipy"})
     assert ok, payload
-    html = payload["demo"]["html"]
-    assert 'const want = ["numpy", "scipy"]' in html, html[:400]
-    # 面板开头要把实际版本报出来（这样"装没装上"不用猜）
-    assert "已就绪：" in html and "__CHECK__" not in html
+    shell = tools.shell_page()
+    assert '"numpy"' in shell and '"scipy"' in shell, shell[:300]
+    # 精确到预载那一行（壳里别处提到这些名字是正常的：正则、注释）
+    assert 'var want = ["numpy", "scipy", "pandas", "matplotlib", "sympy", "networkx"]' in shell, (
+        "启动就装全"
+    )
+    # **lock 里没有的包**走另一条路：`make vendor` 把 wheel 放在同一个目录，
+    # 壳里用 micropip 从**本机** URL 装（见 EXTRA_WHEELS）。画电路图的 schemdraw
+    # 就是这么来的 —— 它不在 Pyodide 那 310 个包里。
+    assert "micropip" in shell.upper() or "micropip" in shell, "壳要用 micropip 装额外包"
+    assert "schemdraw" in shell, "额外包名单要注进壳里"
+    assert "loadPackage('micropip')" in shell, "micropip 自己也得先装上（实测栽过）"
+    assert "sys.version.split()" in shell, "版本要报出来（这样装没装上不用猜）"
+    assert "__CHECK__" not in shell
+    assert "sys.version.split()" in shell, "版本要报出来（这样装没装上不用猜）"
+    assert "__CHECK__" not in shell
 
-    # 点名名单外的：剔掉，并说清没装
+    # 点名名单外的（torch 这种要编译的）：剔掉，并说清没装（在**回给模型的那条 note**里）
     ok, payload = tools.call(
         db_session,
         user,
         "run_python",
-        {"code": "import pandas", "packages": ["pandas", "numpy", "scipy.signal"]},
+        {"code": "import torch", "packages": ["torch", "numpy", "scipy.signal"]},
     )
     assert ok, payload
-    html = payload["demo"]["html"]
-    assert 'const want = ["numpy", "scipy"]' in html
-    assert "pandas" in payload["note"] and "没有装" in payload["note"]
+    assert "torch" in payload["note"] and "没有装" in payload["note"]
     assert "scipy.signal" not in payload["note"], "带子模块的写法要归到 scipy，不算越界"
+    # 名单里的人**不再被当成外人**：pandas 现在"能用，只是要现装" ——
+    # 那句"你要的 X 不在这个子集里"只该对 torch 说
+    assert "你要的 torch" in payload["note"]
+    assert "你要的 pandas" not in payload["note"]
 
 
 def test_run_python_refuses_empty_and_giant_code(client, db_session) -> None:  # noqa: ANN001
@@ -720,7 +749,13 @@ def test_parts_projection_and_legacy_fallback() -> None:
 # ------------------------------------------------------------------ 预算
 
 
-def test_budget_keeps_the_newest_and_says_what_was_dropped() -> None:
+def test_budget_keeps_the_newest_and_stays_quiet_about_it() -> None:
+    """按预算从最新往回塞（正在聊的必须在窗口里），但**不告诉模型历史被截过**。
+
+    这条用例原来钉的是相反的契约（"模型要知道历史被截过"）。改了是因为那条告知
+    会被模型当自己的话复述出来 —— 用户看到的是一句莫名其妙的报备，原话：
+    "直接把这个告知删掉，不要再留"。截断是我们自己的事（`dropped` 照旧返回）。
+    """
     history = [
         {"role": "user", "content": "旧" * 5000},
         {"role": "assistant", "content": "旧答"},
@@ -730,7 +765,9 @@ def test_budget_keeps_the_newest_and_says_what_was_dropped() -> None:
     assert dropped >= 1
     assert messages[-1]["content"] == "新问题", "正在聊的必须在窗口里"
     assert messages[-2]["content"] == "旧答", "从最新往前塞"
-    assert "没有带进来" in messages[0]["content"], "模型要知道历史被截过"
+    assert messages[0]["content"] == "系统提示", "system 一个字的告知都不加"
+    assert "没有带进来" not in messages[0]["content"]
+    assert "长度限制" not in messages[0]["content"]
 
 
 def test_budget_counts_cjk_as_one_token() -> None:

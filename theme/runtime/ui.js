@@ -661,6 +661,11 @@
     // 同一块上连着换（点得快）：后来那次说了算，别让前一个定时器把内容定格在透明里
     var token = (box.__qfSwap || 0) + 1;
     box.__qfSwap = token;
+    // **两个方向都要有过渡。**
+    //
+    // 原先只给了"淡出"：换完内容就把 transition 清掉，于是 opacity 从 0 回到 1
+    // 是**瞬间**的 —— 看上去是"淡下去、啪地出现"。这正是那句"不同对话之间的
+    // 切换太生硬 / 不够丝滑"的真正来源（不是没有过渡，是只做了一半）。
     box.style.transition = 'opacity 110ms ease';
     box.style.opacity = '0';
     window.setTimeout(function () {
@@ -670,13 +675,62 @@
       window.requestAnimationFrame(function () {
         window.requestAnimationFrame(function () {
           if (box.__qfSwap !== token) return;
-          box.style.opacity = '';
-          box.style.transition = '';
+          box.style.opacity = '1'; // 这一次是**带过渡**地回来
+          // 过渡跑完再撤掉内联样式，免得起止值留在元素上影响以后
+          window.setTimeout(function () {
+            if (box.__qfSwap !== token) return;
+            box.style.transition = '';
+            box.style.opacity = '';
+          }, 130);
         });
       });
     }, 110);
   }
 
+
+  /* ---------------------------------------------------------- 页面之间的过渡
+   *
+   * 点站内链接：先给 `body` 加 `data-leaving`（CSS 把内容淡出，120ms），再真的跳；
+   * 新页面那边 `.view` 自己淡入（app.css）。两半加起来 ~300ms，连贯且**每次都在**。
+   *
+   * 为什么不用跨文档 View Transitions（原先就是这么做的）：实测它会漏 ——
+   * 在笔记页打开过一篇笔记、等几秒再点活动栏换页，浏览器拒掉那次过渡并报
+   * "ViewTransition opt-in disabled"；也试过"先 preventDefault、等上一个过渡收尾
+   * 再跳"，更糟：程序化跳转丢掉用户激活，跨页照样被拒。用户那句"平滑过渡是
+   * UI 设计的工程纪律，你没做全"说的就是这个漏。所以换成不依赖 opt-in 的做法。
+   *
+   * 拦的条件很保守：同源、普通左键、无修饰键、不是新窗口、不是下载、不是页内锚点。
+   * 其它一律不碰（外链、右键新标签、⌘+点……）。
+   */
+  function leaveWithFade(href) {
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) {
+      location.assign(href);
+      return;
+    }
+    document.body.dataset.leaving = '1';
+    window.setTimeout(function () {
+      location.assign(href);
+    }, 120);
+  }
+
+  document.addEventListener(
+    'click',
+    function (ev) {
+      if (ev.defaultPrevented || ev.button !== 0) return;
+      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      if (!ev.target || !ev.target.closest) return;
+      var link = ev.target.closest('a[href]');
+      if (!link || link.target || link.hasAttribute('download')) return;
+      if (link.origin !== location.origin) return;
+      var href = link.getAttribute('href') || '';
+      if (!href || href.charAt(0) === '#') return;
+      if (link.getAttribute('href') === location.pathname + location.search) return;
+      ev.preventDefault();
+      leaveWithFade(link.href);
+    },
+    true
+  );
 
   QF.ui = {
     swap: swap,

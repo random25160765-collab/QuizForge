@@ -15,6 +15,51 @@
  *     `/api/api/notes/…` → 404，而 `.catch` 把它收成一条 toast：页面不报错、一直空着。
  */
 (function () {
+  /** 把一段正文渲染进**任意宿主**（工作台的笔记窗格用）。
+   *
+   *  与笔记页「阅读」用的是同一套零件：`QF.md` 渲染 + callout 上色。少了这一步，
+   *  窗格里的 `> [!note] 说明` 会把标记原样露出来、字号行宽也与笔记页两样 ——
+   *  用户的原话就是"主页的笔记渲染非常怪"。
+   *
+   *  `opts.links: false` 时不跑 wiki 链接那一遍：那个要靠笔记索引判断"存不存在"，
+   *  而窗格这一侧没有索引（跑了会把所有链接标成"还不存在"，比不标更误导）。
+   */
+  /** 把一段正文渲染进**任意宿主**（工作台的笔记窗格用）。
+   *
+   *  与笔记页「阅读」同一套零件：`QF.md` 渲染 + callout 上色。少了这一步，
+   *  窗格里的 `> [!note] 说明` 会把标记原样露出来、字号行宽也与笔记页两样 ——
+   *  用户的原话就是"主页的笔记渲染非常怪"。
+   *
+   *  `opts.links: false` 时不跑 wiki 链接那一遍：那要靠笔记索引判断"存不存在"，
+   *  而窗格这一侧没有索引（跑了会把所有链接标成"还不存在"，比不标更误导）。
+   *
+   *  **为什么另挂一个全局名**：`QF` 是 `ui.js` 建的，而本文件在不同页面的加载
+   *  时序不一样 —— 在主页上，本文件执行时 `QF` 还是 undefined（报错原文：
+   *  `Cannot set properties of undefined (setting 'notesrt')`），于是入口永远挂不上，
+   *  窗格只能退回"不带上色"的裸渲染。`window.qfNoteRenderInto` 与任何加载顺序无关。
+   */
+  function noteRenderInto(host, body, opts) {
+    if (!host) return;
+    var text = body || '';
+    if (!text.trim()) {
+      host.appendChild(h('div.nread__empty', { text: '（这篇还是空的）' }));
+      return;
+    }
+    try {
+      host.appendChild(QF.md && QF.md.render ? QF.md.render(text) : h('pre', { text: text }));
+    } catch (err) {
+      host.appendChild(h('pre', { text: text }));
+      return;
+    }
+    decorateCallouts(host);
+    if (!opts || opts.links !== false) linkify(host);
+  }
+  window.qfNoteRenderInto = noteRenderInto;
+  if (window.QF) {
+    // 已经在了就顺手也挂到 QF 上（笔记页与其它已加载的调用方照旧能用）
+    window.QF.notesrt = { renderInto: noteRenderInto };
+  }
+
   'use strict';
 
   var QF = window.QF || {};
@@ -51,14 +96,16 @@
     tabs: [],           // 打开过的笔记（标签页）—— 库大、目录深，没有它就得来回找
     side: 'open',       // open | closed
     files: 'open',      // open | closed —— 左边那个文件面板（原先只有右栏能收，它收不起来）
-    panel: 'outline'    // 侧栏当前面板：outline | links | props | history
+    panel: 'outline',   // 侧栏当前面板：outline | links | props | history
+    bookmarks: [],      // 书签（按库存本地：它是"我的快捷方式"，不该写进笔记文件）
+    searchScope: ''     // 检索限定的目录（树上"在文件夹中搜索"，空 = 整个库）
   };
 
   /* 图标一律内联画：不引图标库、不引 CDN（仓库铁律），描边粗细统一 1.6。 */
   function svgIcon(paths) {
     return (
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
-      'stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>'
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" ' +
+    'stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>'
     );
   }
 
@@ -76,14 +123,23 @@
     x: svgIcon('<path d="M6 6l12 12M18 6 6 18"/>'),
     // 全部收起 / 全部展开：两对 chevron（朝内收 / 朝外展）。两个图标叠在一颗按钮里，
     // 靠透明度 + 旋转换过去 —— 用户要的"丝滑转换"就是这一下。
-    foldAll: svgIcon('<path d="m7 14 5-5 5 5"/><path d="m7 9 5-5 5 5"/>'),
-    unfoldAll: svgIcon('<path d="m7 10 5 5 5-5"/><path d="m7 15 5 5 5-5"/>'),
+    // 收/展那两对箭头重画（用户："这个地方的收起展开图标还是很辣眼睛"）。
+    // 原先两枚 5px 高、10px 宽的小箭头挤在 24px 的框里：又小又偏，一眼睛的"没对齐"。
+    // 现在两对都以 **y=12** 对称、跨度 12×12（与仓里其它图标同一量级），
+    // 向上＝收起来、向下＝展开 —— 方向本身就是文案。
+    foldAll: svgIcon('<path d="M6 12l6-6 6 6"/><path d="M6 18l6-6 6 6"/>'),
+    unfoldAll: svgIcon('<path d="M6 6l6 6 6-6"/><path d="M6 12l6 6 6-6"/>'),
     // 三个视图：源码 / 默认（就地编辑）/ 阅读
-    code: svgIcon('<path d="m9 6-5 6 5 6"/><path d="m15 6 5 6-5 6"/>'),
-    inline: svgIcon('<path d="M4 20h16"/><path d="M14.5 4.5 19 9 9 19H4.5V14.5Z"/>'),
-    page: svgIcon('<path d="M5 4.5h9L19 9.5v10H5z"/><path d="M14 4.5v5h5"/><path d="M8 13h8M8 16.5h5"/>'),
+    // 三枚图标都**占满 5..19 那个方框**、同一套描边参数：并排放在一起时
+    // 视觉重量才一致（原先 `<>` 只有 10 宽、铅笔又粗又大，三个并排像三种风格）。
+    code: svgIcon('<path d="m8.5 7-5 5 5 5"/><path d="m15.5 7 5 5-5 5"/>'),
+    inline: svgIcon('<path d="M5 19h14"/><path d="M14 5.5 18.5 10 10 18.5H5v-5z"/>'),
+    page: svgIcon('<path d="M5 5h8.5L19 10.5V19H5z"/><path d="M13.5 5v5.5H19"/><path d="M8 13h7M8 16h4"/>'),
     // 在系统文件管理器里显示：一个"打开的文件夹"
     folder: svgIcon('<path d="M3.5 19V6.5h5l2 2.5h5.5v3"/><path d="M3.5 19h13l3-7h-13z"/>'),
+    copy: svgIcon('<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4H5.5A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"/>'),
+    move: svgIcon('<path d="M3 7.5h5l1.8 2.2H13"/><path d="M3 7.5v10h18v-8H9.6"/><path d="M17 3.5 20.5 7 17 10.5"/>'),
+    external: svgIcon('<path d="M13 4h7v7"/><path d="M20 4l-8.5 8.5"/><path d="M19 15v4.5H4.5V5H9"/>'),
     more: svgIcon('<path d="M6 12h.01M12 12h.01M18 12h.01"/>'),
     // 思维导图：一根主干 + 两片叶子
     mind: svgIcon('<path d="M6 4v16"/><path d="M6 9h5M6 15h5"/><circle cx="15" cy="9" r="2.2"/><circle cx="15" cy="15" r="2.2"/>')
@@ -116,13 +172,13 @@
 
   function q(params) {
     return Object.keys(params)
-      .filter(function (k) {
-        return params[k] !== undefined && params[k] !== null && params[k] !== '';
-      })
-      .map(function (k) {
-        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
-      })
-      .join('&');
+    .filter(function (k) {
+      return params[k] !== undefined && params[k] !== null && params[k] !== '';
+    })
+    .map(function (k) {
+      return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+    })
+    .join('&');
   }
 
   function esc(text) {
@@ -132,7 +188,7 @@
   function nowHM() {
     var d = new Date();
     var pad = function (n) {
-      return (n < 10 ? '0' : '') + n;
+    return (n < 10 ? '0' : '') + n;
     };
     return pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
@@ -154,9 +210,9 @@
     // 这一页不加载 boot.js：设置（主题、工具挂载、资料根）得自己取一次
     if (QF.shell && QF.shell.pullSettings) QF.shell.pullSettings();
     try {
-      QF.shell.mount({});
+    QF.shell.mount({});
     } catch (err) {
-      if (window.console) console.warn('顶栏接线失败', err);
+    if (window.console) console.warn('顶栏接线失败', err);
     }
     // 侧栏开着还是收着，是"我的习惯"而不是"这次的状态" —— 记在本机，下次照旧
     try {
@@ -198,6 +254,7 @@
     el.lib.addEventListener('change', function () {
       if (state.dirty) saveNow(true);
       state.lib = el.lib.value;
+      loadBookmarks();          // 书签按库分：换了库就换一份
       state.note = null;
       folded = {};
       dirFolded = {};
@@ -235,6 +292,21 @@
     });
 
     document.addEventListener('keydown', onKey);
+    // 渲染态的格式化键位：选中**渲染出来的**文字也能直接加粗（对标 Obsidian）。
+    // 输入框里的按键不走这里 —— 那边各有各的一套（`formatShortcut`）。
+    document.addEventListener('keydown', function (ev) {
+      if (!(ev.metaKey || ev.ctrlKey) || ev.altKey) return;
+      var tag = (ev.target && ev.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (!document.getElementById('notes-live')) return;
+      var key = (ev.key || '').toLowerCase();
+      var pair = null;
+      if (key === 'b' && !ev.shiftKey) pair = ['**', '**'];
+      else if (key === 'i' && !ev.shiftKey) pair = ['*', '*'];
+      else if (key === 'x' && ev.shiftKey) pair = ['~~', '~~'];
+      if (!pair) return;
+      if (formatRenderedSelection(pair[0], pair[1])) ev.preventDefault();
+    });
     window.addEventListener('beforeunload', function (ev) {
       if (!state.dirty) return;
       // 还有没落下的字 —— 提醒一下，别让它悄悄消失
@@ -262,6 +334,7 @@
           el.lib.appendChild(h('option', { value: item.name, text: item.name }));
         });
         state.lib = state.libs[0].name;
+        loadBookmarks();
         el.lib.value = state.lib;
         // （页脚那个写库名的 span 随"库选择下移"一起删了：选择框自己就写着名字）
         // 启动时也得画一次主区 —— 不然中间是一片空白，看着像坏了
@@ -291,6 +364,14 @@
             'div.ntree__head',
             null,
             h('span', { text: (tree.count || 0) + ' 条目' }),
+            // 新建笔记：**在收起/展开的左边**（用户指定的位置），
+            // 用的是原来那颗节点（`el.newBtn`）—— 搬过来，监听器跟着走。
+            (function () {
+              if (!el.newBtn) return null;
+              el.newBtn.hidden = false;
+              el.newBtn.classList.add('nfiles__new');
+              return el.newBtn;
+            })(),
             (function () {
               var all = Object.keys(collectDirs(tree));
               // 判据要落在**目录的实际展开态**上，而不是"dirFolded 里有没有值"：
@@ -328,6 +409,8 @@
             })()
           )
         );
+        var pins = bookmarkRows();
+        if (pins) el.tree.appendChild(pins);
         (tree.dirs || []).forEach(function (dir) {
           el.tree.appendChild(dirNode(dir, 1));
         });
@@ -364,27 +447,40 @@
 
   function dirNode(dir, depth) {
     var box = h('div');
+    // 子项包两层：外层负责"行"、内层负责"高度动效"（`grid-template-rows: 1fr ↔ 0fr`）。
+    // 两层是必须的 —— 那个技巧要求**只有一个孩子**去撑高度。
+    var kids = h('div.ntree__box');
+    var kidinner = h('div.ntree__boxin');
+    kids.appendChild(kidinner);
     var isFolded = !!dirFolded[dir.path];
     var node = h(
-      'button.ntree__dir',
+      'button.ntree__dir' + (isFolded ? '.is-folded' : ''),
       {
         type: 'button',
         title: dir.path,
+        dataset: { path: dir.path },
         style: { paddingLeft: '4px' },
         onClick: function () {
-          dirFolded[dir.path] = !dirFolded[dir.path];
-          loadTree();
+          var folded = !dirFolded[dir.path];
+          dirFolded[dir.path] = folded;
+          // **就地**开合，不重画整棵树：`loadTree()` 之后新节点一上来就是"已经转好"的样子，
+          // 过渡根本没机会跑 —— 用户说的"展开/收起的动效你也没做"就是这个。
+          node.classList.toggle('is-folded', folded);
+          kids.classList.toggle('is-folded', folded);
+        },
+        onDblclick: function () {
+          startInlineRename(dir.path, 'dir');
         },
         onContextmenu: function (ev) {
           showMenu(ev, dirMenu(dir));
         }
       },
       indentGuides(depth),
-      h('span.ntree__caret', {
-        html: ICONS.chev,
-        // 展开时朝下（转 90°）、折起时朝右 —— 与外壳资源树同一套语义
-        style: isFolded ? null : { transform: 'rotate(90deg)' }
-      }),
+      // 展开时朝下、折起时朝右 —— 角度交给 CSS 的 class，好让 transform 有过渡
+      h('span.ntree__caret', { html: ICONS.chev }),
+      // 这里**不放**文件夹图标：名称前面加个符号是"另外一套记号"，用户明确不要
+      // （"文件夹的名称前面不要出现那个文件夹符号"）。目录与笔记的区分交给
+      // **展开箭头 + 缩进 + 行尾条目数**这三样 —— 已经够一眼分清，不必再叠一层。
       h('span.ntree__label', { text: dir.name }),
       h('span.ntree__count', { text: String(dir.count || 0) })
     );
@@ -405,12 +501,15 @@
       if (from) moveNote(from, dir.path);
     });
     box.appendChild(node);
-    if (isFolded) return box;
+    // 子项**始终建出来**、靠 CSS 收起来：折叠时删掉节点的话就没有"收起"这个过程了。
+    // （树是几百行规模，多建的那点节点换来的是能看见的开合动效，值。）
+    kids.classList.toggle('is-folded', isFolded);
+    box.appendChild(kids);
     (dir.dirs || []).forEach(function (child) {
-      box.appendChild(dirNode(child, depth + 1));
+      kidinner.appendChild(dirNode(child, depth + 1));
     });
     (dir.files || []).forEach(function (file) {
-      box.appendChild(fileNode(file, depth + 1));
+      kidinner.appendChild(fileNode(file, depth + 1));
     });
     return box;
   }
@@ -533,15 +632,22 @@
     var folder = file.path.split('/').slice(0, -1).join('/');
     var stem = file.name.replace(/\.md$/i, '');
     return [
-      { label: '新建同级笔记', icon: 'plus', run: function () { createNote(folder, ''); } },
+      // **笔记就是文件，不存在"子笔记"**（用户："不存在子笔记这种东西！！！你把文件夹和
+      // 笔记搞混了"）。上一版这里有个"新建子笔记"，它会在磁盘上建一个**与这篇同名的目录**、
+      // 再往里放一篇新笔记 —— 于是库里出现了 `梯度的几何意义/未命名.md` 这种"笔记套笔记"，
+      // 而树里看起来就是"某篇笔记下面挂了一篇"。那套 folder note 惯例在此地不适用：
+      // 目录归目录（下面 `dirMenu` 管），笔记归笔记（这里管）。
+      { label: '新建笔记（同级）', icon: 'plus', run: function () { createNote(folder, ''); } },
+      { label: '创建副本', icon: 'copy', run: function () { copyPath(file.path); } },
+      { label: '移动到…', icon: 'move', run: function () { pickFolderFor(file.path, false); } },
+      { label: '在文件夹中搜索', icon: 'search', run: function () { scopeSearch(folder); } },
       {
-        label: '新建子笔记',
-        icon: 'plus',
-        run: function () {
-          // 子笔记落在"以这篇命名"的目录里（Obsidian 的 folder note 惯例）
-          createNote(folder ? folder + '/' + stem : stem, '');
-        }
+        label: isBookmarked(file.path) ? '取消书签' : '加入书签',
+        icon: 'star',
+        run: function () { toggleBookmark(file.path); }
       },
+      '-',
+      { label: '在系统文件管理器中显示', icon: 'external', run: function () { revealPath(file.path); } },
       '-',
       { label: '重命名', icon: 'type', hint: '双击标题也一样', run: function () { startInlineRename(file.path); } },
       { label: '复制双链 [[…]]', icon: 'links', run: function () { copyText('[[' + (file.title || stem) + ']]', '双链'); } },
@@ -591,19 +697,324 @@
     ];
   }
 
+  /** 在指定目录下新建一个文件夹（后端 `/notes/folder` 真的 mkdir —— 组织树就是磁盘目录树）。 */
+  function newFolderIn(parent) {
+    askName('新建文件夹', '新文件夹', parent ? '建在：' + parent : '建在库的最外层').then(function (name) {
+      if (!name) return;
+      var rel = parent ? parent + '/' + name : name;
+      api
+        .post('/notes/folder', { lib: state.lib, folder: rel })
+        .then(function () {
+          toast('已新建文件夹', 'ok');
+          loadTree();
+        })
+        .catch(fail);
+    });
+  }
+
   function dirMenu(dir) {
+    var folded = !!dirFolded[dir.path];
     return [
-      { label: '在这里新建笔记', icon: 'plus', run: function () { createNote(dir.path, ''); } },
+      { label: '新建笔记', icon: 'plus', run: function () { createNote(dir.path, ''); } },
+      { label: '新建文件夹', icon: 'folder', run: function () { newFolderIn(dir.path); } },
+      '-',
+      { label: '创建副本', icon: 'copy', run: function () { copyPath(dir.path); } },
+      { label: '移动到…', icon: 'move', run: function () { pickFolderFor(dir.path, true); } },
+      { label: '在文件夹中搜索', icon: 'search', run: function () { scopeSearch(dir.path); } },
       {
-        label: dirFolded[dir.path] ? '展开这一支' : '折叠这一支',
-        icon: dirFolded[dir.path] ? 'unfoldAll' : 'foldAll',
-        run: function () {
+        label: isBookmarked(dir.path) ? '取消书签' : '加入书签',
+        icon: 'star',
+        run: function () { toggleBookmark(dir.path); }
+      },
+      '-',
+      { label: folded ? '展开这一支' : '折叠这一支', icon: folded ? 'unfoldAll' : 'foldAll', run: function () {
           dirFolded[dir.path] = !dirFolded[dir.path];
           loadTree();
-        }
-      },
-      { label: '复制路径', icon: 'props', run: function () { copyText(dir.path, '路径'); } }
+        } },
+      { label: '复制路径', icon: 'props', run: function () { copyText(dir.path, '路径'); } },
+      { label: '在系统文件管理器中显示', icon: 'external', run: function () { revealPath(dir.path); } },
+      '-',
+      { label: '重命名…', icon: 'type', run: function () { startInlineRename(dir.path, 'dir'); } },
+      { label: '删除（进回收站）', icon: 'trash', danger: true, run: function () { confirmDelete(dir.path, true); } }
     ];
+  }
+
+  /** 复制一份（Obsidian 的 Make a copy）：笔记 → `<名> 1.md`，目录 → 整棵 `<名> 1`。 */
+  function copyPath(path) {
+    api
+      .post('/notes/copy', { lib: state.lib, path: path })
+      .then(function (out) {
+        toast('已复制到 ' + (out && out.to), 'ok');
+        loadTree();
+      })
+      .catch(fail);
+  }
+
+  /** 在**系统文件管理器**里显示这一项（后端解析路径，只认库里的位置）。 */
+  function revealPath(path) {
+    api
+      .post('/notes/reveal', { lib: state.lib, path: path })
+      .then(function (out) {
+        if (out && out.opened) toast('已在文件管理器中打开', 'ok');
+        else toast((out && out.why) || '这个环境里打不开文件管理器', 'bad');
+      })
+      .catch(fail);
+  }
+
+  /** 删除（进回收站）。目录会连内容一起进 —— 所以文案要说清楚。 */
+  function confirmDelete(path, isFolder) {
+    var name = path.split('/').pop();
+    var what = isFolder ? '文件夹「' + name + '」及其里的内容' : '「' + name + '」';
+    ui.confirm('把' + what + '移到回收站？文件不会被真删，回收站里能捞回来。', { okLabel: '移到回收站' }).then(
+      function (yes) {
+        if (!yes) return;
+        api
+          .post('/notes/delete', { lib: state.lib, path: path })
+          .then(function () {
+            toast('已移到回收站', 'ok');
+            // 删的正是打开着的这一篇（或它所在的目录）→ 把主区收掉，别留一篇"已删除"
+            var open = state.note && state.note.path;
+            if (open && (open === path || open.indexOf(path + '/') === 0)) {
+              state.note = null;
+              renderMain();
+              renderSide();
+            }
+            loadTree();
+          })
+          .catch(fail);
+      }
+    );
+  }
+
+  /** 选一个目标目录（"移动到…"）：列出全库目录，可筛选。 */
+  function pickFolderFor(from, isFolder) {
+    var dirs = collectDirs(state.tree || {});
+    var here = from.split('/').slice(0, -1).join('/');
+    var options = [''];
+    Object.keys(dirs)
+      .sort()
+      .forEach(function (item) {
+        options.push(item);
+      });
+    var input = h('input.nask__input', { type: 'text', placeholder: '筛选目录…', spellcheck: 'false' });
+    var list = h('div.nmove__list');
+    var renderList = function (filter) {
+      ui.clear(list);
+      var needle = (filter || '').toLowerCase();
+      options
+        .filter(function (item) {
+          if (item === here) return false;                       // 已经在这儿了
+          if (isFolder && (item === from || item.indexOf(from + '/') === 0)) return false;  // 不许搬进自己里面
+          if (!needle) return true;
+          return (item || '库根').toLowerCase().indexOf(needle) >= 0;
+        })
+        .forEach(function (item) {
+          list.appendChild(
+            h('button.nmove__row', {
+              type: 'button',
+              text: item || '库根（库的最外层）',
+              onClick: function () {
+                panel.close();
+                api
+                  .post('/notes/move', { lib: state.lib, path: from, folder: item })
+                  .then(function () {
+                    toast('已移动', 'ok');
+                    loadTree();
+                  })
+                  .catch(fail);
+              }
+            })
+          );
+        });
+      if (!list.firstChild) list.appendChild(h('p.npanel__hint', { text: '没有可选的目录' }));
+    };
+    input.addEventListener('input', function () {
+      renderList(input.value);
+    });
+    var panel = ui.modal({
+      title: '移动到…',
+      size: 'md',
+      body: h(
+        'div.nmove',
+        null,
+        input,
+        list,
+        h('p.npanel__hint', { text: '把这一项移进选中的目录（按路径写的链接会跟着改）。' })
+      )
+    });
+    renderList('');
+    setTimeout(function () {
+      input.focus();
+    }, 40);
+  }
+
+  /** 在文件夹中搜索：给检索加一个"范围"，范围就写在结果上方，一眼能看见、能取消。 */
+  function scopeSearch(folder) {
+    state.searchScope = folder || '';
+    if (el.search) el.search.focus();
+    var term = el.search ? el.search.value.trim() : '';
+    if (term) runSearch(term);
+    else loadTree();          // 还没输词：先把范围亮出来，等用户敲
+  }
+
+  function scopeChip() {
+    if (!state.searchScope) return null;
+    return h(
+      'div.nscope',
+      null,
+      h('span.nscope__text', { text: '只在「' + state.searchScope + '」里找' }),
+      h('button.nscope__x', {
+        type: 'button',
+        text: '×',
+        title: '取消范围（搜整个库）',
+        onClick: function () {
+          state.searchScope = '';
+          var term = el.search ? el.search.value.trim() : '';
+          if (term) runSearch(term);
+          else loadTree();
+        }
+      })
+    );
+  }
+
+  //: 书签按库存在本地 —— 它是"我的快捷方式"，不是笔记内容，不该写进文件里
+  function bookmarksKey() {
+    return 'qf.notes.bookmarks.' + (state.lib || '');
+  }
+
+  function loadBookmarks() {
+    var raw = null;
+    try {
+      raw = window.localStorage.getItem(bookmarksKey());
+    } catch (err) {
+      raw = null;
+    }
+    var parsed = null;
+    try {
+      parsed = raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      parsed = null;
+    }
+    state.bookmarks = Array.isArray(parsed) ? parsed : [];
+  }
+
+  function isBookmarked(path) {
+    return state.bookmarks.indexOf(path) >= 0;
+  }
+
+  function toggleBookmark(path) {
+    var at = state.bookmarks.indexOf(path);
+    if (at >= 0) {
+      state.bookmarks.splice(at, 1);
+      toast('已取消书签', 'ok');
+    } else {
+      state.bookmarks.push(path);
+      toast('已加入书签（在树的最上面）', 'ok');
+    }
+    try {
+      window.localStorage.setItem(bookmarksKey(), JSON.stringify(state.bookmarks));
+    } catch (err) {
+      toast('书签存不下来（浏览器不让写本地存储）', 'bad');
+    }
+    loadTree();
+  }
+
+  /** 点书签：笔记就直接打开，目录就在树里给它展开并滚过去。 */
+  function gotoBookmark(path) {
+    var dirs = collectDirs(state.tree || {});
+    if (dirs[path]) {
+      delete dirFolded[path];
+      loadTree();
+      setTimeout(function () {
+        var node = el.tree.querySelector('.ntree__dir[data-path="' + cssEscape(path) + '"]');
+        if (node && node.scrollIntoView) node.scrollIntoView({ block: 'center' });
+      }, 60);
+      return;
+    }
+    openNote(path);
+  }
+
+  /** 树顶上的书签组。 */
+  function bookmarkRows() {
+    if (!state.bookmarks.length) return null;
+    var box = h('div.nbook');
+    box.appendChild(h('div.nbook__head', { text: '书签' }));
+    state.bookmarks.forEach(function (path) {
+      var label = path.split('/').pop().replace(/\.md$/i, '');
+      box.appendChild(
+        h(
+          'div.nbook__row',
+          {
+            title: path,
+            onClick: function () {
+              gotoBookmark(path);
+            },
+            onContextmenu: function (ev) {
+              showMenu(ev, [
+                { label: '打开', icon: 'chevronR', run: function () { gotoBookmark(path); } },
+                { label: '取消书签', icon: 'star', run: function () { toggleBookmark(path); } }
+              ]);
+            }
+          },
+          h('span.nbook__label', { text: label }),
+          h('button.nbook__x', {
+            type: 'button',
+            text: '×',
+            title: '取消书签',
+            onClick: function (ev) {
+              ev.stopPropagation();
+              toggleBookmark(path);
+            }
+          })
+        )
+      );
+    });
+    return box;
+  }
+
+  /** 问一个名字（自己搭一个：原生 `prompt` 会冻住整页、样式也跟应用不搭）。 */
+  function askName(title, initial, hint) {
+    return new Promise(function (resolve) {
+      var input = h('input.nask__input', { type: 'text', value: initial || '', spellcheck: 'false' });
+      var done = false;
+      var finish = function (ok) {
+        if (done) return;
+        done = true;
+        var value = (input.value || '').trim();
+        panel.close();
+        resolve(ok && value ? value : '');
+      };
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          finish(true);
+        } else if (ev.key === 'Escape') {
+          ev.preventDefault();
+          finish(false);
+        }
+        ev.stopPropagation();
+      });
+      var panel = ui.modal({
+        title: title,
+        size: 'sm',
+        body: h(
+          'div.nask',
+          null,
+          input,
+          h(
+            'div.nask__actions',
+            null,
+            h('button.nbtn', { type: 'button', text: '取消', onClick: function () { finish(false); } }),
+            h('button.nbtn.nbtn--primary', { type: 'button', text: '确定', onClick: function () { finish(true); } })
+          ),
+          hint ? h('p.npanel__hint', { text: hint }) : null
+        )
+      });
+      setTimeout(function () {
+        input.focus();
+        input.select();
+      }, 40);
+    });
   }
 
   function moveNote(from, folder) {
@@ -802,14 +1213,9 @@
           title: '知识图谱',
           onClick: openGraph,
         }),
-        h('button.nicon.nicon--mini', {
-          type: 'button',
-          html: ICONS.plus,
-          title: '新建笔记（⌘O 同级 / ⌘P 子级）',
-          onClick: function () {
-            createNote('', '');
-          }
-        }),
+        // 新建笔记那颗**不在这里**：它与文件面板里那颗重复（用户："现在有两个
+        // 重复的按钮，右边那个删掉，左边那个缩小然后放到搜索的下面"）。
+        // 留在文件面板的树栏那一行，这里只留图谱与右栏开关。
         h('button.nicon.nicon--mini' + (state.side === 'open' ? '.is-on' : ''), {
           type: 'button',
           html: ICONS.side,
@@ -964,7 +1370,7 @@
       h('div', { html: EMPTY_MARK }),
       h('div.nempty__title', { text: '开始写' }),
       h('div.nempty__text', {
-        text: '左边挑一篇，或者新建一篇。写作台默认是分栏：左边写 Markdown，右边即时渲染。'
+        text: '左边挑一篇，或者新建一篇。'
       }),
       h(
         'div.nempty__actions',
@@ -1010,8 +1416,10 @@
                 ['mindmap', '思维导图', ICONS.mind, '思维导图']
               ]
             : [
+                // 中间那个原先叫「默认」，用户要求改名「编辑」——
+                // 三个名字现在各自说清自己是什么：源码（纯文本）、编辑（可改的渲染）、阅读（只读）。
                 ['source', '源码', ICONS.code, '源码'],
-                ['live', '默认', ICONS.inline, '默认'],
+                ['live', '编辑', ICONS.inline, '编辑'],
                 ['read', '阅读', ICONS.page, '阅读']
               ]).map(function (pair) {
           return h(
@@ -1126,9 +1534,27 @@
     node.className = 'note__status' + (state.dirty ? ' note__status--dirty' : '');
   }
 
+  /** 编辑内核：`cm6`（默认）或 `legacy`（旧文本框）。换内核要能一步退回去。 */
+  function engineOf() {
+    try {
+      return window.localStorage.getItem('qf.notes.engine') === 'legacy' ? 'legacy' : 'cm6';
+    } catch (err) {
+      return 'cm6';
+    }
+  }
+
   function currentText() {
+    var cm6Box = document.getElementById('notes-cm6');
+    if (cm6Box && cm6Box._cm6) return cm6Value(cm6Box._cm6);
+    var liveBox = document.getElementById('notes-cm6-live');
+    if (liveBox && liveBox._cm6) return cm6Value(liveBox._cm6);
     var area = document.querySelector('.nedit__area');
     if (area) return area.value;
+    // 所见即所得那一栏：正文就是 `state.note.body` —— 每次"点一块改完"都已经按行
+    // 写进去了（`liveSplice`），不从 DOM 反推
+    // 所见即所得那一栏：正文就是 `state.note.body` —— 每次"点一块改完"都已经
+    // 按行范围写进去了（`liveSplice`），这里不需要再从 DOM 反推。
+    if (document.getElementById('notes-live')) return (state.note && state.note.body) || '';
     return (state.note && state.note.body) || '';
   }
 
@@ -1157,7 +1583,37 @@
       wrap.appendChild(renderMindmap());
       return wrap;
     }
-    wrap.appendChild(state.mode === 'live' ? renderLive() : renderEditor(false));
+    // 「编辑」= 整篇文本框 + 右侧即时渲染（`renderEditor(true)`）。
+    // 分块编辑（一块一块点开才能改）已按用户要求撤掉：那套既要维护"块 ↔ 源码行号"
+    // 的双向映射，又要在点开时把块换成 textarea —— 踩一下就写错地方。
+    // 「源码」= 同一个编辑器但不带预览（全宽，专心改标记）。
+    // 「编辑」= 所见即所得（单栏、看渲染、点哪儿改哪儿）：见 `renderLive` 上面那段。
+    // 「源码」= 全宽文本框（改标记、看原文）。
+    if (state.mode === 'live') {
+      // 编辑视图 = **与阅读页同一套渲染**（`renderLive`）：用户要的就是"阅读就是编辑的
+      // 只读形状"——标题、行内公式、带图标与配色的提示框、编号列表全在位。
+      //
+      // CM6 的 Live Preview 版（`cm6LiveEditor`）还没做到同等观感：提示框只有色条、
+      // 列表不编号、段落节奏也没对齐，所以**不上默认路径**。要试它：
+      //     localStorage['qf.notes.live'] = 'cm6'
+      // （源码视图那一边已经是 CM6 了，行号 / 真撤销 / 搜索都在。）
+      var wantCm6Live = false;
+      try {
+        wantCm6Live = window.localStorage.getItem('qf.notes.live') === 'cm6';
+      } catch (err) {
+        wantCm6Live = false;
+      }
+      if (wantCm6Live && engineOf() === 'cm6') {
+        var livePane = h('div.note__pane');
+        if (cm6LiveEditor(livePane)) {
+          wrap.appendChild(livePane);
+          return wrap;
+        }
+      }
+      wrap.appendChild(renderLive());
+      return wrap;
+    }
+    wrap.appendChild(renderEditor(false));
     return wrap;
   }
 
@@ -1269,12 +1725,22 @@
       // 只看**第一个子节点**：渲染后正文里的换行是 <br> 而不是 \\n，
       // 拿整个 textContent 去匹配会把整段正文都当成标题（实测就是这么串成一坨的）
       var first = quote.firstChild;
-      var head = (first && (first.textContent !== undefined ? first.textContent : first.nodeValue)) || '';
-      var found = head.match(/\[!([A-Za-z]+)\]([-+])?[ \t]*(.*)/);
+      // 这里叫 headText：下面那个 `head` 是**标题行的 DOM 元素**。
+      // 踩过：两边同名（`var` 提升），折叠那一支拿到的其实是**字符串**，
+      // `head.setAttribute(...)` 当场抛 —— 可折叠 callout 的折叠功能整个是坏的。
+      var headText = (first && (first.textContent !== undefined ? first.textContent : first.nodeValue)) || '';
+      var found = headText.match(/\[!([A-Za-z]+)\]([-+])?[ \t]*(.*)/);
       if (!found) return;
       var raw = found[1].toLowerCase();
-      var kind = CALLOUTS[raw] ? raw : CALLOUT_ALIAS[raw] || 'note';
-      var spec = CALLOUTS[kind];
+      // 两张表按理说在这个 IIFE 里已经初始化过（都是顶层的 `var`）—— 但实测在
+      // **主页的窗格那条路**上，调用到这里时它们竟然取不到（报错原文
+      // `Cannot read properties of undefined (reading 'note')`，位置就是这一行），
+      // 至今没查到为什么。与其让"上色失败"把整段正文一起带走，这里给一条兜底：
+      // 查不到就按 note 的类型名与颜色画，形状与文字都对，只是颜色用一个通用值。
+      var tables = typeof CALLOUTS === 'object' && CALLOUTS ? CALLOUTS : null;
+      var alias = typeof CALLOUT_ALIAS === 'object' && CALLOUT_ALIAS ? CALLOUT_ALIAS : {};
+      var kind = tables && tables[raw] ? raw : alias[raw] || 'note';
+      var spec = (tables && tables[kind]) || ['提示', '#086DDD', ''];
       // 标题里可能缠着源文件里的 `%%` 注释标记，去掉；实在取不到就用类型名
       var title = (found[3] || '').replace(/[%\\]+/g, '').trim().slice(0, 60) || spec[0];
       var fold = found[2] || '';
@@ -1296,25 +1762,36 @@
         // `[!note]-` 默认收起、`[!note]+` 默认展开 —— 点标题切换
         quote.classList.add('callout--foldable');
         if (fold === '-') quote.classList.add('is-folded');
+      }
+      var head = h('div.callout__title');
+      head.appendChild(h('span.callout__icon', { html: calloutIcon(spec[2]) }));
+      head.appendChild(h('span.callout__titletext', { text: title }));
+      if (fold) {
+        // 处理器挂在**标题行**上（元素已经建出来了），顺手把可点这件事说清楚
         head.setAttribute('role', 'button');
         head.setAttribute('tabindex', '0');
+        head.setAttribute('title', '点一下折叠 / 展开这一段');
         head.addEventListener('click', function () {
           quote.classList.toggle('is-folded');
         });
       }
-      var head = h('div.callout__title');
-      head.appendChild(h('span.callout__icon', { html: calloutIcon(spec[2]) }));
-      head.appendChild(h('span', { text: title }));
 
       // 把正文收进 `.callout__content`（与 Obsidian 同一层结构）：
       // 一是折叠时"只藏正文、留住标题"才有东西可藏，二是标题行与正文的间距好控。
       var content = h('div.callout__content');
       while (quote.firstChild) content.appendChild(quote.firstChild);
       // 去掉正文首尾的 <br>：源里「> [!tip] 标题」后面那行空引用会渲染成一个 <br>，
-      // 于是标题与正文之间凭空多出一整行空档（实测就是这个「距离太宽」）。
+      // 于是标题与正文之间凭空多出一整行空档（实测量到 27px，真正的行距只有 6px）。
+      // **空白文本节点也要一起清**：原先只判 `nodeName === 'BR'`，而首个子节点
+      // 往往是块之间的空白文本，循环第一步就停住了 —— `<br>` 于是留了下来。
       // 只动首尾，正文内部用来分段的 <br> 留着。
-      while (content.firstChild && content.firstChild.nodeName === 'BR') content.removeChild(content.firstChild);
-      while (content.lastChild && content.lastChild.nodeName === 'BR') content.removeChild(content.lastChild);
+      function isBlankNode(node) {
+        if (!node) return true;
+        if (node.nodeName === 'BR') return true;
+        return node.nodeType === 3 && !(node.nodeValue || '').trim();
+      }
+      while (isBlankNode(content.firstChild)) content.removeChild(content.firstChild);
+      while (isBlankNode(content.lastChild)) content.removeChild(content.lastChild);
       quote.appendChild(head);
       quote.appendChild(content);
     });
@@ -1429,9 +1906,392 @@
     return pane;
   }
 
+  /** 围栏代码块的行区间（装饰要躲开它们：里面的 `$`、`**` 都是字面量）。 */
+  function cm6Fences(doc) {
+    var out = [];
+    var open = -1;
+    for (var n = 1; n <= doc.lines; n++) {
+      var t = doc.line(n).text;
+      if (!/^\s*(```|~~~)/.test(t)) continue;
+      if (open < 0) open = n;
+      else {
+        out.push([open, n]);
+        open = -1;
+      }
+    }
+    if (open > 0) out.push([open, doc.lines]);
+    return out;
+  }
+
+  /** Live Preview 装饰：**非光标行**隐藏标记、公式换成 KaTeX、标题按层级缩放。
+   *
+   *  两个关键点（都是踩出来的）：
+   *
+   *  1. **块级装饰不能由 ViewPlugin 提供** —— 内核的硬规矩：`Block decorations may not be
+   *     specified via plugins`。它影响布局与测量，只能从 state 算，所以这里用
+   *     `EditorView.decorations.compute(['doc','selection'], …)`。我第一版全塞在
+   *     ViewPlugin 里，结果内核在渲染阶段抛 `markers → forRange → coordsAtPos: undefined`
+   *     （症状看着像几何算不出来，其实是这一条）。
+   *  2. **只扫需要的行、并且逐条校验区间**。全篇扫：笔记这个体量比"按视口算"更稳
+   *     （视口滚动时不会闪）。区间一律 `to > from` 且落在文档内 —— 不合法就丢那一条。
+   *
+   *  光标所在行显示源码（与 Obsidian 同一条规矩），所以想改标记把光标移过去就行。
+   */
+  function cm6LiveDecorations(Q) {
+    var Dec = Q.Decoration;
+    //: 上一轮算出来多少条装饰（排障用：一直是 0 或不变就说明没生效）
+    var mathWidget = function (tex, display) {
+      return new (class extends Q.WidgetType {
+        toDOM() {
+          var box = document.createElement(display ? 'div' : 'span');
+          box.className = display ? 'cm-math cm-math--block' : 'cm-math';
+          var html = null;
+          try {
+            html = QF.md && QF.md.renderMath ? QF.md.renderMath(tex, !!display, {}) : null;
+          } catch (err) {
+            html = null;
+          }
+          if (html) box.innerHTML = html;
+          else {
+            // 渲染失败要**看得出来**（红底 + 等宽）：早先只是把原文吐出来，于是
+            // "公式没渲染"和"这段本来就是源码"看起来一模一样，排障全靠猜。
+            box.classList.add('cm-math--bad');
+            box.textContent = (display ? '$$' : '$') + tex + (display ? '$$' : '$');
+          }
+          return box;
+        }
+        ignoreEvent() {
+          return false;
+        }
+      })();
+    };
+    var calloutBadge = function (spec, typed) {
+      return new (class extends Q.WidgetType {
+        toDOM() {
+          var box = document.createElement('span');
+          box.className = 'cm-callout-badge';
+          box.style.color = spec[1];
+          box.title = typed;
+          box.innerHTML =
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+            'stroke-linecap="round" stroke-linejoin="round" width="15" height="15">' + spec[2] + '</svg>';
+          return box;
+        }
+        ignoreEvent() {
+          return false;
+        }
+      })();
+    };
+    //: 行内标记：**粗** / *斜* / ~~删~~ / ==重点== / `码` / $公式$
+    var INLINE = /\*\*([^*\n]+?)\*\*|(?<!\*)\*([^*\n]+?)\*(?!\*)|~~([^~\n]+?)~~|==([^=\n]+?)==|`([^`\n]+?)`|\$\$([^$\n]+?)\$\$|\$([^$\n]+?)\$/g;
+
+    var build = function (st) {
+      var out = [];
+      var pushRange = function (from, to, dec) {
+        if (!(to > from) || from < 0 || to > st.doc.length) return;
+        out.push(dec.range(from, to));
+      };
+      var cursorLine = st.doc.lineAt(st.selection.main.head).number;
+      var fences = cm6Fences(st.doc);
+      var inFence = function (n) {
+        for (var i = 0; i < fences.length; i++) {
+          if (n >= fences[i][0] && n <= fences[i][1]) return true;
+        }
+        return false;
+      };
+      var calloutKind = '';
+      for (var n = 1; n <= st.doc.lines; n++) {
+        var line = st.doc.line(n);
+        var t = line.text;
+        if (n === cursorLine || inFence(n)) continue;
+        // 行间公式（**单行**写法）：`$$ … $$` 都写在同一行。
+        // 必须先判这一种 —— 早先只认"`$$` 独占一行"的多行形式，于是把第一个 `$$` 当开头、
+        // 一路找到**下一个** `$$` 当结尾，中间整段被塞进一个公式里；KaTeX 解析失败后又把
+        // 原文吐成纯文本，看起来就是"整篇原始 LaTeX"（用户截图里那个）。
+        var oneLine = /^\s*\$\$(.+?)\$\$\s*$/.exec(body);
+        if (oneLine) {
+          if (oneLine[1].trim()) {
+            pushRange(line.from, line.to, Dec.replace({ block: true, widget: mathWidget(oneLine[1].trim(), true) }));
+          }
+          continue;
+        }
+        // 行间公式（多行）：`$$` 独占一行，`$$` 收尾
+        if (/^\s*\$\$/.test(body)) {
+          var endLine = -1;
+          for (var k = n + 1; k <= st.doc.lines; k++) {
+            // 收尾那行也要剥掉引用前缀再判（提示框里的多行公式就是 `> $$`）
+            var kt = st.doc.line(k).text.replace(/^(\s*>\s?)+/, '');
+            if (/\$\$\s*$/.test(kt)) {
+              endLine = k;
+              break;
+            }
+          }
+          if (endLine > n) {
+            var texLines = [body];
+            for (var q = n + 1; q <= endLine; q++) texLines.push(st.doc.line(q).text.replace(/^(\s*>\s?)+/, ''));
+            // 换行**压平成空格**再交给 KaTeX：带换行的 tex 会吐出一段坏 SVG（实测）
+            var inner = texLines
+              .join('\n')
+              .replace(/^\s*\$\$/, '')
+              .replace(/\$\$\s*$/, '')
+              .replace(/\s*\n\s*/g, ' ')
+              .trim();
+            if (inner) {
+              pushRange(line.from, st.doc.line(endLine).to, Dec.replace({ block: true, widget: mathWidget(inner, true) }));
+              n = endLine;
+              continue;
+            }
+          }
+        }
+        // 去掉引用前缀（`> `，可能多层）之后再看正文 —— 阅读页也是这么干的
+        // （`md.js` 的 `cleanTex`）。**提示框里满是公式**（用户那篇就是），
+        // 不剥前缀就等于整块公式都认不出来。
+        var quote = /^(\s*>\s?)+/.exec(t);
+        var prefixLen = quote ? quote[0].length : 0;
+        var body = t.slice(prefixLen);
+        var base = line.from + prefixLen;
+
+        // 提示框：只**加装饰**，不打断逐行处理（早先这里 `continue` 整块跳过，
+        // 于是提示框里的公式全都不渲染 —— 用户截图里那一大堆原始 LaTeX 就是这个）。
+        if (quote) {
+          out.push(Dec.line({ class: 'cm-callout cm-callout--' + (calloutKind || 'note') }).range(line.from));
+        } else {
+          calloutKind = '';
+        }
+        var co = /^\s*\[!([\w-]+)\]/.exec(body);
+        if (co) {
+          calloutKind = String(CALLOUT_ALIAS[co[1].toLowerCase()] || co[1].toLowerCase());
+          var spec = CALLOUTS[calloutKind] || CALLOUTS.note;
+          var bat = base + co.index;
+          pushRange(bat, bat + co[0].length, Dec.replace({ widget: calloutBadge(spec, co[1]) }));
+        }
+        // 标题：整行加层级 class，并藏掉 `## `
+        var h = /^(#{1,6})\s+/.exec(body);
+        if (h) {
+          out.push(Dec.line({ class: 'cm-h cm-h' + h[1].length }).range(line.from));
+          pushRange(base, base + h[0].length, Dec.replace({}));
+        }
+        // 列表 / 任务框的行首标记（引用前缀由 `quote` 那步统一处理）
+        var mark = /^(\s*)([-*+]|\d+[.)])\s+/.exec(body);
+        if (mark) pushRange(base + mark[1].length, base + mark[0].length, Dec.replace({}));
+        // 行内标记
+        var mm;
+        INLINE.lastIndex = 0;
+        while ((mm = INLINE.exec(body))) {
+          var at = base + mm.index;
+          var whole = mm[0];
+          if (whole.charAt(0) === '$') {
+            pushRange(at, at + whole.length, Dec.replace({ widget: mathWidget(whole.slice(1, -1).trim(), false) }));
+            continue;
+          }
+          var openLen = /^(\*\*|\*|~~|==|`)/.exec(whole)[1].length;
+          pushRange(at, at + openLen, Dec.replace({}));
+          pushRange(at + whole.length - openLen, at + whole.length, Dec.replace({}));
+        }
+      }
+      return Dec.set(out, true);
+    };
+
+    /** 算不出来就**不装饰**（装饰是锦上添花，编辑器是命根子）。 */
+    var safeBuild = function (st) {
+      try {
+        return build(st);
+      } catch (err) {
+        if (!safeBuild.warned) {
+          safeBuild.warned = true;
+          window.console && window.console.warn('[notes] 装饰算不出来，这一轮不装饰：', err);
+        }
+        return Dec.none;
+      }
+    };
+
+    return Q.EditorView.decorations.compute(['doc', 'selection'], safeBuild);
+  }
+
+  /** `编辑` 视图的 CM6 版：与源码视图同一个内核，多一层 Live Preview 装饰。
+   *  内核没加载 / 出意外就返回 null，调用方退回旧的 `renderLive()`。 */
+  function cm6LiveEditor(pane) {
+    var Q = window.QF && window.QF.cm6;
+    if (!Q || !Q.EditorView || !Q.ViewPlugin) return null;
+    var box = h('div.nedit.nedit--live');
+    box.appendChild(renderPad());
+    try {
+      var view = new Q.EditorView({
+        state: Q.EditorState.create({
+          doc: state.note.body || '',
+          extensions: [
+            Q.history(),
+            Q.drawSelection(),
+            Q.highlightActiveLine(),
+            Q.bracketMatching(),
+            Q.indentOnInput(),
+            Q.closeBrackets(),
+            Q.search(),
+            Q.keymap.of([
+              { key: 'Mod-b', run: function (v) { wrapIn(v, '**', '**', '粗体'); return true; } },
+              { key: 'Mod-i', run: function (v) { wrapIn(v, '*', '*', '斜体'); return true; } },
+              { key: 'Mod-u', run: function (v) { wrapIn(v, '<u>', '</u>', '下划线'); return true; } },
+              { key: 'Mod-k', run: function (v) { wrapIn(v, '[', '](https://)', '说明'); return true; } },
+              { key: 'Mod-`', run: function (v) { wrapIn(v, '`', '`', 'code'); return true; } },
+              { key: 'Mod-Shift-x', run: function (v) { wrapIn(v, '~~', '~~', '删掉'); return true; } },
+              { key: 'Mod-Shift-h', run: function (v) { wrapIn(v, '==', '==', '重点'); return true; } },
+              { key: 'Mod-Shift-m', run: function (v) { wrapIn(v, '$$\n', '\n$$', 'x = y'); return true; } },
+              { key: 'Mod-s', run: function () { saveNow(true); return true; } },
+            ].concat(Q.defaultKeymap, Q.historyKeymap, Q.searchKeymap, Q.closeBracketsKeymap, [Q.indentWithTab])),
+            Q.markdown(),
+            cm6LiveDecorations(Q),
+            Q.EditorView.lineWrapping,
+            Q.EditorView.updateListener.of(function (u) {
+              if (u.docChanged) {
+                lastTyped = u.state.doc.toString();
+                markDirty();
+                schedulePreview();
+                scheduleSave();
+              }
+            }),
+            Q.EditorView.domEventHandlers({
+              blur: function () {
+                if (state.dirty) saveNow();
+              },
+              contextmenu: function (ev) {
+                showMenu(ev, sourceMenu(cm6Shim(view)));
+                return true;
+              },
+            }),
+          ],
+        }),
+        parent: box,
+      });
+    } catch (err) {
+      // **不许静默**：吞掉异常的话，"编辑视图没起来"这件事就完全没法排查
+      // （我自己第一次调试就撞上这个 —— 只看到"退回旧渲染"，不知道哪一步炸了）。
+      window.console && window.console.warn('[notes] Live Preview 起不来，退回旧渲染：', err);
+      return null;
+    }
+    box.id = 'notes-cm6-live';
+    box._cm6 = view;
+    setTimeout(function () {
+      view.focus();
+      view.dispatch({ selection: { anchor: 0 }, scrollIntoView: true });
+    }, 0);
+    pane.appendChild(box);
+    return view;
+  }
+
+  /** 源码视图的 CM6 版。内核没加载就返回 null，调用方退回旧文本框。 */
+  function cm6SourceEditor(box) {
+    var Q = (window.QF && window.QF.cm6) || null;
+    if (!Q || !Q.EditorView) return null;
+    var fmt = function (before, after, ph) {
+      return function (view) {
+        wrapIn(view, before, after, ph);
+        return true;
+      };
+    };
+    var head = function (prefix) {
+      return function (view) {
+        linePrefixIn(view, prefix);
+        return true;
+      };
+    };
+    var bindings = [
+      { key: 'Mod-b', run: fmt('**', '**', '粗体') },
+      { key: 'Mod-i', run: fmt('*', '*', '斜体') },
+      { key: 'Mod-u', run: fmt('<u>', '</u>', '下划线') },
+      { key: 'Mod-k', run: fmt('[', '](https://)', '说明') },
+      { key: 'Mod-`', run: fmt('`', '`', 'code') },
+      { key: 'Mod-Shift-x', run: fmt('~~', '~~', '删掉') },
+      { key: 'Mod-Shift-h', run: fmt('==', '==', '重点') },
+      { key: 'Mod-Shift-m', run: fmt('$$\n', '\n$$', 'x = y') },
+      { key: 'Mod-Shift-1', run: head('## ') },
+      { key: 'Mod-Shift-2', run: head('### ') },
+      { key: 'Mod-Shift-3', run: head('#### ') },
+      { key: 'Mod-Shift-4', run: head('##### ') },
+      { key: 'Mod-Shift-8', run: head('- ') },
+      { key: 'Mod-Shift-7', run: head('1. ') },
+      { key: 'Mod-Shift-9', run: head('> ') },
+      // ⌘S：**先落块再保存**是所见即所得那边的讲究；源码视图里文档就是真相，
+      // 直接存即可（`currentText()` 会从编辑器里取全文）。
+      { key: 'Mod-s', run: function () {
+          saveNow(true);
+          return true;
+        } },
+    ];
+    var view = new Q.EditorView({
+      state: Q.EditorState.create({
+        doc: state.note.body || '',
+        extensions: [
+          Q.lineNumbers(),
+          Q.history(),
+          Q.drawSelection(),
+          Q.highlightActiveLine(),
+          Q.bracketMatching(),
+          Q.indentOnInput(),
+          Q.closeBrackets(),
+          Q.search(),
+          Q.highlightSelectionMatches(),
+          Q.keymap.of(
+            bindings.concat(
+              Q.defaultKeymap,
+              Q.historyKeymap,
+              Q.searchKeymap,
+              Q.closeBracketsKeymap,
+              [Q.indentWithTab]
+            )
+          ),
+          Q.markdown(),
+          Q.EditorView.lineWrapping,
+          Q.EditorView.updateListener.of(function (u) {
+            if (u.docChanged) {
+              lastTyped = u.state.doc.toString();
+              markDirty();
+              schedulePreview();
+              scheduleSave();
+            }
+            if (u.docChanged || u.selectionSet) highlightCursorLine();
+          }),
+          Q.EditorView.domEventHandlers({
+            blur: function () {
+              if (state.dirty) saveNow();
+            },
+            contextmenu: function (ev) {
+              showMenu(ev, sourceMenu(cm6Shim(view)));
+              return true;
+            },
+          }),
+        ],
+      }),
+      parent: box,
+    });
+    box.id = 'notes-cm6';
+    box._cm6 = view;
+    // 滚动同步：编辑器滚到哪，右侧预览跟到哪（比例映射，与旧文本框同一套手感）
+    view.scrollDOM.addEventListener(
+      'scroll',
+      function () {
+        var pane = document.getElementById('notes-preview-pane');
+        if (!pane) return;
+        var span = Math.max(1, view.scrollDOM.scrollHeight - view.scrollDOM.clientHeight);
+        var pspan = Math.max(0, pane.scrollHeight - pane.clientHeight);
+        pane.scrollTop = Math.min(1, Math.max(0, view.scrollDOM.scrollTop / span)) * pspan;
+      },
+      { passive: true }
+    );
+    setTimeout(function () {
+      view.focus();
+      var end = view.state.doc.length;
+      view.dispatch({ selection: { anchor: end }, scrollIntoView: true });
+    }, 0);
+    return view;
+  }
+
   function editorPane() {
     var box = h('div.nedit');
     box.appendChild(renderPad());
+
+    // 内核可用就用它；`qf.notes.engine = 'legacy'` 或内核没加载 → 退回旧文本框
+    // （回退开关留一轮：换内核这种事要能一步退回去）。
+    if (engineOf() === 'cm6' && cm6SourceEditor(box)) return box;
 
     var area = h('textarea.nedit__area', {
       spellcheck: 'false',
@@ -1580,6 +2440,8 @@
    * 对纯文本行够准，公式与代码块可能匹配不上，那就**不动**（宁可不跟，也别乱跳）。
    */
   function highlightCursorLine() {
+    // CM6 自带 `highlightActiveLine`；这里只服务旧文本框（找不到就没事发生）
+    if (document.getElementById('notes-cm6')) return;
     if (state.mode !== 'split') return;
     var area = document.querySelector('.nedit__area');
     var preview = document.getElementById('notes-preview');
@@ -1702,10 +2564,19 @@
 
   /** 保存正文。**不回写编辑框** —— 回写会顶掉光标。 */
   function saveNow(force) {
+    if (!isNote()) return Promise.resolve();
     var area = document.querySelector('.nedit__area');
-    if (!isNote() || !area) return Promise.resolve();
+    var live = document.getElementById('notes-live');
+    var cm6Box = document.getElementById('notes-cm6') || document.getElementById('notes-cm6-live');
+    // 正文从**当前那一栏**取：源码模式读编辑器，所见即所得模式从块拼回来
+    // （`currentText()` 三条路都认）。
+    //
+    // 这道门踩过**两次**：第一版写死 `.nedit__area`，渲染态里保存一次都没发生过；
+    // 换 CM6 之后源码视图既没有 `.nedit__area` 也没有 `#notes-live`，于是又中了同一枪
+    // （用户按 ⌘S，状态栏还写着"未保存"）。以后这个栏目加了新的编辑器，**记得往这里加**。
+    if (!area && !live && !cm6Box) return Promise.resolve();
     if (!state.dirty && !force) return Promise.resolve();
-    var text = area.value;
+    var text = currentText();
     state.saving = true;
     renderStatusOnly();
     return api
@@ -1713,13 +2584,18 @@
       .then(function (note) {
         // 只在"编辑框里还是我刚发出去的那份"时才认为干净；
         // 否则说明保存期间又改了，保持未保存状态等下一轮。
-        var stillSame = document.querySelector('.nedit__area');
+        var stillArea = document.querySelector('.nedit__area');
+        var stillCm6 = document.getElementById('notes-cm6') || document.getElementById('notes-cm6-live');
+        // 源码模式：编辑器里还是刚发出去那份才算干净；所见即所得模式：正文就是
+        // `state.note.body`（每次 commit 都已写进去），保存回来即为干净。
+        var stillText = stillCm6 && stillCm6._cm6 ? cm6Value(stillCm6._cm6) : stillArea ? stillArea.value : null;
+        var unchanged = stillText === null ? true : stillText === text;
         state.note = note;
         state.saving = false;
         state.retry = 0;
         state.savedAt = nowHM();
         state.failed = false;
-        state.dirty = !(stillSame && stillSame.value === text);
+        state.dirty = !unchanged;
         renderStatusOnly();
         renderSide();
       })
@@ -1754,7 +2630,7 @@
     var keepTop = host ? host.scrollTop : 0;
     ui.clear(target);
     if (!text.trim()) {
-      target.appendChild(h('div.nread__empty', { text: '右边是即时渲染 —— 开始打字就会出现在这里。' }));
+      target.appendChild(h('div.nread__empty', { text: '右边是「编辑」视图的即时渲染 —— 开始打字就会出现在这里。' }));
       return;
     }
     if (QF.md && QF.md.render) {
@@ -1777,6 +2653,821 @@
      为什么按块而不是整篇：整篇重渲染会把光标顶掉、也会让滚动跳；
      按块改只动那几行（`replace_range`），改动小、可撤销、也看得见改了哪里。
    */
+
+  /** 点哪儿，光标落哪儿。
+   *
+   *  文本框是**点击那一刻才建出来的** —— mousedown 时它还不存在，浏览器没机会按坐标放
+   *  光标；同一次事件里立刻读几何拿到的又是**没布局好**的旧值（实测"前两次点光标都在
+   *  开头，第三次才对"）。所以：等下一帧布局稳了，把同一段文字、同一套排版铺进一个
+   *  **透明镜像层**盖在文本框上，再问浏览器"这个坐标落在第几个字之间"。
+   *  （镜像用 opacity: 0.001 而不是 visibility: hidden —— 后者不参与命中测试。）
+   */
+  function caretOffsetAt(area, x, y) {
+    var cs = window.getComputedStyle(area);
+    var rect = area.getBoundingClientRect();
+    if (!rect.width || !rect.height) return -1;
+    var mirror = document.createElement('div');
+    var box = mirror.style;
+    box.position = 'fixed';
+    box.left = rect.left + 'px';
+    box.top = rect.top + 'px';
+    box.width = rect.width + 'px';
+    box.margin = '0';
+    box.padding = '0';
+    box.border = '0';
+    box.overflow = 'hidden';
+    box.opacity = '0.001';
+    box.zIndex = '9999';
+    [
+      'fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing',
+      'lineHeight', 'textTransform', 'textIndent', 'whiteSpace', 'wordBreak',
+      'overflowWrap', 'tabSize', 'direction',
+    ].forEach(function (key) {
+      box[key] = cs[key];
+    });
+    mirror.textContent = area.value;
+    document.body.appendChild(mirror);
+    var offset = -1;
+    try {
+      var pos = document.caretPositionFromPoint ? document.caretPositionFromPoint(x, y) : null;
+      if (pos && pos.offsetNode && mirror.contains(pos.offsetNode)) {
+        offset = pos.offset;
+      } else if (document.caretRangeFromPoint) {
+        var range = document.caretRangeFromPoint(x, y);
+        if (range && mirror.contains(range.startContainer)) offset = range.startOffset;
+      }
+    } catch (err) {
+      offset = -1;
+    }
+    if (mirror.parentNode) mirror.parentNode.removeChild(mirror);
+    return offset;
+  }
+
+  /* ------------------------------------------------ 渲染文字 ↔ 源码 对齐 */
+
+  //: 源码里那些**不是正文**的字符：对不上就跳过它们继续找（`**`、`[]()`、`~~`、`==`…）
+  var MARK_CHARS = '*_~=`[]()\\<>!#';
+
+  //: 上一次对齐**卡在哪儿**（`{ at, expect, found }`）。拒绝时把它写进提示里 ——
+  //: "对不上"这句话本身没法排查，能指出"源码里遇到 `xxx` 就对不下去了"才有用。
+  var lastAlignFail = null;
+
+  /**
+   * 把"整篇渲染出来的文字"与"整篇正文"对齐。
+   *
+   * 返回 `{ text, marks }`：`marks[i]` 是第 i 个渲染字符对应的**正文区间**。
+   * - 普通字符：`[a, a + 1]`
+   * - 渲染出来但源码里没有独立位置的（空格被标记挤掉了）：`[a, a]`（零宽，无害）
+   * - 完全对不上的（提示框那个本地化标题）：`[-1, -1]`（选中它一律拒绝）
+   * **整体对不上就返回 null**（收尾核对不过）—— 调用方宁可什么都不做。
+   *
+   * 匹配方式：**有界贪心子序列**（见文件头那段说明）。不许跨空行 = 不许跑到别的块里。
+   */
+  function alignSource(host, src) {
+    var text = '';
+    var marks = [];
+    var at = 0;
+    var bad = false;
+    lastAlignFail = null;
+
+    /** 往后找同一个字；返回位置，找不到 -1。
+     *
+     *  **允许跨空行**：块与块之间本来就隔着空行，一碰 `\n\n` 就失败的话，第一个块之后
+     *  全都会对不上（实测：H2 吃到 7，后面每个节点都吃到 0）。代价是"可能跑远"，所以
+     *  (a) 限距 500 字，(b) 走完做收尾核对，(c) 真正要改的那个区间另有逐字校验。
+     */
+    function seek(ch) {
+      for (var k = at; k < src.length && k - at <= 500; k++) {
+        if (src.charAt(k) === ch) return k;
+      }
+      return -1;
+    }
+
+    function matchText(plain) {
+      for (var i = 0; i < plain.length; i++) {
+        var ch = plain.charAt(i);
+        if (ch === ' ' || ch === '\t') {
+          // 渲染出来的空格可能压根不在源码里（被 `**` 之类挤掉了）→ 零宽，无害
+          if (src.charAt(at) === ' ') at += 1;
+          marks.push([at, at]);
+          text += ch;
+          continue;
+        }
+        var found = seek(ch);
+        if (found < 0) {
+          lastAlignFail = { at: at, expect: ch, found: src.substr(at, 14) };
+          bad = true;
+          return false;
+        }
+        at = found + 1;
+        marks.push([found, found + 1]);
+        text += ch;
+      }
+      return true;
+    }
+
+    function skipAtom(kind) {
+      var from = at;
+      if (kind === 'math') {
+        var open = src.slice(at, at + 2);
+        if (open === '$$') {
+          at += 2;
+          var e2 = src.indexOf('$$', at);
+          if (e2 < 0) return false;
+          at = e2 + 2;
+        } else if (src.charAt(at) === '$') {
+          at += 1;
+          var e1 = src.indexOf('$', at);
+          if (e1 < 0) return false;
+          at = e1 + 1;
+        } else if (open === '\\(') {
+          at += 2;
+          var ep = src.indexOf('\\)', at);
+          if (ep < 0) return false;
+          at = ep + 2;
+        } else {
+          return false;
+        }
+      } else if (kind === 'code') {
+        var ticks = /^`+/.exec(src.slice(at));
+        if (!ticks) return false;
+        var fence = ticks[0];
+        at += fence.length;
+        var ec = src.indexOf(fence, at);
+        if (ec < 0) return false;
+        at = ec + fence.length;
+      } else if (kind === 'image') {
+        var ib = src.indexOf('![', at);
+        if (ib < 0 || ib > at + 2) return false;
+        var ic = src.indexOf(')', ib);
+        if (ic < 0) return false;
+        at = ic + 1;
+      } else {
+        return false;
+      }
+      marks.push([from, at]);
+      text += '\u0000';
+      return true;
+    }
+
+    function walk(node) {
+      if (bad) return;
+      if (node.nodeType === 3) {
+        matchText(node.nodeValue || '');
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      var el = node;
+      var cls = String(el.className || '');
+      if (el.tagName === 'IMG') {
+        skipAtom('image');
+        return;
+      }
+      if (el.tagName === 'CODE' || cls.indexOf('mathblock') >= 0) {
+        skipAtom(el.tagName === 'CODE' ? 'code' : 'math');
+        return;
+      }
+      if (cls.indexOf('katex') >= 0) {
+        if (cls.indexOf('katex-html') >= 0 || cls.indexOf('katex-display') >= 0) {
+          Array.prototype.forEach.call(el.childNodes, walk);
+          return;
+        }
+        skipAtom('math');
+        return;
+      }
+      // 提示框：源码写 `> [!note] 标题`，渲染出来的是**本地化标签**（`[!note]` → "说明"）
+      // —— 那两样在源码里对不上。所以标题整段标成"不可映射"，源码里那一行也整行吃掉。
+      if (cls.indexOf('callout') >= 0 && el.classList.contains('callout')) {
+        var eol = src.indexOf('\n', at);
+        at = eol < 0 ? src.length : eol;
+        Array.prototype.forEach.call(el.childNodes, function (child) {
+          if (child.nodeType === 1 && String(child.className || '').indexOf('callout-title') >= 0) {
+            marks.push([-1, -1]);
+            text += '\u0000';
+            return;
+          }
+          walk(child);
+        });
+        return;
+      }
+      Array.prototype.forEach.call(el.childNodes, walk);
+      // 链接：里面的文字已经对过了，源码里剩下的 `](url)` / `]]` 由子序列匹配自然跳过，
+      // 这里只要把 url 里**恰好相同**的字别去抢（子序列是"往后找同一个字"，url 里有同字
+      // 也可能被抢中）—— 直接跳到收尾括号之后是最稳的。
+      if (el.tagName === 'A' && !bad) {
+        if (src.slice(at, at + 2) === ']]') at += 2;
+        else if (src.charAt(at) === ']') {
+          var closeRound = src.indexOf(')', at);
+          if (closeRound >= 0) at = closeRound + 1;
+        }
+      }
+    }
+
+    walk(host);
+    if (bad) return null;
+    // 收尾核对：剩下的只能是空白与标记字符（否则说明整篇已经错位了）
+    var rest = src.slice(at);
+    for (var i = 0; i < rest.length; i++) {
+      var c2 = rest.charAt(i);
+      if (MARK_CHARS.indexOf(c2) < 0 && !/\s/.test(c2)) {
+        lastAlignFail = { at: at + i, expect: '（源码还有剩）', found: rest.substr(i, 14) };
+        return null;
+      }
+    }
+    return text ? { text: text, marks: marks } : null;
+  }
+
+  /** 当前 DOM 选区落在整篇的第几个渲染字符上（不在正文里就返回 null）。 */
+  function renderedSelection() {
+    var sel = window.getSelection && window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+    var range = sel.getRangeAt(0);
+    var inner = document.getElementById('notes-live');
+    var md = inner ? inner.querySelector('.md') : null;
+    if (!md || !md.contains(range.startContainer) || !md.contains(range.endContainer)) return null;
+    var pre = document.createRange();
+    pre.selectNodeContents(md);
+    pre.setEnd(range.startContainer, range.startOffset);
+    var start = pre.toString().length;
+    return { md: md, start: start, end: start + range.toString().length, text: range.toString() };
+  }
+
+  /** 渲染态按 ⌘B/⌘I：把选中的那段**正文**裹起来（不用先点进源码）。 */
+  function formatRenderedSelection(open, close) {
+    var picked = renderedSelection();
+    if (!picked) return false;
+    var body = (state.note && state.note.body) || '';
+    var map = alignSource(picked.md, body);
+    if (!map) {
+      var why = lastAlignFail ? '（源码里卡在「' + String((lastAlignFail.found || '').trim()).slice(0, 10) + '」）' : '';
+      toast('这一段里夹着认不出的东西，先点进那一行再改' + why + ' —— 我不敢猜区间，怕改错字', 'warn');
+      return false;
+    }
+    if (picked.end > map.marks.length || picked.start >= picked.end) return false;
+    // 收集这一段里**所有有效的**映射：零宽（被标记挤掉的空格）无害，跳过它就行；
+    // 只要碰到一个 `[-1,-1]`（提示框标题那类渲染产物）就整段拒绝。
+    var from = -1;
+    var to = -1;
+    for (var i = picked.start; i < picked.end; i++) {
+      var mark = map.marks[i];
+      if (!mark) continue;
+      if (mark[0] < 0) {
+        toast('选中的这一段里夹着提示框标题这类对不上源码的内容 —— 点进那一行改更稳', 'warn');
+        return false;
+      }
+      if (from < 0) from = mark[0];
+      to = Math.max(to, mark[1]);
+    }
+    if (from < 0 || to <= from) return false;
+    // **写之前的最后一道校验**：取出来的这一段源码，去掉标记与空白之后，必须与用户选中的
+    // 文字逐字一致。这道校验直接盯着"我要改的那几个字符"，比前面任何启发式都可靠 ——
+    // 不一致就什么都不做（宁可这一下没反应，也不能把加粗加错地方）。
+    var plain = function (raw) {
+      var out = '';
+      for (var k = 0; k < raw.length; k++) {
+        var c = raw.charAt(k);
+        if (MARK_CHARS.indexOf(c) >= 0 || /\s/.test(c)) continue;
+        out += c;
+      }
+      return out;
+    };
+    if (plain(body.slice(from, to)) !== plain(picked.text)) {
+      toast('这一段我算不准是哪几个字，点进那一行改更稳', 'warn');
+      return false;
+    }
+    replaceRangeInBody(from, to, open + body.slice(from, to) + close);
+    return true;
+  }
+
+  /** 行内公式：点它**自己**才把那一小段变成源码，同一行的其余文字照旧渲染。 */
+  function inlineBeginEdit(mathEl) {
+    if (liveEditing) liveCommit();
+    var inner = document.getElementById('notes-live');
+    var md = inner ? inner.querySelector('.md') : null;
+    var body = (state.note && state.note.body) || '';
+    var map = md ? alignSource(md, body) : null;
+    if (!map) {
+      toast('这一行里的公式认不出源码区间，点整行改更稳', 'warn');
+      return;
+    }
+    var pre = document.createRange();
+    pre.selectNodeContents(md);
+    pre.setEndBefore(mathEl);
+    var mark = map.marks[pre.toString().length];
+    if (!mark) {
+      toast('这个公式认不出源码区间，点整行改更稳', 'warn');
+      return;
+    }
+    var area = h('textarea.nlblock__src.is-code.nlblock__src--inline', {
+      value: body.slice(mark[0], mark[1]),
+      spellcheck: 'false',
+      rows: '1',
+    });
+    var snapshot = { from: mark[0], to: mark[1] };
+    mathEl.replaceWith(area);
+    area.style.width = Math.max(6, area.value.length + 2) + 'ch';
+    area.focus();
+    area.setSelectionRange(0, area.value.length);
+    var done = false;
+    var finish = function (save) {
+      if (done) return;
+      done = true;
+      if (save) replaceRangeInBody(snapshot.from, snapshot.to, area.value);
+      else rerenderLive();
+    };
+    area.addEventListener('keydown', function (e2) {
+      if (e2.key === 'Enter' || e2.key === 'Escape') {
+        e2.preventDefault();
+        finish(e2.key === 'Enter');
+      }
+      e2.stopPropagation();
+    });
+    area.addEventListener('input', function () {
+      area.style.width = Math.max(6, area.value.length + 2) + 'ch';
+    });
+    area.addEventListener('blur', function () {
+      finish(true);
+    });
+  }
+
+
+  /** 把**行区间**写回已加载的正文。这是唯一改正文的入口 —— 安全语义就在这一句里：
+   *  只有被点开的那几行会被重排，其余行原样保留（"没改就一字不变"靠的就是它）。
+   *
+   *  上一版还要在这里**逐个块**修正行号（每个块把起始行存在 DOM 上）；整篇一棵树之后，
+   *  行号是渲染时从正文现算的，写回之后重画一次就都对上了 —— 那一段位移逻辑随之删掉。
+   */
+  function liveSplice(start, count, text) {
+    var lines = ((state.note && state.note.body) || '').split('\n');
+    var fresh = text.split('\n');
+    lines.splice.apply(lines, [start, count].concat(fresh));
+    state.note.body = lines.join('\n');
+    // 置脏 + 排保存**放在这个唯一入口里**：改正文的三条路（点开一行改、
+    // 渲染态 ⌘B、行内公式）都从这里过，谁都不用记着再补一句 ——
+    // 上一版我把这两句漏在了调用方，结果"改了没落盘"（不复现也看不出来）。
+    markDirty();
+    scheduleSave();
+  }
+
+  /** 切到「源码」并把光标放到某一行（认不出区间时的退路）。 */
+  function jumpToSource(start) {
+    if (start < 0) return;
+    if (liveEditing) liveCommit();
+    state.mode = 'source';
+    renderMain();
+    var cm6Box = document.getElementById('notes-cm6');
+    if (cm6Box && cm6Box._cm6) {
+      var v = cm6Box._cm6;
+      var line = v.state.doc.line(Math.min(start + 1, v.state.doc.lines));
+      v.focus();
+      v.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+      return;
+    }
+    var area = document.querySelector('.nedit__area');
+    if (!area) return;
+    var upto = area.value.split('\n').slice(0, start).join('\n').length;
+    area.focus();
+    area.setSelectionRange(upto, upto);
+  }
+
+
+  /* ------------------------------------------------------------ 所见即所得（Live Preview）
+   *
+   * 用户选的方案（B）：**单栏、看的就是渲染结果，点哪儿改哪儿**。
+   *
+   * ## 规矩：不做任何"DOM → Markdown"的往返
+   *
+   * 往返是有损的（wiki 链接、表格、公式那一类回不来），一保存就可能悄悄改写用户
+   * 没碰过的行。这里的做法是**回写用户自己敲的那几行原文**：
+   *
+   *   1. 每个块渲染时把它的**原始源码**存进 `data-src`，并记住它在正文里的
+   *      **行范围**（`data-start` / `data-count`，来自 `blocksOf`）；
+   *   2. 点这一块 → 就地换上文本框，里面装的就是 `data-src`（**原文** ——
+   *      所以"### 标题 + 紧接着的段落"这种多行块，换行原样保留）；
+   *   3. 失焦 / Esc / ⌘↵ → 用文本框里的字**按行范围精确替换**，重画这一块，
+   *      并把**后面各块的行号**按行数差平移。
+   *
+   * 于是：没点过的块逐字节原样带过；点过但没改的块也不写（值相等就不动）；
+   * 一次改动只可能影响**你正在编辑的那几行**。
+   *
+   * 上一版走的是"把整块的 DOM 序列化成 Markdown"那条路，实测一次改段落牵动
+   * 73 行（`### 标题\n正文` 被拍成一行、公式块被重排）—— 那版已经整段删掉，
+   * 不留任何一条会改坏数据的路。
+   */
+
+  /** 把一个块的源码行按**结构**切成若干组：一组 = 渲染出来的一个顶层元素。
+   *
+   *  一个"块"（空行之间那几行）常常是这样：
+   *
+   *      ### 标题          → 一个 <h3>
+   *      正文一行          → 一个 <p>
+   *      $$                → 一个 <div class="mathblock">
+   *      f_x = ...
+   *      $$
+   *
+   *  用户点在哪一个**渲染元素**上，就只把那一组行拿出来改 —— 这是"无缝"的关键：
+   *  点标题不该把下面的正文与公式也变成源码（上一版按整块来，字体全被换掉）。
+   */
+  function liveGroups(lines) {
+    var out = [];
+    var i = 0;
+    var reHead = /^\s{0,3}#{1,6}\s/;
+    var reMath = /^\s*\$\$/;
+    var reFence = /^\s*(```|~~~)/;
+    var reQuote = /^\s*>/;
+    var reList = /^\s*([-*+]|\d+[.)])\s+/;
+    var reHr = /^\s{0,3}([-*_])\s*(\1\s*){2,}$/;
+    /** 这一行是不是"另一个块"的开头 —— 组内碰到它就该断。
+     *
+     *  踩过：列表和紧跟其后的引用行之间**没有空行**时，`while (lines[i].trim())` 会把
+     *  那段引用**并进列表组**；而渲染器是按构造切开的（`<ol>` + `<blockquote>` 两个元素），
+     *  于是"行组数 ≠ 元素数"→ 整篇挂不上行号 → **整篇不能编辑**
+     *  （用户点名的「判断某点偏导数存在的方法」就是这样一篇）。 */
+    // `reHr` 只用于"是不是分隔线"的识别（分隔线按普通段落处理，渲染器给一个 <hr>，
+    // 两边都是 1 个元素，能对上）。
+    while (i < lines.length) {
+      var line = lines[i];
+      if (!line.trim()) {
+        i += 1;
+        continue;
+      }
+      var start = i;
+      var kind = 'text';
+      if (reFence.test(line)) {
+        var fence = line.trim().slice(0, 3);
+        i += 1;
+        while (i < lines.length && lines[i].trim().indexOf(fence) !== 0) i += 1;
+        if (i < lines.length) i += 1;
+        kind = 'code';
+      } else if (reHead.test(line)) {
+        i += 1;                                   // 标题：一行一组
+        kind = 'head';
+      } else if (reMath.test(line)) {
+        // 行间公式：`$$` 单独一行时吃到收尾那行；同一行闭合（`$$x$$`）就是一行
+        var rest = line.trim().replace(/^\$\$/, '');
+        i += 1;
+        if (rest.indexOf('$$') < 0) {
+          while (i < lines.length && lines[i].indexOf('$$') < 0) i += 1;
+          if (i < lines.length) i += 1;
+        }
+        kind = 'math';
+      } else if (reQuote.test(line)) {
+        // 镜像渲染器：引用是"吃到空行为止"（紧跟在引用后面、没有空行的普通行，
+        // 渲染器也会把它并进同一个 <blockquote> 里 —— 那就得跟着并）。
+        while (i < lines.length && lines[i].trim()) i += 1;
+        kind = 'quote';
+      } else if (reList.test(line)) {
+        // 镜像渲染器：列表只在"还是列表项"或"缩进的续行"时继续，**别的行一律断**。
+        // 踩过：写成"吃到空行为止"，于是列表后面紧跟的那行 `> …` 被并进列表组，
+        // 而渲染器把它切成 <ol> + <blockquote> 两个元素 → 数量对不上 → 整篇不能编辑。
+        while (i < lines.length && (reList.test(lines[i]) || /^\s{2,}\S/.test(lines[i]))) i += 1;
+        kind = 'list';
+      } else if (reHr.test(line) && !reList.test(line)) {
+        i += 1;                                  // 分隔线：渲染器给一个 <hr>，一组
+        kind = 'hr';
+      } else {
+        // 散文：**断行规则要镜像渲染器**。
+        //  · 列表**不断** —— 渲染器只在"段落还空着"时才让列表另起一块；段落里已经有字
+        //    的时候，紧接着的 `1. …` 会被它**吞进同一个 <p>**。切成两组就对不上了
+        //    （「判断某点偏导数存在的方法」的第 12~15 行正是这种写法）。
+        //  · 分隔线要断（渲染器给 <hr>）；标题/公式/围栏/引用都要断。
+        while (
+          i < lines.length &&
+          lines[i].trim() &&
+          !reFence.test(lines[i]) &&
+          !reHead.test(lines[i]) &&
+          !reMath.test(lines[i]) &&
+          !reQuote.test(lines[i]) &&
+          !(reHr.test(lines[i]) && !reList.test(lines[i]))
+        ) {
+          i += 1;
+        }
+      }
+      // **铁律：每组至少吃掉一行。**
+      // 上面每个分支都该自己前进；但只要漏一个（我上一版就漏了），外层就是死循环，
+      // 一路 push 到数组长度溢出（报的是 `RangeError: Invalid array length`，
+      // 看上去像数组的问题，其实是"没前进"）。这里兜一道底。
+      if (i === start) i += 1;
+      out.push({ start: start, count: i - start, kind: kind });
+    }
+    return out;
+  }
+
+  /** 把行组**挂到渲染出来的顶层元素上**（不包额外的 div：`.md > *:first-child`
+   *  这类子选择器靠的就是"元素直接是 .md 的孩子"，包一层会把排版改掉）。
+   *
+   *  行组数与元素数对不上时（渲染器把几行并成一块、或拆开了）就**整块当成一组** ——
+   *  宁可粒度粗一点，也不能把行号挂错（挂错就是改错行）。
+
+  /* ------------------------------------------------------------ 所见即所得
+   *
+   * **决策（用户，2026-09-19）：编辑视图自研，不引入 CodeMirror。**
+   * 源码视图那套 CM 是历史产物；编辑视图这条路继续自己造 —— 理由不是"CM 不好"，
+   * 而是引进来会同时动到渲染、键盘、选区、保存四条线，风险与收益不成比例。
+   * 底下这套"整篇一棵树 + 行组"就是自研的形态，改进方向是让它更稳（见 `liveAnnotateDoc`
+   * 的降级策略），而不是换内核。
+   *
+   * **整篇一份渲染树**，不是"每块一份"。块是**数据概念**（源码行区间），让它同时当 DOM
+   * 概念，等于把同一份内容切成一堆独立的小文档 —— `.md > *:first-child` 会按块生效、
+   * 外边距不折叠、容器内距要重新商量，于是间距/字体/首尾元素都得单独调一遍（这一波为此
+   * 交了六处 bug，还不齐）。现在和阅读页**同一棵树**：那些问题是结构上不存在的，
+   * 而不是"再调一次"。
+   *
+   * 编辑仍然是"点哪儿改哪儿"：点中的那一组元素就地换成源码，提交时**按行 splice** 进
+   * 已加载的正文 —— 安全语义一字未改（没碰的行保持一字不差）。
+   */
+
+  //: 正在就地编辑的那一组元素（同时只允许一处）
+  var liveEditing = null;
+
+  /** 渲染整篇：与阅读视图同一套渲染 + 同一套后处理。 */
+  function liveMd(raw) {
+    var md = null;
+    try {
+      md = QF.md && QF.md.render ? QF.md.render(raw) : h('pre', { text: raw });
+    } catch (err) {
+      md = h('pre', { text: raw });
+    }
+    linkify(md);
+    decorateCallouts(md);
+    // 渲染态里链接不该抢键盘焦点（点到链接是"要改这句话"，不是"要去那一页"）
+    Array.prototype.forEach.call(md.querySelectorAll('a[href], a.wikilink'), function (a) {
+      a.setAttribute('tabindex', '-1');
+    });
+    return md;
+  }
+
+  /** 把行组挂到渲染出来的顶层元素上。
+   *
+   *  **对不上就不挂**：挂错行号 = 改一处坏另一处。不挂的后果只是"点了没反应/引导去源码"，
+   *  两个后果的分量差得远，所以这里宁可保守。
+   */
+  function liveAnnotateDoc(md, body) {
+    var groups = liveGroups((body || '').split('\n'));
+    var kids = Array.prototype.filter.call(md.children, function (el) {
+      return el.nodeName !== 'BR';
+    });
+    // 类型对得上吗（组是"标题"，元素就该是 H1-6……）——
+    // 两头对齐时用它当"这一步可信"的判据。
+    var KIND_TAG = {
+      head: /^H[1-6]$/,
+      math: /^(DIV|P|SPAN)$/,
+      code: /^(PRE|DIV)$/,
+      list: /^(UL|OL)$/,
+      quote: /^BLOCKQUOTE$/,
+      text: /^(P|DIV)$/,
+      hr: /^HR$/,
+    };
+    var fits = function (group, el) {
+      var re = KIND_TAG[group.kind];
+      return !re || re.test(el.tagName);
+    };
+    var put = function (el, group) {
+      el.dataset.lineStart = String(group.start);
+      el.dataset.lineCount = String(group.count);
+      el.dataset.kind = group.kind;
+    };
+
+    if (groups.length === kids.length) {
+      kids.forEach(function (el, i) {
+        put(el, groups[i]);
+      });
+      md.dataset.aligned = '1';
+      return true;
+    }
+
+    // 数量对不上：**从两头往中间对**，只挂能确定的那一段。
+    // 中间那段点了会提示"认不出源码区间"（不猜），但整篇不会因此变成只读 ——
+    // 原来"对不上就整篇不挂"，一篇里有个怪构造就整篇编辑不了（这是更坏的失败模式）。
+    var head = 0;
+    while (head < kids.length && head < groups.length && fits(groups[head], kids[head])) head += 1;
+    var tail = 0;
+    while (
+      tail < kids.length - head &&
+      tail < groups.length - head &&
+      fits(groups[groups.length - 1 - tail], kids[kids.length - 1 - tail])
+    ) {
+      tail += 1;
+    }
+    for (var i = 0; i < head; i++) put(kids[i], groups[i]);
+    for (var j = 0; j < tail; j++) put(kids[kids.length - 1 - j], groups[groups.length - 1 - j]);
+    md.dataset.partial = '1';
+    console.warn(
+      '[notes] 行组与渲染元素数量不一致：组 %d / 元素 %d —— 已挂 %d 段（从两头对齐），中间那段不可就地编辑',
+      groups.length,
+      kids.length,
+      head + tail
+    );
+    return head + tail > 0;
+  }
+
+  /** 按当前正文重画整篇（提交之后用）。滚动位置保住 —— 不然改一行就跳回顶上。 */
+  function rerenderLive() {
+    var inner = document.getElementById('notes-live');
+    if (!inner) return;
+    var scroller = inner.closest('.nread') || inner;
+    var keepTop = scroller.scrollTop;
+    var body = (state.note && state.note.body) || '';
+    Array.prototype.forEach.call(inner.querySelectorAll('.md'), function (el) {
+      el.remove();
+    });
+    var md = liveMd(body);
+    inner.appendChild(md);
+    liveAnnotateDoc(md, body);
+    scroller.scrollTop = keepTop;
+  }
+
+  /** 在**整篇正文**里替换一个**字符区间** —— 但仍然按**行范围**回写。
+   *
+   *  这样 ⌘B / 行内公式那种"字符级改动"也走同一条安全路径：只有被碰到的那几行会重写，
+   *  其余行保持一字不差。
+   */
+  function replaceRangeInBody(from, to, text) {
+    var body = (state.note && state.note.body) || '';
+    var lines = body.split('\n');
+    var lineStart = body.slice(0, from).split('\n').length - 1;
+    var offsetOfStart = lines.slice(0, lineStart).join('\n').length + (lineStart ? 1 : 0);
+    var lineEnd = body.slice(0, to).split('\n').length - 1;
+    var offsetOfEnd = lines.slice(0, lineEnd).join('\n').length + (lineEnd ? 1 : 0);
+    var merged =
+      lines[lineStart].slice(0, from - offsetOfStart) + text + lines[lineEnd].slice(to - offsetOfEnd);
+    liveSplice(lineStart, lineEnd - lineStart + 1, merged);
+    rerenderLive();
+  }
+
+  /** 点一处：把**那一组元素**就地换成源码（其余照旧渲染）。 */
+  function liveBeginEdit(md, ev, hit) {
+    // 点在**元素之间的空白**上（`.md` 自己、行间空隙）：什么都没点到，就当没点 ——
+    // 原来这里会弹"认不出源码区间"，于是用户点一下空白就挨一句提示（实测复现）。
+    if (!hit) return;
+    if (hit.dataset.lineStart === undefined) {
+      toast('这一处认不出源码区间 —— 用「源码」改这一篇更稳', 'warn');
+      return;
+    }
+    if (liveEditing === hit) return;
+    if (liveEditing) liveCommit();
+    var body = (state.note && state.note.body) || '';
+    var start = Number(hit.dataset.lineStart);
+    var count = Number(hit.dataset.lineCount) || 1;
+    var text = body.split('\n').slice(start, start + count).join('\n');
+    var kind = String(hit.dataset.kind || 'text');
+    // 就地编辑要"接得上"：字号/行高/字重抄**被替换的那个元素** —— 标题换上去仍是标题那么大。
+    // 字体按组分类（与 Obsidian 一致）：公式与代码用等宽，其余**保持文档的字体**。
+    var cs = window.getComputedStyle(hit);
+    var area = h('textarea.nlblock__src' + (kind === 'math' || kind === 'code' ? '.is-code' : ''), {
+      value: text,
+      spellcheck: 'false',
+      rows: '1',
+    });
+    area.style.fontSize = cs.fontSize;
+    area.style.fontWeight = cs.fontWeight;
+    area.style.lineHeight = cs.lineHeight;
+    area.style.letterSpacing = cs.letterSpacing;
+    area.style.marginTop = cs.marginTop;
+    area.style.marginBottom = cs.marginBottom;
+    if (kind !== 'math' && kind !== 'code') area.style.fontFamily = cs.fontFamily;
+
+    hit.parentNode.insertBefore(area, hit);
+    hit.parentNode.removeChild(hit);
+    liveEditing = area;
+    area.dataset.lineStart = String(start);
+    area.dataset.lineCount = String(count);
+
+    // 撑高：**先把高度压到 1px 再读 `scrollHeight`**。
+    // 用 `height: auto` 是个坑 —— 对 `<textarea>` 来说 auto 等于它 `rows` 的默认高度
+    // （2 行），而 `scrollHeight` 至少是 `clientHeight`，于是"一行字"的文本框永远有
+    // 两行高，下面凭空多出一行的空白（用户："点击某一行字编辑，这一行下面会出现
+    // 莫名其妙的间距"，实测 27px → 53px，正好一行）。
+    var fit = function () {
+      area.style.height = '1px';
+      area.style.height = area.scrollHeight + 'px';
+    };
+    area.addEventListener('keydown', function (e2) {
+      if (e2.key === 'Escape' || ((e2.metaKey || e2.ctrlKey) && e2.key === 'Enter')) {
+        e2.preventDefault();
+        liveCommit();
+        e2.stopPropagation();
+        return;
+      }
+      // ⌘S：**先落块再保存**（就地编辑时正文还在文本框里，直接保存等于存了旧的）
+      if ((e2.metaKey || e2.ctrlKey) && !e2.altKey && (e2.key || '').toLowerCase() === 's') {
+        e2.preventDefault();
+        liveCommit();
+        if (typeof saveNow === 'function') saveNow(true);
+        e2.stopPropagation();
+        return;
+      }
+      // 加粗/斜体/下划线那一套：与源码视图共用一份实现
+      if ((e2.metaKey || e2.ctrlKey) && !e2.altKey && formatShortcut(e2, area)) {
+        requestAnimationFrame(fit);
+        markDirty();
+        scheduleSave();
+        e2.stopPropagation();
+        return;
+      }
+      e2.stopPropagation();
+    });
+    area.addEventListener('input', function () {
+      fit();
+      markDirty();
+    });
+    area.addEventListener('blur', function () {
+      liveCommit();
+    });
+
+    area.focus();
+    var want =
+      ev && typeof ev.clientX === 'number' && typeof ev.clientY === 'number'
+        ? { x: ev.clientX, y: ev.clientY }
+        : null;
+    // 先定形（撑高）**再**算光标 —— 顺序反了会拿到没布局好的几何（前两次点会落在开头）
+    requestAnimationFrame(function () {
+      fit();
+      if (!want) return;
+      var off = caretOffsetAt(area, want.x, want.y);
+      if (off >= 0) area.setSelectionRange(off, off);
+    });
+  }
+
+  /** 收掉正在编辑的那一处：把文本框里的字**按行区间**写回，再重画整篇。 */
+  function liveCommit() {
+    var area = liveEditing;
+    if (!area) return;
+    liveEditing = null;
+    var start = Number(area.dataset.lineStart);
+    var count = Number(area.dataset.lineCount) || 1;
+    var body = (state.note && state.note.body) || '';
+    var before = body.split('\n').slice(start, start + count).join('\n');
+    if (area.value !== before) liveSplice(start, count, area.value);
+    rerenderLive();
+  }
+
+  /** 所见即所得：单栏 + 整篇渲染 + 点哪儿改哪儿。 */
+  function renderLive() {
+    var pane = h('div.note__pane');
+    // 排版**一个字都不覆盖**：尺寸/行高/栏宽都从 `rootEl` 上的 CSS 变量继承 ——
+    // 所见即所得要的就是"和「阅读」逐像素一样"。整篇一棵树之后，这一条是**结构保证**，
+    // 不再靠给编辑态孪生一份选择器去凑（那 51 条已经不需要了）。
+    var inner = h('div.nread__inner', { id: 'notes-live' });
+    var body = (state.note && state.note.body) || '';
+    if (!body.trim()) {
+      inner.appendChild(h('div.nread__empty', { text: '（这篇还是空的 —— 切到「源码」写点什么）' }));
+    } else {
+      inner.appendChild(liveMd(body));
+      liveAnnotateDoc(inner.firstChild, body);
+    }
+    inner.addEventListener('click', function (ev) {
+      var md = inner.querySelector('.md');
+      if (!md) return;
+      var link = ev.target && ev.target.closest ? ev.target.closest('a[href]') : null;
+      if (link && (ev.metaKey || ev.ctrlKey)) return;      // ⌘/Ctrl + 点是"真的要去"
+      // 已经在这一处编辑里点：交给浏览器自己放光标（重建会把光标顶回开头）
+      if (ev.target && ev.target.classList && ev.target.classList.contains('nlblock__src')) return;
+      // 行内公式：**只把它自己**换成源码（同行其余文字保持渲染）
+      var mathEl = ev.target && ev.target.closest ? ev.target.closest('.katex') : null;
+      if (mathEl && !mathEl.closest('.mathblock')) {
+        ev.preventDefault();
+        inlineBeginEdit(mathEl);
+        return;
+      }
+      var hit = ev.target && ev.target.closest ? ev.target.closest('[data-line-start]') : null;
+      if (hit && !md.contains(hit)) hit = null;
+      ev.preventDefault();
+      liveBeginEdit(md, ev, hit);
+    });
+    // 悬停时右上角那枚 `</>`：**"看这一组的源码"** —— 和"点正文就地改一行"是两件事，
+    // 大块内容想整段看时不用一行行点。它跟着鼠标所在的那一组走。
+    var srcBtn = h('button.nlblock__src-btn', {
+      type: 'button',
+      text: '</>',
+      title: '看这一组的源码',
+      hidden: true,          // 不悬停就该看不见 —— 漏了这一句它就一直浮在正文上
+    });
+    var hovered = null;
+    inner.addEventListener('mousemove', function (ev) {
+      var md = inner.querySelector('.md');
+      if (!md) return;
+      var hit = ev.target && ev.target.closest ? ev.target.closest('[data-line-start]') : null;
+      if (!hit || !md.contains(hit)) {
+        srcBtn.hidden = true;
+        hovered = null;
+        return;
+      }
+      hovered = hit;
+      var box = hit.getBoundingClientRect();
+      var host = inner.getBoundingClientRect();
+      srcBtn.hidden = false;
+      srcBtn.style.top = Math.max(0, box.top - host.top + inner.scrollTop - 2) + 'px';
+    });
+    srcBtn.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      if (!hovered) return;
+      liveBeginEdit(inner.querySelector('.md'), { clientX: -1, clientY: -1 }, hovered);
+    });
+    inner.appendChild(srcBtn);
+    pane.appendChild(h('div.nread', null, inner));
+    return pane;
+  }
 
   function blocksOf(text) {
     var lines = (text || '').split('\n');
@@ -1801,123 +3492,6 @@
     }
     return out;
   }
-
-  function renderLive() {
-    var pane = h('div.note__pane');
-    var box = h('div.nlive');
-    var blocks = blocksOf(state.note.body || '');
-    if (!blocks.length) {
-      box.appendChild(
-        h('div.nlive__empty', {
-          text: '（空的）点这里开始写 —— 或按 ⌘/ 看全部快捷键',
-          onClick: function () { appendBlock(); }
-        })
-      );
-    }
-    blocks.forEach(function (block) {
-      box.appendChild(liveBlock(block));
-    });
-    // 原先这里是「＋ 新的一段」—— 用户的原话是"这个新的一段是什么？意义不明"。
-    // 它确实说不清：屏幕上一根孤零零的按钮，没人知道"一段"是什么单位、加在哪。
-    // 现在换成**正文末尾那条提示带**：平时几乎不出现，鼠标进入这一块才浮出来，
-    // 而且把话说全（"在末尾加一段"）。它同时就是那片可点区域本身。
-    box.appendChild(
-      h('button.nlive__add', {
-        type: 'button',
-        text: '＋ 在末尾加一段',
-        title: '在末尾加一段（点正文下面的空白处也一样）',
-        onClick: function () { appendBlock(); }
-      })
-    );
-    box.addEventListener('click', function (ev) {
-      // 点在最后一块下面那片空白 = 加一段（Obsidian 也是这个手感）
-      if (ev.target === box) appendBlock();
-    });
-    pane.appendChild(box);
-    // 刚加的那一段：渲染完直接进编辑态，免得多点一次。
-    // 用"最后一块"定位，不做行号算术 —— 行号算术在末尾空行多一个少一个时会错。
-    if (state.editLastBlock) {
-      state.editLastBlock = false;
-      var all = box.querySelectorAll('.nlive__block');
-      if (all.length) setTimeout(function () { editBlock(all[all.length - 1]); }, 0);
-    }
-    return pane;
-  }
-
-  function liveBlock(block) {
-    var row = h('div.nlive__block', { dataset: { start: String(block.start), count: String(block.count) } });
-    row.appendChild(h('div.nlive__rendered', { html: renderBlockHtml(block.raw) }));
-    row.setAttribute('title', '点一下改这一段（源码里第 ' + (block.start + 1) + ' 行起）');
-    row.addEventListener('click', function (ev) {
-      if (ev.target.closest && ev.target.closest('a')) return;   // 链接要点得通
-      editBlock(row);
-    });
-    row.addEventListener('contextmenu', function (ev) {
-      showMenu(ev, blockMenu(block));
-    });
-    return row;
-  }
-
-  function renderBlockHtml(raw) {
-    try {
-      if (QF.md && QF.md.render) {
-        var node = QF.md.render(raw);
-        var holder = h('div');
-        holder.appendChild(node);
-        // **callout 那道后处理也要跑**：阅读模式是把整篇渲染完再统一扫一遍
-        // （`decorateCallouts`），而这里是**一块一块渲染**的 —— 少这一步，
-        // 同一篇笔记在「阅读」里是漂亮的提示框，在「默认」里就是一行字面量
-        // `[!info]`（用户："你的默认编辑模式要和阅读模式一样美观"）。
-        decorateCallouts(holder);
-        return holder.innerHTML;
-      }
-    } catch (err) {
-      /* 渲染器出错就退回原文，别把这一段吞掉 */
-    }
-    return '<pre>' + esc(raw) + '</pre>';
-  }
-
-  /** 把一块变成编辑框。里面是**这一块的源码**。 */
-  function editBlock(row) {
-    if (state.editing) return;
-    var start = Number(row.dataset.start);
-    var count = Number(row.dataset.count);
-    var block = blocksOf(state.note.body || '').filter(function (one) { return one.start === start; })[0];
-    if (!block) return;
-    state.editing = true;
-    ui.clear(row);
-    var area = h('textarea.nlive__area', { value: block.raw, rows: String(Math.max(1, count)) });
-    row.appendChild(area);
-    autosize(area);
-    area.focus();
-    area.setSelectionRange(area.value.length, area.value.length);
-    var done = false;
-    function finish(save) {
-      if (done) return;
-      done = true;
-      state.editing = false;
-      area.removeEventListener('blur', onBlur);
-      if (save && area.value !== block.raw) {
-        lineOp('replace_range', start, { count: count, raw: area.value });
-        return;
-      }
-      renderMain();
-    }
-    function onBlur() { finish(true); }
-    area.addEventListener('input', function () { autosize(area); });
-    area.addEventListener('keydown', function (ev) {
-      ev.stopPropagation();
-      if (ev.key === 'Escape') { ev.preventDefault(); finish(false); return; }
-      if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') { ev.preventDefault(); finish(true); return; }
-      // 编辑块里也能用格式化快捷键（与源码视图同一套）
-      if (formatShortcut(ev, area)) return;
-    });
-    area.addEventListener('blur', onBlur);
-    area.addEventListener('contextmenu', function (ev) {
-      showMenu(ev, sourceMenu(area, { inBlock: true }));
-    });
-  }
-
   function autosize(area) {
     area.style.height = 'auto';
     area.style.height = Math.max(28, area.scrollHeight) + 'px';
@@ -1931,38 +3505,6 @@
     state.editLastBlock = true;
     lineOp('insert', last, { raw: raw });
   }
-
-  /** 块的右键菜单：编辑 / 插入 / 复制 / 删除。 */
-  function blockMenu(block) {
-    var start = block.start;
-    return [
-      { label: '编辑这一段', run: function () {
-          var row = el.main.querySelector('.nlive__block[data-start="' + start + '"]');
-          if (row) editBlock(row);
-        } },
-      '-',
-      { label: '在这段之后插入标题', run: function () { insertAfterBlock(start, block.count, '## 新标题'); } },
-      { label: '在这段之后插入列表', run: function () { insertAfterBlock(start, block.count, '- 第一条\n- 第二条'); } },
-      { label: '在这段之后插入引用', run: function () { insertAfterBlock(start, block.count, '> 引用'); } },
-      { label: '在这段之后插入代码块', run: function () { insertAfterBlock(start, block.count, '```\ncode\n```'); } },
-      { label: '在这段之后插入公式块', run: function () { insertAfterBlock(start, block.count, '$$\nx = y\n$$'); } },
-      { label: '在这段之后插入表格', run: function () { insertAfterBlock(start, block.count, '| 列 | 列 |\n| --- | --- |\n|  |  |'); } },
-      { label: '在这段之后插入分隔线', run: function () { insertAfterBlock(start, block.count, '---'); } },
-      '-',
-      { label: '复制这一段的源码', run: function () { copyText(block.raw, '这一段的源码'); } },
-      {
-        label: '删除这一段',
-        danger: true,
-        run: function () {
-          ui.confirm('删掉这一段？', { okLabel: '删掉' }).then(function (yes) {
-            if (!yes) return;
-            lineOp('replace_range', start, { count: block.count, raw: '' });
-          });
-        }
-      }
-    ];
-  }
-
   function insertAfterBlock(start, count, raw) {
     // 用范围替换来做：把这一块连同它后面那个空行一起换成"这一块 + 空行 + 新块"
     var block = blocksOf(state.note.body || '').filter(function (one) { return one.start === start; })[0];
@@ -2012,7 +3554,113 @@
   }
 
   /** 在指定 textarea 上做"包裹/解包裹"（右键菜单与快捷键共用）。 */
+  /* ------------------------------------------------ CodeMirror 6（编辑内核）
+   *
+   * 为什么换内核：阅读态的文字是**渲染产物**，自研编辑器只能靠启发式把"点到的字"
+   * 对回源码区间，对不上就得拒绝（用户撞见的那句"这一处认不出源码区间"就是它）。
+   * CM6 里每一行**本来就是**文档内容，装饰只是显示 —— 这类"对不上"不存在。
+   *
+   * 这里的接法是**不改调用点**：工具栏、快捷键、右键菜单原来都拿 `area` 调
+   * `wrapIn/linePrefixIn/insertIn`，所以只给这三个函数加一条 CM6 分支
+   * （鸭子类型：本身是 EditorView，或带着 `cm6` 引用的适配器）。
+   */
+
+  /** 这个参数是 CM6 的 EditorView（或带 `cm6` 引用的适配器）吗？ */
+  function cm6Of(target) {
+    if (!target) return null;
+    if (target.cm6 && typeof target.cm6.dispatch === 'function') return target.cm6;
+    if (typeof target.dispatch === 'function' && target.state && target.state.doc) return target;
+    return null;
+  }
+
+  function cm6Value(view) {
+    return view.state.doc.toString();
+  }
+
+  function cm6Sel(view) {
+    var main = view.state.selection.main;
+    return { from: main.from, to: main.to };
+  }
+
+  /** 换掉 [from, to)，然后落一个选区 —— 走 `dispatch`，所以**撤销栈是真的**。 */
+  function cm6Replace(view, from, to, text, selFrom, selTo) {
+    var head = typeof selFrom === 'number' ? selFrom : from + text.length;
+    var tail = typeof selTo === 'number' ? selTo : head;
+    view.dispatch({
+      changes: { from: from, to: to, insert: text },
+      selection: { anchor: head, head: tail },
+      scrollIntoView: true,
+    });
+  }
+
+  /** 给 `sourceMenu` 这类"按 textarea 写的"调用点用的适配器。
+   *  `cm6` 那一项让 `cm6Of` 认得它，于是包裹类操作仍然走 CM6 分支。 */
+  function cm6Shim(view) {
+    return {
+      cm6: view,
+      get value() {
+        return cm6Value(view);
+      },
+      get selectionStart() {
+        return cm6Sel(view).from;
+      },
+      get selectionEnd() {
+        return cm6Sel(view).to;
+      },
+      focus: function () {
+        view.focus();
+      },
+      setSelectionRange: function (a, b) {
+        view.dispatch({ selection: { anchor: a, head: typeof b === 'number' ? b : a } });
+      },
+    };
+  }
+
+  /** 替换一段文字 —— **必须走浏览器的编辑管线**，不能只改 `value`。
+   *
+   *  `setRangeText` 有两个代价（用户实测都撞上了）：不进撤销栈 → **⌘Z 撤不回来**；
+   *  不触发 `input` → 脏标记与撑高都得自己补。`execCommand('insertText')` 是唯一
+   *  既进撤销栈、又触发 `input` 的写法（已被标记为废弃，但它是唯一的选择）。
+   *  真的不可用时退回 `setRangeText`，并且自己补一个 input。
+   */
+  function replaceRange(area, start, end, inserted, selStart, selEnd) {
+    area.focus();
+    area.setSelectionRange(start, end);
+    var ok = false;
+    try {
+      ok = document.execCommand('insertText', false, inserted);
+    } catch (err) {
+      ok = false;
+    }
+    if (!ok) {
+      area.setRangeText(inserted, start, end, 'end');
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (typeof selStart === 'number') area.setSelectionRange(selStart, selEnd);
+  }
+
   function wrapIn(area, before, after, placeholder) {
+    var view = cm6Of(area);
+    if (view) {
+      var all = cm6Value(view);
+      var sel = cm6Sel(view);
+      var wrapped =
+        all.slice(Math.max(0, sel.from - before.length), sel.from) === before &&
+        all.slice(sel.to, sel.to + after.length) === after;
+      if (wrapped) {
+        var inner = all.slice(sel.from, sel.to);
+        cm6Replace(view, sel.from - before.length, sel.to + after.length, inner, sel.from - before.length, sel.from - before.length + inner.length);
+      } else if (sel.from === sel.to) {
+        // 没有选中文字：**只插一对标记、光标停在中间**（对标 Obsidian）。
+        // 与下面 textarea 那条同一规矩 —— 旧实现在这儿插的是占位词（"粗体"/"斜体"），
+        // 按一下 ⌘B 就凭空多出两个字，忘了删就留在笔记里（真笔记里已经出现两处）。
+        cm6Replace(view, sel.from, sel.to, before + after, sel.from + before.length, sel.from + before.length);
+      } else {
+        var picked = all.slice(sel.from, sel.to);
+        cm6Replace(view, sel.from, sel.to, before + picked + after, sel.from + before.length, sel.from + before.length + picked.length);
+      }
+      return;
+    }
     area.focus();
     var start = area.selectionStart;
     var end = area.selectionEnd;
@@ -2021,21 +3669,35 @@
       value.slice(Math.max(0, start - before.length), start) === before &&
       value.slice(end, end + after.length) === after;
     if (outer) {
-      area.setRangeText(value.slice(start, end), start - before.length, end + after.length, 'select');
-    } else {
-      var picked = value.slice(start, end) || placeholder || '';
-      area.setRangeText(before + picked + after, start, end, 'select');
-      area.setSelectionRange(start + before.length, start + before.length + picked.length);
+      // 已经裹着了 → 再按一次就是脱掉（保留选中，连着按不会跑偏）
+      var inner = value.slice(start, end);
+      replaceRange(area, start - before.length, end + after.length, inner, start - before.length, start - before.length + inner.length);
+      return;
     }
-    area.dispatchEvent(new Event('input', { bubbles: true }));
+    if (start === end) {
+      // 没有选中文字：**只插一对标记，光标停在中间**（对标 Obsidian）。
+      // 旧实现在这儿插的是占位词（"粗体"/"斜体"），用户按一下 ⌘B 就多出两个字 ——
+      // 忘了删就留在笔记里了（这轮在真笔记里看到过两处）。
+      replaceRange(area, start, end, before + after, start + before.length, start + before.length);
+      return;
+    }
+    var picked = value.slice(start, end);
+    replaceRange(area, start, end, before + picked + after, start + before.length, start + before.length + picked.length);
   }
 
   function linePrefixIn(area, prefix) {
+    var view = cm6Of(area);
+    if (view) {
+      var doc = view.state.doc;
+      var line = doc.lineAt(cm6Sel(view).from);
+      cm6Replace(view, line.from, line.from, prefix, line.from + prefix.length, line.from + prefix.length);
+      return;
+    }
     area.focus();
     var start = area.selectionStart;
     var head = area.value.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
-    area.setRangeText(prefix, head, head, 'end');
-    area.dispatchEvent(new Event('input', { bubbles: true }));
+    // 同上：走编辑管线才进撤销栈
+    replaceRange(area, head, head, prefix, head + prefix.length, head + prefix.length);
   }
 
   function insertIn(area, text) {
@@ -2054,6 +3716,7 @@
     var table = null;
     if (!shift && key === 'b') table = ['**', '**', '粗体'];
     else if (!shift && key === 'i') table = ['*', '*', '斜体'];
+    else if (!shift && key === 'u') table = ['<u>', '</u>', '下划线'];
     else if (!shift && key === 'k') table = ['[', '](https://)', '说明'];
     else if (!shift && key === '`') table = ['`', '`', 'code'];
     else if (shift && key === 'k') table = ['[[', ']]', '笔记名'];
@@ -2707,16 +4370,11 @@
     if ((ev.metaKey || ev.ctrlKey) && !ev.altKey) {
       var key = (ev.key || '').toLowerCase();
       if (key === 'o' || key === 'p' || (key === 'n' && !state.note)) {
-        // Ctrl+O 后面插入、Ctrl+P 建子笔记：我们按"落在同一目录 / 落在同名子目录"实现
+        // Ctrl+N / Ctrl+O / Ctrl+P 都是"在当前这篇旁边新建一篇"。
+        // **曾经** Ctrl+P 是"建子笔记"：它会建一个"与这篇同名的目录"再往里放一篇 ——
+        // 那正是用户说的"不存在子笔记这种东西、你把文件夹和笔记搞混了"，去掉。
         ev.preventDefault();
-        var folder = '';
-        if (key === 'p') {
-          var here = state.note ? state.note.path.split('/').slice(0, -1).join('/') : '';
-          var stem = state.note ? state.note.path.split('/').pop().replace(/\.md$/i, '') : '';
-          folder = here ? here + '/' + stem : stem;
-        } else if (state.note) {
-          folder = state.note.path.split('/').slice(0, -1).join('/');
-        }
+        var folder = state.note ? state.note.path.split('/').slice(0, -1).join('/') : '';
         createNote(folder, '');
         return;
       }
@@ -3640,10 +5298,12 @@
 
   function runSearch(term) {
     api
-      .get('/notes/search?' + q({ q: term, lib: state.lib, limit: 60 }))
+      .get('/notes/search?' + q({ q: term, lib: state.lib, limit: 60, folder: state.searchScope || '' }))
       .then(function (res) {
         var items = res.items || [];
         ui.clear(el.tree);
+        var chip = scopeChip();
+        if (chip) el.tree.appendChild(chip);
         el.tree.appendChild(
           h(
             'div.ntree__head',
@@ -3789,8 +5449,10 @@
   }
 
   /** 把树里某个条目变成"正在改名"的输入框（Trilium: 树上 Enter）。 */
-  function startInlineRename(path) {
-    var node = el.tree.querySelector('.ntree__file[data-path="' + cssEscape(path) + '"]');
+  function startInlineRename(path, kind) {
+    var node = el.tree.querySelector(
+      (kind === 'dir' ? '.ntree__dir' : '.ntree__file') + '[data-path="' + cssEscape(path) + '"]'
+    );
     if (!node) return;
     var label = node.querySelector('.ntree__label');
     if (!label) return;
@@ -3820,7 +5482,8 @@
         .post('/notes/rename', {
           lib: state.lib,
           path: path,
-          to: (folder ? folder + '/' : '') + next + '.md'
+          // 目录的 `to` 不带 `.md`（那是笔记的后缀）；带了就会建出"叫 xxx.md 的文件夹"
+          to: (folder ? folder + '/' : '') + next + (kind === 'dir' ? '' : '.md')
         })
         .then(function (res) {
           // 改的就是当前打开这篇 → 换成新的对象（**路径也变了**，别拿旧路径去比新旧对象）
@@ -3855,6 +5518,11 @@
 
   /* ------------------------------------------------------------ 启动 */
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  // 只有笔记页才自启动。其它页面（工作台）会加载本文件，为的是拿上面那个渲染入口 ——
+  // 不守卫的话，工作台一打开就会把整套笔记页（左树 / 中正文 / 右栏）画进 #app-root。
+  var bootPage = (document.getElementById('app-root') || {}).dataset;
+  if (!bootPage || bootPage.page === 'notes') {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+    else boot();
+  }
 })();

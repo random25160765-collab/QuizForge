@@ -768,8 +768,16 @@ class Conversation(Base):
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
     title: Mapped[str] = mapped_column(String(120), default="", nullable=False)
-    #: 置顶：用户自己钉在列表最上面的那些（排序里永远排在"按时间"之前）
+    #: 置顶：用户自己钉在列表最上面的那些。
+    #:
+    #: **它是"收藏夹"，不是"搬走"**：置顶的会话在置顶区有一份**副本**，
+    #: 原位置（归档 / 未归档）里那份**不动** —— 用户的原话："对话置顶后位置不变，
+    #: 在置顶处加副本"。
     pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 归档：收起不看的那些（就是"文件夹"那层逻辑，只有一层，不分级）。
+    #: 新建的对话默认 False = 落在**未归档**里；置顶与它互不干涉
+    #:（用户："有没有归档都可以置顶"），所以归档**不会**顺手取消置顶。
+    archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), nullable=False
     )

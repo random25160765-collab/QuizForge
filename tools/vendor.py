@@ -36,8 +36,12 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+
+#: 仓库根（清单脚本 `build/package.py` 在那儿 —— 见 sync_pyodide 末尾的刷新）
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 ROOT = Path(__file__).resolve().parent.parent
 VENDOR_KATEX = ROOT / "vendor" / "katex"
@@ -63,12 +67,44 @@ PYODIDE_FILES = (
 )
 # 预置的包（依赖会从 lock 里解出来，比如 scipy → numpy + openblas）。
 #
+# 分两拨（`_PRELOAD` 与这里全部的区别见 `api/app/tools.py` 的注释）：
+#   * numpy / scipy —— **壳启动时就装好**（最常用，装了就一直现成）；
+#   * pandas / matplotlib —— 只要文件在 indexURL 旁边就行，**脚本 import 了才装**
+#     （`loadPackagesFromImports` 在壳里做），没用到的人一个字节都不下。
+# 体积是真的：numpy 12MB、openblas 6MB、scipy 45MB、pandas 13MB、
+# matplotlib 10MB 加上它那一串依赖（pillow / kiwisolver / fonttools 等）。
+#
 # 为什么要预置：Pyodide 按 `indexURL` 找包（运行时目录里必须有那些 .whl），
 # 不在那儿就是"没有这个模块"。实测就是这么缺的 —— 模型在演示里
 # `import numpy`，面板上却是 `No module named 'numpy'`。
 #
 # 体积是真的：numpy 12MB、openblas 6MB、scipy 45MB。想加包就往这里加名字。
-PYODIDE_PACKAGES = ("numpy", "scipy")
+PYODIDE_PACKAGES = (
+    "numpy",
+    "scipy",
+    "pandas",
+    "matplotlib",
+    # sympy / networkx：EE 那类课要的是**推导**（小信号等效 → KCL/KVL → 把 A_v(s) 化简
+    # 成标准二阶形式），数值算给不出一支带参数的表达式。两个都是纯 Python。
+    "sympy",
+    "networkx",
+    # micropip：**壳自己要用的**（见 EXTRA_WHEELS —— 它靠 micropip 从本机 URL 装那些
+    # lock 之外的包）。它虽然写在 pyodide 的 lock 里，但不在上面这串的依赖闭包里 ——
+    # 不显式列出来的话 `make vendor` 不会取它，壳里 `loadPackage("micropip")` 就是 404
+    #（实测栽过：报"You can install it by calling: await micropip.install('micropip')"）。
+    "micropip",
+)
+
+#: **lock 里没有、但我们自己要的包**（Pyodide 的 `loadPackage` 只认 lock 里那 310 个，
+#: 而 schemdraw 不在其中）。
+#:
+#: 好在它 152KB、纯 Python、核心零依赖（matplotlib 只是画图时的 extra）——
+#: 把 wheel 原样放进 indexURL 旁边，壳里用 `micropip.install("<本机 URL>")` 装就行，
+#: 仍然**不联网**（和别的包一个规矩）。版本钉死，取回来的东西可复现。
+EXTRA_WHEELS: tuple[tuple[str, str], ...] = (
+    # (包名, 版本)
+    ("schemdraw", "0.23"),
+)
 
 # ---------------------------------------------------------------- 演示套件
 #
@@ -182,6 +218,24 @@ def _download(url: str, dest: Path) -> None:
             shutil.copyfileobj(response, out)
 
 
+def _pypi_wheel_url(name: str, version: str) -> str:
+    """从 PyPI 的 JSON API 找这个版本、这个**纯 Python** wheel 的地址。
+
+    为什么不拼 `files.pythonhosted.org` 那种带哈希的路径：它随重新上传会变，
+    钉不住；而 API 给的是当前有效的那个。
+    """
+    import urllib.request
+
+    url = f"https://pypi.org/pypi/{name}/{version}/json"
+    request = urllib.request.Request(url, headers={"User-Agent": "quizforge-vendor"})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    for item in data.get("urls") or []:
+        if str(item.get("filename") or "").endswith("-py3-none-any.whl"):
+            return str(item["url"])
+    raise RuntimeError(f"PyPI 上没有 {name} {version} 的 py3-none-any wheel")
+
+
 def pyodide_package_files(names=PYODIDE_PACKAGES) -> list[str]:
     """按 pyodide-lock.json 解析出这些包（含依赖）的**文件名**。
 
@@ -274,6 +328,22 @@ def sync_pyodide(force: bool = False) -> int:
             )
             return 1
 
+    # 额外 wheel（lock 里没有的，比如 schemdraw）：从 PyPI 取**纯 Python** 那一份，
+    # 钉版本。与预置包一样放在 indexURL 旁边 —— 壳里用 micropip 从**本机** URL 装，
+    # 仍然不联网。
+    for name, version in EXTRA_WHEELS:
+        filename = f"{name}-{version}-py3-none-any.whl"
+        target = VENDOR_PYODIDE / filename
+        if target.is_file() and not force:
+            continue
+        print(f"[INFO] 取额外包 {filename} …")
+        try:
+            _download(_pypi_wheel_url(name, version), target)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
+            print("       沙箱里表现为「没有这个模块」。", file=sys.stderr)
+            return 1
+
     have = [name for name in wanted if (VENDOR_PYODIDE / name).is_file()]
     total = sum((VENDOR_PYODIDE / name).stat().st_size for name in have)
     (VENDOR_PYODIDE / "SOURCE.md").write_text(
@@ -290,6 +360,25 @@ def sync_pyodide(force: bool = False) -> int:
         encoding="utf-8",
     )
     print(f"[INFO] Pyodide 已同步：运行时 {len(PYODIDE_FILES)} + 预置包 {len(have)} 个 -> {_rel(VENDOR_PYODIDE)}")
+
+    # **顺手把清单刷新**：`/assets/pyodide/{name}` 只发**清单里列着**的文件
+    #（见 `heavy_deps.file_path` —— 它拿清单挡路径穿越，顺带也挡住了没登记的包）。
+    # 清单旧了的表现是**新取的包一律 404**，而 404 的现场很难认：
+    # `loadPackage` 静默跳过（不报错！），直到 `import` 时才说"没有这个模块"。
+    # 这一次就栽在这儿：sympy / networkx / schemdraw / micropip 全在缓存里，
+    # 一个都取不到。让"取包"和"刷清单"永远是一件事，别靠人记得。
+    try:
+        subprocess.run(
+            [sys.executable, str(REPO_ROOT / "build" / "package.py"), "manifest"],
+            check=True,
+            capture_output=True,
+        )
+        print("[INFO] 运行时清单已刷新：build/pyodide-manifest.json")
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[WARN] 清单没刷新（{exc}）—— 新取的包会取不到，手跑一次 build/package.py manifest",
+            file=sys.stderr,
+        )
     return 0
 
 

@@ -97,7 +97,13 @@ html[data-theme='light'] .md {
   background: var(--bg3);
   border: 1px solid var(--line);
   color: var(--pri3);
-  white-space: nowrap;
+  /* 原来是 `white-space: nowrap`：短标识符不折断是对的，但模型常把**整句原文**
+   * 包进反引号（一条消息里就有 1909px 宽的一段 ✗），它于是把整个消息区撑宽 ——
+   * 聊天框底下多出一条左右滑动条，右边一大片留白（用户报的就是这个）。
+   * `pre-wrap` = 保留空格、但允许在空格处换行；`overflow-wrap: anywhere` 兜住
+   * "一长串没有空格的标识符"，只在真的放不下时才断。 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 html[data-theme='light'] .icode { color: #0E7C6B; }
 
@@ -289,6 +295,20 @@ html[data-theme='light'] {
   font-size: 1.06em;
   color: var(--fg);
 }
+/* 块与块之间那一个个 <br>：**它们不该占一行**。
+ *
+ * 渲染器在块级元素之间会留一个 <br>（源里那些空行），而 <br> 会撑起一个完整行盒
+ * （实测 26.7px）。于是"两段之间"变成"两段 + 一整行空白"：
+ * 那两个行间公式之间实测 57px，去掉这个 <br> 之后按边距塌缩成 ~26px
+ * （用户："编辑和阅读……这个"大空隙""，就是它）。
+ *
+ * 只干掉 `.md` 的**直接子** <br>：段落内部的软换行在 <p> 里，不在这儿 ——
+ * 所以段落里的换行照旧，块之间那一整行消失。
+ */
+.md > br {
+  display: none;
+}
+
 .mathblock {
   margin: 0.85em 0;
   padding: 0.2em 0;

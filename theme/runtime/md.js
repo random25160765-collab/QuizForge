@@ -179,6 +179,11 @@
     // 高亮 ==text==
     text = text.replace(/==([^\n=]+?)==/g, '<mark>$1</mark>');
 
+    // 下划线 <u>text</u>：markdown 没有下划线，编辑区 ⌘/Ctrl+U 插的就是这个标签。
+    // 注意这一步**跑在已转义的文本上**（见 `inlineMarkup` 的入参名），所以源文里的
+    // `<u>` 到这儿是 `&lt;u&gt;` —— 这里把它还原成真标签，别的 HTML 仍然进不来。
+    text = text.replace(/&lt;u&gt;([^\n]+?)&lt;\/u&gt;/g, '<u>$1</u>');
+
     return text;
   }
 
@@ -273,6 +278,18 @@
         continue;
       }
 
+      // **独占一行的块级公式**（`$$…$$` 在 `extractMath` 里已经变成一个 token）：
+      // 它必须是段落的**兄弟节点**，不能留在段落文本里。踩过：留在里面时
+      // `<div class="mathblock">` 会嵌进 `<p>`（非法结构），渲染出来的元素数就与
+      // 源码行组数对不上 —— 就地编辑只能整块退回，用户那一段"正文 + 公式 + 正文 +
+      // 公式"于是整段都成了源码。
+      var loneMath = /^\u0000M(\d+)\u0000$/.exec(line.trim());
+      if (loneMath) {
+        nodes.push({ type: 'rawHtml', html: restore(line.trim(), store, options) });
+        i++;
+        continue;
+      }
+
       var heading = HEADING.exec(line);
       if (heading) {
         var level = heading[1].length;
@@ -354,6 +371,7 @@
           QUOTE.test(lines[i]) ||
           FENCE.exec(lines[i]) ||
           /^\u0000C\d+\u0000$/.test(lines[i].trim()) ||
+          /^\u0000M\d+\u0000$/.test(lines[i].trim()) ||
           ((ULIST.test(lines[i]) || OLIST.test(lines[i])) && !para.length)
         ) {
           if (para.length) break;
@@ -542,8 +560,30 @@
     return html;
   }
 
+  /**
+   * 渲染结果的小缓存（`src → html`）。
+   *
+   * 为什么值当：对话流式重画时，**没变过的块**也会被重新渲染 —— 一条长回答里
+   * 那些块占大多数（工具卡、引用、更早的段落）。缓存让它们第二次起直接命中。
+   *
+   * 只缓存**不带 options** 的调用：同样一段文字配不同 options 会渲染成不同的
+   * 东西，混在一起就错了。容量小（48）是因为对话里的块本来就不多，而且它是
+   * 按插入顺序淘汰的 —— 流式里每次都在变的那块会自然把最老的挤掉。
+   */
+  var _htmlCache = new Map();
+  var _HTML_CACHE_MAX = 48;
+
   function renderToString(src, options) {
-    return render(src, options).outerHTML;
+    if (options !== undefined && options !== null) return render(src, options).outerHTML;
+    var key = String(src == null ? '' : src);
+    var hit = _htmlCache.get(key);
+    if (hit !== undefined) return hit;
+    var html = render(src, options).outerHTML;
+    if (_htmlCache.size >= _HTML_CACHE_MAX) {
+      _htmlCache.delete(_htmlCache.keys().next().value);
+    }
+    _htmlCache.set(key, html);
+    return html;
   }
 
   function renderInto(target, src, options) {
@@ -588,5 +628,9 @@
     renderInto: renderInto,
     renderInline: renderInlineToString,
     plain: plain,
+    // 单独导出公式渲染：CM6 的 Live Preview 装饰要自己造 KaTeX 部件，
+    // 而"KaTeX 的调用参数"（displayMode / throwOnError / strict / macros…）
+    // 只能有一份，否则两处渲染迟早长得不一样。
+    renderMath: renderMath,
   };
 })();

@@ -404,7 +404,8 @@
   function newConversation(dir) {
     api.post('/chat/conversations', { folder: dir || '' }).then(function (out) {
       var id = out && out.conversation && out.conversation.id;
-      location.href = id ? 'chat.html?c=' + encodeURIComponent(id) : 'chat.html';
+      // 一律在窗格里开（这一页是主页，跳走就丢了当前的窗格布局）
+      send('chat', id ? { id: id } : { fresh: true }, '对话');
     }).catch(function (err2) {
       ui.toast('开不了新对话：' + ((err2 && err2.message) || err2), 'error');
     });
@@ -527,7 +528,10 @@
         icon: one.pinned ? 'star' : 'robot',
         title: (one.preview || '') + (one.count ? '\n' + one.count + ' 条消息' : ''),
         // 带 id 过去：对话页认这个参数，落到那一条上
-        href: 'chat.html?c=' + encodeURIComponent(one.id),
+        // **不跳页**：把会话当成一种资源送进右边的窗格（与资料、文档同一条规矩）。
+        // 用户："我在资源页面点击对话的时候，就应该直接把对话给我看。"
+        kind: 'chat',
+        ref: { id: one.id },
         move: { kind: 'chat', id: one.id, dir: one.folder || '', title: one.title || '' },
         menu: function () { return chatActions(one); },
       }));

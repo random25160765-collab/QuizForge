@@ -153,8 +153,77 @@
             // 用户看到的永远是"读不到这篇笔记"，而接口其实好好的
             // （用户报的原文就是这句："现在资源页面还是没法看笔记"）。
             doc.appendChild(meta);
-            // 正文交给共用的 Markdown 零件（与笔记页、对话里用的是同一份）
-            doc.appendChild(h('div.md', null, QF.md.render(note.body || '')));
+
+            // 正文：与笔记页「阅读」**同一套形状与后处理** —— `.nread__inner` 的排版
+            // （字号 / 行高 / 栏宽都跟着设置面板走）+ callout 上色。
+            // 原先这里只有 `h('div.md', QF.md.render(...))`：callout 会把 `[!note]`
+            // 标记原样露出来，字号行宽也与笔记页两样（用户："主页的笔记渲染非常怪"）。
+            var out = h('div.nread', null, h('div.nread__inner'));
+            var inner = out.querySelector('.nread__inner');
+            doc.appendChild(out);
+            var paint = function (mode) {
+              ui.clear(inner);
+              if (mode === 'edit') {
+                var area = h('textarea.panes__notearea', { value: note.body || '', spellcheck: 'false' });
+                var save = h('button.btn.btn--primary.panes__notesave', { type: 'button', text: '保存' });
+                save.addEventListener('click', function () {
+                  api
+                    .post('/notes/body', { lib: opts.lib, path: opts.path, body: area.value })
+                    .then(function (saved) {
+                      note = saved || note;
+                      ui.toast('已保存', 'ok');
+                      ui.clear(inner);
+                      paint('read');
+                    })
+                    .catch(function (err) {
+                      ui.toast('保存失败：' + ((err && err.message) || err), 'warn');
+                    });
+                });
+                inner.appendChild(area);
+                inner.appendChild(save);
+                return;
+              }
+              // 走笔记页那套零件（callout 上色在内）。这里**用全局入口**而不是
+              // `QF.notesrt`：`QF` 由 ui.js 建立，与 notes.js 的加载时序不定 ——
+              // 实测主页上 notes.js 执行时 QF 还不存在，挂在 QF 上的入口会丢。
+              var render = (window.QF && QF.notesrt && QF.notesrt.renderInto) || window.qfNoteRenderInto;
+              var painted = false;
+              if (render) {
+                try {
+                  render(inner, note.body || '', { links: false });
+                  painted = !!inner.childElementCount;
+                } catch (err) {
+                  // 那条路没跑通就退回裸渲染：**窗格绝不能因为装饰失败而空白**
+                  //（正文是这里唯一要给人看的东西，上色只是锦上添花）
+                  painted = false;
+                }
+              }
+              if (!painted) {
+                ui.clear(inner);
+                inner.appendChild(QF.md.render(note.body || ''));
+              }
+            };
+            // 阅读 / 编辑 两态（笔记页那三态在窗格里没有左树与右栏，编辑即文本框）
+            var seg = h('div.panes__notemode');
+            [
+              { key: 'read', label: '阅读' },
+              { key: 'edit', label: '编辑' },
+            ].forEach(function (one) {
+              var btn = h('button.panes__notemodebtn' + (one.key === 'read' ? '.is-on' : ''), {
+                type: 'button',
+                text: one.label,
+                onClick: function () {
+                  Array.prototype.forEach.call(seg.querySelectorAll('button'), function (b2) {
+                    b2.classList.toggle('is-on', b2 === btn);
+                  });
+                  paint(one.key);
+                },
+              });
+              seg.appendChild(btn);
+            });
+            // 模式开关放在正文**上面**（先开关，再内容）
+            doc.insertBefore(seg, out);
+            paint('read');
           })
           .catch(function (err) {
             ui.clear(doc);
@@ -169,6 +238,20 @@
   /* ------------------------------------------------------------------ 资料条目 */
 
   function registerDoc() {
+    // 对话：与"资料"同一档的窗格 —— 左栏点一条会话就地看，不跳页
+    QF.panes.register('chat', {
+      title: '对话',
+      icon: 'robot',
+      key: function (opts) { return (opts || {}).id || 'new'; },
+      mount: function (host, opts) {
+        if (!QF.chat || !QF.chat.mount) {
+          host.appendChild(h('p.panes__muted', { text: '对话模块没加载（这一页需要 chat.js）' }));
+          return;
+        }
+        return QF.chat.mount(host, opts || {});
+      },
+    });
+
     QF.panes.register('doc', {
       title: '资料',
       icon: 'book',
