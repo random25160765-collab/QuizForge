@@ -24,7 +24,8 @@
 |---|---|---|
 | 对话内核 | `api/app/routers/chat.py` | 会话与消息（**树**：再生成=分叉）、SSE 流、零件装配、引用去重；**铺垫在落库时打 `process` 标记**（界面折成可展开的「过程」，刷新也不散） |
 | 工具循环 | `api/app/agent_loop.py` | 多轮工具调用、上下文预算、**最后一轮不给工具**（逼收口作答）、协议泄漏兜底 |
-| 工具集 | `api/app/tools.py` | **15 个**：检索 3 · 图谱 1 · 点详情 1 · 题 4（现成 / 推题 / **现编** / 批改）· 掌握度与复习 2 · 写操作提案 2 · 沙箱 2 |
+| 工具集 | `api/app/tools.py` | **23 个**（六组 + 一个元能力）：笔记 4 · 资料 3 · 图谱 3 · 出题 8 · 沙箱 2 · 联网 2 · 元能力 `run_subagent`。分组是唯一出处，界面开关与提示词都读它（`mounts.py` / `GROUP_PROMPTS`） |
+| 联网搜索 | `api/app/websearch.py` | **默认免密钥**（必应的 RSS 输出，零配置可用）；填了密钥可切博查 / Tavily / Serper。`read_web_page` 抓正文（启发式抽取），**本机与内网地址一律拒**（见该模块的 `_guard_url`） |
 | 大题批改 | `api/app/routers/problem.py` | 独立子代理批改（看不到聊天记录）；批完**回写一条 assistant 消息进对话** —— 主 agent 下一轮才看得见「他做过这道大题、批成什么样」 |
 | 我的题单 | `api/app/routers/mybank.py` · `user_questions` | 自己出的题**另开一张表**：公共 `questions` 挂着覆盖率对账、图谱的 `question_concepts`、流水线状态机（draft→verified→published），混进去会污染统计、让流水线管它、而且**删不掉** |
 | 单用户 | `api/app/deps.py` | **没有账号**：注册 / 登录 / 会话 / CSRF 全删；`CurrentUser` 这个名字留着，取的是**本机唯一用户**（没有就当场建）。护栏在 `test_route_contract.py`：那些守卫不许挂回来 |

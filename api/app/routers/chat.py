@@ -66,6 +66,7 @@ from .. import attachments as attach
 from .. import parts as msgparts
 from .. import mounts
 from .. import runs
+from .. import websearch
 from ..db import as_json
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
 from ..models import Attachment, Conversation, ConversationFolder, Message
@@ -75,7 +76,7 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 @router.get("/mounts")
 def mounts_state(db: DbSession) -> dict:
-    """顶栏那组开关现在的状态：五组各亮着没有，以及**这一版真声明了哪些工具**。
+    """顶栏那组开关现在的状态：每组各亮着没有，以及**这一版真声明了哪些工具**。
 
     `declared` 是从 `tools.specs()` 真算出来的，不是另抄一份 ——
     "图标亮着"与"模型看得到几个工具"必须能对得上，而这是唯一能证明它俩一致的办法
@@ -108,6 +109,21 @@ def mounts_save(body: dict, db: DbSession) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return mounts.describe(db)
+
+
+@router.get("/websearch")
+def web_search_state(db: DbSession) -> dict:
+    """联网搜索配好了没有、走哪条路。
+
+    设置面板要这一条：界面本地只知道**用户自己填的**那份，而实际生效的可能来自
+    内测通道（见 `websearch.resolve`）—— 只说"没填密钥"，会让人对着一个其实能用的
+    功能找问题。**不回密钥**。
+
+    路名是 `/websearch` 而不是 `/search`：后者已经归"在消息正文里搜一段字"了
+    （见下面的 `search_messages`）。同名两条路由不会报错，只会有一条**永远进不去** ——
+    实测踩到：加上去的那一刻，搜消息的两个用例就开始 KeyError。
+    """
+    return websearch.state(db)
 
 
 @router.get("/sandbox")
@@ -220,12 +236,22 @@ GROUP_PROMPTS = {
         "**别自己引库、也别手画坐标轴**）。\n"
         "不要因为「我做不到」就推辞，也不要把「做不到」当结论 —— 先看手上的工具能做到哪一步。"
     ),
+    "web": (
+        "联网：`web_search` 搜公开网页（回标题 / 网址 / 摘要），"
+        "`read_web_page` 把某一页读成正文。\n"
+        "**他的材料里没有**、或者他问的是外面的事（最新版本、现在的做法、某个数字的出处）"
+        "才用它；材料库与图谱里查得到的，优先走那几路 —— 更准，也带行号与出处。"
+        "**关于他自己的事不要上网找**（他学到哪、记过什么，网上没有）。\n"
+        "**搜到要读**：摘要只是索引，常常正好缺了你要的那一句 —— 要引用事实就先 "
+        "`read_web_page`。引用时**把网址写上**，让他能点开核对；读不到就说读不到，"
+        "不要拿摘要凑，也不要因为没搜到就改口编。"
+    ),
 }
 
 # 组名 → 中文，未挂时用来告诉模型"别提这些"。
 GROUP_LABELS = {
     "notes": "笔记", "library": "资料", "graph": "知识图谱", "quiz": "题库与进度",
-    "sandbox": "沙箱",
+    "sandbox": "沙箱", "web": "联网",
 }
 
 
@@ -235,14 +261,19 @@ from .. import tools as tool_registry  # noqa: E402  提示词要点名工具，
 #: 因为同一个组里还分权限档：查询模式挂着 `notes` 组，但 `write_note`（write 档）没声明，
 #: 提示词里就不能念它（念了它就会去调，然后被拒）。 —— 只说"你有笔记工具"是不够的：
 #: 实测模型会坚持"我没有 search_notes 这个东西"，点到名字才肯动手。
-#: 有测试盯着它和 `tools.REGISTRY` 一致（抄成两份必然漂）。
+#: 有测试盯着它和 `tools.REGISTRY` 一致（抄成两份必然漂）——
+#: 见 `tests/test_prompt.py::test_every_group_has_a_prompt_a_label_and_its_tools`。
 GROUP_TOOLS = {
-    "notes": ("search_notes", "write_note"),
+    # `list_notes` / `read_note` 原先漏在这儿了 —— 而这一条正是"清单会漂"的现场：
+    # 它是**兜底**，正常路径由调用方传入真声明的工具名，所以漂了也看不出来。
+    # 兜底一旦被用到（`declared` 没传），模型会被告知"你只有那两个工具"。
+    "notes": ("list_notes", "read_note", "search_notes", "write_note"),
     "library": ("attach_material", "search_material", "read_material"),
     "graph": ("search_knowledge", "get_point_detail", "explore_graph"),
     "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews", "grade_problem",
              "flag_question", "mark_mastered", "push_question", "create_question"),
     "sandbox": ("run_python", "render_demo"),
+    "web": ("web_search", "read_web_page"),
 }
 
 
@@ -742,6 +773,32 @@ def _history(db: DbSession, messages: list[Message], *, vision: bool = False, mo
 # ------------------------------------------------------------------ 会话
 
 
+def _heal_folder_archived(db: DbSession, user_id) -> None:  # noqa: ANN001
+    """把「在分组里却没归档」的会话修回来。
+
+    这个组合是**旧代码**造出来的：`create_conversation` 收下 `folder` 时没有
+    同时置 `archived`（前端从分组里点「新对话」会把当前分组带上），而左栏那棵树
+    是按 `archived` 渲染的 —— 于是这些会话在界面上**看不见**，却仍被
+    `delete_folder` 照 `folder` 算进分组里：用户看到的是"分组里明明没东西，
+    却删不掉"。
+
+    读列表时顺手治一次，与 `_heal_stale` 同一套做法（比留一个一次性脚本可靠：
+    谁的库都不会漏掉）。已经一致时它只做一次 SELECT、不写库。
+    """
+    rows = db.scalars(
+        select(Conversation).where(
+            Conversation.user_id == user_id,
+            Conversation.folder != "",
+            Conversation.archived.is_(False),
+        )
+    ).all()
+    if not rows:
+        return
+    for conv in rows:
+        conv.archived = True
+    db.commit()
+
+
 @router.get("/conversations")
 def list_conversations(user: CurrentUser, db: DbSession) -> dict:
     """会话列表：标题、条数、最后一句话的预览。
@@ -749,6 +806,11 @@ def list_conversations(user: CurrentUser, db: DbSession) -> dict:
     排序 = **置顶的在前**，各自按最近活动倒序。置顶是用户自己钉的
     （"这条我在攻"），所以它必须压过"谁最近动过"。
     """
+    # 先把"在分组里却没归档"的历史数据修回来（见 `_heal_folder_archived`）。
+    # 不修的话它们在树上不显示，用户既看不见也挪不动 —— 只能对着一个删不掉的
+    # 分组发呆（那正是用户报上来的现象）。
+    _heal_folder_archived(db, user.id)
+
     rows = db.execute(
         select(Conversation, func.count(Message.id))
         .join(Message, Message.conversation_id == Conversation.id, isouter=True)
@@ -986,6 +1048,13 @@ def create_conversation(payload: dict, user: AuthenticatedWriter, db: DbSession)
     if body.get("folder"):
         conv.folder = _clean_folder(body.get("folder"))
         _ensure_folder(db, user.id, conv.folder)
+        # **进分组就是归档** —— 与拖放同一条规矩（前端 `moveConvTo` 也是两个字段一起发）。
+        #
+        # 少了这一句会造出「在分组里却没归档」的会话：左栏那棵树是按 `archived`
+        # 渲染的，所以它在界面上**根本看不见**，而 `delete_folder` 又照 `folder`
+        # 把它算进分组里 —— 表现就是"分组里明明没东西，却删不掉"
+        #（用户实测：`考研/数学` 里 7 条这样的会话）。
+        conv.archived = True
     db.add(conv)
     db.commit()
     db.refresh(conv)
@@ -1040,11 +1109,22 @@ def rename_conversation(cid: uuid.UUID, payload: dict, user: AuthenticatedWriter
         # 归档 / 取消归档。**不碰置顶**：用户要的是"有没有归档都可以置顶"，
         # 所以归档一条置顶过的对话，它在置顶区那份副本照旧在。
         conv.archived = body["archived"]
+        # **取消归档 = 同时出分组**：分组住在归档区（左栏那棵树），一条会话不能
+        # 既"在分组里"又"未归档" —— 那个组合在界面上是隐形的（树按 `archived`
+        # 渲染），却仍被 `delete_folder` 算进分组，于是成了"分组里没东西却删不掉"。
+        # 同一请求里显式给了 `folder` 的，以它为准（下面一段处理）。
+        if not conv.archived and "folder" not in body:
+            conv.folder = ""
 
     if "folder" in body:
         # 挪进某个分组：目标分组顺手登记一次（拖放时用户常常没先建过它）
         conv.folder = _clean_folder(body.get("folder"))
         _ensure_folder(db, user.id, conv.folder)
+        # 反过来：**进分组就是归档** —— 与 `create_conversation` 和前端
+        # `moveConvTo` 同一条规矩。移出分组（`folder: ""`）时不动归档：
+        # "在归档区里挪到最外层"是个真实动作，不该顺手把它扔回未归档。
+        if conv.folder:
+            conv.archived = True
 
     # 这里**不碰** `updated_at`：改名与置顶不是"活动"，列表的"最近"排序
     # 只该被消息推动（模型上的注释解释了为什么那一列没有 `onupdate`）。

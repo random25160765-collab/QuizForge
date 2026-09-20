@@ -39,6 +39,28 @@ def test_only_mounted_fragments_enter():
                 assert frag not in text, "%s 混进了 %s" % (other, key)
 
 
+def test_every_group_has_a_prompt_a_label_and_its_tools():
+    """每个工具组都得配齐三样，而且**工具清单要和注册表对得上**。
+
+    `tools.GROUPS` 才是唯一出处，而这三份是手写的 —— 这正是会漂的地方：
+    加一组忘了写提示词，模型就是"图标亮着、但它不知道有这回事"；
+    清单里抄错或抄漏一个工具名，提示词会念出一个不存在的名字
+    （模型照着去调，然后被 `call()` 拒掉，用户看到的是一次莫名其妙的失败）。
+    """
+    from app import tools
+    from app.routers.chat import GROUP_LABELS, GROUP_PROMPTS, GROUP_TOOLS
+
+    for key, _label, _hint in tools.GROUPS:
+        assert key in GROUP_PROMPTS, "这一组没有提示词片段：" + key
+        assert key in GROUP_LABELS, "这一组没有中文名：" + key
+        assert key in GROUP_TOOLS, "这一组没有工具清单：" + key
+        actual = {name for name in tools.REGISTRY if tools.group_of(name) == key}
+        assert set(GROUP_TOOLS[key]) == actual, key + " 的工具清单和注册表对不上"
+
+    # 反向也要对：提示词里不许出现注册表里没有的组（删掉一组时最容易漏这一头）
+    assert set(GROUP_PROMPTS) == set(tools.GROUP_LABELS)
+
+
 def test_off_groups_are_told_off():
     """没挂的组要明确说"你没有这个"，否则模型会提议去查。"""
     text = build_prompt({"notes"})

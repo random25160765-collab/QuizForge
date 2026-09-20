@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -198,9 +199,18 @@ def test_snapshot_maps_back_to_the_mode():
     assert m.mode_of_groups(groups) == "query"
     assert allow == ("read",)
 
-    groups, allow = m.from_snapshot('["notes", "library", "graph", "quiz", "sandbox"]')
+    # 用 `tools.ALL_GROUPS` 而不是把那一串组名抄进来：**加一组就要来改一次测试**，
+    # 而这条测试要验的是"快照能还原成模式"，不是"学习模式恰好有这五组"
+    #（原先抄的是手写的五组，加 `web` 那天它就红了 —— 红得没有信息量）。
+    groups, allow = m.from_snapshot(json.dumps(list(tools.ALL_GROUPS)))
     assert m.mode_of_groups(groups) == "study"
     assert set(allow) == set(tools.ACCESS_LEVELS)
+
+    # 老消息的快照（加组之前那份）对不上任何预设 → 按它**自己记的那几组**走。
+    # 这是对的：那一轮确实没有新组，不该被追认。
+    groups, allow = m.from_snapshot('["notes", "library", "graph", "quiz", "sandbox"]')
+    assert m.mode_of_groups(groups) == "custom"
+    assert len(groups) == 5 and "web" not in groups
 
     # 空数组 = 极简（**不是**"没记过"）：没挂任何组也是一个明确的模式
     assert m.from_snapshot("[]") == (set(), ("read",))
