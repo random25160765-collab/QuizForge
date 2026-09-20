@@ -131,7 +131,7 @@ def create_app() -> FastAPI:
         )
 
     # ------------------------------------------------------------ 静态前端
-    # 由 `python3 tools/build.py --web` 输出（容器里由 Dockerfile 的多阶段构建生成）。
+    # 由 `python3 tools/build_web.py`（即 `make web`）输出；`make api-dev` 会先构建它。
     # 挂载在最后：FastAPI 按注册顺序匹配，/api/* 必须排在 "/" 之前。
     web_dir = settings.web_dir
     if not web_dir.is_dir():

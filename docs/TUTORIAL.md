@@ -37,18 +37,21 @@ make web           # 构建在线前端 → api/web
 make api-dev       # → http://127.0.0.1:8100
 ```
 
-打开页面注册账号即可开始。快照比模型旧时补一次 `make api-migrate`。
+打开页面即可开始（没有注册账号那一步）。库里空时按下面「从快照搬题」灌一次。
 
-### 在线版（容器 / 部署形态）
+### 从快照搬题（可选）
+
+仓库里带着一份快照 `db/quizforge.sql.gz`（Postgres dump）。它不进应用，
+只是**搬历史数据**的入口 —— 搬完落到本机的 `data/quizforge.db`：
 
 ```bash
 make env-init
-make docker-up     # 构建镜像并起 db + api（镜像内跑前端构建与迁移）
-make db-restore    # 同样用快照灌库
+make db-up         # 起一个 Postgres 容器当源库
+make db-restore    # 用快照灌进去
+python tools/migrate_to_local.py    # 逐表搬到 SQLite，搬完对账；之后 make db-down
 ```
 
-**改前端要重建镜像。** 前端产物在镜像内生成，`make web` 只写到宿主 `api/web`，
-不会进到已经在跑的容器里。本机打磨前端请用 `make api-dev`（宿主 uvicorn 热重载）。
+更省事的办法是直接拷一份现成的 `data/quizforge.db` —— local-first 的正路。
 
 首次准备 KaTeX（只从本机副本同步，不联网）：
 
@@ -295,11 +298,13 @@ make graph-export   # → graph.json（图谱页取不到接口时的降级快�
 ### 运维
 
 ```bash
-make docker-down    # 停
-make db-backup      # 备份（数据在 docker 卷上，这是必须随手可用的那条路径）
+make db-down        # 停掉那个搬数据用的 Postgres（搬完就可以停）
+make db-dump        # 把快照更新进版本库（db/quizforge.sql.gz）
+make db-backup      # 数据文件的备份
 ```
 
-镜像自包含：前端在镜像内构建，不依赖宿主先跑 `make web`。
+应用自己不带服务：数据就是 `data/quizforge.db` 一个文件，**备份它就是备份一切**。
+打包版（`make package` / `dist-linux`）是单文件，双击即用，不需要 Docker。
 代价是**改前端必须重建镜像**（见第一节）。
 
 ---

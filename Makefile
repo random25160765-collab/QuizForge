@@ -27,7 +27,7 @@ WEB_OUT   ?= api/web
 .PHONY: vendor check test new web web-watch web-full package pyodide-manifest notes-import \
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
-        db-up db-down docker-up docker-down env-init db-backup db-dump db-restore \
+        db-up db-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
         graph-export skills-link \
         coverage coverage-gaps drive help
@@ -145,6 +145,7 @@ api-venv:
 db-up:
 	@docker compose up -d db
 	@echo "PostgreSQL 已在 127.0.0.1:5432 启动（仅供 tools/migrate_to_local.py 当源库用）"
+	@echo "  搬完记得 make db-down；要更新快照就 make db-dump"
 
 db-down:
 	@docker compose down
@@ -179,20 +180,17 @@ api-test:
 	@cd api && .venv/bin/python -m pytest
 
 # 整套跑在容器里（含构建镜像与迁移）
-docker-up:
-	@docker compose up -d --build
-	@echo "→ http://127.0.0.1:$${API_PORT:-8100}/"
+# docker-up / docker-down 已删（2026-09-20）：它们起的是「api 容器」那套部署，
+# 而应用现在是本机单文件（PyInstaller）或本机 uvicorn —— api/Dockerfile 也一起删了。
+# 只起 Postgres 当源库请用 `make db-up` / `make db-down`。
 
-docker-down:
-	@docker compose down
-
-# 生成部署用的 .env（docker compose 会自动读取它）
+# 生成 .env（本机跑服务时读它；`docker compose` 也读同目录这一份）
 # 已有 .env 时拒绝覆盖 —— 里面可能有按机器调整过的端口等设置。
-# 注意这里**没有密钥要填**：AI 密钥由每个用户在自己的设置面板里填，
-# 服务端不持有任何人的凭据。
+# 注意这里**没有密钥要填**：AI 密钥在 `config/ai.local.json`（已 gitignore），
+# 那是本机自己的那一份，不随仓库走。
 env-init:
 	@test -f .env && { echo ".env 已存在，未覆盖"; exit 0; } || cp .env.example .env
-	@echo "已生成 .env（按需修改端口 / 每人 AI 用量上限）"
+	@echo "已生成 .env（按需修改端口 / 用量上限 / 内测通道开关）"
 
 # 数据备份。
 # 数据现在落在 VPS 磁盘的 docker 卷上 —— 这是选择轻量服务器的代价，
@@ -335,9 +333,11 @@ drive:
 help:
 	@echo "quizforge · 常用目标"
 	@echo ""
-	@echo "  上手        make db-up · make db-restore · make check · make test · make api-dev"
+	@echo "  上手        make api-venv · make api-dev（http://127.0.0.1:8100）"
 	@echo "  流水线      make coverage · make coverage-gaps MATERIAL=x · make drive [ARGS=...]"
 	@echo "              四步：dispatch → worker → promote --apply → rework --apply（drive 已含）"
-	@echo "  数据库      make db-dump / db-restore（快照进版本库）· make bank-export / bank-import"
-	@echo "  校验构建    make check · make test · make web（构建前端到 api/web/）"
-	@echo "  服务        make api-dev（http://127.0.0.1:8100）· docker-up / docker-down · make skills-link"
+	@echo "  校验        make check（密钥扫描 + 题库校验）· make test · make graph-check"
+	@echo "  构建发布    make web（前端 → api/web/）· make package / dist-linux（单文件）"
+	@echo "  备份搬运    make db-up && make db-restore → python tools/migrate_to_local.py"
+	@echo "              然后 make db-dump 更新快照 · 另见 bank-export / bank-import"
+	@echo "  其它        make env-init（生成 .env）· make skills-link · make help"

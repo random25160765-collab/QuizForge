@@ -241,8 +241,10 @@ JS 的 `Math.round` 向上（32.5 → 33），而 Python 内置 `round()` 是银
 Last-Modified 做启发式缓存 —— 部署新版本后老用户会继续跑缓存里的旧 JS，
 表现为「改了前端，刷新看不到」。
 
-**镜像自包含**：Dockerfile 是多阶段的，前端产物在镜像内用
-`tools/build_web.py` 生成，不依赖宿主先跑 `make web`。
+**镜像自包含**（这一段是历史：容器部署形态已随 local-first + 单文件打包退役，
+`api/Dockerfile` 已删，见 `docker-compose.yml` 顶部。下面那个"绑定挂载会白屏"的坑
+仍然成立 —— 它适用于任何"把 `api/web` 当外部目录挂进去"的做法）：Dockerfile 是多阶段的，
+前端产物在镜像内用 `tools/build_web.py` 生成，不依赖宿主先跑 `make web`。
 之前靠 `./api/web:/app/web` 绑定挂载提供前端，而 `api/web` 在 `.gitignore` 里 ——
 干净机器上部署时挂载目录是空的，页面直接白屏。
 
