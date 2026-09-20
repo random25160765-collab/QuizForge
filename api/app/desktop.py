@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -47,4 +48,78 @@ def reveal(path: Path) -> dict:
     return {"opened": True, "path": target}
 
 
-__all__ = ["command_for", "reveal"]
+#: 用户要在系统选择器里干什么（各平台的文案）
+PICK_TITLE = "选择资料目录"
+
+
+def pick_folder_commands(platform: str) -> list[list[str]]:
+    """各平台"弹系统文件夹选择器"的命令，按优先级排。空列表 = 这台上没有。
+
+    抽成纯函数就是为了能测（与 `command_for` 同一条理由）。
+    Linux 上给三种：zenity（GNOME）/ kdialog（KDE）/ qarma（轻量 WM）——
+    桌面环境五花八门，少写一个就是少一半用户能用。
+    """
+    if platform == "darwin":
+        return [["osascript", "-e", f'POSIX path of (choose folder with prompt "{PICK_TITLE}")']]
+    if platform.startswith("win"):
+        script = (
+            "Add-Type -AssemblyName System.Windows.Forms | Out-Null;"
+            "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+            f"$d.Description = '{PICK_TITLE}';"
+            "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath } else { exit 1 }"
+        )
+        return [["powershell", "-NoProfile", "-NonInteractive", "-Command", script]]
+    return [
+        ["zenity", "--file-selection", "--directory", "--title=" + PICK_TITLE],
+        ["kdialog", "--getexistingdirectory", ".", "--title", PICK_TITLE],
+        ["qarma", "--file-selection", "--directory", "--title=" + PICK_TITLE],
+    ]
+
+
+def pick_folder(timeout_s: float = 300.0) -> dict:
+    """弹一次系统文件夹选择器。
+
+    返回值三态，界面照这三态说不同的话：
+
+    * `{"path": "/…"}` —— 用户选好了
+    * `{"cancelled": True}` —— 用户按了取消（**不是错误**，别报错）
+    * `{"unsupported": True, "why": "…"}` —— 这台上没有可用的图形选择器
+      （无桌面环境、容器里、SSH 会话）：这时界面回退到"手输路径"，
+      并把原因说出来 —— 直接静默失败的话，用户只会以为按钮坏了。
+
+    为什么要这个而不是让人手打路径（用户连着说了两遍）：路径是这个界面里
+    **最不该让人手打**的东西 —— 打错一个字符就"根目录不存在"，
+    而"选一个目录"在系统里本来就是点两下的事。
+    """
+    platform = sys.platform if os.name != "nt" else "win32"
+    tried: list[str] = []
+    for cmd in pick_folder_commands(platform):
+        if not shutil.which(cmd[0]):
+            tried.append(cmd[0])
+            continue
+        try:
+            result = subprocess.run(  # noqa: S603 —— 命令是我们自己拼的固定几种，参数不经 shell
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"unsupported": True, "why": str(exc)[:200]}
+        if result.returncode != 0:
+            # 用户取消（zenity/osascript 都是非 0）—— 与"没有工具"要分开
+            return {"cancelled": True}
+        picked = (result.stdout or "").strip().splitlines()
+        path = Path(picked[-1].strip()) if picked else None
+        if not path or not path.is_dir():
+            return {"cancelled": True}
+        return {"path": str(path)}
+    return {
+        "unsupported": True,
+        "why": "这台机器上没有可用的图形选择器（试过：" + "、".join(tried) + "）；"
+        "可以手动填目录的绝对路径。",
+    }
+
+
+__all__ = ["PICK_TITLE", "command_for", "pick_folder", "pick_folder_commands", "reveal"]

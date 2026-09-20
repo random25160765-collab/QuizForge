@@ -131,16 +131,48 @@ body[data-page='notes'] .view {
 }
 
 .nfiles__searchrow {
+  position: relative;   /* 清空 × 的定位基准 = 这一行（也就是输入框那一格） */
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 0 10px 8px;
 }
 
+/* 清空 ×：贴住搜索框**右内缘**、垂直居中。
+ * 两个数要对上：这里 `right: 15px`（行内距 10 + 框内距 5），
+ * 输入框那边 `padding-right: 26px`（× 的宽 24 + 2 的余量）。 */
+.nfiles__searchrow .nclear {
+  position: absolute;
+  /* 与**输入框**同顶同高（不是与整行居中）：这一行下边还有 8px 内距，
+   * 对着行居中就偏下 4px（实测量到 4.0）。高度取输入框的 28，中线自然对上。 */
+  top: 0;
+  right: 15px;
+  width: 20px;
+  height: 28px;
+}
+
+.nfiles__searchrow .nclear[hidden] {
+  display: none;
+}
+
+/* 树栏那一行里的新建笔记：比工具条上的小一档（用户："缩小"）。
+ * 图标也跟着收一档（10px 太小、16px 与 22px 的按钮不成比例，14 正好）。 */
+.nfiles__new {
+  width: 22px;
+  height: 22px;
+}
+
+.nfiles__new svg {
+  width: 14px;
+  height: 14px;
+}
+
 .nfiles__search {
   flex: 1;
   min-width: 0;
   height: 28px;
+  /* 右内距给清空 × 留位：不留的话文字会钻到 × 底下（对齐与间距） */
+  padding-right: 26px;
   padding: 0 8px;
   color: var(--fg);
   background: var(--bg3);
@@ -174,22 +206,215 @@ body[data-page='notes'] .view {
   border-top: 1px solid var(--line);
 }
 
+/* 库选择：按参考图去掉那块**灰药丸** —— 只剩"名字 + 右侧小箭头"。
+ * `appearance: none` 拿掉系统下拉的原生外观，箭头用背景图自己画（select 没有伪元素）。 */
 .nfiles__lib--foot {
+  flex: none;              /* 上一版 flex:1 撑满整行，看着像个输入框 */
+  width: auto;
   height: 26px;
-  font-size: 12px;
+  margin-right: auto;      /* 两颗图标留在右边 */
+  padding: 0 18px 0 2px;   /* 右边留给自画的箭头 */
+  font-size: 12.5px;
+  color: var(--fg2);
+  background-color: transparent;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b8b8b' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 2px center;
+  border: 0;
+  appearance: none;
+  -webkit-appearance: none;
 }
 
-/* 三个视图的图标按钮：形状与资源页那排图标按钮同宽 */
-.seg__item--icon {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  padding: 4px 0;
+.nfiles__lib--foot:hover {
+  color: var(--fg);
 }
 
-.seg__item--icon svg {
-  width: 15px;
-  height: 15px;
+.nfiles__lib--foot:focus {
+  border-color: transparent;   /* 基类 focus 会给一圈品牌色边，这里不要 */
+}
+
+/* 底部那两颗（在系统里显示 / 回收站）：**灰底不要、只留图标、图标稍大一点**（用户给了参考图）。
+ * 悬停时才有一层很轻的底 —— 那不是"装饰"，是"这个能点"的反馈。 */
+.nfiles__foot .nicon--mini {
+  width: 26px;
+  height: 26px;
+  background: none;
+}
+
+.nfiles__foot .nicon--mini:hover {
+  background: var(--bg2);
+}
+
+.nfiles__foot .nicon--mini svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* ---- 书签组（树的最上面那一块） ---- */
+
+.nbook {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.nbook__head {
+  padding: 0 6px 4px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg3);
+  text-transform: uppercase;
+}
+
+.nbook__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+  transition: background var(--dur, 140ms) var(--ease, ease);
+}
+
+.nbook__row:hover {
+  background: var(--bg3);
+}
+
+.nbook__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 行尾那颗 × 平时不出现（和树上"…"同一条规矩：不占视线） */
+.nbook__x {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur, 140ms) var(--ease, ease), color var(--dur, 140ms) var(--ease, ease);
+}
+
+.nbook__row:hover .nbook__x {
+  opacity: 1;
+}
+
+.nbook__x:hover {
+  color: var(--fg);
+  background: var(--bg2);
+}
+
+/* ---- "问一个名字" / "移动到…" 两个弹层里的控件 ---- */
+
+.nask,
+.nmove {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.nask__input {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm, 6px);
+}
+
+.nask__input:focus {
+  outline: none;
+  border-color: var(--pri);
+}
+
+.nask__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.nmove__list {
+  max-height: 46vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.nmove__row {
+  display: block;
+  width: 100%;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.nmove__row:hover {
+  background: var(--bg3);
+}
+
+/* ---- 检索范围那一颗（"只在「x」里找"） ---- */
+
+.nscope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 4px 6px;
+  padding: 3px 4px 3px 8px;
+  font-size: 11.5px;
+  color: var(--fg2);
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+  border-radius: var(--r-sm, 6px);
+}
+
+.nscope__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nscope__x {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.nscope__x:hover {
+  color: var(--fg);
+  background: var(--bg2);
 }
 
 /* 行尾那颗「…」：平时不出现，悬停才亮 —— 与资源树那几颗同一条规矩 */
@@ -429,7 +654,7 @@ body[data-page='notes'] .view {
 }
 
 .nbody__tags,
-.nread__inner .nbody__tags {
+.nread__inner .nbody__tags{
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
@@ -683,6 +908,34 @@ body[data-page='notes'] .view {
   color: var(--fg3);
 }
 
+/* 目录子项的展开/收起：`grid-template-rows` 从 1fr 到 0fr —— 不用知道内容多高
+ * 也能过渡（这是唯一"高度自适应 + 能动"的写法）。内层那一条 `min-height: 0`
+ * 是必须的，否则格子最小高度被内容撑住，收不下去。 */
+.ntree__box {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 190ms var(--ease, ease);
+}
+
+.ntree__box.is-folded {
+  grid-template-rows: 0fr;
+}
+
+.ntree__boxin {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 箭头：展开朝下、折起朝右（角度写在样式里，才有过渡；上一版是 JS 直接落 inline
+ * transform，加上每次开合都重画整棵树 —— 于是永远看不见动效） */
+.ntree__caret svg {
+  transform: rotate(90deg);
+}
+
+.ntree__dir.is-folded .ntree__caret svg {
+  transform: rotate(0deg);
+}
+
 /* 树行：高度统一，缩进表达层级，选中给一道左侧竖线（不用整行色块） */
 .ntree__dir,
 .ntree__file {
@@ -920,6 +1173,24 @@ body[data-page='notes'] .view {
   font-weight: 500;
 }
 
+/* 三个视图的图标按钮。
+ * **必须写在 `.seg__item` 之后**：它俩同优先级，`.seg__item` 里的 `padding: 4px 11px`
+ * 本来会把这里的 `padding: 4px 0` 盖掉 —— 图标于是被 11px 内距推到右边，
+ * 量出来 svg 的中线比按钮中线偏右 4.5px（用户："图标完全没对齐，太丑了"）。
+ * 这条今天写在文件上半部分、规则在下半部分，就是这么被盖的。 */
+.seg__item--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  padding: 4px 0;
+}
+
+.seg__item--icon svg {
+  width: 15px;
+  height: 15px;
+}
+
 /* 正文区：阅读 / 编辑 / 分栏共用一个滚动容器 */
 .note__pane {
   flex: 1;
@@ -1115,7 +1386,7 @@ body[data-page='notes'] .view {
   padding: 24px 30px 40vh;
 }
 
-.nread__inner {
+.nread__inner  {
   max-width: 74ch;
   font-size: 14px;
   line-height: 1.82;
@@ -1129,21 +1400,21 @@ body[data-page='notes'] .view {
 .nread__inner h1,
 .nread__inner h2,
 .nread__inner h3,
-.nread__inner h4 {
+.nread__inner h4{
   margin: 1.6em 0 0.6em;
   font-weight: 600;
   line-height: 1.35;
 }
 
-.nread__inner h1 {
+.nread__inner h1{
   font-size: 1.5em;
 }
 
-.nread__inner h2 {
+.nread__inner h2{
   font-size: 1.25em;
 }
 
-.nread__inner h3 {
+.nread__inner h3{
   font-size: 1.1em;
 }
 
@@ -1152,17 +1423,17 @@ body[data-page='notes'] .view {
 .nread__inner ol,
 .nread__inner blockquote,
 .nread__inner pre,
-.nread__inner table {
+.nread__inner table{
   margin: 0.85em 0;
 }
 
-.nread__inner blockquote {
+.nread__inner blockquote{
   padding: 2px 0 2px 14px;
   color: var(--fg2);
   border-left: 2px solid var(--line-strong, var(--line));
 }
 
-.nread__inner code {
+.nread__inner code{
   padding: 1px 5px;
   font-family: var(--font-mono, monospace);
   font-size: 0.92em;
@@ -1171,7 +1442,7 @@ body[data-page='notes'] .view {
   border-radius: 4px;
 }
 
-.nread__inner pre {
+.nread__inner pre{
   padding: 12px 14px;
   overflow: auto;
   background: var(--bg2);
@@ -1179,13 +1450,13 @@ body[data-page='notes'] .view {
   border-radius: var(--r-md, 8px);
 }
 
-.nread__inner pre code {
+.nread__inner pre code{
   padding: 0;
   background: none;
   border: 0;
 }
 
-.nread__inner hr {
+.nread__inner hr{
   height: 1px;
   margin: 1.8em 0;
   background: var(--line);
@@ -1667,7 +1938,7 @@ body[data-page='notes'] {
   flex: 1 1 auto;
 }
 
-.nread__inner {
+.nread__inner  {
   max-width: var(--notes-width, 92ch);
 }
 
@@ -1756,6 +2027,11 @@ body[data-page='notes'] .callout {
   /* 正文用常规字色：框上的颜色只表示「这是哪一类」，不染到要读的字上 */
   color: var(--fg);
   padding: 12px;
+  /* 上下留出间距（用户："连续 callout 的间距过密"）。
+   * 实测原先两个相邻 callout 只有 4px —— 几乎是贴在一起的，读起来像一个大框。
+   * 渲染器在块与块之间会插一个 <br>，所以相邻兄弟的 margin **不会合并**，
+   * 于是这里写 6px，两框之间实际就是 12px（照 Obsidian 的手感）。 */
+  margin: 6px 0;
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   border-radius: 4px;
@@ -1780,6 +2056,9 @@ body[data-page='notes'] .callout__title {
   display: flex;
   align-items: center;
   gap: 8px;
+  /* 标题行给一个下限高度：图标盒子比文字盒子矮，没下限时整行会被文字的行高带着走，
+   * 图标与文字的**光学**中心就差那么一两个像素（用户已经提过两次"图标和标题的对不齐"）。 */
+  min-height: 20px;
   margin: 0;
   font-size: 0.95em;
   font-weight: 600;
@@ -1788,7 +2067,13 @@ body[data-page='notes'] .callout__title {
 }
 
 body[data-page='notes'] .callout__content {
-  margin-top: 6px;
+  /* 标题与第一行正文之间（用户提的第三条）。首尾的 <br> 已经在 JS 里清掉了，
+   * 这里只剩这一份固定间距，标多少就是多少。 */
+  margin-top: 7px;
+}
+
+body[data-page='notes'] .callout__content > *:first-child {
+  margin-top: 0;
 }
 
 body[data-page='notes'] .callout__content > *:last-child {
@@ -1799,11 +2084,18 @@ body[data-page='notes'] .callout__icon {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
+  justify-content: center;
+  /* 定宽：图标大小不一时，标题文字的起点不会跟着飘 */
+  width: 16px;
+  height: 16px;
 }
 
 body[data-page='notes'] .callout__icon svg {
-  width: 1em;
-  height: 1em;
+  width: 15px;
+  height: 15px;
+  /* 往下 0.5px：图标（圆/三角这类几何形）的**光学**中心比文字盒中心略高，
+   * 中日韩文字的字面又略低于自身行盒 —— 差半像素就是一眼睛的不齐。 */
+  margin-top: 1px;
 }
 
 /* 可折叠：`[!note]-` 默认收起、`[!note]+` 默认展开，点标题切 */
@@ -1841,7 +2133,7 @@ body[data-page='notes'] .callout.is-folded .callout__content {
   overflow: auto;
 }
 
-.nread__inner {
+.nread__inner  {
   max-width: var(--notes-width, 74ch);
   margin: 0 auto;
   padding: 34px 30px 96px;
@@ -1853,7 +2145,7 @@ body[data-page='notes'] .callout.is-folded .callout__content {
 }
 
 /* 文档第一个标题就是"这篇叫什么"：给到跟 Obsidian 一样的体量 */
-.nread__inner h1 {
+.nread__inner h1{
   margin: 0 0 20px;
   font-size: 1.75em;
   font-weight: 650;
@@ -1861,14 +2153,14 @@ body[data-page='notes'] .callout.is-folded .callout__content {
   letter-spacing: -0.01em;
 }
 
-.nread__inner h2 {
+.nread__inner h2{
   margin: 34px 0 12px;
   font-size: 1.34em;
   font-weight: 620;
   line-height: 1.4;
 }
 
-.nread__inner h3 {
+.nread__inner h3{
   margin: 26px 0 8px;
   font-size: 1.12em;
   font-weight: 600;
@@ -1877,39 +2169,39 @@ body[data-page='notes'] .callout.is-folded .callout__content {
 
 .nread__inner h4,
 .nread__inner h5,
-.nread__inner h6 {
+.nread__inner h6{
   margin: 20px 0 6px;
   font-size: 1em;
   font-weight: 600;
   color: var(--fg2);
 }
 
-.nread__inner p {
+.nread__inner p{
   margin: 0 0 14px;
 }
 
 .nread__inner ul,
-.nread__inner ol {
+.nread__inner ol{
   margin: 0 0 14px;
   padding-left: 1.5em;
 }
 
-.nread__inner li {
+.nread__inner li{
   margin: 4px 0;
 }
 
-.nread__inner li::marker {
+.nread__inner li::marker{
   color: var(--fg3);
 }
 
-.nread__inner blockquote {
+.nread__inner blockquote{
   margin: 0 0 14px;
   padding: 2px 0 2px 14px;
   color: var(--fg2);
   border-left: 2px solid var(--line-strong);
 }
 
-.nread__inner code {
+.nread__inner code{
   padding: 0.12em 0.36em;
   font-family: var(--notes-mono, var(--font-mono, monospace));
   font-size: 0.9em;
@@ -1917,7 +2209,7 @@ body[data-page='notes'] .callout.is-folded .callout__content {
   border-radius: 5px;
 }
 
-.nread__inner pre {
+.nread__inner pre{
   margin: 0 0 16px;
   padding: 14px 16px;
   overflow: auto;
@@ -1926,12 +2218,12 @@ body[data-page='notes'] .callout.is-folded .callout__content {
   border-radius: var(--r-md);
 }
 
-.nread__inner pre code {
+.nread__inner pre code{
   padding: 0;
   background: none;
 }
 
-.nread__inner table {
+.nread__inner table{
   width: 100%;
   margin: 0 0 16px;
   border-collapse: collapse;
@@ -1939,24 +2231,24 @@ body[data-page='notes'] .callout.is-folded .callout__content {
 }
 
 .nread__inner th,
-.nread__inner td {
+.nread__inner td{
   padding: 7px 10px;
   text-align: left;
   border: 1px solid var(--line);
 }
 
-.nread__inner th {
+.nread__inner th{
   background: var(--bg2);
   font-weight: 600;
 }
 
-.nread__inner hr {
+.nread__inner hr{
   margin: 26px 0;
   border: 0;
   border-top: 1px solid var(--line);
 }
 
-.nread__inner img {
+.nread__inner img{
   max-width: 100%;
   border-radius: var(--r-sm);
 }
@@ -1964,14 +2256,14 @@ body[data-page='notes'] .callout.is-folded .callout__content {
 /* 公式：给它自己的空间与呼吸，别跟正文挤在一起 */
 .nread__inner .math,
 .nread__inner .katex-display,
-.nread__inner mjx-container[display='true'] {
+.nread__inner mjx-container[display='true']{
   margin: 18px 0;
   overflow-x: auto;
   overflow-y: hidden;
 }
 
 /* 提示框（Obsidian 的 callout）：源里写 `> [!note]`，渲染后落成这个形状 */
-.nread__inner .callout {
+.nread__inner .callout{
   margin: 16px 0;
   padding: 12px 16px;
   background: color-mix(in srgb, var(--pri) 9%, transparent);
@@ -1979,7 +2271,7 @@ body[data-page='notes'] .callout.is-folded .callout__content {
   border-radius: var(--r-md);
 }
 
-.nread__inner .callout > *:last-child {
+.nread__inner .callout > *:last-child{
   margin-bottom: 0;
 }
 
@@ -2027,18 +2319,18 @@ body[data-page='notes'] .callout.is-folded .callout__content {
 }
 
 .nedit__area,
-.nread__inner {
+.nread__inner  {
   font-family: var(--notes-mono);
   font-size: var(--notes-size);
   line-height: var(--notes-line);
 }
 
-.nread__inner {
+.nread__inner  {
   max-width: var(--notes-width);
 }
 
 /* 预览里"光标那一行对应的块"（Trilium 的 useSyncedHighlight） */
-.nread__inner .is-cur {
+.nread__inner .is-cur{
   background: color-mix(in srgb, var(--pri) 10%, transparent);
   border-radius: var(--r-sm, 6px);
   box-shadow: -8px 0 0 color-mix(in srgb, var(--pri) 10%, transparent);
@@ -2835,4 +3127,240 @@ body[data-page='notes'] .outline {
 .nmind__tool:hover {
   color: var(--pri);
   border-color: var(--pri);
+}
+
+/* ============================================================ 就地编辑框（所见即所得）
+ *
+ * 上一版它只是个 `<textarea>`，于是长成"浏览器默认的输入框"：约 180px 宽、带边框、
+ * 带底色、还带滚动条 —— 用户的原话是"你搞了一个非常丑的窗格"，并贴了 Obsidian 的
+ * 对比图（那边是把源码**铺在正文里**改）。
+ *
+ * 所以这里把它**去壳**：全宽、透明、无边框、无圆角、无内距、不可拖拽、高度随内容长。
+ * 字号/行高/字重由 JS 从"渲染出来的那一行"抄过来（标题换上去仍是标题那么大），
+ * 公式与代码块另外换成等宽字体（源码该像源码）。
+ */
+/* 就地编辑的源码框。整篇一棵树之后它是**组元素的兄弟**（原位替换），
+ * 所以按块级铺满那一行的宽度即可。 */
+.nlblock__src {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  overflow: hidden;
+  resize: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+
+/* 块间距：整篇一棵树之后**不需要**任何补丁 —— 编辑态和阅读态是同一个 `.md`，
+ * `.md > *:first-child/:last-child`、外边距折叠、容器内距全都按同一套规则走。
+ * （上一版为此写了 46 条孪生选择器 + 一组"还原外边距"规则，还叠出过一处坏注释。） */
+
+/* 下划线（编辑区 ⌘/Ctrl+U）：`<u>` 默认样式够用，这里只调一下下划线的距离，
+ * 别贴着汉字底边。 */
+.nread__inner u,
+.nlblock__inner u {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+
+/* ---- CodeMirror 6 内核（源码视图）----
+ * CM6 的 DOM 是它自己的（`.cm-editor` / `.cm-content` / `.cm-gutters`），
+ * 排版得在这儿对齐本页的字体与配色 —— 不然它会用内核自带的等宽+深色。 */
+.nedit .cm-editor {
+  flex: 1;
+  min-height: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--fg);
+  background: transparent;
+}
+
+.nedit .cm-editor.cm-focused {
+  outline: none;
+}
+
+.nedit .cm-scroller {
+  line-height: 1.65;
+  font-family: inherit;
+}
+
+.nedit .cm-content {
+  padding: 8px 0 40vh;
+  caret-color: var(--pri);
+}
+
+.nedit .cm-gutters {
+  color: var(--fg3);
+  background: transparent;
+  border-right: 1px solid var(--line);
+}
+
+.nedit .cm-activeLine {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.nedit .cm-activeLineGutter {
+  background: transparent;
+  color: var(--fg2);
+}
+
+.nedit .cm-selectionBackground,
+.nedit .cm-editor ::selection {
+  background: color-mix(in srgb, var(--pri) 24%, transparent) !important;
+}
+
+.nedit .cm-cursor {
+  border-left-color: var(--pri);
+}
+
+.nedit .cm-panels {
+  background: var(--bg2);
+  color: var(--fg);
+  border-color: var(--line);
+}
+
+.nedit .cm-searchMatch {
+  background: color-mix(in srgb, var(--amber) 30%, transparent);
+}
+
+
+/* ---- 编辑视图（CM6 + Live Preview 装饰）----
+ * 标题字号/字重与阅读页**同一组数值**（"阅读就是编辑的只读形状"）；
+ * 公式用 KaTeX 的 DOM，居中显示与阅读页一致。 */
+.nedit--live .cm-content {
+  font-family: var(--font-ui, inherit);
+  font-size: 15px;
+  line-height: 1.82;
+  padding: 8px 0 40vh;
+}
+
+.nedit--live .cm-h {
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.nedit--live .cm-h1 { font-size: 1.75em; }
+.nedit--live .cm-h2 { font-size: 1.5em; }
+.nedit--live .cm-h3 { font-size: 1.12em; }
+.nedit--live .cm-h4,
+.nedit--live .cm-h5,
+.nedit--live .cm-h6 { font-size: 1.03em; color: var(--fg2); }
+
+.nedit--live .cm-math {
+  padding: 0 1px;
+}
+
+.nedit--live .cm-math--block {
+  display: block;
+  margin: 0.5em 0;
+  text-align: center;
+}
+
+
+/* 提示框（CM6 装饰版）：整块底色 + 左侧色条；图标由部件带类型色 */
+.nedit--live .cm-callout {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border-left: 3px solid var(--line-strong, var(--line));
+  padding-left: 8px;
+}
+
+.nedit--live .cm-callout--note,
+.nedit--live .cm-callout--info,
+.nedit--live .cm-callout--todo { border-left-color: #086ddd; }
+.nedit--live .cm-callout--tip,
+.nedit--live .cm-callout--abstract { border-left-color: #00bfbc; }
+.nedit--live .cm-callout--success { border-left-color: #08b94e; }
+.nedit--live .cm-callout--question,
+.nedit--live .cm-callout--warning { border-left-color: #e0ac00; }
+.nedit--live .cm-callout--failure,
+.nedit--live .cm-callout--danger,
+.nedit--live .cm-callout--bug { border-left-color: #e93147; }
+.nedit--live .cm-callout--example { border-left-color: #7852ee; }
+.nedit--live .cm-callout--quote { border-left-color: #9e9e9e; }
+
+/* 公式没渲染出来时**要看得出来**（不是悄悄吐原文） */
+.nedit--live .cm-math--bad {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.92em;
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 12%, transparent);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.nedit--live .cm-callout-badge {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: -2px;
+  margin-right: 2px;
+}
+
+/* 行内公式的源码框：**就地嵌在行里**，不是换行的一块 ——
+ * 宽度按字符数走（`ch`），高度就一行，免得把行距顶开。 */
+.nlblock__src--inline {
+  display: inline-block;
+  width: auto;
+  min-width: 4ch;
+  vertical-align: baseline;
+  white-space: pre;
+  overflow: hidden;
+}
+
+/* 公式/代码的源码用等宽（源码该像源码）；**其余保持文档字体** ——
+ * 上一版整块用等宽，标题和正文一起变成代码体（用户："把字体全部都改了"）。 */
+.nlblock__src.is-code {
+  font-family: var(--font-mono, monospace);
+}
+
+/* 悬停时右上角那枚 `</>`（"看这一组的源码"）。
+ * 平时不出现、悬停才亮 —— 它是个"手边工具"，不该在阅读时抢视线。
+ * 显示/隐藏由 JS 落 `hidden`（它要跟着鼠标所在的那一组走）。 */
+.nlblock__src-btn {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  padding: 1px 5px;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg3);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.nlblock__src-btn[hidden] {
+  display: none;
+}
+
+.nlblock__src-btn:hover {
+  color: var(--fg);
+  background: var(--bg3);
+}
+
+/* 所见即所得：整篇一棵树（`.md`），可编辑的"组"就是带行号的那些顶层元素。
+ * 快捷键走 `formatShortcut`（与源码视图同一套）：⌘/Ctrl+B 加粗、I 斜体、
+ * U 下划线、K 链接、` 行内代码、⇧X 删除线、⇧H 重点、⇧M 行间公式、
+ * ⇧1..⇧5 标题、⇧8/⇧7/⇧9 列表与引用；渲染态直接选中文字按 ⌘B 也认。 */
+#notes-live {
+  position: relative;      /* `</>` 那颗按钮的定位基准 */
+}
+
+#notes-live .md > [data-line-start] {
+  cursor: text;
+}
+
+#notes-live[data-aligned] .md[data-aligned] > [data-line-start]:hover {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border-radius: 4px;
 }

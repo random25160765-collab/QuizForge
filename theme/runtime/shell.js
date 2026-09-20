@@ -46,17 +46,26 @@
   /* 最左那条窄图标条。原先这些页面入口挤在顶栏里（页面一多就挤不下，
      而且每个页面还会各自把顶栏改成自己的样子），现在归到这儿 ——
      顶栏于是能瘦下来，把位置让给"打开的标签"。 */
+  // 顺序照用户给的：主页 · 对话 · 笔记 · 练习 · 资料（从上到下）。
+  // 记一遍这条为什么重要：活动栏是**肌肉记忆**的那一列，顺序换一次要重新学一次，
+  // 所以顺序由用户定，不按"实现上谁先做出来"排。
   var RAIL = [
-    // 第一项是**进入资源页**的入口，不是"收起资源栏" ——
+    // 第一项是**进入主页**的入口，不是"收起资源栏" ——
     // 用户的原话："点击资源那个按钮，直接就跳转到资源的组合页面"。
-    // 资源栏自己的收起在它头上那颗（而资源栏只在资源页出现）。
-    { href: 'workbench.html', label: '资源', icon: 'grip', page: 'workbench',
+    // 资源栏自己的收起在它头上那颗（而资源栏只在主页出现）。
+    // 名字从「资源」改成「主页」也是用户提的（"或许现在应该叫主页"）：
+    // 这一页是**落地页 + 窗格组合**，不只是"资源的列表"。
+    // hint 里不再重复一遍 label：`railButton` 拼的是 `label + ' · ' + hint`，
+    // 这里再写一次「主页」，提示就成"主页 · 主页 · 全局浏览…"（重命名时留下的）。
+    // 在主页上这颗还是**资源栏的开合**，那件事由 `setSide` 现写（见下），
+    // 不写在这儿 —— 别处它确实只是"去主页"。
+    { href: 'workbench.html', label: '主页', icon: 'grip', page: 'workbench',
       hint: '全局浏览 + 窗格组合' },
+    { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
+    { href: 'notes.html', label: '笔记', icon: 'list', page: 'notes' },
     { href: 'quiz.html', label: '练习中心', icon: 'play', pages: ['quiz', 'graph'],
       hint: '练习 · 组卷 · 复习 · 图谱' },
-    { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
     { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
-    { href: 'notes.html', label: '笔记', icon: 'list', page: 'notes' },
     // 错题本**不在这儿**：它是"练什么"的一部分，入口归练习中心（见 NAV 最后一项）
   ];
 
@@ -72,6 +81,28 @@
     return window.innerWidth <= 1180;
   }
 
+  /** 把活动栏上那颗「主页」画成资源栏**现在的**样子。
+   *
+   *  在主页上这颗按钮就是资源栏的开关，所以提示得照实说：收起之后页面上再没有
+   *  第二个"展开"的入口（资源栏自己头上那颗箭头跟着栏一起藏起来了，见 app.css
+   *  的 `body[data-side='closed'] .side > *`），提示还写着"主页 · 全局浏览…"，
+   *  用户就只能靠猜 —— 这是"收了就展不开"的一半原因。
+   *  另外这一趟要**重画**：`renderRail()` 每次 mount 都新建节点，新节点上带着的是
+   *  RAIL 里那句静态 hint，状态得重新贴上去。 */
+  function paintSideButton() {
+    if (!document.body.dataset.side) return;   // 还没定过：等 bindSide 那一句
+    var btn = document.querySelector('#rail-nav .rail__btn[href$="workbench.html"]');
+    if (!btn) return;
+    var open = sideOpen();
+    btn.classList.toggle('is-on', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if ((QF.config && QF.config.page) === 'workbench') {
+      var label = open ? '收起资源栏' : '展开资源栏';
+      btn.title = label + '（Alt+B）';
+      btn.setAttribute('aria-label', label);
+    }
+  }
+
   function setSide(open, persist) {
     document.body.dataset.side = open ? 'open' : 'closed';
     // 首屏那次**不写本机**：窄屏默认收起只是"这一屏该怎么摆"，
@@ -79,11 +110,7 @@
     if (persist !== false) {
       try { localStorage.setItem(SIDE_KEY, open ? '1' : '0'); } catch (e) { /* 无痕模式忽略 */ }
     }
-    var btn = document.querySelector('#rail-nav .rail__btn[href$="workbench.html"]');
-    if (btn) {
-      btn.classList.toggle('is-on', open);
-      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    }
+    paintSideButton();
   }
 
   function railButton(item, page) {
@@ -110,6 +137,33 @@
     RAIL.forEach(function (item) { box.appendChild(railButton(item, page)); });
   }
 
+  /** 活动栏里那颗「主页」：**在主页上它得能开合资源栏**。
+   *
+   *  踩过：窄屏（抽屉模式）默认收起资源栏，而这颗按钮只是个"跳到本页"的链接 ——
+   *  已经在本页时点了等于没反应，用户看到的就是"根本没法正常打开资源管理器"。
+   *  别的页上它仍然是"去主页"的链接（那里根本没有资源栏可开）。
+   *
+   *  ⚠️ 用**委托**挂在 `#rail-nav` 上，不是找到那颗按钮单独挂。
+   *  `renderRail()` 每次 `mount()` 都会 `ui.clear()` 之后重画一整排，
+   *  逐颗挂的处理器跟着旧节点一起没了；而 `bindSide()` 只在**第一次** mount
+   *  跑过（`if (!bound)` 那一关），于是从那以后这颗按钮就退化成普通链接：
+   *  点一下只是**重新加载本页**。收起状态是本机存的（`qf.side.open = '0'`），
+   *  重新加载回来还是收着的 —— 用户看到的就是"资源栏收了就展不开"
+   *  （不是没反应，是反应成了刷新，而刷新完照旧是收起的）。
+   *  挂在容器上就没有"跟着节点一起没"这回事，重画多少次都还在。 */
+  function bindRail() {
+    var box = document.getElementById('rail-nav');
+    if (!box || box.dataset.sideBound) return;
+    box.dataset.sideBound = '1';
+    box.addEventListener('click', function (ev) {
+      var btn = ev.target.closest ? ev.target.closest('.rail__btn[href$="workbench.html"]') : null;
+      if (!btn || !box.contains(btn)) return;
+      if ((QF.config && QF.config.page) !== 'workbench') return;
+      ev.preventDefault();
+      setSide(!sideOpen());
+    });
+  }
+
   /** 资源栏的状态：读回上次的选择，并把两个入口（图标条那颗、资源栏右上角那个箭头）接上 */
   function bindSide() {
     var saved = null;
@@ -117,20 +171,6 @@
     // 窄屏一律先收起：抽屉默认开着就等于一进来拿 264px 盖住右边的内容
     // （实测 1000px 宽时正好压在画布那两行字上，看着像"内容被裁了"）
     setSide(!drawerMode() && saved !== '0', false);
-
-    // 活动栏那颗「资源」：**在资源页里它得能开合资源栏**。
-    // 踩过：窄屏（抽屉模式）默认收起资源栏，而这颗按钮只是个"跳到本页"的链接 ——
-    // 已经在本页时点了等于没反应，用户看到的就是"根本没法正常打开资源管理器"。
-    // 别的页上它仍然是"去资源页"的链接（那里根本没有资源栏可开）。
-    var rail = document.querySelector('#rail-nav .rail__btn[href$="workbench.html"]');
-    if (rail && !rail.dataset.sideBound) {
-      rail.dataset.sideBound = '1';
-      rail.addEventListener('click', function (ev) {
-        if ((QF.config && QF.config.page) !== 'workbench') return;
-        ev.preventDefault();
-        setSide(!sideOpen());
-      });
-    }
 
     // 资源栏自己头上那颗收起
     var fold = document.getElementById('side-fold');
@@ -165,7 +205,11 @@
       if (side && side.contains(ev.target)) return;
       var railBtn = ev.target.closest ? ev.target.closest('#rail-nav .rail__btn') : null;
       if (railBtn) return;          // 由上面那颗按钮自己开合，别两边都动
-      setSide(false);
+      // `persist: false`：这是**关掉一个浮层**，不是"我以后不要资源栏了"。
+      // 写本机的话，窄窗口下随手点一下内容，回到宽窗口资源栏就默认收起了 ——
+      // 与上面那条 resize 是同一条道理（"窄屏那个状态不该改掉大屏的习惯"）。
+      // 真要收，资源栏头上那颗箭头会写（那颗才是人的决定）。
+      setSide(false, false);
     }, true);
   }
 
@@ -323,12 +367,40 @@
           '你自己的密钥，保存在你的账号里 —— 换设备不用重填。本站不提供共享密钥，用量记在你的账上。',
           apiKeyInput)));
 
+    // **现在到底走哪条通道**：这句话原先挂在对话页输入框下面，用户让搬到设置里
+    //（"内测通道的提示放到设置那边去"）。放这儿更对路 —— 它就是"要不要填密钥"的答案，
+    // 而填密钥的地方就在下面。
+    var channelRow = h('p', {
+      text: '正在读取当前通道…',
+      style: { margin: '-4px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg2)' },
+    });
+    api
+      .get('/ai/usage')
+      .then(function (st) {
+        var mode = (st && st.mode) || '';
+        // 两个模型是**两回事**：`betaModel` 是内测通道实际在用的那个，
+        // `model` 是你自己填的那个（没填时是默认值）。混用会报出一个根本没在跑的模型名
+        //（实测：内测通道写着 deepseek-chat，这行却报 gpt-4o-mini）。
+        var mine = (st && st.model) || '';
+        var beta = (st && st.betaModel) || '';
+        channelRow.textContent =
+          mode === 'beta'
+            ? '当前：本站内测通道' + (beta ? ' · ' + beta : '')
+            : mode === 'user'
+              ? '当前：你自己的密钥' + (mine ? ' · ' + mine : '')
+              : '当前：没有可用的通道 —— 对话与批改都用不了，填上密钥即可。';
+      })
+      .catch(function () {
+        channelRow.textContent = '';
+      });
+
     var aiForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: 'AI（批改与对话）' }),
       h('p', {
         text: '优先级：你自己填的密钥 > 本站的内测通道。不填密钥就用内测通道（站长的那份额度）。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
+      channelRow,
       switchRow('启用 AI', '关闭时简答题提交后直接显示参考答案，由你自己判断对错；对话页也不再可用。', aiConf.enabled, function (value) {
         store.saveSettings({ ai: { enabled: value } });
       }),
@@ -516,6 +588,10 @@
   function mount(opts) {
     opts = opts || {};
     renderRail();
+    // 每次都要做这两件：`renderRail()` 刚把那一排整个重画过 —— 接处理器、
+    // 贴状态都得跟着来一遍（两处各自带"做过就不再做"的守卫，重复调不花钱）
+    paintSideButton();
+    bindRail();
     if (!bound) {
       bound = true;
       bindTheme();
@@ -595,6 +671,46 @@
     }, BUILD_POLL_MS);
   }
 
-  QF.shell = { mount: mount, pullSettings: pullSettings, build: myBuild, watchBuild: watchBuild };
+  /** 骨架 → 内容 的那一次交接，让新画出来的东西**淡进来**。
+   *
+   *  用户的原话："在五个主页面之间转来转去的时候，有了一点过渡感，但是渲染的时候
+   *  还是会闪一下。"—— 那"一下"就是这里：顶栏/活动栏是静态的，页面正文先是
+   *  `bootstate` 骨架（HTML 里就有的），等鉴权与数据回来之后被整块换掉，
+   *  于是画面"啪"地变一次。跨页那半截（离开淡出）已经在 `ui.js` 里做了，
+   *  这一半是**进来之后**的。
+   *
+   *  只做**一次**（`done` 守卫）：页面自己后续的重画（换笔记、翻页）不该跟着闪 ——
+   *  那些是"局部换内容"，闪一下反而像卡顿。
+   */
+  function revealFirstPaint() {
+    var root = document.getElementById('app-root');
+    if (!root || !window.MutationObserver) return;
+    var done = false;
+    var check = function () {
+      if (done) return;
+      var box = document.getElementById('app-root');
+      if (!box) return;
+      if (box.querySelector('.bootstate')) return;      // 还停在骨架上：再等
+      if (!box.childElementCount) return;                // 空的：再等
+      done = true;
+      box.classList.add('qf-painted');
+      window.setTimeout(function () {
+        box.classList.remove('qf-painted');
+      }, 320);
+    };
+    new MutationObserver(check).observe(root, { childList: true, subtree: true });
+    check();
+  }
+
+  QF.shell = {
+    mount: function (opts) {
+      var out = mount(opts);
+      revealFirstPaint();
+      return out;
+    },
+    pullSettings: pullSettings,
+    build: myBuild,
+    watchBuild: watchBuild,
+  };
   QF.settings = { open: openSettings };
 })();

@@ -245,6 +245,130 @@ def test_move_rewrites_path_style_links(lib: notelib.Library):
     assert not (lib.root / "子").exists()
 
 
+def test_rename_folder_rewrites_path_style_links(lib: notelib.Library):
+    """目录改名：目录整个搬过去，**指向它里面**的按路径写的链接跟着改。"""
+    (lib.root / "子").mkdir()
+    (lib.root / "子" / "乙.md").write_text("---\ntitle: 乙\n---\n\n乙\n", encoding="utf-8")
+    (lib.root / "A.md").write_text("---\ntitle: A\n---\n\n见 [[子/乙]] 与 [[乙]]\n", encoding="utf-8")
+    notelib.reset_index()
+
+    notelib.rename_path(lib, "子", "丙")
+
+    assert (lib.root / "丙" / "乙.md").is_file()
+    assert not (lib.root / "子").exists()
+    body = notelib.read_note(lib, "A.md")["body"]
+    assert "[[丙/乙]]" in body          # 按路径写的 → 跟着改
+    assert "[[乙]]" in body             # 按名字写的 → 不动（目录改名没改笔记名）
+
+
+def test_rename_folder_refuses_to_move_into_itself(lib: notelib.Library):
+    """把目录挪进它自己里面 = 把自己弄丢，直接拒绝。"""
+    (lib.root / "子" / "孙").mkdir(parents=True)
+    notelib.reset_index()
+    with pytest.raises(notelib.NoteError, match="自己里面"):
+        notelib.rename_path(lib, "子", "子/孙/子")
+
+
+def test_delete_folder_goes_to_trash_and_comes_back(lib: notelib.Library):
+    """目录删除也进回收站，而且**真的能恢复**（只删不收 = 比不支持删除更坏）。"""
+    (lib.root / "子").mkdir()
+    (lib.root / "子" / "乙.md").write_text("---\ntitle: 乙\n---\n\n乙\n", encoding="utf-8")
+    notelib.reset_index()
+
+    notelib.delete_path(lib, "子")
+
+    assert not (lib.root / "子").exists()
+    trashed = notelib.trash_list(lib)
+    assert len(trashed) == 1
+    assert trashed[0]["is_dir"] is True           # 界面要靠这个字段区分"笔记 / 目录"
+    assert trashed[0]["title"] == "子"
+
+    notelib.restore_from_trash(lib, trashed[0]["name"])
+    assert (lib.root / "子" / "乙.md").is_file()
+
+
+def test_trash_keeps_dir_and_note_apart(lib: notelib.Library):
+    """回收站里目录与笔记是两种条目，恢复时各归各位（目录名不加序号后缀）。"""
+    (lib.root / "甲").mkdir()
+    (lib.root / "甲" / "一.md").write_text("一\n", encoding="utf-8")
+    notelib.reset_index()
+    notelib.delete_path(lib, "甲")
+    notelib.delete_path(lib, "B.md")
+
+    by_title = {one["title"]: one for one in notelib.trash_list(lib)}
+    assert by_title["甲"]["is_dir"] is True
+    assert by_title["B.md"]["is_dir"] is False
+
+    notelib.restore_from_trash(lib, by_title["甲"]["name"])
+    notelib.restore_from_trash(lib, by_title["B.md"]["name"])
+    assert (lib.root / "甲" / "一.md").is_file()
+    assert (lib.root / "B.md").is_file()
+
+
+def test_copy_note_and_folder_never_overwrite(lib: notelib.Library):
+    """复制（Make a copy）：笔记 → `<名> 1.md`；目录 → 整棵 `<名> 1`；**绝不覆盖**。"""
+    (lib.root / "子").mkdir()
+    (lib.root / "子" / "乙.md").write_text("乙正文\n", encoding="utf-8")
+    notelib.reset_index()
+
+    first = notelib.copy_path(lib, "B.md")
+    assert first["to"] == "B 1.md"
+    assert (lib.root / "B 1.md").read_text(encoding="utf-8") == (lib.root / "B.md").read_text(encoding="utf-8")
+
+    second = notelib.copy_path(lib, "B.md")
+    assert second["to"] == "B 2.md"               # 序号往上找，不覆盖上一份副本
+
+    folder = notelib.copy_path(lib, "子")
+    assert folder["to"] == "子 1"
+    assert (lib.root / "子 1" / "乙.md").is_file()
+    assert (lib.root / "子" / "乙.md").is_file()   # 原件还在
+
+
+def test_move_folder_works_and_prunes_source(lib: notelib.Library):
+    """目录也能移动（上一版只有笔记能）；搬空之后源目录不留空壳。"""
+    (lib.root / "甲" / "子").mkdir(parents=True)
+    (lib.root / "甲" / "子" / "乙.md").write_text("乙\n", encoding="utf-8")
+    (lib.root / "丙").mkdir()
+    notelib.reset_index()
+
+    notelib.move_path(lib, "甲/子", "丙")
+
+    assert (lib.root / "丙" / "子" / "乙.md").is_file()
+    assert not (lib.root / "甲").exists()          # 空壳收掉
+
+
+def test_search_can_be_scoped_to_a_folder(lib: notelib.Library):
+    """在文件夹中搜索：只在这个目录**里面**找。"""
+    (lib.root / "内").mkdir()
+    (lib.root / "内" / "甲.md").write_text("关键词 在内\n", encoding="utf-8")
+    (lib.root / "外.md").write_text("关键词 在外\n", encoding="utf-8")
+    notelib.reset_index()
+
+    every = {hit["path"] for hit in notelib.search("关键词", lib_name="T")}
+    assert {"内/甲.md", "外.md"} <= every
+    scoped = [hit["path"] for hit in notelib.search("关键词", lib_name="T", folder="内")]
+    assert scoped == ["内/甲.md"]
+
+
+def test_tree_dir_paths_are_relative_to_the_library(lib: notelib.Library):
+    """目录的 `path` 与文件一样**相对库**（不带库名）。
+
+    两者不一致时踩过三处：往目录里新建笔记会建到 `Math/Math/buffer/…`、
+    "在文件夹中搜索"永远搜不到（前缀对不上）、拖拽移动的目标目录也不对。
+    """
+    (lib.root / "甲" / "乙").mkdir(parents=True)
+    (lib.root / "甲" / "乙" / "丙.md").write_text("丙\n", encoding="utf-8")
+    notelib.reset_index()
+
+    root = notelib.tree(lib)
+    assert root["path"] == ""                       # 根 = 库本身，路径为空
+    top = [item for item in root["dirs"] if item["name"] == "甲"][0]
+    assert top["path"] == "甲"                       # 不带库名
+    deep = top["dirs"][0]
+    assert deep["path"] == "甲/乙"
+    assert top["files"][0]["path"] == "甲/乙/丙.md" if top["files"] else True
+
+
 def test_named_snapshot_is_outside_the_undo_cursor(lib: notelib.Library):
     """命名快照不参与撤销游标、也不被轮转清理（Trilium 的 revisionIgnoreNamedSnapshots）。"""
     notelib.line_op(lib, "A.md", op="replace", index=0, raw="# 改过")

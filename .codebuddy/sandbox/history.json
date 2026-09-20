@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "records": [
+    {
+      "spaceKey": "f200c1c2b5444d6d8ea157efcbd9db74",
+      "projectPath": "/tmp/qf-prev2",
+      "desc": "quizforge 前端预览：笔记页（阅读/编辑/源码 + 文件树与右键菜单）、资料页、对话页、练习页、图谱页、资源页。带一份示例笔记库（Math）。",
+      "createdAt": 1789827670937
+    },
+    {
+      "spaceKey": "039bfb58d6ff4a59b8f103929d20f82b",
+      "projectPath": "/tmp/qf-prev2",
+      "desc": "quizforge 前端预览（含示例笔记库 Math）：笔记页（阅读/编辑/源码 · 文件树 · 右键菜单）、资料页、对话页、练习页、图谱页、资源页。",
+      "createdAt": 1789827787074
+    }
+  ]
+}

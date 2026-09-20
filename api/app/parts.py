@@ -25,7 +25,14 @@
 from __future__ import annotations
 
 # 单次工具输出留这么多字：一次查询不该把上下文撑爆
-MAX_TOOL_OUTPUT = 4000
+#: 单次工具输出留多少字。
+#:
+#: 4000 → 20000：4000 是**预算 8000 时代**的值（那时候一条查询就能把整个上下文撑满，
+#: 所以卡得很死）。现在预算是**按模型窗口**给的（1M 那一档），4000 就明显太保守了 ——
+#: 它会把"一次读到的一大段原文""一份长搜索结果"从中间砍掉，而模型要的恰恰是那些。
+#: 20000 字 ≈ 一两万 token：单次可以接受，十几次工具调用也在百万预算里。
+#: 上限本身还是要的（防的是真·爆炸：一次读进几 MB），但它是**安全阀**，不是日常尺度。
+MAX_TOOL_OUTPUT = 20000
 # 思考过程留这么多：它是过程，不是结论
 MAX_THINK = 8000
 
@@ -144,14 +151,28 @@ def file_part(
     }
 
 
-def demo_part(*, title: str, html: str, run_id: str = "") -> dict:
+def demo_part(
+    *,
+    title: str,
+    html: str,
+    run_id: str = "",
+    kind: str = "demo",
+    code: str = "",
+) -> dict:
     """演示沙箱：一段 HTML，前端塞进 sandbox iframe 里跑（不带 same-origin）。
 
     `run_id` 是**页面向宿主回传结果时的身份**：沙箱里跑完（Python 那种）会
     `postMessage({qfRun: run_id, text})`，前端据此把输出认到这条消息上 ——
     没有它，输出就只会飘在面板里，模型永远看不到自己那段代码到底干了什么。
     """
-    part = {"type": "demo", "title": str(title)[:80], "html": html}
+    # `kind` 让前端知道这一条该怎么长：`python` 是"跑一段脚本拿输出"，该长得像执行命令；
+    # 其余（`demo`）是可视化，才是那张要打开面板的卡片。原先两者只靠字段猜，猜不出来，
+    # 于是 run_python 也长了张"打开演示"的卡片（用户："放在沙箱里也不好看"）。
+    part = {"type": "demo", "kind": str(kind or "demo"), "title": str(title)[:80], "html": html}
+    # 跑脚本那一类把脚本原文也带上：界面上折在「脚本」里（默认收起），
+    # 要回看就展开 —— 与工具调用块里那份是同一个东西，但这里离输出最近。
+    if code:
+        part["code"] = str(code)
     if run_id:
         part["runId"] = str(run_id)
     return part

@@ -1,15 +1,34 @@
 {
  "version": "0.26.4",
  "note": "Pyodide 运行时清单：首启下载后逐个校验（build/package.py manifest 生成）",
- "bytes": 78964768,
+ "bytes": 152661762,
  "files": {
+  "cycler-0.12.1-py3-none-any.whl": "decbe5b1367b9890a30d8b1f0d5d5a062af628d3b3ccc59112cf3c53f7c6b84b",
+  "decorator-5.1.1-py3-none-any.whl": "b6acb853119a0f8d8e596041c121742b2e580af03c682d83d10941bd4eacf7e3",
+  "fonttools-4.51.0-py3-none-any.whl": "02bfb3707f47724672e28951be5a47e8669edc556bc79873cb1b96c8f83fc15b",
+  "kiwisolver-1.4.5-cp312-cp312-pyodide_2024_0_wasm32.whl": "7cb47be55135cfb57f65be10d173b09c162097e3242ff120306d7b55f887d634",
+  "matplotlib-3.5.2-cp312-cp312-pyodide_2024_0_wasm32.whl": "7321e0aa4dcd53cc7826fb558bed79ec6624a6430b00fa048b21fbe21fa0cc2e",
+  "matplotlib_pyodide-0.2.2-py3-none-any.whl": "41e8016ed2f586b99b8e4e506b511fd324a466e7c1d01ebd6c47fdbf158ccc16",
+  "micropip-0.6.0-py3-none-any.whl": "d97c0c01748ddbc52a19944c6a6788c6a8969ed13158c06bc63c6eb02779cd98",
+  "mpmath-1.3.0-py3-none-any.whl": "b67cb3dab5b6f74242829b0610fa214af2d7b7e43c924ce98b2f725c893d5c8a",
+  "networkx-3.3-py3-none-any.whl": "400d2b991047cd91d35b7a9cf83ea850fcaa8b4074ee260a570a5f5277a4cca5",
   "numpy-1.26.4-cp312-cp312-pyodide_2024_0_wasm32.whl": "4a2f5303a88a0747c5e6c80701e0ff4ff5667e487c0c9f9c73875e4d88f4cf9a",
   "openblas-0.3.26.zip": "3c0afcaaabec774f5fa739b908ae08672eacf3c8fe265328da2d632a04ba3cd3",
+  "packaging-23.2-py3-none-any.whl": "3c30fe6689a35520f2040f4963eae8dbdf6aaa8e326674a13bca3f11514c674a",
+  "pandas-2.2.0-cp312-cp312-pyodide_2024_0_wasm32.whl": "ae979af0f0be1e8c482408d838ea1366d187f3f057f47b429910e66dbba60673",
+  "pillow-10.2.0-cp312-cp312-pyodide_2024_0_wasm32.whl": "9f3ae58c481ade2a88f794a5aa130b9514d315ef549f254e474f9593a73428cf",
   "pyodide-lock.json": "cd50b49de944c579045e122fe8628b31f9ce446379f032f36c05e273d38766e0",
   "pyodide.asm.js": "919560652ed3dad3707cb3a394785da1e046fb13dc0defa162058ff230cb7eed",
   "pyodide.asm.wasm": "b7e66a19427a55010ac3367c1b6c64b893f9826f783412945fdf0c3337f3bc94",
   "pyodide.js": "c0069107621d5b942a659e737a12e774cc0451feaa2256f475d72e071d844ec7",
+  "pyparsing-3.1.2-py3-none-any.whl": "346cc485c0fb067121825224c5bfe258991f4f2509e1c56adbe7237ea58bb16b",
+  "python_dateutil-2.9.0.post0-py2.py3-none-any.whl": "302d74af893af51ee8b52e2c06a1fc2bc73cfe645eed3f35a17f082cdf101c7d",
   "python_stdlib.zip": "72894522b791858b9d613ac786b951d8b5094035dcf376313ea24a466810f336",
-  "scipy-1.12.0-cp312-cp312-pyodide_2024_0_wasm32.whl": "1a081410432367ee43f52a280961df4ba7e9bb65d8b9862b3cd2e3727e84d873"
+  "pytz-2024.1-py2.py3-none-any.whl": "561652a008b98ef7b66a6acf816e3f4d1c0e17e8ed9eb8dbb993037413cda597",
+  "schemdraw-0.23-py3-none-any.whl": "b6af33cf175fb7692ed3f71b5d2702c400e009ae26efe76c6fa4f85d34e0fac5",
+  "scipy-1.12.0-cp312-cp312-pyodide_2024_0_wasm32.whl": "1a081410432367ee43f52a280961df4ba7e9bb65d8b9862b3cd2e3727e84d873",
+  "setuptools-69.5.1-py3-none-any.whl": "f847dc7eb5de53fa8299e22ab4ff49835f2c0f5317f3c5c0b6ec227ce9893a70",
+  "six-1.16.0-py2.py3-none-any.whl": "f359c3850331f250d1a5e394aae58193774c6358676340aba992718589b9dcf1",
+  "sympy-1.12-py3-none-any.whl": "46e65e88fba7b7f6a63b96e030f3319cc67df6540024136f7c1b937ff088c481"
  }
 }

@@ -65,6 +65,7 @@ from .. import ai_gateway as gateway
 from .. import attachments as attach
 from .. import parts as msgparts
 from .. import mounts
+from .. import runs
 from ..db import as_json
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
 from ..models import Attachment, Conversation, ConversationFolder, Message
@@ -73,56 +74,275 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 @router.get("/mounts")
-def mounts_state(user: CurrentUser, db: DbSession) -> dict:
+def mounts_state(db: DbSession) -> dict:
     """顶栏那组开关现在的状态：五组各亮着没有，以及**这一版真声明了哪些工具**。
 
     `declared` 是从 `tools.specs()` 真算出来的，不是另抄一份 ——
     "图标亮着"与"模型看得到几个工具"必须能对得上，而这是唯一能证明它俩一致的办法
     （改完在界面上量一下 `declared` 的条数，就知道开关有没有真的接上）。
     """
-    return mounts.describe(db, user.id)
+    return mounts.describe(db)
 
 
 @router.post("/mounts")
-def mounts_save(body: dict, user: CurrentUser, db: DbSession) -> dict:
-    """存一份挂载集。**空列表是合法的** —— 那就是极简模式（一条工具都不声明）。"""
+def mounts_save(body: dict, db: DbSession) -> dict:
+    """换模式，或（自定义时）存一份挂载集。
+
+    * `{"mode": "query"}` —— 三个模式之一：组与权限档都由模式表决定（首选这条路）；
+    * `{"groups": [...]}` —— 自定义：只存"哪几组"，权限档保持四档全放（老行为）。
+
+    空列表仍然合法，等于"一条工具都不声明"。
+    """
+    mode = body.get("mode")
+    if isinstance(mode, str) and mode.strip():
+        try:
+            mounts.write_mode(db, mode)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return mounts.describe(db)
     groups = body.get("groups")
     if not isinstance(groups, list):
         raise HTTPException(status_code=400, detail="groups 得是个列表")
     try:
-        mounts.write(db, user.id, [str(part) for part in groups])
+        mounts.write(db, [str(part) for part in groups])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return mounts.describe(db, user.id)
+    return mounts.describe(db)
 
-# 人设刻意的短：真正的「懂这个知识空间」应该来自工具与材料，而不是往提示词里堆形容词。
-# 这里只定三件事：说什么语言、怎么说话、以及一条硬规矩（不许编出处）。
-SYSTEM_PROMPT = (
-    "你是 QuizForge 的学习助手，服务一个正在啃 AI 加速器（Tenstorrent / tt-metal）"
-    "的学习者。**所有输出一律用中文**（包括调工具前后那半句话），直接讲清机制与因果，"
-    "必要时用 Markdown 与 LaTeX，不要空泛鼓励，也不要复述问题。\n"
-    "工具有三条检索路：`search_knowledge` 找知识空间里的概念/点，"
-    "`search_material` 在材料**原文**里按字面找段落，`explore_graph` 从一个概念往外走关系"
-    "（该先学什么、和什么易混）。要查材料、看题库、看他的掌握度时**直接调用**。"
-    "说「我去查一下」然后就把话停在那里，等于什么都没做 —— 说完就去查，查完再说结论；"
-    "但**查到够回答就收口**，别把回合全花在检索上（最后一轮工具会被收走，你必须开口）。"
+
+@router.get("/sandbox")
+def sandbox_shell() -> dict:
+    """常驻 Python 运行壳的那份 HTML（前端拿去做隐藏 iframe 的 `srcdoc`）。
+
+    为什么由服务端给：壳里要填 Pyodide 的 indexURL 和预载包名单 —— 那是 `tools.py`
+    才知道的事实（本机缓存路径、支持哪几个包），前端不该再抄一份。
+
+    前端**第一次真要跑 Python 时**才去建它：页面一打开就下 60MB 运行时，
+    对不跑 Python 的人不公平。建好之后它常驻 —— 那笔启动成本只付一次。
+    """
+    return {"html": tool_registry.shell_page()}
+
+# 提示词按"这一版挂了哪几组工具"拼：基座 + 每组一份片段 + 未挂组的"别提"清单。
+#
+# 为什么非要按模式分（原来是一个常量）：极简模式下它照样命令模型去调
+# `search_knowledge` / `push_question`（工具早被拿走了），人设里那句"服务一个正在啃
+# AI 加速器的学习者"还会让模型张口就猜"你最近在看 NOC、circular buffer 吧" ——
+# 用户原话："它根本就不应该知道我在干什么"。所以两条硬规则：
+#   1) **没挂的能力不进提示词**（连"工具"这个词都不出现）；2) 极简模式不交代应用领域。
+VOICE = (
+    "**所有输出一律用中文**，直接讲清机制与因果，"
+    "必要时用 Markdown 与 LaTeX，不要空泛鼓励，也不要复述问题。"
     "（如果你确实想先交代一句，那句也必须是中文；任何情况下都不要输出英文句子。）\n"
-    "凡引用材料，必须来自工具返回的出处，**不要凭记忆编材料名或行号**；"
-    "工具查不到就直说没查到，然后用你自己的理解回答，并说明这部分没有材料支撑。\n"
-    "要考他就调 `push_question` 推一张卡 —— **卡片只在你真的调了工具时才会出现**，"
-    "在文字里说「我给你推了一道」而他那边什么都没有，是最糟的一种回答。\n"
-    "推了题就等他自己作答：不要报答案、不要替他念选项，等他答完再讲。\n"
-    "他要「跑一段脚本 / 算一下 / 验证某个算法」时**直接动手**：`run_python` 能在沙箱里"
-    "真跑 Python；机制里有空间或时间结构时，`render_demo` 画一个能动的演示"
-    "（沙箱里已经备好 React + JSX + d3 与一套现成组件，见该工具说明里的骨架 —— "
-    "**别自己引库、也别手画坐标轴**）。"
-    "不要因为「我做不到」就推辞，也不要把「做不到」当结论 —— 先看看手上的工具能做到哪一步。\n"
-    "要动他的记录（收藏、标记掌握）就走对应的工具**提案**：界面上会出现一张凭条，"
-    "他点了才生效 —— 永远不要声称你已经替他改了记录。"
+    # 这一条**不分模式** —— 极简那份另有自己的版本（见 MINIMAL_PROMPT），而挂了
+    # 工具的那几份原来一条都没写。后果实测过两次：模型张嘴就是"你最近在看 NOC、
+    # circular buffer 吧"，或者一上来列一串"要不要我查 X、Y、Z" —— 那些 X/Y/Z
+    # 全是从材料库里捡的词。用户的原话："无论是什么模式，你都不能预设用户在学什么。"
+    "**不许预设他在学什么**：不要替他挑主题，不要假设他的方向、进度或最近在看什么，"
+    "也不要把材料里的词拼成`你大概在啃 X`这种话。想推进就直接问他想聊哪一块。\n"
+    "**举例也要中性**：只有你自己查到了、或者他自己提到了，才用材料里的词；"
+    "否则宁可举一个中性的例子，或者干脆不举 —— 开场就报出三个「他在学的主题」"
+    "是最像猜的一种说话方式。"
 )
 
-# 消息最长留 8000 字：够贴一段材料，又能挡住把整份材料灌进来的用法
-MAX_CONTENT = 8000
+# 检索纪律**只在挂了工具时**才进提示词：它提到"工具""查""最后一轮工具会被收走"，
+# 摆在极简模式里等于又告诉模型"你是有工具的"—— 第一版踩了这个坑（人看不出来，
+# 模型会照着演）。
+TOOL_DISCIPLINE = (
+    "**调用工具前后那半句话也必须是中文**。"
+    "凡引用材料，必须来自工具返回的出处，**不要凭记忆编材料名或行号**；"
+    "工具查不到就直说没查到，然后用你自己的理解回答，并说明这部分没有材料支撑。\n"
+    "说「我去查一下」然后就把话停在那里，等于什么都没做 —— 说完就去查，查完再说结论；"
+    "但**查到够回答就收口**，别把回合全花在检索上（最后一轮工具会被收走，你必须开口）。\n"
+    # 长工具链派给子代理（详细说明在 `run_subagent` 的工具描述里）：
+    # 这是"怎么用工具"的一条纪律，与上面几条同一层。
+    "**要串行跑很多次查询时，派给子代理**（`run_subagent`）：它在自己的上下文里"
+    "试查询词、换说法、逐段找原文，你这边只收到一份结果 —— 也比你自己一步步调省得多。"
+)
+
+# 极简：没有任何工具，连"这个应用是干什么的"都不告诉它 —— 否则它就会猜。
+MINIMAL_PROMPT = (
+    "你是 QuizForge 里的聊天助手。这一版**没有任何工具**，也没有办法读取他的资料或"
+    "记录：所有你需要的信息，只能来自他自己说的话。\n"
+    "所以：不要猜他最近在学什么，不要说你「看得到 / 查得到」任何东西，也不要说"
+    "「我看看你的掌握度」「我去查一下」这类话。要问就直接问，要聊就直接聊。\n"
+    + VOICE
+)
+
+# 应用领域只在**挂了工具**时才交代：它要理解材料，就必须知道这是给谁用的。
+# 但**领域是"材料库的主题"，不是"他在学什么"** —— 原来那句写的是"服务一个正在啃
+# AI 加速器的学习者"，模型就顺杆爬成了"你最近在看 NOC、circular buffer 吧"。
+DOMAIN = (
+    "你是 QuizForge 的学习助手。这套工具的材料库主题是 AI 加速器"
+    "（Tenstorrent / tt-metal）—— 那是**材料**的范围，不等于**他**在学什么："
+    "他的方向、进度、最近在看哪一块，只有他自己说出来的才算数。"
+)
+
+# 每组一份片段，只有**挂了这一组**才进提示词。写的时候守住一件事：
+# 片段里只说"能用什么、什么时候用"，不要把用不到的能力也念一遍。
+GROUP_PROMPTS = {
+    "notes": (
+        "笔记（他自己的，只在他的库里找）：`search_notes` 跨库按内容找；"
+        "`write_note` 把一段话**追加**到某篇的末尾（写前自动留快照）。"
+        "他说「记下来 / 记到笔记里」时才写，写完把那句原文念给他听。"
+    ),
+    "library": (
+        "资料：`attach_material` 按标题找条目、把正文节选读进上下文，"
+        "`search_material` 在**原文**里按字面找段落，`read_material` 精读某几十行。"
+        "引用原文时给出行号和材料名，别改写原话。"
+    ),
+    "graph": (
+        "知识图谱：`search_knowledge` 找概念/知识点，`get_point_detail` 看一个点的定义、"
+        "出处与挂着的题，`explore_graph` 沿关系走邻域（前置、后继、包含、易混）。"
+        "问「该先学什么」「这两个有什么区别」时用它，别凭记忆答。"
+    ),
+    "quiz": (
+        "题库与进度：查题用 `get_existing_questions`（默认**不带答案**），"
+        "看掌握度用 `get_mastery`，看该复习什么用 `get_due_reviews`。\n"
+        "要考他就调 `push_question` 推一张卡，或 `create_question` 现编一道 —— "
+        "**卡片只在你真的调了工具时才会出现**，在文字里说「我给你推了一道」"
+        "而他那边什么都没有，是最糟的一种回答。推了题就等他自己作答："
+        "不要报答案、不要替他念选项，等他答完再讲；批改用 `grade_problem`。\n"
+        "要动他的记录（收藏、标记掌握）走 `flag_question` / `mark_mastered` 的**提案**："
+        "界面上会出现一张凭条，他点了才生效 —— 永远不要声称你已经替他改了记录。"
+    ),
+    "sandbox": (
+        "沙箱两件事，别混：\n"
+        "* **验证与算数**用 `run_python` —— 脚本**直接交给工具**（写进 `code` 参数），"
+        "**不要在正文里贴代码、也不要贴你「预期」的输出**。"
+        "这一次调用**会等它跑完**（通常几毫秒；第一次要等运行时启动，几秒）："
+        "输出作为这次调用的结果回到你手里，所以**拿到结果再说话**，直接下结论。\n"
+        "  **不要说**「脚本已经交进去了」「输出马上就到」「下一轮再看」这类话 —— "
+        "那一轮就是现在。也**不许**在没有输出的时候声称跑出了什么。"
+        "（这里原来写的是「调完就停、下一轮再说」；用户的原话是"
+        "「让 agent 等命令返回了再说话」，所以改成了现在的等待。）\n"
+        "* **可视化**（空间 / 时间结构：数据怎么流、流水线怎么排、瓶颈在哪）用 `render_demo` "
+        "画一个能动的演示（里面已备好 React + JSX + d3 与现成组件，见该工具说明里的骨架 —— "
+        "**别自己引库、也别手画坐标轴**）。\n"
+        "不要因为「我做不到」就推辞，也不要把「做不到」当结论 —— 先看手上的工具能做到哪一步。"
+    ),
+}
+
+# 组名 → 中文，未挂时用来告诉模型"别提这些"。
+GROUP_LABELS = {
+    "notes": "笔记", "library": "资料", "graph": "知识图谱", "quiz": "题库与进度",
+    "sandbox": "沙箱",
+}
+
+
+from .. import tools as tool_registry  # noqa: E402  提示词要点名工具，得问注册表
+
+#: 组 → 里面的工具名（**兜底**）。正常路径是调用方把"这一轮真声明了哪些工具"传进来 ——
+#: 因为同一个组里还分权限档：查询模式挂着 `notes` 组，但 `write_note`（write 档）没声明，
+#: 提示词里就不能念它（念了它就会去调，然后被拒）。 —— 只说"你有笔记工具"是不够的：
+#: 实测模型会坚持"我没有 search_notes 这个东西"，点到名字才肯动手。
+#: 有测试盯着它和 `tools.REGISTRY` 一致（抄成两份必然漂）。
+GROUP_TOOLS = {
+    "notes": ("search_notes", "write_note"),
+    "library": ("attach_material", "search_material", "read_material"),
+    "graph": ("search_knowledge", "get_point_detail", "explore_graph"),
+    "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews", "grade_problem",
+             "flag_question", "mark_mastered", "push_question", "create_question"),
+    "sandbox": ("run_python", "render_demo"),
+}
+
+
+def capability_line(mounted, declared=None) -> str:
+    """**当前能力**的权威声明 —— 每一轮都带，不看历史、不看快照。
+
+    为什么不能只靠"模式变了才提示"：那个判断要读"上一条用户消息当时是什么模式"，
+    而老消息的快照列是空的（快照功能是后加的）→ 读出来是 [] → 与"现在是极简"
+    一比竟然算作"没变"，于是**一个字都不提示**。用户实测踩到两次。
+    所以这里改成无条件的：把"现在能用什么"写死在每一轮的提示里，并明确
+    "对话历史里你对自己能力的说法，一律以本条为准"。
+    """
+    now_keys = [k for k in GROUP_PROMPTS if k in set(mounted or ())]
+    if not now_keys:
+        head = "【当前这一版】极简：**你没有任何工具**，也读不到他的笔记、资料、知识图谱、题库、掌握度。"
+    else:
+        if declared is None:
+            names = "、".join("`%s`" % n for k in now_keys for n in GROUP_TOOLS.get(k, ()))
+        else:
+            names = "、".join("`%s`" % n for n in declared)
+        head = ("【当前这一版】" + "、".join(GROUP_LABELS[k] for k in now_keys)
+                + "：你能用这些工具：" + names + "。")
+    return (head + "\n"
+            "**对话历史里你此前对自身能力的任何描述（「我有…」「我没有…」"
+            "「我查不了」）一律以本条为准** —— 与本条冲突时，说明模式换过了，按本条来。")
+
+
+def mode_notice(previous, mounted, declared=None) -> str:
+    """模式在**一个对话内**变了 —— 这一条必须跟着本轮提示走。
+
+    为什么非要它：光把系统提示换成新的不够。用户实测过一次：切到"查询"之后模型
+    仍然说"我这边没有拿到任何工具"，因为**它自己前面刚说过三遍"我没有工具"**，
+    它更信自己刚说的话。所以这里明说"变的是什么"、"现在有哪些工具"、
+    以及"历史里那些话作废"。反过来（工具被收走）也要说，否则它会去调不存在的工具。
+    """
+    now_keys = [k for k in GROUP_PROMPTS if k in set(mounted or ())]
+    was_keys = [k for k in GROUP_PROMPTS if k in set(set() if previous is None else set(previous))]
+    if set(now_keys) == set(was_keys):
+        return ""
+    was = "、".join(GROUP_LABELS[k] for k in was_keys) or "极简（没有任何工具）"
+    if not now_keys:
+        return (
+            "【这一轮的变更】用户刚把模式换成了「极简」：**从现在起你没有任何工具**。"
+            "不要再调用任何工具，也不要再引用笔记、资料、知识图谱、题库里的内容 —— "
+            "你看不到它们了。"
+        )
+    if declared is None:
+        names = "、".join("`%s`" % n for k in now_keys for n in GROUP_TOOLS.get(k, ()))
+    else:
+        names = "、".join("`%s`" % n for n in declared)
+    return (
+        "【这一轮的变更】用户刚把模式从「" + was + "」换成了「"
+        + ("、".join(GROUP_LABELS[k] for k in now_keys)) + "」。"
+        "**从这一轮起**你能用这些工具：" + names + "。\n"
+        "对话历史里你此前说过「我没有工具」「我查不了」「工具没挂上」这类话 —— "
+        "**那些话从现在起作废，不要再重复**；用户要你查什么、要你做什么，直接调工具给他结果。"
+    )
+
+
+def build_prompt(mounted, previous=None, declared=None) -> str:
+    """按这一版挂载的组拼提示词。空集 = 极简模式（见 MINIMAL_PROMPT）。
+
+    `previous` 是**上一条用户消息当时挂载的组**；与现在不同时，末尾追加一条
+    "模式变了"的实时提示（见 `mode_notice`）。
+    """
+    keys = [k for k in GROUP_PROMPTS if k in set(mounted or ())]
+    if not keys:
+        # 极简是一份完全不同的提示词，但它**同样要带上"当前能力"那一行** ——
+        # 原先这里直接 return，于是模型会继续假装自己能查（用户实测：切到极简后
+        # 它还在报上一轮的四条线）。"模式变了"那条作为加强，能判断出来就加。
+        out = MINIMAL_PROMPT + "\n" + capability_line(mounted, declared)
+        if previous:
+            note = mode_notice(previous, mounted, declared or [])
+            if note:
+                out += "\n" + note
+        return out
+    off = [GROUP_LABELS[k] for k in GROUP_PROMPTS if k not in set(mounted or ())]
+    parts = [
+        DOMAIN + VOICE + TOOL_DISCIPLINE,
+        capability_line(mounted, declared),          # 现在有什么：无条件、权威
+        "\n".join(GROUP_PROMPTS[k] for k in keys),
+    ]
+    if off:
+        parts.append(
+            "**这一版没有挂**：" + "、".join(off) + "。这些你看不到，"
+            "不要提议去查它们，也不要假装能看到。"
+        )
+    notice = mode_notice(previous, mounted, declared)
+    if notice:
+        parts.append(notice)          # 放最后：这是"现在"最要紧的一条
+    return "\n".join(parts)
+
+
+# 消息最长留 **20 万字**：够贴一整篇论文 / 技术文章，又还挡得住"把整本书灌进来"。
+#
+# 这条以前是 8000 —— 实测撞到：用户贴了一篇稿子，**前半还在、后半没了**，而界面上
+# 一声不吭（他是从模型嘴里知道的："你稿子最后一句被截断了"，库里那条消息的字数
+# 正好 8000）。8000 字对"贴一段材料"也许够，对"贴一篇文章"远远不够 ——
+# 而**截断这件事绝不该悄悄发生**：真要超（20 万也很少有人撞到），前端会明说。
+MAX_CONTENT = 200000
 
 # 一条消息最多挂几处引用：再多就成了引文清单，而不是对话
 CITATION_MAX = 6
@@ -217,7 +437,11 @@ def _conversation_out(c: Conversation, count: int, preview: str) -> dict:
         "messageCount": count,
         "preview": " ".join((preview or "").split())[:80],
         "pinned": bool(c.pinned),
-        # 所属分组（路径，`''` = 根）。前端拿它把会话摆进目录树里
+        # 归档：前端把它摆进左栏的"归档"区（没有归档的落在"未归档"区）
+        "archived": bool(c.archived),
+        # 所属分组（路径，`''` = 根）。**左栏已经不画目录树了**（改成"置顶 / 归档 /
+        # 未归档"三区，见 chat.js 的 renderZones）—— 这个字段留着是因为数据在、
+        # 接口还有人用，删它要动的东西比留它多。
         "folder": c.folder or "",
         "createdAt": c.created_at.isoformat() if c.created_at else None,
         "updatedAt": c.updated_at.isoformat() if c.updated_at else None,
@@ -812,6 +1036,11 @@ def rename_conversation(cid: uuid.UUID, payload: dict, user: AuthenticatedWriter
     if isinstance(body.get("pinned"), bool):
         conv.pinned = body["pinned"]
 
+    if isinstance(body.get("archived"), bool):
+        # 归档 / 取消归档。**不碰置顶**：用户要的是"有没有归档都可以置顶"，
+        # 所以归档一条置顶过的对话，它在置顶区那份副本照旧在。
+        conv.archived = body["archived"]
+
     if "folder" in body:
         # 挪进某个分组：目标分组顺手登记一次（拖放时用户常常没先建过它）
         conv.folder = _clean_folder(body.get("folder"))
@@ -1028,6 +1257,11 @@ def post_message(
     body = payload or {}
     content = str(body.get("content") or "").strip()
     reply_to = body.get("replyTo")
+    # 「深度思考」（输入框里那颗药丸）：**缺省 = 开** —— 默认模型是
+    # `deepseek-flash`，思考是它的常态；前端关掉才传 false，那时由
+    # `gateway.thinking_params` 给上游显式 `thinking: disabled`。
+    _deep = body.get("thinking")
+    thinking = True if _deep is None else bool(_deep)
 
     conf = gateway.resolve_config(db, user.id)
     gateway.enforce_quota(db, user.id)
@@ -1092,7 +1326,7 @@ def post_message(
             status="ok",
             # 快照"这一刻的模式"：开关是随时会改的，事后再也推不出当时挂了几组。
             # 对话树就是靠它画出"对话过程里模式变过几次、各是什么"。
-            mounts=json.dumps(sorted(mounts.effective(db, user.id)), ensure_ascii=False),
+            mounts=json.dumps(sorted(mounts.effective(db)), ensure_ascii=False),
         )
         # 附件：先上传、后引用（见 upload_attachment 的说明）。
         # 只接受**本人**的、且还没挂到别的消息上的那些 —— 别人传的 id 猜不出来，
@@ -1165,7 +1399,7 @@ def post_message(
     db.refresh(assistant)
 
     return StreamingResponse(
-        _stream(db, user, conv, conf, user_msg, assistant, history),
+        _stream(db, user, conv, conf, user_msg, assistant, history, thinking=thinking),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1173,6 +1407,30 @@ def post_message(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/runs/{run_id}")
+def deliver_run(run_id: str, body: dict, db: DbSession) -> dict:
+    """**按 runId** 交回沙箱输出：页面跑完就报，与"那条消息落库了没有"无关。
+
+    为什么非要这条（原来只有消息那条）：跑脚本大多发生在**流式过程中**，那时消息
+    还没落库，前端拿不到 message id —— 于是输出被丢掉，块永远停在"运行中…"，
+    而库里那次运行其实**有**输出（实测查库确认过）。这条按 runId 认领，顺手把
+    agent 循环里那个"等输出"的会合点放行（见 `app/runs.py`）。
+
+    `body`：`{ok, text, ms}`（与 postMessage 回传的形状一致）。
+    """
+    body = body or {}
+    payload = {
+        "ok": body.get("ok") is not False,
+        "text": str(body.get("text") or ""),
+        "ms": int(body.get("ms") or 0),
+        # 图（matplotlib 那种）：壳收走后以 base64 跟着回来 —— 存进那行运行里，
+        # 刷新后还在。限量与大小在 `runs.deliver` 里统一收（见 `_clean_images`）。
+        "images": body.get("images") or [],
+    }
+    delivered = runs.deliver(str(run_id or "").strip(), payload)
+    return {"ok": True, "delivered": delivered}
 
 
 @router.post("/conversations/{cid}/messages/{mid}/run")
@@ -1202,6 +1460,18 @@ def attach_run(
     if not run_id:
         raise HTTPException(400, "缺少 runId")
     text = str(body.get("text") or "")[:RUN_TEXT_LIMIT]
+    # 顺手把会合点放行：跑脚本的那一轮可能正停在这儿等（见 app/runs.py）。
+    # 两条上报路（这条与 `/chat/runs/{runId}`）都汇到那儿，谁先到都算数。
+    runs.deliver(
+        run_id,
+        {
+            "ok": body.get("ok") is not False,
+            "text": text,
+            "ms": int(body.get("ms") or 0),
+            # 图也一起放行（同 `/chat/runs/{runId}` 那条路）
+            "images": body.get("images") or [],
+        },
+    )
 
     # 造**新的** dict 而不是原地改：JSON 列的脏检查比较的是值，
     # 原地改完再赋值会被判成"没变"，于是什么都不写（实测就是这样静默丢的）。
@@ -1330,6 +1600,7 @@ def _stream(  # noqa: ANN001
     user_msg: Message,
     assistant: Message,
     history: list[dict],
+    thinking: bool = True,
 ):
     started = time.perf_counter()
     parts: list[dict] = []
@@ -1347,17 +1618,69 @@ def _stream(  # noqa: ANN001
     yield _sse("start", _message_out(assistant))
 
     try:
+        # 这一轮的模式（挂载集 + 权限档）先算一次：拼提示词、声明工具、执行守卫
+        # 用的是同一份 —— 三处不一致是这种系统最容易出的 bug。
+        # **模式由输入锚定**（用户定的规则）：
+        #
+        #   一条输入可以有多个输出，输入锚定模式，因此所有的输出都是一个模式，
+        #   要想改模式，必须更改输入。
+        #
+        # 所以这一轮用哪几组、放到哪一档，以那条用户消息**当时记下的快照**为准，
+        # 而不是"现在设置里是什么"—— 设置里那个只是"下一条输入用什么"。
+        # 老消息没记过快照才回落到设置（`from_snapshot` 返回 None）。
+        anchored = mounts.from_snapshot(getattr(user_msg, "mounts", None))
+        if anchored is None:
+            turn_mounts, turn_access = mounts.effective(db), mounts.access_of(db)
+        else:
+            turn_mounts, turn_access = anchored
+        # 上一条用户消息当时是什么模式（用户消息上存着快照，对话树也靠它）——
+        # 模式在一个对话内会变，变了就要在提示词里明说，见 mode_notice。
+        # 这一轮**真正声明**出去的工具名（组 × 权限档的结果）——
+        # 提示词里点名的就是它，与发给模型的 tools 参数同源。
+        turn_declared = [
+            item["function"]["name"]
+            for item in tool_registry.specs(turn_mounts, turn_access)
+        ]
+        # 上一条用户消息当时是什么模式（用户消息上存着快照）—— 模式在一个对话内会变，
+        # 变了要在提示词里明说（见 mode_notice）。查不到就当"没变"：这只是提示词的
+        # 一条附加说明，绝不该因为它让整轮对话失败。
+        prev_mounts = None
+        try:
+            _prev = (
+                db.query(Message)
+                .filter(
+                    Message.conversation_id == conv.id,
+                    Message.role == "user",
+                    Message.id != user_msg.id,
+                )
+                # 按自增主键排，不按 created_at —— **Message 上没有 created_at 这一列**
+                # （实测过：写 created_at 会每轮抛异常，而这里外面套了兜底，于是被静默
+                # 吃成"没变"，症状是"模式变多会提示、变少从不提示"，一次灵一次不灵）。
+                .order_by(Message.id.desc())
+                .first()
+            )
+            if _prev is not None:
+                prev_mounts = [str(one) for one in (as_json(_prev.mounts, []) or [])]
+        except Exception:  # noqa: BLE001  提示词附加项，失败就按"没变"处理
+            prev_mounts = None
+
         for event in agent_loop.run(
             db,
             user,
             conf,
-            system=SYSTEM_PROMPT,
+            # 提示词随**这一版挂载的组**变（极简模式是一份完全不同的提示词：
+            # 它不该知道用户有笔记/资料/题库，见 build_prompt 的说明）
+            system=build_prompt(turn_mounts, prev_mounts, turn_declared),
             history=history,
             tools=tools,
             # 只声明**已挂载**的那几组；未挂载的即使被叫到名字也不执行（纵深防御）
-            mounts=mounts.effective(db, user.id),
+            mounts=turn_mounts,
+            allow=turn_access,
             # 工具要知道"这是哪次对话"：push_question 靠它避开这次已经推过的题
             tool_context={"conversationId": str(conv.id)},
+            # 「深度思考」开关（前端药丸 → 请求体 → 这里，见 `thinking_params`）。
+            # 这是唯一开思考的调用路径：子代理与批改不传（默认关）。
+            thinking=thinking,
         ):
             kind = event["kind"]
 
@@ -1367,6 +1690,17 @@ def _stream(  # noqa: ANN001
             elif kind == "think":
                 _push_think(parts, event["text"])
                 yield _sse("think", {"text": event["text"]})
+            elif kind == "run_output":
+                # 跑脚本的**最终输出**回来了（agent 循环在那儿等过它，见 agent_loop）。
+                # 写进那块零件：库里的消息因此自带结果 —— 刷新、换设备都还在，
+                # 模型下一轮读历史时看到的也是"跑完了、输出是这些"。
+                run = event.get("run")
+                if isinstance(run, dict) and run:
+                    for one in parts:
+                        if one.get("type") == "demo" and one.get("runId") == event["runId"]:
+                            one["run"] = run
+                            break
+                yield _sse("run", {"runId": event["runId"], "run": run})
             elif kind == "note":
                 yield _sse("note", {"text": event["text"]})
             elif kind == "tool_start":
@@ -1385,19 +1719,13 @@ def _stream(  # noqa: ANN001
                     },
                 )
             elif kind == "tool_result":
-                # 工具调用之前的那段话是**铺垫**，不是结论（"我先查一下…"）—— 打上 `process`，
-                # 界面上它就成了可折叠的"过程"，正文里留下的才是答案。
+                # **这里原来会给"工具前那段话"打 `process` 标记**（界面上折成"过程"块），
+                # 出发点是"紧跟着工具调用的话是铺垫、不是结论"。已删：模型先说一段正文
+                # （"我一次验到底：两条路各出一张…"）再调工具时，那 1500 字会被整段折走，
+                # 正文区只剩工具气泡 —— 用户的原话："正文被吞到思考里面了"。
                 #
-                # 为什么在这打、而不是只在界面上临时折：**存下来的零件要带着这个标记**。
-                # 只在界面上折的话，刷新一下铺垫又散回正文了（用户就是这么反馈的：
-                # "我这边看不到 thinking" —— 他看到的其实是散开的铺垫）。
-                for earlier in reversed(parts):
-                    if earlier.get("type") == "tool_call":
-                        continue  # 跳过工具本身，找它前面最近的那段文字
-                    if earlier.get("type") == "text" and str(earlier.get("text") or "").strip():
-                        earlier["process"] = True
-                        earlier["label"] = "过程"
-                    break
+                # 通道本来就分得清楚：思维链走 `reasoning_content`（think 零件），
+                # 对用户说的话走 `content`（text 零件）。正文永远留正文。
                 part = tool_parts.get(event["callId"])
                 if part is not None:
                     part["output"] = event["output"]
@@ -1434,15 +1762,38 @@ def _stream(  # noqa: ANN001
                 # 他点了才落到记录里（走的是收藏夹 / 错题本那两条老路）。
                 # 演示沙箱：模型给的是一段自包含 HTML，界面上长成一个沙箱 iframe
                 demo = (event.get("payload") or {}).get("demo")
-                if isinstance(demo, dict) and demo.get("html"):
+                # `runId` 也算：跑 Python 现在走**常驻运行壳**，零件本身没有 html
+                #（见 tools.py 的 `_PYODIDE_SHELL`），但照样要长出一个零件。
+                if isinstance(demo, dict) and (demo.get("html") or demo.get("runId")):
                     parts.append(
                         msgparts.demo_part(
                             title=demo.get("title") or "演示",
-                            html=demo["html"],
+                            html=demo.get("html") or "",
                             run_id=demo.get("runId") or "",
+                            # 跑脚本 vs 画演示：前端据此选长相（命令块 / 卡片）
+                            kind=(
+                                "python"
+                                if demo.get("kind") == "python" or event.get("name") == "run_python"
+                                else "demo"
+                            ),
+                            # 脚本原文（`run_python` 的入参）：给界面折起来看
+                            code=(
+                                demo.get("code")
+                                or (event.get("args") or {}).get("code")
+                                or ""
+                            ),
                         )
                     )
-                    yield _sse("demo", {"callId": event["callId"], "demo": demo})
+                    # 跑 Python 的那种：把 `kind` 与**脚本原文**一起发过去 ——
+                    # 流式那一路是照着这个 payload 直接长出零件的（不走库里那份），
+                    # 少了 code，前端就没法把它交给常驻运行壳。
+                    payload = dict(demo)
+                    if payload.get("runId") and not payload.get("html"):
+                        payload["kind"] = "python"
+                        payload["code"] = str((event.get("args") or {}).get("code") or "")
+                        # 点名要装的包（动态导入那种）也跟着走 —— 壳要用它
+                        payload["packages"] = list(demo.get("packages") or [])
+                    yield _sse("demo", {"callId": event["callId"], "demo": payload})
 
                 proposal = (event.get("payload") or {}).get("proposal")
                 if isinstance(proposal, dict) and proposal.get("kind"):

@@ -148,6 +148,8 @@ def sqlite_rowid_pk_problems(db_path: Path) -> list[str]:
 #: 仍然只能重建库（SQLite 改不了列类型，`_rowid_pk_problems` 那段注释讲了为什么）。
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("conversations", "folder", "VARCHAR(240) NOT NULL DEFAULT ''"),
+    # 归档（一层，不分级）：老的对话一律是 False = 未归档，正是想要的默认
+    ("conversations", "archived", "BOOLEAN NOT NULL DEFAULT 0"),
     ("messages", "mounts", "TEXT NOT NULL DEFAULT ''"),
 )
 

@@ -530,3 +530,47 @@ body[data-page='workbench'] .view {
 }
 
 .panes__newtab:hover { background: var(--bg3); color: var(--fg); }
+
+/* 主页里那扇笔记窗格：阅读 / 编辑 两态，与笔记页「阅读」同一套排版（`.nread`）。
+ * 字号行宽跟着设置面板走（`.nread__inner` 读的是 rootEl 上的 CSS 变量）。 */
+.panes__notemode {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0 0 10px;
+  padding: 2px;
+  background: var(--bg3);
+  border-radius: var(--r-md, 8px);
+}
+
+.panes__notemodebtn {
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg3);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  cursor: pointer;
+}
+
+.panes__notemodebtn.is-on {
+  color: var(--fg);
+  background: var(--bg);
+  box-shadow: var(--shadow-1, 0 1px 2px rgb(0 0 0 / 12%));
+}
+
+.panes__notearea {
+  display: block;
+  width: 100%;
+  min-height: 320px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg);
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md, 8px);
+  resize: vertical;
+}

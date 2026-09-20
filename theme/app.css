@@ -51,6 +51,10 @@
   --bad: #F87171;
   --amber: #FBBF24;
   --blue: #60A5FA;
+
+  /* 三个模式的指认色**不在这里**：色号只有一处来源 —— 后端 `mounts.py` 的
+   * `Mode.color`（设置里的 `mode_colors` 可覆盖），由 mounts.js 注入成
+   * `--mode-<key>`。用户："注意不要硬编码颜色 —— 未来如果我想改颜色呢？那应该是一键式的。" */
   /* 边框：深色下必须看得见轮廓。原先 #1F2A35 与底色 #131A22 的对比度只有 1.21:1，
      视觉上等于没有边框；现在 --line 约 1.84:1、--line-strong 约 2.6:1。 */
   --line: #38495A;
@@ -106,6 +110,9 @@ html[data-theme='light'] {
   --amber: #B45309;
   --blue: #2563EB;
   --pri-3: #0E7C6B;
+  /* 三个模式的指认色**不在这里**：色号只有一处来源 —— 后端 `mounts.py` 的
+   * `Mode.color`（设置里的 `mode_colors` 可覆盖），由 mounts.js 注入成
+   * `--mode-<key>`。用户："注意不要硬编码颜色 —— 未来如果我想改颜色呢？那应该是一键式的。" */
   --shadow-2: 0 12px 30px -20px rgba(15, 26, 36, 0.4);
   --shadow-3: 0 26px 56px -30px rgba(15, 26, 36, 0.45);
 }
@@ -332,13 +339,51 @@ body[data-sb='on'] .view {
   animation-duration: 0.22s;
   animation-timing-function: var(--ease);
 }
-/* 跨文档导航（首页 → 刷题页、刷题页 → 错题本、登录页 → 刷题页）也走同一套过渡：
-   旧文档的画面会在新文档加载与首帧渲染期间一直垫着，不再直接切过去。
-   需要**两端文档都**声明这一句，所以 landing.html / login.html 里也各有一份。 */
-@view-transition { navigation: auto; }
+/* **跨文档那条（`@view-transition { navigation: auto }`）已经撤掉**，原因是一次
+   实测出来的漏：在笔记页"打开过一篇笔记 + 等几秒"之后再点活动栏换页，浏览器会把
+   跨页那次过渡拒掉并报 "ViewTransition opt-in disabled"（同一文档里用没用过
+   `startViewTransition` 都不是判据 —— 对照实验做过：别的页等多久都不报、
+   笔记页不打开笔记也不报）。用户的要求是"每次都能正常平滑过渡，不要留漏洞"，
+   所以页面之间改成**确定性的两半**，不依赖那个 opt-in：
+
+     * 离开：点站内链接时给 `body` 加 `data-leaving`，这一页的内容淡出（见下），
+       120ms 后真的跳（`ui.js` 里那段）；
+     * 进来：新页面加载完，内容淡入（下面那条 animation）。
+
+   外壳（活动栏、顶栏）**不参与** —— 它们在每页都一样，跟着淡反而像整页闪。
+   页内切换（`ui.viewSwap`）仍然走 View Transitions：那是同文档的，稳定。 */
+body[data-leaving='1'] .view {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.view {
+  /* `backwards` 而不是 `both`：`both` 会把动画最后一帧的 opacity **一直按住**，
+     于是 `body[data-leaving='1'] .view { opacity: 0 }` 根本压不过它 ——
+     淡出那半截就没了（实测点完之后 70ms 量到 opacity 还是 1）。
+     `backwards` 只负责"动画开始前用 from 那一帧"，跑完就还回层叠里的值。 */
+  animation: qf-page-in 190ms var(--ease, ease-out) backwards;
+}
+
+/* 骨架 → 内容 的那一次交接（`shell.js` 的 `revealFirstPaint` 加上这个类）。
+ * 复用下面同一套 keyframes：进来是"从底色淡进来"，不是从透明黑。 */
+#app-root.qf-painted {
+  animation: qf-page-in 200ms var(--ease, ease-out) backwards;
+}
+
+/* 从页面底色淡进来（不是从透明黑）。`.view` 自己没有底色，露出的是 body 的 --bg，
+   所以深浅两套主题下都只是"底色 → 内容"，不会有黑闪。 */
+@keyframes qf-page-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-old(root),
   ::view-transition-new(root) { animation: none; }
+
+  .view { animation: none; }
+  body[data-leaving='1'] .view { opacity: 1; }
 }
 
 .page__head { margin-bottom: 22px; }
@@ -1669,11 +1714,18 @@ body[data-page='wrongbook'] .part {
 
 /* 退场中的弹层卡片：脱离流的居中 + 自己淡出。
    两条都不是可选：留在流里会在 grid 里再占一行（把随后弹出的确认框顶到下面），
-   而 fade 放在遮罩上会连累同时存在的另一个弹层。 */
+   而 fade 放在遮罩上会连累同时存在的另一个弹层。
+
+   **定位别用 `inset: 0; margin: auto`**：那对 `height: auto` 的卡片会把高度
+   **拉伸到满屏**（top/bottom 都给 0 且 height 不定的时候，元素被撑满）——
+   退场那一瞬卡片从"430×内容高"变成"430×满屏高"，用户看到的就是
+   "关闭时跳出一个更大的弹窗闪一下"。用 left/top 50% + translate 定位：
+   尺寸完全不变，位置与 grid 居中重合（所以也不会跳位置）。 */
 .modal-root .modal__card.is-leaving {
   position: absolute;
-  inset: 0;
-  margin: auto;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.18s var(--ease);

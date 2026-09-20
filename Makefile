@@ -105,6 +105,12 @@ win-sync:
 smoke: win-sync
 	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/smoke_win.py
 
+# 界面检查：六页冒烟 + 笔记编辑器（源码/编辑两个视图、⌘Z、⌘S 只差一行、装饰是否生效）。
+# 需要先起着服务（默认 http://127.0.0.1:8100），并且本机能 require 到 playwright-core：
+#     QF_PLAYWRIGHT=/path/to/playwright-core make ui-check
+ui-check:
+	@QF_BASE=$${QF_BASE:-http://127.0.0.1:8100} node tools/checks/notes_editor.mjs
+
 dist:
 	@$(MAKE) --no-print-directory web
 	@# PYTHONUNBUFFERED：这一步要跑两三分钟，输出被缓冲的话看起来像卡死

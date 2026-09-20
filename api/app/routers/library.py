@@ -20,8 +20,11 @@ from typing import Any, Callable
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
+from .. import ai_gateway as gateway
 from .. import attachments as attach
+from .. import desktop
 from .. import library as lib
+from .. import library_meta
 from .. import notelib
 from ..deps import CurrentUser, DbSession
 from ..models import UserSettings
@@ -35,6 +38,31 @@ ROOTS_KEY = "library_roots"
 
 #: 环境变量：用于测试与"我就是不想用默认根"的场合。
 ROOTS_ENV = "QF_LIBRARY_ROOTS"
+
+
+#: 一次 `/index` 里最多问几次模型。判元数据是一次网络往返（实测一秒左右一条），
+#: 现在是**并发**发出去的，所以批量可以大一些：一批 12 条并发跑，通常两三秒。
+#: 再大就没意义了 —— 前端是循环调用，一批一批推进反而看得见进度。
+LLM_BATCH = 12
+
+#: 判元数据时的并发宽度。上限 6：再高是拿上游的限流换速度（真被限流，整批更慢）。
+LLM_WORKERS = 6
+
+
+def _judge_meta(item: Any, head: str, conf: dict[str, Any] | None) -> tuple[dict[str, Any], str]:
+    """问模型要这份资料的元数据。
+
+    返回 `(元数据, 空串)` 或 `(机械兜底, 原因)`。**机械兜底里没有猜**：
+    只有文件名派生的标题与扩展名决定的类型 —— 判不出来就让人去补，
+    不拿一个错的作者填进去（它是引用格式、检索、去重的地基）。
+    """
+    plain: dict[str, Any] = {"title": lib._pretty(item.stem), "kind": item.kind}  # noqa: SLF001
+    if conf is None:
+        return plain, "还没配模型（设置 → AI），元数据先留空"
+    try:
+        return library_meta.infer(item, head, conf), ""
+    except library_meta.MetaFailed as exc:
+        return plain, exc.message
 
 
 def _run(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -476,12 +504,25 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
     被判成"已处理"，**永远不抽正文** —— 症状是那几份搜不到、正文面板一直是空的，
     而且怎么点"建索引"都没用。
     """
-    limit = int(body.get("limit") or 8)
+    limit = int(body.get("limit") or LLM_BATCH)
     force = bool(body.get("force"))
+    # 判元数据要问模型：拿不到配置就**整批先不判**（正文照样抽，检索照样能用），
+    # 并把原因原样带回去给界面显示 —— 沉默着不判，用户只会以为索引坏了。
+    conf: dict[str, Any] | None
+    hint = ""
+    try:
+        conf = gateway.resolve_config(db, user.id)
+    except HTTPException as exc:
+        conf, hint = None, str(exc.detail)
+    if conf is not None:
+        limit = max(1, min(limit, LLM_BATCH))
     roots = roots_for(_settings_row(db, user.id))
     known = lib.load_all_metadata(_meta_dir())
     done: list[dict[str, Any]] = []
     remaining = 0
+    # 分两步：先挑出这一批要处理的条目（挑的同时抽正文，那是本地 IO），
+    # 再**并发**问模型。串行问的话，一批 12 条就是十几秒，界面只能一格一格挪。
+    todo: list[tuple[Any, str, dict[str, Any], str]] = []
     for entry in lib.entries(roots, _meta_dir(), _text_dir()):
         key = entry.citekey
         # **判据是"这份正文抽过没有"**，不是"抽出来空不空"，也不是"键在不在已知表里"，
@@ -492,16 +533,25 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
         # * `at` 才是那个标记本身：它区分的是"没抓过"与"抓过但没有正文"（`brief()` 里也这么用）。
         if entry.text_state.get("at") and not force:
             continue
-        if len(done) >= max(1, min(limit, 50)):
+        if len(todo) >= max(1, min(limit, 50)):
             remaining += 1
             continue
-        frozen = key in known
         state = _run(lib.extract_text, entry.item, _text_dir(), key, force=force)
         # **抽完再定键**：作者与年份就在正文里。踩过两次才写对 ——
         # 第一次是先定键（`arxiv220514135` 本可以是 `dao2022flashattention`），
         # 第二次是注释说要抽完再定、代码却仍然把键设成了抽之前的那个。
-        fresh = lib.infer(entry.item, head_text=lib.head_text_for(entry.item, _text_dir(), key))
+        todo.append((entry, key, state, lib.head_text_for(entry.item, _text_dir(), key)))
+
+    judged_all = library_meta.judge_many([(entry.item, head) for entry, _k, _s, head in todo], conf, workers=LLM_WORKERS) \
+        if conf is not None else [(entry.item, None, hint or "还没配模型") for entry, _k, _s, _h in todo]
+
+    for (entry, key, state, _head), (_item, judged, why) in zip(todo, judged_all, strict=False):
+        frozen = key in known
+        fresh = dict(judged or {"title": lib._pretty(entry.item.stem), "kind": entry.item.kind})  # noqa: SLF001
         fresh.setdefault("source", str(entry.item.path))
+        fresh["origin"] = "llm" if not why else "pending"
+        if why:
+            fresh["why"] = why
         if frozen:
             fresh["citekey"] = key                      # 已冻结的键不动（它可能已经被引用）
         else:
@@ -512,7 +562,9 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
                 _run(lib.rename_text, _text_dir(), key, fresh["citekey"])
             # 走 freeze 而不是直接 save：它会在**撞键时去重**，
             # 否则两个条目会冻结成同一个键、后写的覆盖前一份，前者下一轮又变成"没抓过"
-            frozen_meta = _run(lib.freeze, _meta_dir(), _text_dir(), fresh, entry.item.rel, origin="inferred")
+            frozen_meta = _run(
+                lib.freeze, _meta_dir(), _text_dir(), fresh, entry.item.rel, origin=str(fresh["origin"])
+            )
             fresh = frozen_meta
         done.append(
             {
@@ -522,7 +574,86 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
                 "chars": state.get("chars"),
             }
         )
-    return {"done": done, "remaining": remaining, "metaDir": str(_meta_dir())}
+    return {"done": done, "remaining": remaining, "metaDir": str(_meta_dir()), "hint": hint}
+
+
+@router.post("/pick-folder")
+def pick_folder() -> dict:
+    """弹一次**系统**文件夹选择器，把用户选中的目录给回来。
+
+    路径由用户在本机选，服务端只把结果送回去 —— 客户端传来的路径不会当成"要打开的目录"
+    去使用，它只是"要**加进清单**的那一个"（加清单要经过 `/roots` 的校验）。
+    """
+    return desktop.pick_folder()
+
+
+@router.post("/meta/llm")
+def meta_llm(body: dict, user: CurrentUser, db: DbSession) -> dict:
+    """用模型重判一批资料的元数据。
+
+    为什么单独一个接口：`/index` 只管"还没有元数据的条目"，而这一次要修的是
+    **已经写坏的那批**（用户："元数据提取这块你整个就是糊弄"）——
+    它们的标题里混着目录行、作者里混着地名与出版社。
+
+    三件必须钉住的事：
+
+    * **citekey 一律不动**。它是身份，笔记里可能已经按它引用了（`referencing_notes`），
+      重建等于断引用。键好不好看，比断引用次要得多。
+    * **只动模型该判的那几个字段**：title / authors / year / kind / topics / origin。
+      `source`、`assets`、人手工补过的（`origin: manual`）都不碰。
+    * 判不出来的条目**保留原样**并把原因报回去，不写一个更差的进去。
+    """
+    conf: dict[str, Any] | None
+    try:
+        conf = gateway.resolve_config(db, user.id)
+    except HTTPException as exc:
+        raise HTTPException(503, str(exc.detail)) from exc
+
+    scope = str(body.get("scope") or "pending")
+    # 并发之后一批能给大些：默认 12 条，上限 40（前端循环调用，一批一批推进）
+    limit = max(1, min(int(body.get("limit") or 12), 40))
+    force = bool(body.get("force"))
+    roots = roots_for(_settings_row(db, user.id))
+    meta_dir, text_dir = _meta_dir(), _text_dir()
+    known = lib.load_all_metadata(meta_dir)
+
+    picked: list[tuple[Any, dict[str, Any], str]] = []
+    remaining = 0
+    for entry in lib.entries(roots, meta_dir, text_dir):
+        meta = dict(entry.meta or {})
+        origin = str(meta.get("origin") or "")
+        if origin == "manual" and not force:
+            continue
+        if scope != "all" and not library_meta.looks_unjudged(meta):
+            continue
+        if len(picked) >= limit:
+            remaining += 1
+            continue
+        picked.append((entry, meta, lib.head_text_for(entry.item, text_dir, entry.citekey)))
+
+    judged = library_meta.judge_many(
+        [(entry.item, head) for entry, _meta, head in picked], conf, workers=LLM_WORKERS
+    )
+    changed: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    # 落盘按原顺序单线程做：写文件是快的，顺序写让改动一眼看得清（并发写没有收益还有风险）
+    for (entry, meta, _head), (_item, fresh, why) in zip(picked, judged, strict=False):
+        key = entry.citekey
+        if fresh is None:
+            failed.append({"citekey": key, "why": why})
+            continue
+        for field in ("title", "authors", "year", "kind", "topics"):
+            if fresh.get(field):
+                meta[field] = fresh[field]
+            elif field in ("authors", "topics"):
+                meta[field] = []
+        meta["origin"] = "llm"
+        meta["metaRev"] = library_meta.META_REV
+        meta["citekey"] = key                     # 身份不动
+        meta.pop("why", None)
+        lib.save_metadata(meta_dir, meta, origin="llm")
+        changed.append({"citekey": key, "title": str(meta.get("title") or ""), "authors": meta.get("authors") or []})
+    return {"changed": changed, "failed": failed, "remaining": remaining}
 
 
 __all__ = ["default_roots", "roots_for", "router"]

@@ -63,6 +63,7 @@
     citekey: '',
     detail: null,
     indexing: false,
+    judging: false,
     kinds: [],
     status: '',
     // 左右两栏的开合（open | closed）。这是"我的习惯"不是"这次的状态" → 记本机。
@@ -91,6 +92,11 @@
     el.count = document.getElementById('library-count');
     el.indexBtn = document.getElementById('library-index');
     el.classifyBtn = document.getElementById('library-classify');
+    el.metaBtn = document.getElementById('library-meta');
+    el.upload = document.getElementById('library-upload');
+    el.file = document.getElementById('library-file');
+    el.prog = document.getElementById('library-progress');
+    el.progFill = document.getElementById('library-progressfill');
     el.main = document.getElementById('library-main');
     el.side = document.getElementById('library-side');
     el.tools = document.getElementById('library-tools');
@@ -128,7 +134,13 @@
     });
     el.addRoot.addEventListener('click', addRootPrompt);
     el.indexBtn.addEventListener('click', toggleIndex);
+    el.metaBtn.addEventListener('click', toggleMeta);
     el.classifyBtn.addEventListener('click', classifyPrompt);
+    // 上传：用户自己把文件丢进来，剩下的（抽正文 + 模型判元数据）自动接着做
+    el.upload.addEventListener('click', function () {
+      if (el.file) el.file.click();
+    });
+    el.file.addEventListener('change', onPicked);
     el.pick.addEventListener('change', function () {
       if (el.pick.value === '__add__') {
         addRootPrompt();
@@ -255,7 +267,10 @@
     var pending = state.items.filter(function (one) {
       return one.text.state === 'none' && !one.text.attempted;      // 试过没有正文的不算"待抓"
     }).length;
-    var needMeta = state.items.filter(function (one) { return one.origin === 'inferred' && !one.authors.length; }).length;
+    // "还需要判"的计数：还没让模型判过的（`pending` / 老的 `inferred`）
+    var needMeta = state.items.filter(function (one) {
+      return (one.origin === 'pending' || one.origin === 'inferred') && !one.authors.length;
+    }).length;
     el.bar.appendChild(h('span.lib__baritem', { text: (state.query ? '命中 ' : '共 ') + total + ' 条' }));
     if (pending) el.bar.appendChild(h('span.lib__baritem.lib__baritem--dim', { text: '待抓正文 ' + pending }));
     if (needMeta) el.bar.appendChild(h('span.lib__baritem.lib__baritem--dim', { text: '待补元数据 ' + needMeta }));
@@ -268,6 +283,8 @@
       ? '停下（已经抓到的不会丢，下次从剩下的接着抓）'
       : '抽正文（PDF 抽取较慢，分批推进，可随时停下）';
     el.classifyBtn.textContent = '模型归类';
+    el.metaBtn.classList.toggle('is-on', state.judging);
+    el.metaBtn.textContent = state.judging ? '停下' : '判元数据';
   }
 
   /** 把刚抓过的几条从"待抓"里划掉 —— 不动整列表（重画会顶掉滚动位置）。 */
@@ -315,8 +332,13 @@
             text: [authorsLine(one), one.year || ''].filter(Boolean).join(' · ') || '（作者与年份待补）'
           }),
           h('span.lib__marks', null,
+            // "这一条是模型判的"不再标：**现在全是模型判的**（元数据整条管线交给模型），
+            // 一个每行都有的标记等于没有信息（用户："这个信息现在就变成冗余了"）。
+            // 真正有信息量的是**例外**：人手工改过的、以及还没判过的。
             one.origin === 'manual' ? h('span.lib__mark.lib__mark--manual', { text: '人定' }) : null,
-            one.origin === 'llm' ? h('span.lib__mark.lib__mark--llm', { text: '模型' }) : null,
+            one.origin === 'pending' || one.origin === 'inferred'
+              ? h('span.lib__mark.lib__mark--warn', { text: '待判' })
+              : null,
             one.text.state === 'garbled' ? h('span.lib__mark.lib__mark--bad', { text: '无正文' }) : null,
             one.text.state === 'poor' ? h('span.lib__mark.lib__mark--warn', { text: '正文一般' }) : null,
             one.text.state === 'none'
@@ -442,8 +464,14 @@
         'div.lib__detailtags',
         null,
         h('span.lib__kind.lib__kind--' + one.kind, { text: KIND_LABEL[one.kind] || one.kind }),
-        h('span.lib__origin.lib__origin--' + (one.origin || 'inferred'), {
-          text: { manual: '元数据：人定的', llm: '元数据：模型填的', inferred: '元数据：推断的（待核）' }[one.origin || 'inferred']
+        // 同上：不标"模型填的"（那是常态），只标例外
+        h('span.lib__origin.lib__origin--' + (one.origin || 'pending'), {
+          text:
+            {
+              manual: '元数据：人定的',
+              pending: '元数据：还没判（用模型判一下）',
+              inferred: '元数据：还没判（用模型判一下）',
+            }[one.origin || 'pending'] || ''
         }),
         h('span.lib__textstate.lib__textstate--' + (text.tone || 'none'), { text: text.text }),
         h('span.lib__path', { text: one.rel, title: one.path })
@@ -734,12 +762,50 @@
 
   // ------------------------------------------------------------------ 动作
 
+  /** 把选中的目录加进清单（系统选择器与手输两条路都走这里）。 */
+  function addRoot(path) {
+    return api
+      .post('/library/roots', { action: 'add', path: path })
+      .then(function () {
+        ui.toast('已加入清单', 'ok');
+        loadRoots(true);
+      })
+      .catch(fail);
+  }
+
+  /** 添加资料目录：**先弹系统的文件夹选择器**（用户连着说了两遍）。
+   *
+   *  为什么要这样：路径是这个界面里最不该让人手打的东西 —— 打错一个字符就是
+   *  "根目录不存在"，而"选一个目录"在系统里本来就是点两下的事。
+   */
   function addRootPrompt() {
+    api
+      .post('/library/pick-folder', {})
+      .then(function (res) {
+        if (res && res.path) {
+          addRoot(res.path);
+          return;
+        }
+        if (res && res.cancelled) return;   // 用户按了取消：什么都不做，别报错
+        // 这台上没有图形选择器（容器 / SSH / 无桌面环境）：退回手输，并把**原因**说清 ——
+        // 静默失败的话，用户只会以为按钮坏了
+        promptRootByHand((res && res.why) || '这台机器上没有可用的文件夹选择器。');
+      })
+      .catch(fail);
+  }
+
+  function promptRootByHand(why) {
     var input = h('input.lib__field', { type: 'text', value: '', placeholder: '例如 /mnt/f/Documents' });
     ui.modal({
-      title: '添加资料目录',
+      title: '手动填写资料目录',
       size: 'sm',
-      body: h('div', null, h('div.lib__hint', { text: '只加进清单，不动目录里的任何文件。' }), input),
+      body: h(
+        'div',
+        null,
+        h('div.lib__hint', { text: why }),
+        h('div.lib__hint', { text: '只加进清单，不动目录里的任何文件。' }),
+        input
+      ),
       actions: [
         { label: '取消', kind: 'ghost', onClick: function (close) { close(); } },
         {
@@ -749,13 +815,7 @@
             var path = input.value.trim();
             close();
             if (!path) return;
-            api
-              .post('/library/roots', { action: 'add', path: path })
-              .then(function () {
-                ui.toast('已加入清单', 'ok');
-                loadRoots(true);
-              })
-              .catch(fail);
+            addRoot(path);
           }
         }
       ]
@@ -867,6 +927,125 @@
     });
   }
 
+  // ---------------------------------------------------------------- 进度条
+
+  /** 画一条**确定性**进度（`done/total`）。不是转圈 —— 用户要的是"还剩多少"。 */
+  function setProgress(done, total, label) {
+    if (!el.prog || !el.progFill) return;
+    if (!total) {
+      el.prog.hidden = true;
+      return;
+    }
+    el.prog.hidden = false;
+    var pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
+    el.progFill.style.width = pct + '%';
+    el.prog.title = (label || '处理中') + '：' + done + ' / ' + total + '（' + pct + '%）';
+  }
+
+  function clearProgress() {
+    if (el.prog) el.prog.hidden = true;
+    if (el.progFill) el.progFill.style.width = '0%';
+  }
+
+  // ---------------------------------------------------------------- 判元数据
+
+  /** 判元数据：分批循环（后端是并发问模型的），随时能停。 */
+  function toggleMeta() {
+    if (state.judging) {
+      state.judging = false;
+      renderBar();
+      return;
+    }
+    state.judging = true;
+    var changed = 0;
+    var failed = 0;
+    var total = state.items.filter(function (one) {
+      return (one.origin === 'pending' || one.origin === 'inferred') && !one.authors.length;
+    }).length;
+    if (!total) total = Math.max(1, state.items.length);   // 免得除以 0
+    renderBar();
+    var step = function () {
+      if (!state.judging) {
+        state.status = '停下了；已经判过的不会丢';
+        clearProgress();
+        renderBar();
+        return;
+      }
+      api
+        .post('/library/meta/llm', { limit: 12, scope: 'pending' })
+        .then(function (res) {
+          changed += (res.changed || []).length;
+          failed += (res.failed || []).length;
+          var left = res.remaining || 0;
+          setProgress(changed + failed, changed + failed + left, '判元数据');
+          state.status =
+            '已判 ' + changed + ' 条' + (failed ? '（失败 ' + failed + '）' : '') + (left ? '，还剩 ' + left : '');
+          renderBar();
+          if (left) {
+            setTimeout(step, 30);
+            return;
+          }
+          state.judging = false;
+          state.status =
+            '判完了：这一轮 ' + changed + ' 条' + (failed ? '，失败 ' + failed + ' 条（可再点一次重试）' : '');
+          clearProgress();
+          renderBar();
+          loadItems();
+          if (state.citekey) loadDetail(state.citekey);
+        })
+        .catch(function (err) {
+          state.judging = false;
+          clearProgress();
+          renderBar();
+          fail(err);
+        });
+    };
+    step();
+  }
+
+  // ---------------------------------------------------------------- 上传
+
+  /** 上传完**自动**接着处理：抓正文（含判元数据）。
+   *
+   *  用户的原话是"用户上传一个文件，或者上传一批文件，然后 llm 自动处理" ——
+   *  所以这里传完不撒手，直接接着跑；进度条上看得见两件事合成的一条线。
+   */
+  function onPicked() {
+    var files = Array.prototype.slice.call((el.file && el.file.files) || []);
+    if (!files.length) return;
+    var dir =
+      el.pick && el.pick.value && el.pick.value !== '__add__' ? el.pick.value : (state.roots[0] || '');
+    if (!dir) {
+      ui.toast('先选一个资料根（左上角那个下拉）', 'warn');
+      return;
+    }
+    state.status = '正在上传 ' + files.length + ' 个文件…';
+    renderBar();
+    var ok = 0;
+    var next = function (index) {
+      if (index >= files.length) {
+        el.file.value = '';
+        state.status = '上传完 ' + ok + ' 个，自动接着处理';
+        renderBar();
+        ui.toast('已上传 ' + ok + ' 个，正在抽正文与判元数据…', 'ok');
+        if (!state.indexing) toggleIndex();
+        return;
+      }
+      setProgress(index, files.length, '上传');
+      api
+        .upload('/library/upload', files[index], { dir: dir })
+        .then(function () {
+          ok += 1;
+          next(index + 1);
+        })
+        .catch(function (err) {
+          ui.toast((files[index] || {}).name + ' 上传失败：' + err.message, 'warn');
+          next(index + 1);
+        });
+    };
+    next(0);
+  }
+
   /** 抓正文：分批循环，随时能停。 */
   function toggleIndex() {
     if (state.indexing) {
@@ -878,14 +1057,23 @@
     var done = 0;
     renderBar();
     var step = function () {
-      if (!state.indexing) return;
+      if (!state.indexing) {
+        state.status = '停下了；已经抓到的不会丢';
+        clearProgress();
+        renderBar();
+        return;
+      }
       api
-        .post('/library/index', { limit: 3 })
+        .post('/library/index', { limit: 12, force: false })
         .then(function (res) {
           done += (res.done || []).length;
-          state.status = '已抓 ' + done + ' 份' + (res.remaining ? '，还剩 ' + res.remaining : '');
+          var left = res.remaining || 0;
+          // 一次请求里"抽正文"与"判元数据"是一起做的（后端并发），所以进度就一条
+          setProgress(done, done + left, '抓正文 + 判元数据');
+          state.status =
+            '已抓 ' + done + ' 份' + (left ? '，还剩 ' + left : '') + (res.hint ? '（' + res.hint + '）' : '');
           // 边抓边把"待抓"数往下走：不然进度只是个数字，看不出还剩多少
-          var still = (res.remaining || 0) > 0;
+          var still = left > 0;
           renderBar(still ? state.items.length : undefined);
           if (still) renderPending(res.done || []);
           if (res.remaining && (res.done || []).length) {
@@ -893,13 +1081,16 @@
             return;
           }
           state.indexing = false;
-          state.status = '抓完了：这一轮 ' + done + ' 份';
+          state.status = '抓完了：这一轮 ' + done + ' 份' + (res.hint ? '；' + res.hint : '');
+          clearProgress();
           renderBar();
           loadItems();
           if (state.citekey) loadDetail(state.citekey);
         })
         .catch(function (err) {
           state.indexing = false;
+          clearProgress();
+          renderBar();
           fail(err);
         });
     };

@@ -501,6 +501,191 @@ def test_tool_call_shows_up_and_stays_in_the_message(client, monkeypatch) -> Non
     assert '"concepts"' in turns[1][-1]["content"], "工具结果真的进了上下文"
 
 
+def test_the_text_before_a_tool_call_stays_in_the_body(client, monkeypatch) -> None:  # noqa: ANN001
+    """工具调用**前面那段话不打折**：它是对用户说的正文，永远留在正文里。
+
+    这里原来有一条"按位置猜"的启发式：紧跟工具调用的 text 打上 `process`、标成
+    「过程」，界面上折进折叠块。它猜错过 —— 模型先说一段正文（"我一次验到底：
+    两条路各出一张…"）再调工具，那 1500 字被整段折走，正文区只剩工具气泡。
+    用户的原话："正文被吞到思考里面了"（还补了一句"ds 的思维链是英文的"：
+    该进折叠块的是推理通道，不是中文正文）。
+
+    通道本来就分得清楚：思维链走 `reasoning_content`（think 零件），
+    对用户说的话走 `content`（text 零件）。不用我们按位置再猜一次。
+    """
+    _ready(client)
+    turns: list[int] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        turns.append(1)
+        if len(turns) == 1:
+            yield ("delta", "我一次验到底：")
+            yield ("delta", "两条路各出一张。")
+            yield (
+                "tool_calls",
+                [
+                    {
+                        "id": "call_1",
+                        "name": "search_knowledge",
+                        "arguments": json.dumps({"query": "x"}),
+                    }
+                ],
+            )
+            yield ("finish", "tool_calls")
+            return
+        yield ("delta", "两张都出来了。")
+        yield ("finish", "stop")
+
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+    done = dict(_events(_send(client, cid, content="出两张图").text))["done"]
+
+    texts = [p for p in done["parts"] if p["type"] == "text"]
+    assert len(texts) >= 2, "工具前后两段正文都在"
+    assert all(not p.get("process") for p in texts), "工具前那段不许被打上 process"
+    assert all(not p.get("label") for p in texts), "也不许被标成「过程」"
+    assert done["content"] == "我一次验到底：两条路各出一张。\n两张都出来了。", "轮与轮之间用换行接"
+
+
+def test_the_thought_trail_rides_back_with_the_turn(client, monkeypatch) -> None:  # noqa: ANN001
+    """思维链要**回传**：带 tools 时上游要求把 `reasoning_content` 原样带回去，否则 400。
+
+    2026-09-20 实测：`deepseek-flash` 裸调就给思维链（思考模式默认开启、默认
+    effort=high），而配置里那个遗留名 `deepseek-chat` 一个字节都不给。所以两条路
+    都要在：攒到就回传（不踩 400），攒不到就不带这个字段（请求与从前逐字节一致）。
+    """
+    _ready(client)
+    turns: list[list[dict]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        turns.append([{k: v for k, v in m.items()} for m in messages])
+        if len(turns) == 1:
+            yield ("think", "先想一下：")
+            yield ("think", "用户问的是队列。")
+            yield ("delta", "我查一下。")
+            yield (
+                "tool_calls",
+                [
+                    {
+                        "id": "call_1",
+                        "name": "search_knowledge",
+                        "arguments": json.dumps({"query": "queue"}),
+                    }
+                ],
+            )
+            yield ("finish", "tool_calls")
+            return
+        yield ("delta", "是环形队列。")
+        yield ("finish", "stop")
+
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+    events = _events(_send(client, cid, content="队列是什么").text)
+
+    thinks = [data["text"] for name, data in events if name == "think"]
+    assert thinks == ["先想一下：", "用户问的是队列。"], "思维链原样流给界面"
+
+    later = next(m for m in turns[1] if m.get("role") == "assistant")
+    assert later["reasoning_content"] == "先想一下：用户问的是队列。", "攒起来的思维链跟着这一轮回传"
+    assert later["content"] == "我查一下。"
+
+
+def test_thinking_params_are_explicit_and_only_for_known_models() -> None:
+    """思考开关只发给"认识的模型"，且两个方向都是**显式**值。
+
+    不依赖上游默认：`deepseek-flash` 裸调就思考、`deepseek-chat` 裸调不思考 ——
+    同一颗"开着"的药丸在两个模型上该是同一种行为。名单外的模型一个字节都不加
+    （`thinking` 是 DeepSeek 的方言，别家收到不认识的字段可能 400）。
+    """
+    assert ai_gateway.thinking_params("deepseek-flash", True) == {"thinking": {"type": "enabled"}}
+    assert ai_gateway.thinking_params("deepseek-flash", False) == {"thinking": {"type": "disabled"}}
+    assert ai_gateway.thinking_params("deepseek-flash-0710", True) == {"thinking": {"type": "enabled"}}
+    assert ai_gateway.thinking_params("deepseek-chat", True) == {"thinking": {"type": "enabled"}}
+    assert ai_gateway.thinking_params("deepseek-reasoner", False) == {"thinking": {"type": "disabled"}}
+    assert ai_gateway.thinking_params("gpt-4o-mini", True) == {}
+    assert ai_gateway.thinking_params("", True) == {}
+
+
+def test_the_deep_think_switch_reaches_the_upstream(client, monkeypatch) -> None:  # noqa: ANN001
+    """「深度思考」药丸：缺省 = 开；关掉就是给上游一个显式的 `disabled`。"""
+    _register(client)
+    _set_ai(
+        client, enabled=True, apiKey="sk-test", baseUrl="http://127.0.0.1:9/v1", model="deepseek-flash"
+    )
+    seen: list[dict] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        seen.append(dict(params or {}))
+        yield ("delta", "好")
+        yield ("finish", "stop")
+
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+    _events(_send(client, cid, content="默认这条").text)
+    _events(_send(client, cid, content="关掉思考这条", thinking=False).text)
+
+    assert seen[0] == {"thinking": {"type": "enabled"}}, "缺省 = 开（药丸默认开着）"
+    assert seen[1] == {"thinking": {"type": "disabled"}}, "关掉就给显式的 disabled"
+
+
+def test_the_request_body_carries_thinking_to_a_real_endpoint(client) -> None:  # noqa: ANN001
+    """钉住**真正发出去的那份 body**：本地起一个假上游，看它收到什么。
+
+    前面那条测试钉的是"传给 gateway 的 params"；这一条钉的是"最后拼进 HTTP
+    请求体的东西" —— 中间还隔着 `stream_completion` 的 body 构造，断在那儿
+    是最难发现的一种（界面上一切正常，只是模型不思考）。
+    """
+    import http.server
+    import json as _json
+    import threading
+
+    seen: dict = {}
+
+    class _Upstream(http.server.BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            size = int(self.headers.get("content-length") or 0)
+            try:
+                seen.update(_json.loads(self.rfile.read(size) or b"{}"))
+            except ValueError:
+                seen["raw"] = "无法解析"
+            payload = (
+                'data: {"choices":[{"delta":{"reasoning_content":"想一下"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"好"}}]}\n\n'
+                "data: [DONE]\n\n"
+            )
+            raw = payload.encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("content-length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *args) -> None:  # noqa: ANN002
+            """别把访问日志混进测试输出。"""
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Upstream)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        _register(client)
+        _set_ai(
+            client,
+            enabled=True,
+            apiKey="sk-test",
+            baseUrl="http://127.0.0.1:%d/v1" % server.server_port,
+            model="deepseek-flash",
+        )
+        cid = _new_conversation(client)
+        events = _events(_send(client, cid, content="你好").text)
+
+        assert seen.get("thinking") == {"type": "enabled"}, "body 里少了思考开关：%r" % (
+            sorted(seen),
+        )
+        thinks = [data["text"] for name, data in events if name == "think"]
+        assert thinks == ["想一下"], "上游给的思维链要流到前端"
+    finally:
+        server.shutdown()
+
+
 def test_models_without_tool_support_degrade_instead_of_erroring(client, monkeypatch) -> None:  # noqa: ANN001
     """不支持工具调用的模型：摘掉工具重来一次，而不是把 400 甩给用户。
 
@@ -932,10 +1117,15 @@ def test_the_sandbox_output_comes_back_by_itself(client, monkeypatch) -> None:  
     )
     assert bad.status_code == 404
 
-    # 前端回填（沙箱跑完 postMessage → POST 到这里）
+    # 前端回填（沙箱跑完 postMessage → POST 到这里）。带一张图 ——
+    # 壳从 matplotlib 收走的那种（base64），落进零件后刷新还在。
+    tiny_png = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
     ok = client.post(
         f"/api/chat/conversations/{cid}/messages/{done['id']}/run",
-        json={"runId": run_id, "ok": True, "text": "已就绪：numpy 1.26.4\n结果是 2\n"},
+        # 上报的 `text` 就是脚本自己的输出（壳的内部账不进这里 —— 见 tools.py 的常驻壳）
+        json={"runId": run_id, "ok": True, "text": "numpy 1.26.4\n结果是 2\n", "images": [tiny_png]},
         headers=_headers(client),
     )
     assert ok.status_code == 200, ok.text
@@ -945,8 +1135,9 @@ def test_the_sandbox_output_comes_back_by_itself(client, monkeypatch) -> None:  
         m for m in client.get(f"/api/chat/conversations/{cid}").json()["messages"] if m["id"] == done["id"]
     )
     part = next(p for p in stored["parts"] if p["type"] == "demo")
-    assert part["run"]["text"].startswith("已就绪：numpy 1.26.4")
+    assert part["run"]["text"].startswith("numpy 1.26.4")
     assert part["run"]["ok"] is True
+    assert part["run"]["images"] == [tiny_png], "图要跟着运行一起存下来（刷新后还在）"
 
     # 下一轮：它进模型的历史（模型自己就能读到，不必谁转述）
     _send(client, cid, content="那结果是多少")
@@ -1442,6 +1633,54 @@ def test_message_carries_the_mode_snapshot(client, monkeypatch) -> None:  # noqa
     assert len(users) == 2
     assert users[0]["mounts"] != users[1]["mounts"]
     assert users[1]["mounts"] == []
+
+
+def test_no_mode_lets_it_assume_what_he_is_studying() -> None:
+    """**每一个模式**的提示词里都要有"不许预设他在学什么"。
+
+    来历：这条禁令原来只写在极简那份（`MINIMAL_PROMPT`）里，挂了工具的那几份
+    一条都没写 —— 于是学习模式下一句"你好"，它回的是"让我查 circular buffer、
+    NOC、tile 布局…"（那些词全是从材料库里捡的，用户根本没提过）。
+    用户的原话："无论是什么模式，你都不能预设用户在学什么。"
+
+    顺带钉住领域那句的**说法**：材料库的主题必须被说成"材料的范围"，
+    而不是"他在学什么" —— 老版本写的是"服务一个正在啃 AI 加速器的学习者"，
+    模型就是顺着那句话开始猜的。
+    """
+    from app.routers import chat as chat_router
+
+    every = set(chat_router.GROUP_PROMPTS.keys())
+    for mounts in (set(), {"notes"}, every):
+        prompt = chat_router.build_prompt(mounts, None, ["notes"])
+        assert "不许预设他在学什么" in prompt, "禁令每个模式都要有"
+        assert "服务一个正在啃" not in prompt, "旧人设（'正在啃 AI 加速器的学习者'）不许再出现"
+
+    # 挂了工具的那些还要多一句"材料≠他"的说明；极简不提材料库，所以不要求它
+    assert "不等于**他**在学什么" in chat_router.build_prompt(every, None, ["notes"])
+
+
+def test_a_long_message_is_not_silently_cut(client, monkeypatch) -> None:  # noqa: ANN001
+    """贴一篇文章进去，**原样存下来** —— 不许悄悄砍掉后半截。
+
+    这条抓的是一个真事故：`MAX_CONTENT` 原来是 8000 字。用户贴了一篇 RL-Kernel
+    的稿子，库里那条消息正好 8000 字、后半没了，而**界面上没有任何提示** ——
+    他最后是从模型嘴里知道的（模型说"你稿子最后一句被截断了"）。
+    8000 字对"贴一段材料"也许够，对"贴一篇文章"远远不够。
+    """
+    _ready(client)
+    _stub(monkeypatch, _happy_stream())
+    cid = _new_conversation(client)
+
+    text = "一" * 20000
+    _send(client, cid, content=text)
+
+    users = [
+        one
+        for one in client.get(f"/api/chat/conversations/{cid}").json()["messages"]
+        if one["role"] == "user"
+    ]
+    assert len(users) == 1
+    assert users[0]["content"] == text, "整篇要原样存下来（8000 那会儿会被切成 8000）"
 
 
 def test_new_conversation_lands_in_its_folder(client) -> None:  # noqa: ANN001

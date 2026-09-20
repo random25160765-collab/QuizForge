@@ -89,6 +89,86 @@ def _vision_of(conf: dict, model: str) -> bool:
     if isinstance(flag, bool):
         return flag
     return model_reads_images(model)
+
+
+#: **模型名 → 上下文窗口**（token）。
+#:
+#: 为什么是自己维护一张表，而不是问接口要：`GET /models` **不回窗口** ——
+#: 2026-09 在 api.deepseek.com 上实测，每个条目只有 `id / object / owned_by`
+#: 三个键。既然"元数据"这条路不通，就把数字抄在本地：官方 Models & Pricing 页
+#: 给的 `deepseek-flash` 与 `deepseek-v4-pro` 都是 **1M**。
+#:
+#: 比对用**前缀**（`deepseek-flash-0710` 这种带日期的也认）。表里没有的模型
+#: 回落到实例上限（`settings.ai_max_context_tokens`）—— 新模型上来时站长改那
+#: 一个数就能兜住，不必等发版。
+MODEL_CONTEXT: dict[str, int] = {
+    "deepseek-flash": 1_000_000,  # DeepSeek-V4.1-Flash
+    "deepseek-v4-flash": 1_000_000,  # 旧名：官方仍接受，路由到 V4.1-Flash
+    "deepseek-v4-pro": 1_000_000,
+    # 下面两个已不在 `/models` 的返回里，但请求仍能调通（实测）——
+    # 官方文档把 V4 之前的名字并进了 Flash 一档，所以按 1M 给。
+    "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000,
+}
+
+
+def model_context(model: str, fallback: int) -> int:
+    """这个模型能吃多少 token；认不出来就给 `fallback`。"""
+    name = (model or "").strip().lower()
+    for key, tokens in MODEL_CONTEXT.items():
+        if name == key or name.startswith(key + "-"):
+            return tokens
+    return fallback
+
+
+#: 认得出支持 `thinking` 开关的模型（前缀比对，与 `MODEL_CONTEXT` 同一套写法）。
+#:
+#: 为什么要一张名单：`thinking` 是 DeepSeek 的方言，往别家（或自建网关）的请求里
+#: 塞一个它不认识的字段，有的会直接 400 —— 名单外一个字节都不加，行为与从前一致。
+#:
+#: `deepseek-chat` 也在名单里：2026-09-20 实测它**能被这个开关打开思考**
+#:（裸调 0 字思维链，加 `thinking: enabled` 后 120 字）—— 它不是"不能思考"，
+#: 只是默认不思考；而 `deepseek-flash` 裸调就思考（官方：思考模式默认开、
+#: 默认 effort=high）。
+THINKING_MODELS: tuple[str, ...] = (
+    "deepseek-flash",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-chat",
+    "deepseek-reasoner",
+)
+
+
+def thinking_params(model: str, enabled: bool) -> dict:
+    """这次请求要不要带思考开关；认识这个模型才带，带了就给**明确**的值。
+
+    不依赖上游默认：`deepseek-flash` 裸调就思考、`deepseek-chat` 裸调不思考，
+    同一个"开着"的请求在两个模型上该是同一种行为，所以两个方向都显式写
+    （`enabled` / `disabled` —— 后者 2026-09-20 实测有效：思维链 0 字）。
+
+    名单外返回空字典：那个字段对别家没有意义，塞过去只会招 400。
+    """
+    name = (model or "").strip().lower()
+    if not any(name == key or name.startswith(key + "-") for key in THINKING_MODELS):
+        return {}
+    return {"thinking": {"type": "enabled" if enabled else "disabled"}}
+
+
+def budget_tokens(model: str, conf: dict, cap: int) -> int:
+    """这次调用真正用多少上下文预算 —— **按模型自动定**，三个数取最小：
+
+      * **模型窗口**（`model_context`）：超过它上游直接 400，所以是天花板；
+      * **用户设置** `maxContextTokens`：想省额度的人自己调小（缺省 = 不表态）；
+      * **实例上限** `cap`（`settings.ai_max_context_tokens`）：站长兜底。
+
+    顺带它就是"换模型自动跟着变"的那一处：模型名一换，窗口跟着换，
+    不用任何人手改数字（用户要的就是这个）。
+    """
+    window = model_context(model, cap)
+    want = int(conf.get("maxContextTokens") or 0) or window
+    return max(MIN_CONTEXT_TOKENS, min(want, window, cap))
+
+
 DEFAULT_TIMEOUT_MS = 60000
 MIN_TIMEOUT_MS = 5000
 # 低于这个预算就装不下"系统提示 + 一轮问答"，设更小没有意义
@@ -181,9 +261,6 @@ def resolve_config(db, user_id) -> dict:  # noqa: ANN001
     api_key = str(conf.get("apiKey") or "").strip()
     timeout_ms = int(conf.get("timeoutMs") or DEFAULT_TIMEOUT_MS)
     timeout_ms = max(MIN_TIMEOUT_MS, min(timeout_ms, settings.ai_timeout_ms))
-    # 上下文预算：用户给多少都行（小窗口模型要它小），但不超过实例上限
-    context_tokens = int(conf.get("maxContextTokens") or 0) or settings.ai_max_context_tokens
-    context_tokens = max(MIN_CONTEXT_TOKENS, min(context_tokens, settings.ai_max_context_tokens))
 
     if conf.get("enabled") and api_key:
         model = str(conf.get("model") or "").strip() or DEFAULT_MODEL
@@ -193,7 +270,11 @@ def resolve_config(db, user_id) -> dict:  # noqa: ANN001
             "model": model,
             "vision": _vision_of(conf, model),
             "timeoutMs": timeout_ms,
-            "maxContextTokens": context_tokens,
+            # **按模型自动定**（见 `budget_tokens`）：模型窗口 / 用户设置 / 实例上限取小
+            "maxContextTokens": budget_tokens(model, conf, settings.ai_max_context_tokens),
+            # 上游支持 JSON 模式就带上：资料元数据那一问要的就是一段 JSON，
+            # 有它就不用猜模型会不会裹一层"好的，这是结果"。
+            "jsonMode": bool(conf.get("jsonMode")),
             "source": "user",
             "label": "你自己的密钥",
         }
@@ -211,7 +292,10 @@ def resolve_config(db, user_id) -> dict:  # noqa: ANN001
             "model": model,
             "vision": _vision_of(beta, model),
             "timeoutMs": max(MIN_TIMEOUT_MS, min(beta_timeout, settings.ai_timeout_ms)),
-            "maxContextTokens": context_tokens,
+            # 内测通道用的是**它自己那份模型名**在算窗口（见 budget_tokens），
+            # 而 `maxContextTokens` 仍取用户设置里那个（他照样能自己调小）
+            "maxContextTokens": budget_tokens(model, conf, settings.ai_max_context_tokens),
+            "jsonMode": bool(beta.get("jsonMode")),
             "source": "beta",
             "label": str(beta.get("label") or "").strip() or ("内测通道 · " + model),
         }
