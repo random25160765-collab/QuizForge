@@ -2029,6 +2029,119 @@ def create_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 笔记 / 资料（可挂载）
 
 
+def read_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """读一篇笔记：正文 + 大纲 + 反链。
+
+    与 `search_notes` 的分工：那个回答"命中在哪"，这个回答"那一篇写了什么"。
+    这一步原先**是断的** —— `search_notes` 的说明里写着"要读全文，让用户打开它"，
+    等于模型搜到了却读不到（用户："chat 这边还没接上笔记库"）。
+
+    与资料侧的 `read_material` 对齐：那边按行读原文，这边整篇给 —— 笔记通常不长，
+    而且正文本来就是给人读的 Markdown。大纲与反链一起带上：模型常常正是为了
+    "这篇和别的什么有关"才要读它。
+    """
+    from . import notelib  # noqa: PLC0415
+
+    rel = str(args.get("path") or "").strip()
+    if not rel:
+        return {"error": "要给我笔记的相对路径（`search_notes` / `list_notes` 的结果里都有）。"}
+    lib_name = str(args.get("lib") or "").strip()
+    try:
+        note = notelib.read_note(notelib.library(lib_name), rel)
+    except notelib.NoteNotFound as exc:
+        return {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读不到：{exc}"}
+
+    body = str(note.get("body") or "")
+    limit = _clamp(args.get("maxChars"), 800, 40000, 12000)
+    out: dict = {
+        "lib": note.get("lib") or lib_name,
+        "path": note.get("path") or rel,
+        "title": note.get("title") or "",
+        "kind": note.get("kind") or "note",
+        "chars": len(body),
+        "truncated": len(body) > limit,
+        "text": body[:limit],
+        "note": (
+            f"正文只给了前 {limit} 字（原文 {len(body)} 字）—— 想接着看就说清要看哪一段。"
+            if len(body) > limit
+            else "这是全文。"
+        ),
+    }
+    if note.get("outline"):
+        # **只带前若干项**：实测一篇 4.5 万字的笔记有 837 条大纲 —— 全塞进
+        # 上下文纯烧 token。要看细的，让它按需再读一次（或者问用户看哪一节）。
+        out["outline"] = note["outline"][:40]
+    if note.get("backlinks"):
+        out["backlinks"] = note["backlinks"][:20]
+    return out
+
+
+def list_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """列出笔记库；带 `lib` 时给那个库的笔记清单。
+
+    为什么需要：`search_notes` 是**按关键词**找 —— 用户问"我笔记里都记了什么"时，
+    模型手里没有"有几个库、各有什么"这张图，只能空搜或者干脆说不知道。
+    这个工具给那张图。
+    """
+    from . import notelib  # noqa: PLC0415
+
+    lib_name = str(args.get("lib") or "").strip()
+    if not lib_name:
+        try:
+            libs = [
+                {"lib": lib.name, "notes": lib.notes, "canvases": lib.canvases, "external": lib.external}
+                for lib in notelib.libraries()
+            ]
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"列不出来：{exc}"}
+        return {
+            "libraries": libs,
+            "note": "要看某个库里有哪几篇，带 `lib` 再调一次；读某一篇用 `read_note`。",
+        }
+
+    try:
+        tree_data = notelib.tree(notelib.library(lib_name))
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"列不出来：{exc}"}
+
+    # 树是嵌套的（dirs / files）—— 压成"路径清单"给模型更好用：它要的是
+    # "有哪些篇、怎么称呼它们"，而不是给前端渲染的那棵带缩进的树。
+    found: list[str] = []
+
+    def walk(node: dict) -> None:
+        for item in node.get("files") or []:
+            rel = str(item.get("path") or "")
+            if not rel:
+                continue
+            title = str(item.get("title") or "")
+            found.append(f"{rel}｜{title}" if title else rel)
+        # 注：`tree()` 出来的是 **finalize 之后**的形状 —— `dirs` 已被它从
+        # dict 摊成 list（每个子节点自己带着相对路径）。第一版我按 dict 遍历，
+        # 对 list 调 `.items()` 抛错、又被下面的 try 吞掉，于是**只列出了根层**
+        #（实测：`libraries()` 说 96 篇，这里只给 10 篇）。两种形状都认。
+        dirs = node.get("dirs") or []
+        if isinstance(dirs, dict):
+            dirs = list(dirs.values())
+        for child in dirs:
+            if isinstance(child, dict):
+                walk(child)
+
+    try:
+        walk(tree_data)
+    except Exception:  # noqa: BLE001
+        pass
+    limit = _clamp(args.get("limit"), 1, 500, 200)
+    return {
+        "lib": lib_name,
+        "count": len(found),
+        "notes": found[:limit],
+        "note": "每条是「相对路径｜标题」；读全文用 `read_note`。"
+        + (f"（只给了前 {limit} 条，共 {len(found)} 条）" if len(found) > limit else ""),
+    }
+
+
 def search_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     """在笔记里找。**跨所有笔记库**（Math / Personal / Philosophy / Tech）。
 
@@ -2049,7 +2162,7 @@ def search_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     return {
         "items": hits,
         "count": len(hits),
-        "note": "命中含库名与路径；要读某一篇的全文，让用户打开它、或者直接说要看哪一篇。",
+        "note": "命中含库名与路径；**要读某一篇的全文就调 `read_note`**（别让用户自己去打开）。",
     }
 
 
@@ -2147,6 +2260,62 @@ def attach_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+# ---------------------------------------------------------------- 联网
+#
+# 前面几路检索全在**本机**（笔记 / 资料 / 图谱 / 题库），问到"外面的事"它们都答不了。
+# 这一组补那个缺口：`web_search` 搜、`read_web_page` 读正文（实现见 app/websearch.py）。
+#
+# 两个都放在同一个 `try` 的形状里：**配置没配好不抛**，交回一条说清"去哪儿填"的消息 ——
+# 模型会念给用户听，那比一句"搜索失败"有用得多（本模块 docstring 那条"异常边界"）。
+
+
+def web_search(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """搜一次公开网页。"""
+    from . import websearch  # 延迟导入：它要读设置，而设置在导入期还没就位
+
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"error": "要搜什么？`query` 是空的。"}
+    try:
+        conf = websearch.resolve(db)
+        items = websearch.search(
+            conf,
+            query,
+            count=args.get("count"),
+            include_domains=args.get("includeDomains"),
+            exclude_domains=args.get("excludeDomains"),
+        )
+    except websearch.SearchError as exc:
+        return {"error": str(exc)}
+    if not items:
+        return {
+            "query": query,
+            "results": [],
+            "note": "一条都没搜到。换个说法、或者拆成更具体的关键词再试一次；"
+            "**别把「我没搜到」当成「这件事不存在」** —— 说清是没搜到，"
+            "然后按你自己已有的理解回答，并说明这部分没有出处。",
+        }
+    return {
+        "query": query,
+        "results": items,
+        "note": "摘要只是**索引**，常常正好缺了你要的那一句：要引用事实、要给数字、"
+        "要说「根据…」，先调 `read_web_page` 把那一页读了再开口。引用时把网址写上。",
+    }
+
+
+def read_web_page(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """把一个网页读成正文（`web_search` 之后的下一步）。"""
+    from . import websearch
+
+    url = str(args.get("url") or "").strip()
+    if not url:
+        return {"error": "要读哪个网址？`url` 是空的。"}
+    try:
+        return websearch.read_page(url)
+    except websearch.SearchError as exc:
+        return {"error": str(exc)}
+
+
 #: 挂载分组 —— 顶栏那几个枢纽图标就是它。
 #:
 #: **唯一出处**：界面上的标签与顺序、`specs()` 的过滤、`call()` 的纵深防御都读这里。
@@ -2158,6 +2327,9 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
     ("graph", "图谱", "查概念与知识点、看前置链"),
     ("quiz", "出题", "查题库、判题、标记掌握、安排复习"),
     ("sandbox", "沙箱", "跑一段代码、渲染演示"),
+    # 排在最后：前面四组都是"他的东西"，这一组是**往外看**（需要单独配密钥，
+    # 见 `app/websearch.py`）。放在末尾也让顶栏那排图标的既有位置不变。
+    ("web", "联网", "上外网搜、把网页读成正文"),
 )
 
 GROUP_LABELS: dict[str, str] = {key: label for key, label, _ in GROUPS}
@@ -2209,6 +2381,41 @@ def run_subagent(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 
 
 REGISTRY = {
+    "list_notes": {
+        "access": "read",
+        "group": "notes",
+        "fn": list_notes,
+        "description": "有哪些笔记库、某个库里有哪些篇。"
+        "用户说\"我笔记里记过什么\"、或者你不知道该去哪个库找时用它 —— "
+        "`search_notes` 是按关键词搜，这个给的是全貌。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "lib": {"type": "string", "description": "哪个笔记库（可省；省了只列库与各自篇数）"},
+                "limit": {"type": "integer", "description": "最多几篇（默认 200）"},
+            },
+        },
+    },
+    "read_note": {
+        "access": "read",
+        "group": "notes",
+        "fn": read_note,
+        "description": "读一篇笔记的正文（Markdown），一并给大纲与反链。"
+        "`search_notes` 只告诉你命中在哪，**要看他写了什么必须调这个** —— "
+        "别让用户自己去打开。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "笔记在库里的相对路径，如 信号与系统/卷积.md",
+                },
+                "lib": {"type": "string", "description": "哪个笔记库（可省）"},
+                "maxChars": {"type": "integer", "description": "最多给多少字，默认 12000"},
+            },
+            "required": ["path"],
+        },
+    },
     "search_notes": {
         "access": "read",
         "group": "notes",
@@ -2607,6 +2814,71 @@ REGISTRY = {
                 },
             },
             "required": ["question"],
+        },
+    },
+    "web_search": {
+        "access": "read",
+        "group": "web",
+        "fn": web_search,
+        "description": (
+            "上外网搜一次，拿回几条结果的标题、网址与摘要。\n"
+            "**什么时候用**：要的东西不在他的材料里、也不是通用常识 —— "
+            "最新的版本 / 现在的推荐做法 / 某个型号的参数 / 一篇论文的出处 / "
+            "一个刚出的说法。他自己的笔记、资料、图谱里查不到时，这是第二条路。\n"
+            "**什么时候别用**：材料库与知识图谱里查得到的事（那几路更准、还带行号与出处）；"
+            "以及**关于他自己的事**（他学到哪、记过什么，那些只有本机那几路知道，"
+            "网上不会有答案）。\n"
+            "**摘要不是依据**：它常常正好缺了你要的那一句。要引用事实、要给数字、"
+            "要说「根据…」，先 `read_web_page` 把那一页读了再开口 —— "
+            "只拿摘要下结论，等于换了个地方编。引用时**把网址写上**，让他能自己点开核对。\n"
+            "**一次搜一个点**：几个不相关的问题就搜几次，别把一串关键词堆进一次搜索。"
+            "搜不到就换个说法再来，或者直说没搜到。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索词。像你在搜索框里会打的那样，越具体越好"
+                    "（带上年份、版本号、机构名这类能缩小范围的字）",
+                },
+                "count": {"type": "integer", "description": "要几条（1-20，默认 6）"},
+                "includeDomains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "只在这几个站点里找（可省），例如 [\"arxiv.org\", \"docs.python.org\"]",
+                },
+                "excludeDomains": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "别要这几个站点的结果（可省），例如 [\"zhihu.com\"]",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "read_web_page": {
+        "access": "read",
+        "group": "web",
+        "fn": read_web_page,
+        "description": (
+            "把一个网页读成正文文本 —— `web_search` 之后的下一步。\n"
+            "**为什么非有它不可**：摘要常常正好缺了你要的那一句，而只拿摘要下结论就是在编。"
+            "搜到像样的来源就把它读了，再开口；一次读一页，读哪几页由你挑（两三页通常够了）。\n"
+            "**它给的是抽出来的正文**（启发式）：导航、脚本、样式已经去掉，但有些站点抽不干净。"
+            "返回里的 `note` 说「抽出来的正文很少」时，那一页多半是脚本渲染的 —— "
+            "**别当成「这一页没内容」**，换个来源或者直说读不到。\n"
+            "只能读 http / https，**本机与内网的地址读不了**（这是刻意的，别去试）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "要读的网址（http / https）。用 `web_search` 回来的那个原样填。",
+                },
+            },
+            "required": ["url"],
         },
     },
     # ---- 元能力：不属于任何一块（见 META_TOOLS），挂了任何工具时都在 ----

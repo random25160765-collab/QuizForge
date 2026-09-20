@@ -1588,6 +1588,69 @@ def test_folder_delete_refuses_when_not_empty(client) -> None:  # noqa: ANN001
     assert "有东西" not in _folders(client)["folders"]
 
 
+# ------------------------------------------------------------------ 分组 ⟺ 归档
+#
+# 一条不变量：**在分组里 ⟹ 已归档**。分组住在归档区（左栏那棵树只渲染
+# `archived` 的会话），所以"在分组里却没归档"这个组合在界面上是**隐形**的 ——
+# 会话跑到"未归档"区去了、分组看着是空的，可删分组时后端又照 `folder` 把它
+# 算进去。用户报的"分组里还有 7 个子对话，删不掉"就是它（`考研/数学`）。
+
+
+def test_new_conversation_inside_a_folder_is_archived(client) -> None:  # noqa: ANN001
+    """在分组里点「新对话」：落进分组，**并且归档**。
+
+    少了归档那一半，新会话在树上根本不出现（它落在未归档区），而分组看着是空的。
+    """
+    _register(client)
+    created = client.post(
+        "/api/chat/conversations", json={"folder": "考研/数学"}, headers=_headers(client)
+    ).json()["conversation"]
+    assert created["folder"] == "考研/数学"
+    assert created["archived"] is True, created
+    assert _one(client, created["id"])["archived"] is True
+
+
+def test_unarchive_also_leaves_the_folder(client) -> None:  # noqa: ANN001
+    """取消归档 = 同时出分组。
+
+    反过来的那一半：不能一边"在分组里"一边"未归档"。
+    """
+    _register(client)
+    cid = _new_conversation(client)
+    client.patch(f"/api/chat/conversations/{cid}", json={"folder": "A/B"}, headers=_headers(client))
+    assert _one(client, cid)["archived"] is True
+
+    client.patch(f"/api/chat/conversations/{cid}", json={"archived": False}, headers=_headers(client))
+    row = _one(client, cid)
+    assert row["archived"] is False
+    assert row["folder"] == "", row
+
+
+def test_heals_a_conversation_left_in_a_folder_without_archive(client, db_session) -> None:  # noqa: ANN001
+    """旧数据「在分组里却没归档」：读列表时自愈，让它回到树上。
+
+    这是旧代码造出来的行（`create_conversation` 收下 `folder` 时没同时归档）。
+    不治的话它既不在树上、又占着分组 —— 分组删不掉，用户也不知道东西在哪。
+    """
+    from app.models import Conversation
+
+    _register(client)
+    cid = _new_conversation(client)
+    client.patch(f"/api/chat/conversations/{cid}", json={"folder": "考研/数学"}, headers=_headers(client))
+
+    # 直接改库，模拟旧代码留下的那一行（现在的接口已经不会这么写了）
+    conv = db_session.get(Conversation, uuid.UUID(cid))
+    conv.archived = False
+    db_session.commit()
+
+    assert _one(client, cid)["archived"] is True  # 这一次读列表顺手治了
+
+    # 治回来之后才删得掉：先把它挪出分组
+    client.patch(f"/api/chat/conversations/{cid}", json={"folder": ""}, headers=_headers(client))
+    resp = client.delete("/api/chat/folders", params={"path": "考研/数学"}, headers=_headers(client))
+    assert resp.status_code == 200, resp.text
+
+
 def test_folder_path_is_cleaned(client) -> None:  # noqa: ANN001
     """`..` / 空段 / 首尾斜杠一律清掉 —— 不许在树里长出一个叫 `..` 的目录。
 

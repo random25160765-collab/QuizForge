@@ -443,6 +443,104 @@
           '地址填 <code>http://localhost:11434/v1</code>）并通过 <code>OLLAMA_ORIGINS=*</code> 放开跨域。',
       }));
 
+    /* ------------------------------------------------------ 联网搜索
+     *
+     * 给 AI 一对"搜 + 读"的手（实现见 `api/app/websearch.py`）——
+     * 它的知识有截止日期，而库里那几路检索全在**本机**，问到外面的事就答不了。
+     *
+     * 服务商清单**从服务端拿**、不在这儿抄一份：加一家只改后端一处，而且"哪几家
+     * 能用、默认地址是什么"本来就该由后端说了算（它才知道接口形状）。
+     */
+    var searchConf = conf.search || {};
+    var providerEndpoints = {};
+    var providerKeyless = {};
+    var searchStatus = h('p', {
+      text: '正在读取当前状态…',
+      style: { margin: '-4px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg2)' },
+    });
+    var searchEndpointInput = h('input.input.input--mono', {
+      type: 'text',
+      spellcheck: 'false',
+      placeholder: '留空 = 用该服务商的默认地址',
+      value: searchConf.endpoint || '',
+      onInput: function (event) {
+        store.saveSettings({ search: { endpoint: event.target.value.trim() } });
+      },
+    });
+    var searchKindSelect = h('select.select', {
+      onChange: function (event) {
+        var kind = event.target.value;
+        // 切服务商时**把接口地址清空**：那个框留空 = 用该家的默认地址（见后端
+        // `websearch._normalize`）。不清的话上一家的地址会被带过去 ——
+        // 一个"看着改了、其实没有"的错。
+        searchEndpointInput.value = '';
+        searchEndpointInput.setAttribute(
+          'placeholder', '留空 = ' + (providerEndpoints[kind] || '用默认地址'));
+        store.saveSettings({ search: { kind: kind, endpoint: '' } });
+      },
+    });
+    var searchKeyInput = h('input.input.input--mono', {
+      type: 'password',
+      autocomplete: 'off',
+      placeholder: '留空就用免密钥那条',
+      value: searchConf.apiKey || '',
+      onInput: function (event) {
+        store.saveSettings({ search: { apiKey: event.target.value.trim() } });
+      },
+    });
+    api
+      .get('/chat/websearch')
+      .then(function (st) {
+        var list = st.providers || [];
+        list.forEach(function (one) {
+          providerEndpoints[one.kind] = one.endpoint;
+          providerKeyless[one.kind] = !!one.keyless;
+          searchKindSelect.appendChild(
+            h('option', { value: one.kind, text: one.label + (one.keyless ? ' —— 免密钥' : '') }));
+        });
+        // 没存过就选**服务端列表的第一个**（那家就是后端的默认，见 `websearch.PROVIDERS`）——
+        // 不在这儿写死一个名字，免得两边各有一份默认值。
+        var want = String(searchConf.kind || '');
+        if (!providerEndpoints[want]) want = list.length ? list[0].kind : '';
+        searchKindSelect.value = want;
+        if (providerEndpoints[want]) {
+          searchEndpointInput.setAttribute('placeholder', '留空 = ' + providerEndpoints[want]);
+        }
+        // **实际在走哪条路**由服务端说（可能是内测通道那份密钥，也可能是免密钥那条）——
+        // 光看这个框空着就说"没配置"，会让人对着一个其实能用的功能找问题。
+        searchStatus.textContent = st.ready
+          ? '当前：可以联网 · ' + (st.label || '')
+            + (st.source === 'keyless' ? ' · 不用配任何东西'
+              : st.source === 'beta' ? ' · 本站内测通道' : ' · 你自己的密钥')
+          : '当前：用不了 —— ' + (st.message || '');
+      })
+      .catch(function () {
+        searchStatus.textContent = '';
+      });
+
+    var searchForm = h('div.form__section', null,
+      h('div.form__sectiontitle', { text: '联网搜索' }),
+      h('p', {
+        // 这一段是**纯文本**（旁边 AI 那段也是），不解析 Markdown —— 别在这儿写 `**强调**`，
+        // 星号会原样显示出来。
+        text: '让 AI 能上外网查它自己不知道的东西（最新的版本、现在的推荐做法、'
+          + '某个数字的出处）。它只读网页，不动你的任何数据；引用时会把网址写出来'
+          + '给你核对。',
+        style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      searchStatus,
+      switchRow('启用联网搜索', '关掉之后这一组工具不再声明给模型 —— 它就不会去搜。',
+        searchConf.enabled !== false, function (value) {
+          store.saveSettings({ search: { enabled: value } });
+        }),
+      h('div.form__grid', { style: { marginTop: '12px' } },
+        field('服务商', '默认那条免密钥；往下三家要各自申请一把密钥', searchKindSelect),
+        field('接口地址', '一般留空 —— 只有自建网关时才需要改', searchEndpointInput)),
+      h('div', { style: { marginTop: '12px' } },
+        field('API 密钥', '只有选收费那三家才要填。填了就用你的（额度、稳定性、更长的摘要）；'
+          + '留空就走免密钥那条（必应，一次最多 10 条，个人小量够用）。',
+          searchKeyInput)));
+
     var fontScale = h('input.slider', {
       type: 'range',
       min: '0.85',
@@ -528,7 +626,7 @@
     ui.modal({
       title: '设置',
       size: 'lg',
-      body: h('div.form', null, aiForm, appearanceForm, dataForm),
+      body: h('div.form', null, aiForm, searchForm, appearanceForm, dataForm),
       actions: [{ label: '完成', kind: 'primary' }],
     });
   }
@@ -701,6 +799,13 @@
     new MutationObserver(check).observe(root, { childList: true, subtree: true });
     check();
   }
+
+  /* 注：**页面之间的过渡不在这里** —— 它在 `ui.js` 的 `leaveWithFade`
+   *（点站内链接 → `body[data-leaving]` 淡出 120ms → 跳转，新页由 `.view` 自己淡入）。
+   * 我一度在这儿又写了一套（`.is-leaving` + `qf-page-in`），结果是死代码：
+   * `ui.js` 那份先 `preventDefault`，我的判断 `if (ev.defaultPrevented) return` 直接放行。
+   * 已经删掉；"切换不够丝滑"的真因是**首帧被同步脚本推迟**，见 `build_web.py`
+   * 的 `_script_tag`（全都加了 `defer`）。 */
 
   QF.shell = {
     mount: function (opts) {
