@@ -1,11 +1,22 @@
-# quizforge 一键起后端 + 数据库
+# quizforge · 一个 Postgres 容器 —— **只为搬历史数据而留**。
 #
-#   1) 可选：把 AI 密钥放进环境变量（不设则 AI 批改自动关闭）
-#      注意这里**不需要**会话签名密钥：会话令牌是随机串、库里只存哈希，
-#      没有需要服务端签名或验签的环节（详见 api/app/config.py 的说明）
-#        export QF_AI_API_KEY=sk-xxx  QF_AI_BASE_URL=https://api.deepseek.com/v1  QF_AI_MODEL=deepseek-chat
-#   2) docker compose up -d --build
-#   3) 首次导入题库：docker compose exec api python -m app.cli.import_bank
+# 应用本身早就不需要库服务了：数据是本机的 `data/quizforge.db`（SQLite），
+# 首启自己建表（`app.db.ensure_schema`，alembic 已退役）。这个容器只在两种时候用：
+#
+#   1) 从版本库里的快照搬题进来：
+#        make db-up && make db-restore && python tools/migrate_to_local.py
+#      （搬运逐表对账，搬完就可以 `make db-down` 了）
+#   2) 更新那份快照：`make db-dump` —— 结果进版本库（`db/quizforge.sql.gz`）
+#
+# 这里原先还有两条服务，都在「local-first + 单文件打包」之后退役：
+#
+#   * `api` —— 靠 api/Dockerfile 多阶段构建，镜像内跑前端构建。现在打包走
+#     PyInstaller（`make package` / `dist-linux`），Dockerfile 已删；
+#   * `graph` —— 一个 Neo4j。图谱的边本来就在库里（`point_edges` /
+#     `concept_edges`），遍历用 SQL 就够，那份图数据库没有被任何代码引用。
+#
+# 见 `.codebuddy/plans/quizforge-next-version*.md` 里的原话：
+# "docker-compose.yml 与 db-up / docker-up 系列目标退役"。
 
 name: quizforge
 
@@ -30,72 +41,5 @@ services:
       timeout: 3s
       retries: 20
 
-  api:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
-    restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      QF_DEBUG: "false"
-      QF_DATABASE_URL: postgresql+psycopg://quizforge:quizforge@db:5432/quizforge
-      # 部署在 HTTPS 后面时在 .env 里改成 true
-      QF_COOKIE_SECURE: "${QF_COOKIE_SECURE:-false}"
-      QF_WEB_DIR: /app/web
-      # 导入器要复用 tools/ 下的解析器、主题树与校验器
-      QF_TOOLS_DIR: /app/tools
-      QF_QUESTIONS_DIR: /app/questions
-      QF_TOPICS_FILE: /app/meta/topics.yaml
-      # AI：**没有密钥**。接口地址 / 模型 / 密钥都由每个用户在自己的
-      # 设置面板里填，存在各自的账号里（服务端只做转发，因为不少供应商
-      # 不允许浏览器直连）。这里只留两个实例级策略。
-      QF_AI_ENABLED: "${QF_AI_ENABLED:-true}"
-      QF_AI_DAILY_QUOTA: "${QF_AI_DAILY_QUOTA:-0}"
-      QF_AI_TIMEOUT_MS: "${QF_AI_TIMEOUT_MS:-90000}"
-    volumes:
-      # 题库与考纲只读挂载：改题后重新导入即可，不用重建镜像
-      - ./questions:/app/questions:ro
-      - ./meta:/app/meta:ro
-      # 前端产物**不挂载**：镜像由 Dockerfile 的多阶段构建自带一份。
-      # 靠 `./api/web:/app/web` 提供的话，api/web 在 .gitignore 里，
-      # 干净机器上部署时挂载目录是空的，页面直接白屏。
-      # 本机迭代用 make api-dev（宿主 uvicorn 直接读 api/web），不需要这个挂载。
-    ports:
-      # 宿主端口可用 .env 里的 API_PORT 覆盖（容器内固定 8000）
-      - "${API_PORT:-8100}:8000"
-    command: >
-      # 建表由应用自己完成（`app.db.ensure_schema`）—— alembic 已随
-      # "local-first" 一起退役，见 api/requirements.txt 里的说明
-      sh -c "uvicorn app.main:app --host 0.0.0.0 --port 8000"
-
-  # 图数据库：题目与知识点之间是有类型的边（前置 / 同节 / 共享术语 / 题↔点），
-  # 到几十万题、十万级知识点的量级时，「沿关系链取某一类题」用关系表会越写越长，
-  # 用 Cypher 是一条查询。选独立的 Neo4j 而不是给 Postgres 装图扩展：
-  #   * 零数据风险（不动现有库与迁移）
-  #   * 遍历查询与可视化（7474 控制台）都是现成的
-  # 代价是两份数据要同步 —— 所以同步做成**幂等的一条命令**（`make graph-sync`），
-  # 源仍然是 Postgres，图只是它的**查询视图**，不做双写。
-  graph:
-    image: neo4j:5-community
-    restart: unless-stopped
-    environment:
-      # 本机开发默认口令；部署时用 .env 覆盖
-      NEO4J_AUTH: "neo4j/${QF_NEO4J_PASSWORD:-quizforge}"
-      NEO4J_server_memory_heap_max__size: 512m
-      NEO4J_server_memory_pagecache_size: 256m
-    ports:
-      - "127.0.0.1:7687:7687"   # bolt（程序连这个）
-      - "127.0.0.1:7474:7474"   # 浏览器控制台（看图谱用）
-    volumes:
-      - graphdata:/data
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-
 volumes:
   pgdata:
-  graphdata:
