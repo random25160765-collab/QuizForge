@@ -33,7 +33,13 @@
 -->
 <!--@INJECT:HEAD_ASSETS@-->
 </head>
-<body data-page="__QUIZFORGE_PAGE__">
+<!--
+  `data-topbar` 与 `data-sb` **在构建时就写对**（见 build_web.py 的
+  PAGE_TOPBAR / PAGE_STATUSBAR）：它们决定顶栏与底部状态栏占不占位。
+  过去这两个由 JS 在 50~150ms 后才设，于是首帧与最终布局差一条顶栏 ——
+  切页时看到的就是"里面的元素位移一下"。按页写死之后，首帧就是最终态。
+-->
+<body data-page="__QUIZFORGE_PAGE__" data-topbar="__QUIZFORGE_TOPBAR__" data-sb="__QUIZFORGE_STATUSBAR__">
 
 <!--
   外壳：活动栏 + 资源栏 + 舞台。

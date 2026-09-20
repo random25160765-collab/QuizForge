@@ -105,6 +105,14 @@ PAGE_JS = {
     "workbench": ["canvas.js", "chat.js", "notes.js", "workbench.js"],
 }
 
+#: 首帧就该是最终态的两个布局属性（见 shell.html 里的说明）：顶栏与底部状态栏
+#: 占不占位。过去这两个由 JS 在 50~150ms 后才设，于是首帧与最终布局差一条顶栏 ——
+#: 切页时看到的就是"里面的元素位移一下 + 闪"。
+#: 值来自逐页实测（2026-09-20）：三页有子导航（所以有顶栏）；只有工作台有资源栏
+#: 与状态栏。缺省一律 off —— 与"没有这条栏"的最终态一致。
+PAGE_TOPBAR = {"quiz": "on", "wrongbook": "on", "graph": "on"}
+PAGE_STATUSBAR = {"workbench": "on"}
+
 PAGE_TITLE = {
     "quiz": "QuizForge · 刷题",
     "wrongbook": "QuizForge · 错题本",
@@ -164,6 +172,21 @@ def _digest(path: Path) -> str:
 
 def _asset(rel: str, digest: str) -> str:
     return f"/assets/{rel}?v={digest}"
+
+
+def _script_tag(url: str) -> str:
+    """一个 `<script src>` 标签，**一律带 defer**。
+
+    为什么：一页要引二十来个脚本，而且**必须按顺序执行**（KaTeX → 运行时 → 页面）。
+    原先是不带 defer 的同步标签 —— 浏览器解析到它们就停下等下载与执行，首帧被
+    推迟到全部跑完（实测 DOMReady 57~99ms，那期间屏幕是白的）。
+
+    加 defer 之后：**下载与解析并行、执行仍按文档顺序**，首帧可以先画出外壳
+    （顶栏、左栏、骨架），脚本随后就绪。用户看到的不再是"白屏一下"，而是
+    "界面在那儿、内容马上来"—— 这与"页面切换不够丝滑"是同一件事：整页跳转
+    本来就快（TTFB 3ms），慢的就是这一段等待。
+    """
+    return f'<script src="{url}" defer></script>'
 
 
 def _config_script(api_base: str, page: str) -> str:
@@ -359,22 +382,24 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
         head_assets = "\n".join(links)
         scripts = [
             _config_script(api_base, page),
-            f'<script src="{katex_js_url}"></script>',
+            _script_tag(katex_js_url),
             # 只有笔记页要编辑器内核（577KB，别让别的页也背）
-            *([f'<script src="{cm6_js_url}"></script>'] if (page == "notes" and cm6_js_url) else []),
+            *([_script_tag(cm6_js_url)] if (page == "notes" and cm6_js_url) else []),
         ]
         # hljs 也要排在运行时之前：`QF.highlight` 在渲染代码块时就问它有没有到位
         if hljs_js_url:
-            scripts.append(f'<script src="{hljs_js_url}"></script>')
+            scripts.append(_script_tag(hljs_js_url))
         # KaTeX 必须先于运行时：md.js 在渲染时就调用 window.katex
-        scripts += [f'<script src="{runtime_url[name]}"></script>' for name in RUNTIME_ORDER]
-        scripts += [f'<script src="{runtime_url[name]}"></script>' for name in page_js]
+        scripts += [_script_tag(runtime_url[name]) for name in RUNTIME_ORDER]
+        scripts += [_script_tag(runtime_url[name]) for name in page_js]
 
         html = _assemble.render_shell(
             shell,
             {
                 "title": PAGE_TITLE[page],
                 "page": page,
+                "topbar": PAGE_TOPBAR.get(page, "off"),
+                "statusbar": PAGE_STATUSBAR.get(page, "off"),
                 "base": "",
                 "head_assets": head_assets,
                 "scripts": "\n".join(scripts),
