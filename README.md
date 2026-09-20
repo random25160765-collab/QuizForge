@@ -29,6 +29,20 @@ make api-dev      # 构建前端并起服务 → http://127.0.0.1:8100
 要用 AI 相关的功能，得在 `config/ai.local.json` 里填自己的 key
 （`baseUrl` / `apiKey` / `model`；这个文件已被 git 忽略，不会跟着仓库走）。
 
+### Windows 桌面入口（可选）
+
+想在 Windows 上"双击就能用"，把这个脚本拷到桌面：
+
+```
+tools/desktop-beta.vbs     ← 双击：服务没起就在 WSL 里拉起来，然后开浏览器
+```
+
+它调的是 `tools/beta-serve.sh`（**幂等**：已经在跑就什么都不做，顺带构建前端）。
+换个机器要改脚本开头的 `DISTRO` 与 `REPO` 两行。
+
+注意这走的是**源码运行形态**（WSL 里的 uvicorn）；打包出来的单文件
+（`make package` / `dist-release`）自带一份完整运行时，**不需要 WSL，也别用这个脚本去起它**。
+
 ## 七个页面
 
 | 页面 | 干什么 |
