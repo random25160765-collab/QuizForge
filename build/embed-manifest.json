@@ -1,0 +1,107 @@
+{
+ "version": "2026-09-21",
+ "model": "Xenova/bge-m3（int8 ONNX）",
+ "dim": 1024,
+ "onnx": "model.onnx",
+ "tokenizer": "tokenizer.json",
+ "bytes": 661161343,
+ "note": "本地向量小模型清单：首启下载后逐个校验（build/embed_manifest.py 生成）",
+ "files": {
+  "flatbuffers-25.12.19-py2.py3-none-any.whl": {
+   "sha256": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4",
+   "url": "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl",
+   "bytes": 26661,
+   "platform": "windows-amd64",
+   "python": "3.12",
+   "kind": "wheel"
+  },
+  "numpy-2.5.3-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl": {
+   "sha256": "b0521d0f4aebb6e06189451025fa17a913287b13c03d5fe05c017333b654ea5b",
+   "url": "https://files.pythonhosted.org/packages/45/8f/9beacf79ca7c650688ad0baa80931adb988fe6e6e5d5903c23cc3dbd70eb/numpy-2.5.3-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+   "bytes": 16711928,
+   "platform": "linux-x86_64",
+   "python": "3.14",
+   "kind": "wheel"
+  },
+  "onnxruntime-1.30.0-cp314-cp314-manylinux_2_28_x86_64.whl": {
+   "sha256": "8b611d24db2954545ce6bd9acd4670183cb368e4642450de7a9ab6474eb374ec",
+   "url": "https://files.pythonhosted.org/packages/f1/38/8138eed225c5bc6ddfc05879ecac7dacc63c34b9b6f99be72839c1f6dc49/onnxruntime-1.30.0-cp314-cp314-manylinux_2_28_x86_64.whl",
+   "bytes": 23586333,
+   "platform": "linux-x86_64",
+   "python": "3.14",
+   "kind": "wheel"
+  },
+  "packaging-26.3-py3-none-any.whl": {
+   "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+   "url": "https://files.pythonhosted.org/packages/63/34/ba1c580383c9eada3711951fef0795c80b829a078d72188184bcab9dd527/packaging-26.3-py3-none-any.whl",
+   "bytes": 129956,
+   "platform": "windows-amd64",
+   "python": "3.12",
+   "kind": "wheel"
+  },
+  "protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl": {
+   "sha256": "89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2",
+   "url": "https://files.pythonhosted.org/packages/db/f3/3996583dd2906297a637af12114deddf7658af6e683fedb83be061983fb5/protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl",
+   "bytes": 343223,
+   "platform": "linux-x86_64",
+   "python": "3.14",
+   "kind": "wheel"
+  },
+  "tokenizers-0.23.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl": {
+   "sha256": "41c2f84d172449b4dadb9cdc508e3e364076613c35b16e76ecfe47a60d1e3305",
+   "url": "https://files.pythonhosted.org/packages/2c/ca/ca6b93c7820df123b2662a9469e8facc826ccc94e98fdd0d615f6431e73a/tokenizers-0.23.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+   "bytes": 3386843,
+   "platform": "linux-x86_64",
+   "python": "3.14",
+   "kind": "wheel"
+  },
+  "numpy-2.5.3-cp312-cp312-win_amd64.whl": {
+   "sha256": "0a59a421a32580a009e8a1751345bf829631b990dc1794b80514ab722b435def",
+   "url": "https://files.pythonhosted.org/packages/3c/a1/accf6d4f0c80c5d9ba9735d6b1550e444180599f34dec69ca01360f717ad/numpy-2.5.3-cp312-cp312-win_amd64.whl",
+   "bytes": 12567828,
+   "platform": "windows-amd64",
+   "python": "3.12",
+   "kind": "wheel"
+  },
+  "onnxruntime-1.30.0-cp312-cp312-win_amd64.whl": {
+   "sha256": "f3501472571f1b1eee50e017851e7929f5ea37312d2d8c2494a19e8fc58b4a38",
+   "url": "https://files.pythonhosted.org/packages/a6/13/0f1699f6de549c9324bc9112a2a85b14c517904cd11b562a654643b755a1/onnxruntime-1.30.0-cp312-cp312-win_amd64.whl",
+   "bytes": 14311470,
+   "platform": "windows-amd64",
+   "python": "3.12",
+   "kind": "wheel"
+  },
+  "protobuf-7.36.2-cp310-abi3-win_amd64.whl": {
+   "sha256": "a300819d441e078a5608c0d3c709796bb548136058fda017ae51d425b44fd353",
+   "url": "https://files.pythonhosted.org/packages/8a/55/b77bda4e5e5f5971fb51b07663694690e9afdb9402136c16a522bd621cad/protobuf-7.36.2-cp310-abi3-win_amd64.whl",
+   "bytes": 456514,
+   "platform": "windows-amd64",
+   "python": "3.12",
+   "kind": "wheel"
+  },
+  "tokenizers-0.23.2-cp310-abi3-win_amd64.whl": {
+   "sha256": "2e96f5699d5249c9c64aa8412e044f727aae3a4098cf830f9901ec1afc361cde",
+   "url": "https://files.pythonhosted.org/packages/db/f7/0a69ac6b82dbccf3f71add938a161c497952749294b8dd6dfe03a819dc40/tokenizers-0.23.2-cp310-abi3-win_amd64.whl",
+   "bytes": 2863236,
+   "platform": "windows-amd64",
+   "python": "3.12",
+   "kind": "wheel"
+  },
+  "model.onnx": {
+   "sha256": "0826f8c1ab9edf1801db86c61919d4d108e8bfc0b809ec823ad366882ff0b77d",
+   "url": "https://hf-mirror.com/Xenova/bge-m3/resolve/main/onnx/model_quantized.onnx",
+   "bytes": 569694530,
+   "platform": "any",
+   "python": "any",
+   "kind": "model"
+  },
+  "tokenizer.json": {
+   "sha256": "6710678b12670bc442b99edc952c4d996ae309a7020c1fa0096dd245c2faf790",
+   "url": "https://hf-mirror.com/Xenova/bge-m3/resolve/main/tokenizer.json",
+   "bytes": 17082821,
+   "platform": "any",
+   "python": "any",
+   "kind": "model"
+  }
+ }
+}
