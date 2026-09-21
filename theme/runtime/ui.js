@@ -277,6 +277,9 @@
     trash: '<path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/>',
     download: '<path d="M12 4V15.5M7.5 11 12 15.5l4.5-4.5"/><path d="M4.5 20h15"/>',
     upload: '<path d="M12 15.5V4M7.5 8.5 12 4 16.5 8.5"/><path d="M4.5 20h15"/>',
+    // 分享：三个节点相连（通用那个"分享"形状）。刻意**不用"盒子+箭头"**——
+    // 那个跟旁边的 upload / download 长得几乎一样，一排按钮里分不出来。
+    share: '<circle cx="17.5" cy="6" r="2.6"/><circle cx="6.5" cy="12" r="2.6"/><circle cx="17.5" cy="18" r="2.6"/><path d="M8.8 10.7l6.4-3.4M8.8 13.3l6.4 3.4"/>',
     print: '<path d="M7 9V3.5h10V9"/><path d="M4.5 9h15v7h-3M7.5 16H4.5"/><path d="M7.5 13h9v7.5h-9Z"/>',
     book: '<path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5Z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5Z"/>',
     cpu: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3"/>',

@@ -60,13 +60,14 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from .. import agent_loop, tools
+from .. import agent_loop, share, tools
 from .. import ai_gateway as gateway
 from .. import attachments as attach
 from .. import parts as msgparts
 from .. import mounts
 from .. import runs
 from .. import websearch
+from ..config import get_settings
 from ..db import as_json
 from ..deps import AuthenticatedWriter, CurrentUser, DbSession
 from ..models import Attachment, Conversation, ConversationFolder, Message
@@ -202,8 +203,11 @@ GROUP_PROMPTS = {
         "他说「记下来 / 记到笔记里」时才写，写完把那句原文念给他听。"
     ),
     "library": (
-        "资料：`attach_material` 按标题找条目、把正文节选读进上下文，"
-        "`search_material` 在**原文**里按字面找段落，`read_material` 精读某几十行。"
+        "资料：`attach_material` 按标题找条目、把正文节选读进上下文，`read_material` 精读某几十行。"
+        "**找段落有两条**：`search_material` 搜**我在学的材料**（值得精读与出题的那一档），"
+        "`search_library` 搜**资料库**（论文 / 白皮书这类「看看就好」的）。"
+        "两边检索方式完全一样（字面 + 向量融合），**在一个里没找到就去另一个里再问一次** ——"
+        "它们是两个书架，不是同一堆东西的两种搜法；只搜一个就说「没有」是最容易犯的错。"
         "引用原文时给出行号和材料名，别改写原话。"
     ),
     "graph": (
@@ -212,6 +216,12 @@ GROUP_PROMPTS = {
         "问「该先学什么」「这两个有什么区别」时用它，别凭记忆答。"
     ),
     "quiz": (
+        "**他的学习方式叫「递归学习法」**：一个概念不懂（比如提纲里的一个词），就求讲解；"
+        "讲解里又冒出几个不懂的概念，就**一个一个问出去** —— 每个是一支；"
+        "弄明白了再回到主线。所以他会频繁在某一轮之后**分叉**，那不是跑偏，是方法本身。\n"
+        "他问「我这次学了什么 / 复盘一下 / 我是不是跑偏了 / 这样学对不对」时，"
+        "**先用 `read_learning_tree` 把这次对话的树读出来再答** —— 分叉的形状只存在于 "
+        "`parent_id` 里，你手上的历史是拍平的一条线，凭印象说一定说错。\n"
         "题库与进度：查题用 `get_existing_questions`（默认**不带答案**），"
         "看掌握度用 `get_mastery`，看该复习什么用 `get_due_reviews`。\n"
         "要考他就调 `push_question` 推一张卡，或 `create_question` 现编一道 —— "
@@ -237,13 +247,22 @@ GROUP_PROMPTS = {
         "不要因为「我做不到」就推辞，也不要把「做不到」当结论 —— 先看手上的工具能做到哪一步。"
     ),
     "web": (
-        "联网：`web_search` 搜公开网页（回标题 / 网址 / 摘要），"
-        "`read_web_page` 把某一页读成正文。\n"
-        "**他的材料里没有**、或者他问的是外面的事（最新版本、现在的做法、某个数字的出处）"
-        "才用它；材料库与图谱里查得到的，优先走那几路 —— 更准，也带行号与出处。"
+        "联网有三个：`web_search` 搜公开网页（回标题 / 网址 / 摘要），`search_papers` "
+        "搜**学术文献**（论文，回作者 / 年份 / 发表处 / 被引数 / 摘要），`read_web_page` "
+        "把某一页读成正文。\n"
+        "**两个搜索是两个索引，不是两种搜法**：要找**文献**（哪篇论文、谁做的、哪一年的、"
+        "某个方法的出处、某个领域的综述）走 `search_papers`；要找**网页**（现在怎么做、"
+        "某个工具或型号的参数、官方文档）走 `web_search`。\n"
+        "**尤其当一个词是缩写、或者是人名时，先想 `search_papers`** —— 通用网页索引在"
+        "这类词上是结构性做不到的：搜 `WCET` 会回来同名协会与词典释义，"
+        "搜作者名会回来同名名人，**而那些都是有结果的搜索结果**，从「有没有结果」看不出错。"
+        "两条路都给**主题词**与**原词**各自的给法：学术那边给主题词（按相关度排），"
+        "网页那边挑特别的原词（按字面匹配）。\n"
+        "**他的材料里没有**、或者他问的是外面的事才用它；材料库与图谱里查得到的，"
+        "优先走那几路 —— 更准，也带行号与出处。"
         "**关于他自己的事不要上网找**（他学到哪、记过什么，网上没有）。\n"
         "**搜到要读**：摘要只是索引，常常正好缺了你要的那一句 —— 要引用事实就先 "
-        "`read_web_page`。引用时**把网址写上**，让他能点开核对；读不到就说读不到，"
+        "`read_web_page`。引用时**把网址或 DOI 写上**，让他能点开核对；读不到就说读不到，"
         "不要拿摘要凑，也不要因为没搜到就改口编。"
     ),
 }
@@ -268,12 +287,13 @@ GROUP_TOOLS = {
     # 它是**兜底**，正常路径由调用方传入真声明的工具名，所以漂了也看不出来。
     # 兜底一旦被用到（`declared` 没传），模型会被告知"你只有那两个工具"。
     "notes": ("list_notes", "read_note", "search_notes", "write_note"),
-    "library": ("attach_material", "search_material", "read_material"),
+    "library": ("attach_material", "search_material", "search_library", "read_material"),
     "graph": ("search_knowledge", "get_point_detail", "explore_graph"),
-    "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews", "grade_problem",
-             "flag_question", "mark_mastered", "push_question", "create_question"),
+    "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews", "read_learning_tree",
+             "grade_problem", "flag_question", "mark_mastered", "push_question",
+             "create_question"),
     "sandbox": ("run_python", "render_demo"),
-    "web": ("web_search", "read_web_page"),
+    "web": ("web_search", "search_papers", "read_web_page"),
 }
 
 
@@ -1254,16 +1274,41 @@ def export_conversation(
     cid: uuid.UUID,
     user: CurrentUser,
     db: DbSession,
-    format: str = Query("md", description="md（给人读，当前分支）/ json（给机器读，全树）"),
+    format: str = Query(
+        "md", description="md（给人读，当前分支）/ json（给机器读，全树）/ html（单页分享）"
+    ),
 ) -> PlainTextResponse:
     """导出一次对话。
 
-    两种格式的分工是刻意的：`md` 只画**当前分支**（拿去读、拿去归档）；
+    三种格式的分工是刻意的：`md` 只画**当前分支**（拿去读、拿去归档）；
     `json` 带走**整棵树**（含被顶下去的分支、工具调用、令牌数）——
-    所以它是"轨迹"的完整备份，而不只是"看过的那些字"。
+    所以它是"轨迹"的完整备份，而不只是"看过的那些字"；
+    `html` 是**发给别人**的那一种：一个自带数据的网页，对话正文那棵对话树都在，
+    对方双击就能看，不需要装任何东西（见 `app/share.py`）。
     """
     conv = _own_conversation(db, user.id, cid)
     all_messages = _messages_of(db, conv)
+
+    if format == "html":
+        # 装配很重（要 base64 掉 300KB 字体），但这条路由是同步 `def`，
+        # FastAPI 会把它丢进线程池，不挡事件循环。
+        #
+        # **自检不过就当场报错**，不给一个"能下载、打开是白的"文件 ——
+        # 那种文件大小正常、浏览器也不报错，人只会以为是自己那边的问题。
+        try:
+            page, _stats = share.build_single_page(
+                get_settings().web_dir,
+                share.payload_of(conv, [_message_out(m) for m in all_messages]),
+            )
+        except (FileNotFoundError, share.ShareBuildError) as err:
+            raise HTTPException(status_code=500, detail="分享页没装配出来：%s" % err) from err
+        return PlainTextResponse(
+            page,
+            media_type="text/html; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="chat-{str(conv.id)[:8]}.html"'
+            },
+        )
 
     if format == "json":
         payload = {

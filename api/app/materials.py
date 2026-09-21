@@ -120,6 +120,7 @@ def search(  # noqa: ANN001
     slug: str = "",
     limit: int = 5,
     max_materials: int = MAX_SCAN_MATERIALS,
+    depth: str = "",
 ) -> dict:
     """在材料正文里做字面检索。
 
@@ -128,6 +129,9 @@ def search(  # noqa: ANN001
     模型想放宽时，少给一个词就行。
 
     排序同样可复现：命中行多的材料在前，同分按材料 slug、行号。
+
+    `depth` 按"资料走到哪一步"过滤（`出题` = 我在学的 / `检索` = 我查的）；
+    空串 = 不过滤。
     """
     terms = _terms(str(query or ""))
     if not terms:
@@ -136,9 +140,16 @@ def search(  # noqa: ANN001
     stmt = select(Material).order_by(Material.slug)
     if slug:
         stmt = stmt.where(Material.slug == slug)
+    if depth:
+        stmt = stmt.where(Material.depth == depth)
     materials = db.scalars(stmt).all()
     if not materials:
-        return {"error": "没有这份材料：" + slug}
+        if slug:
+            return {"error": "没有这份材料：" + slug}
+        # 没给 slug 却一份都没选到 —— 那是**筛空了**（比如按 `depth` 过滤之后
+        # 一条都没有），不是"这份材料不存在"。报 `没有这份材料：`（slug 还是空的）
+        # 会让模型以为自己问错了名字。空结果照常返回，让它自己换一路再试。
+        return {"query": query, "scanned": 0, "total": 0, "hits": []}
 
     scanned = 0
     skipped: list[str] = []

@@ -47,6 +47,38 @@
    这一条**专门判**：不是 XML 就明说"被挡了、换一家"，而不是表现成"没搜到"
    —— 那两种情况的下一步动作完全不同。
 
+## 学术文献走**另一条**索引（同样免密钥）
+
+通用网页索引在这件事上不是"差一点"，是**结构性做不到**：它按网页排序，而学术
+文献的关键词是**缩写**。实测（用户真撞上的那一轮）：
+
+| 搜什么 | 拿回来什么 |
+|---|---|
+| `WCET analysis cache abstract interpretat` | 中国计算机学会的 WCET 研讨会、世界造口治疗师协会、美国某高等教育政策机构 |
+| `worst-case execution time analysis abstr` | "worst" 的词典释义 |
+| `cache analysis WCET includeDomains=arxiv/ACM/IEEE/Springer` | **零结果** |
+| `"static cache simulation" "timing analys` | C 语言 `static` 关键字的教程 |
+| `Ferdinand Heckmann "cache behavior predi` | 斐迪南大公、里奥·费迪南德、动画电影《公牛历险记》 |
+| `Wilhelm "the worst-case execution-time p` | 豆包大模型的产品讨论 |
+
+**这几种全是"成功的搜索"** —— 有结果、有摘要、没有任何错误。所以调用方没法从
+"有没有结果"判断成败，只能从"这是不是我要的东西"判断，而那要读过才知道。
+**这是最坏的一类失败：看起来查过了。**
+
+所以学术这一路挂 **OpenAlex**（免密钥、按学术实体索引）：标题 / 作者 / 年份 /
+发表处 / DOI / 被引数 / 摘要。同一批查询它一条不落：
+
+```
+· Cache behavior prediction by abstract interpretation
+  1996 | Christian Ferdinand, Florian Martin | 被引 172      ← 上表第三行那个"没核到"的
+· The Mälardalen WCET Benchmarks: Past, Present And Future   2010 | 被引 336
+· A Survey on Static Cache Analysis for Real-Time Systems    2016 | 被引 67
+· Scope-Aware Data Cache Analysis for WCET Estimation        2011 | 被引 88
+```
+
+两者分工写在 `search_papers` 的说明里：**问"哪篇论文 / 谁做的 / 哪一年的"走它，
+问"现在怎么做 / 这个型号的参数"走 `web_search`。**
+
 密钥那份配置仍然认（`user_settings.data.search`，以及内测通道
 `config/ai.local.json` 里的 `search` 块）：填了就用你填的，没填就用免密钥那条。
 
@@ -125,6 +157,19 @@ PAGE_TOTAL_S = 15.0
 MAX_PAGE_BYTES = 512 * 1024
 #: 一次搜索响应最多收这么多字节。搜索响应本来就小（几 KB），这个上限是防"对方一直吐"。
 MAX_SEARCH_BYTES = 1024 * 1024
+
+#: 学术通道（OpenAlex）：免密钥、按**学术实体**索引。见模块 docstring 那一节。
+SCHOLAR_ENDPOINT = "https://api.openalex.org/works"
+SCHOLAR_MAX_COUNT = 50
+#: 只要这几个字段。**显式列出来**不只是为了省流量 —— 不列的话它默认返回一大堆
+#: （`abstract_inverted_index` 尤其大），一次好几 MB；而这通道是公开的免费服务，
+#: 少要点是起码的礼貌。实测显式列了之后一份响应约 20KB。
+OPENALEX_SELECT = (
+    "id,doi,title,display_name,publication_year,cited_by_count,type,"
+    "authorships,primary_location,best_oa_location,abstract_inverted_index"
+)
+#: 论文摘要给到 1200 字（网页那条是 600）。理由见 `_result`。
+SCHOLAR_SNIPPET_CHARS = 1200
 MAX_PAGE_CHARS = 12000
 #: 抽出来的正文少于这个字数就怀疑"抽失败了"（脚本渲染 / 正文在图片里）。
 MIN_GOOD_CHARS = 220
@@ -327,6 +372,125 @@ def _serper_results(reply) -> list[dict]:  # noqa: ANN001
     ]
 
 
+# -- 学术通道（OpenAlex，免密钥）--------------------------------------------------
+#
+# 为什么**不**再往 `PROVIDERS` 里塞一家：那不是"再添一个选项"，是换了一种索引
+# 方式 —— 通用网页索引按**网页**排序、学术索引按**文献实体**排序，同一个问题在
+# 两边的正确用法都不一样（一边教"给特别的原词"，一边教"给主题词、看年份与被引"）。
+# 所以出口是**另一个工具**（`search_papers`），让模型按问题的性质选。
+#
+# 结构仍然照 `PROVIDERS` 的样子：加一家（Crossref / arXiv / Semantic Scholar）
+# = 加一条 `request` + `results`，别处不用动。
+
+
+def _abstract_of(inverted) -> str:  # noqa: ANN001
+    """把 OpenAlex 的**倒排摘要**还原成一段话。
+
+    它给的不是摘要文本，而是 `{词: [位置, …]}`（倒排是为了压缩与检索）。
+    交回模型之前必须还原成能读的顺序 —— 否则"有摘要"等于没摘要，
+    而**摘要正是判断一篇文献要不要读的唯一依据**。
+
+    实测有一部分作品**根本没有摘要**（`abstract_inverted_index` 缺席）：
+    那种就留空，不编。
+    """
+    if not isinstance(inverted, dict) or not inverted:
+        return ""
+    slots: list[tuple[int, str]] = []
+    for word, positions in inverted.items():
+        if not isinstance(positions, list):
+            continue
+        for position in positions:
+            try:
+                slots.append((int(position), str(word)))
+            except (TypeError, ValueError):
+                continue
+    slots.sort()
+    return " ".join(word for _position, word in slots)
+
+
+def _openalex_request(conf: dict, query: str, count: int) -> dict:
+    return {
+        "method": "GET",
+        "url": SCHOLAR_ENDPOINT,
+        "headers": {"User-Agent": USER_AGENT, "Accept": "application/json"},
+        # `search` 是**相关度**排序（不是字面匹配）—— 这正是这一路的价值：
+        # 问"缓存分析怎么用抽象解释做"它能找回来，不要求你猜中作者写的原词。
+        "params": {
+            "search": query,
+            "per-page": min(count, SCHOLAR_MAX_COUNT),
+            "select": OPENALEX_SELECT,
+        },
+    }
+
+
+def _openalex_results(reply) -> list[dict]:  # noqa: ANN001
+    data = _json_body(reply)
+    out: list[dict] = []
+    for one in data.get("results") or []:
+        if not isinstance(one, dict):
+            continue
+        authors = [
+            str((entry.get("author") or {}).get("display_name") or "")
+            for entry in (one.get("authorships") or [])
+            if isinstance(entry, dict)
+        ]
+        authors = [name for name in authors if name]
+        # 发表处：`source.display_name` 是规范名，但**实测很多记录它是 `null`**
+        # （尤其 IEEE / ACM 那批 conference paper），而旁边那个 `raw_source_name`
+        # 有值（"2011 17th IEEE Real-Time…"）。只用前一个会把发表处整列丢空 ——
+        # 而"发在哪"正是模型判断一篇文献可不可信的主要依据之一。
+        location = one.get("primary_location") or {}
+        venue = str(
+            ((location.get("source") or {}).get("display_name") or "")
+            or location.get("raw_source_name")
+            or ""
+        )
+        # 一行书目信息 —— 模型靠它判断可信度与时效（哪一年、谁做的、被引多少）
+        facts: list[str] = []
+        if authors:
+            facts.append(", ".join(authors[:3]) + (" 等" if len(authors) > 3 else ""))
+        if venue:
+            facts.append(venue)
+        if one.get("cited_by_count"):
+            facts.append("被引 " + str(one["cited_by_count"]))
+        if one.get("type"):
+            facts.append(str(one["type"]).replace("-", " "))
+        snippets: list[str] = []
+        if facts:
+            snippets.append(" · ".join(facts) + "。")
+        abstract = _abstract_of(one.get("abstract_inverted_index"))
+        if abstract:
+            snippets.append(abstract)
+        # URL 优先给**开放获取的 PDF**（能直接读全文），没有才退回 DOI。
+        # 顺序要紧：DOI 点进去常常是付费墙，而 `read_web_page` 读不到正文时，
+        # 模型会以为"这篇没内容"。
+        pdf = str((one.get("best_oa_location") or {}).get("pdf_url") or "")
+        out.append(
+            _result(
+                title=one.get("title") or one.get("display_name"),
+                url=pdf or str(one.get("doi") or one.get("id") or ""),
+                snippet=" ".join(snippets),
+                site=venue,
+                date=str(one.get("publication_year") or ""),
+                snippet_limit=SCHOLAR_SNIPPET_CHARS,
+            )
+        )
+    return out
+
+
+#: 学术通道的服务商表。结构与 `PROVIDERS` 一样（`keyless` 那条同样不带密钥）。
+SCHOLAR: dict[str, dict] = {
+    "openalex": {
+        "label": "OpenAlex（免密钥）",
+        "endpoint": SCHOLAR_ENDPOINT,
+        "keyless": True,
+        "request": _openalex_request,
+        "results": _openalex_results,
+    },
+}
+DEFAULT_SCHOLAR = "openalex"
+
+
 #: 支持的服务商。**顺序就是界面下拉的顺序**，第一项是默认值。
 #:
 #: * `bing` 是**免密钥**那条（`keyless: True`）：零配置可用，是默认。
@@ -485,11 +649,19 @@ def _one_line(value, limit: int) -> str:  # noqa: ANN001
     return " ".join(text.split())[:limit]
 
 
-def _result(*, title=None, url=None, snippet=None, site=None, date=None) -> dict:  # noqa: ANN001
+def _result(*, title=None, url=None, snippet=None, site=None, date=None,
+            snippet_limit: int = 600) -> dict:  # noqa: ANN001
+    """一条结果。字段名**固定这五个** —— 所有服务商都映射到同一种形状。
+
+    `snippet_limit` 是给学术通道留的口子：论文摘要比网页那段"高亮片段"长得多，
+    而**摘要正是判断一篇文献要不要读的唯一依据**（网页还能点进去看，文献
+    点进去常常是付费墙）。而且缩在 600 字上正好会砍掉摘要的后半段 ——
+    结论往往在那儿。
+    """
     return {
         "title": _one_line(title, 200),
         "url": _one_line(url, 500),
-        "snippet": _one_line(snippet, 600),
+        "snippet": _one_line(snippet, snippet_limit),
         "site": _one_line(site, 80),
         "date": _one_line(date, 40),
     }
@@ -533,13 +705,17 @@ def _filter(items: list[dict], include: list[str], exclude: list[str]) -> list[d
     return out
 
 
-def _http_hint(conf: dict, reply) -> str:  # noqa: ANN001
-    """HTTP 失败的**可操作**说法：401 与 429 的下一步动作完全不同。"""
+def _http_hint(preset: dict, conf: dict, reply) -> str:  # noqa: ANN001
+    """HTTP 失败的**可操作**说法：401 与 429 的下一步动作完全不同。
+
+    `preset` 单独传进来：学术通道不在 `PROVIDERS` 里（见那张表上面的注释），
+    而"要不要提示去改密钥"取决于 `keyless` —— 从 preset 上读，两条通道共用这一处话术。
+    """
     code = reply.status_code
     body = _clip(reply.text, 140)
     tail = ("　它说：" + body) if body else ""
     if code in (401, 403):
-        if PROVIDERS.get(conf["kind"], {}).get("keyless"):
+        if preset.get("keyless"):
             # 免密钥那条没有"密钥填错了"这回事，给它同一句话只会让人去改一个不存在的框
             return (
                 "搜索服务把这次请求挡了（HTTP " + str(code) + "）—— 免密钥那条走的是"
@@ -555,30 +731,13 @@ def _http_hint(conf: dict, reply) -> str:  # noqa: ANN001
     return "搜索服务返回 HTTP " + str(code) + "（" + conf["label"] + "）。" + tail
 
 
-def search(
-    conf: dict,
-    query: str,
-    *,
-    count=None,  # noqa: ANN001
-    include_domains=None,  # noqa: ANN001
-    exclude_domains=None,  # noqa: ANN001
-) -> list[dict]:
-    """搜一次。各家的请求形状与返回格式都不一样，**出口只有这一种**。
+def _perform(preset: dict, conf: dict, text: str, ask: int) -> list[dict]:
+    """发一次请求并解析。**重定向、总预算、每一种超时与它们各自的话术，全在这一处。**
 
-    域名过滤是**本地筛**：各家的语法不同（写进 query 只有 Google 那一系认
-    `site:` —— 实测免密钥那条连 `site:` 都不认），所以统一在拿回来之后按 host 筛。
-    代价是要多取几条再筛 —— 不然"只在这两个站里找"很容易被筛成空，
-    看着像"这世上没有"。
+    为什么抽出来：那套"不许卡住"的墙钟（连接单独 6 秒、一条总预算管住
+    "连 + 跳 + 读完"）与"手动跟重定向"是**踩出来的**（见模块 docstring 那两条）。
+    给学术通道复制一份，早晚有一份会走样 —— 而走样的表现是"偶尔卡住"，最难查。
     """
-    text = " ".join(str(query or "").split())
-    if not text:
-        raise SearchError("搜索词是空的 —— 要搜什么？")
-    want = _clamp_int(count, 1, MAX_COUNT, int(conf["count"]))
-    include = _domains(include_domains)
-    exclude = _domains(exclude_domains)
-    ask = want if not (include or exclude) else min(MAX_COUNT, max(want * 3, want + 6))
-
-    preset = PROVIDERS[conf["kind"]]
     req = preset["request"](conf, text, ask)
     method = str(req.get("method") or "POST").upper()
 
@@ -643,10 +802,80 @@ def search(
             "或者那个服务太慢。等一下再试；也可以去「设置 → 联网搜索」换一家。"
         )
     if reply.status_code >= 400:
-        raise SearchError(_http_hint(conf, reply))
+        raise SearchError(_http_hint(preset, conf, reply))
+    return preset["results"](reply)
 
-    items = preset["results"](reply)
-    return _filter(items, include, exclude)[:want]
+
+def _prepare(query: str) -> str:
+    """搜索词归一。两条通道共用。"""
+    text = " ".join(str(query or "").split())
+    if not text:
+        raise SearchError("搜索词是空的 —— 要搜什么？")
+    return text
+
+
+def search(
+    conf: dict,
+    query: str,
+    *,
+    count=None,  # noqa: ANN001
+    include_domains=None,  # noqa: ANN001
+    exclude_domains=None,  # noqa: ANN001
+    stats: dict | None = None,
+) -> list[dict]:
+    """搜一次公开网页。各家的请求形状与返回格式都不一样，**出口只有这一种**。
+
+    域名过滤是**本地筛**：各家的语法不同（写进 query 只有 Google 那一系认
+    `site:` —— 实测免密钥那条连 `site:` 都不认），所以统一在拿回来之后按 host 筛。
+    代价是要多取几条再筛 —— 不然"只在这两个站里找"很容易被筛成空，
+    看着像"这世上没有"。
+
+    `stats` 是给调用方看的**过滤账**（`raw` / `kept` / `dropped`）：
+    **筛空与"真的没搜到"是两件事**，而调用方只有拿到这个数才分得清 ——
+    否则它会照着"零结果"告诉用户"这世上没有"，而那是最坏的一种结论
+    （用户真撞上过：限定 arxiv/ACM/IEEE/Springer 之后拿回"零结果"，
+    而实际是那 10 条里一条都不在这些站上）。
+    """
+    text = _prepare(query)
+    want = _clamp_int(count, 1, MAX_COUNT, int(conf["count"]))
+    include = _domains(include_domains)
+    exclude = _domains(exclude_domains)
+    ask = want if not (include or exclude) else min(MAX_COUNT, max(want * 3, want + 6))
+
+    items = _perform(PROVIDERS[conf["kind"]], conf, text, ask)
+    kept = _filter(items, include, exclude)
+    if stats is not None:
+        stats.update(raw=len(items), kept=len(kept), dropped=len(items) - len(kept))
+    return kept[:want]
+
+
+def search_papers(
+    conf: dict,
+    query: str,
+    *,
+    count=None,  # noqa: ANN001
+    stats: dict | None = None,
+) -> list[dict]:
+    """搜学术文献（OpenAlex，免密钥）。与 `search` 共用同一套网络纪律与出口形状。
+
+    **它与 `search` 不是"同一个东西的两种搜法"，是两个索引。** 通用网页索引按
+    **网页**排序，而学术文献的关键词是**缩写** —— 实测 `WCET` 搜回来的是同名协会、
+    造口治疗师协会与词典释义（见模块 docstring 那张表），而**那些全是"成功的搜索"**。
+
+    这一路**不设 `include_domains`**：它本来就在学术索引里，再按域名筛只会筛空
+    （而且 `site:` 语法在这个接口上不存在，只能拿回来再筛，那等于白筛）。
+
+    **超时预算沿用设置里的那一份**："不许卡住"是纪律，不是给某一家的优待。
+    """
+    text = _prepare(query)
+    want = _clamp_int(count, 1, SCHOLAR_MAX_COUNT, DEFAULT_COUNT)
+    preset = SCHOLAR[DEFAULT_SCHOLAR]
+    # 学术通道不经设置里的"服务商"（它不是那类东西），但超时那条照旧从 conf 取
+    scholar_conf = {**conf, "kind": DEFAULT_SCHOLAR, "label": preset["label"]}
+    items = _perform(preset, scholar_conf, text, want)
+    if stats is not None:
+        stats.update(raw=len(items), kept=len(items), dropped=0)
+    return items[:want]
 
 
 # ------------------------------------------------------------------ 读网页

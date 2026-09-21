@@ -151,7 +151,20 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 归档（一层，不分级）：老的对话一律是 False = 未归档，正是想要的默认
     ("conversations", "archived", "BOOLEAN NOT NULL DEFAULT 0"),
     ("messages", "mounts", "TEXT NOT NULL DEFAULT ''"),
+    # 资料走到哪一步（检索 / 出题）。默认给"检索"是给**以后新来的行**选的，
+    # 老行得靠下面那张回填表 —— 见 `_BACKFILLS`。
+    ("materials", "depth", "VARCHAR(16) NOT NULL DEFAULT '检索'"),
 )
+
+#: 补完列之后要跑**一次**的回填：`(表, 列) → SQL`，只在那一列**刚补上**时跑。
+#:
+#: 为什么需要它：`ALTER TABLE ... ADD COLUMN ... DEFAULT x` 会把**已有的行**
+#: 也填成 x，而 x 是给"以后新来的行"选的。`materials.depth` 就是例子 ——
+#: 默认 `检索` 是对的，但已有的 60 份材料本来就在出题档上，不回填就**全被降级**，
+#: 表现是升级之后 `search_material` 突然什么都搜不到（而且不报错）。
+_BACKFILLS: dict[tuple[str, str], str] = {
+    ("materials", "depth"): "UPDATE materials SET depth = '出题'",
+}
 
 
 def _ensure_columns(conn) -> list[str]:  # noqa: ANN001
@@ -173,6 +186,17 @@ def _ensure_columns(conn) -> list[str]:  # noqa: ANN001
         if column in have:
             continue
         _run(conn, f'ALTER TABLE "{table}" ADD COLUMN "{column}" {ddl}')
+        backfill = _BACKFILLS.get((table, column))
+        if backfill:
+            # 只在**刚补上**这一列时跑：它已经存在就说明回填早做过了
+            #（回填是"把老行改对"，不是"每次启动都改一遍"）。
+            #
+            # ⚠️ 一个已知的例外：**加列与这段代码不是同一次上线**时会漏掉回填。
+            # 实测撞过一次 —— 开发时热重载，先存了模型（列建出来了）、后存了这张表
+            #（回填才出现），于是列在、回填没跑，60 份材料静静地全被降成了"检索"。
+            # 真撞上了就手工补一句（幂等，重复跑无害）：
+            #     UPDATE materials SET depth='出题'
+            _run(conn, backfill)
         added.append(f"{table}.{column}")
     return added
 
