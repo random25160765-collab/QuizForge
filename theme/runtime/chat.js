@@ -746,7 +746,9 @@
     svg.appendChild(layer);
     host.appendChild(svg);
     host.appendChild(
-      h('div.chattree__hint', { text: '滚轮缩放 · 拖动平移' })
+      // 提示语要把**双指**写进去：触屏上没有滚轮，只写"滚轮缩放"等于告诉手机
+      // 用户"这棵树不能放大"（原来就是这么写的，而他确实找不到怎么放大）。
+      h('div.chattree__hint', { text: '双指或滚轮缩放 · 拖动平移' })
     );
 
     // 适应窗口：算完 bbox 再定缩放与偏移
@@ -766,20 +768,99 @@
     TREE.view.y = (height - (maxY - minY) * scale) / 2 - minY * scale;
     applyTreeView(svg);
 
-    svg.addEventListener('wheel', function (event) {
-      event.preventDefault();
-      var factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-      var k = Math.max(0.2, Math.min(2.4, TREE.view.k * factor));
-      var rect2 = svg.getBoundingClientRect();
-      var px = event.clientX - rect2.left;
-      var py = event.clientY - rect2.top;
+    // ---- 手势：一根指头拖动 = 平移，两根指头 = 缩放 ----------------------
+    //
+    // 为什么要自己接缩放：`.chattree__svg` 上有 `touch-action: none`（平移需要它，
+    // 不然一拖就把页面滚走了），而它的代价是**浏览器手势也被一起关掉，包括双指
+    // 缩放**。于是这棵树在触屏上只平移、不能放大 —— 桌面那套"滚轮缩放"在手机上
+    // 没有任何对应物。用户原话：分享页传到移动端，"没办法用手指放大对话树"。
+    var pointers = new Map(); // pointerId -> {x,y}：双指要算**两根**各自的位置
+    var pinch = null;         // 双指手势的基准（见 `startPinch`）
+
+    function clampK(k) {
+      return Math.max(0.2, Math.min(2.4, k));
+    }
+
+    /** 以 (px,py)（svg 局部坐标）为中心缩放 `factor` 倍。
+     *
+     * 滚轮与双指**共用这一条**："让那个点在原地不动"的公式只该有一份 ——
+     * 视图是 `translate(x,y) scale(k)`，要让点 p 指着的内容不动，
+     * 新偏移就是 `p - (p - x) * (k'/k)`。 */
+    function zoomAt(px, py, factor) {
+      var k = clampK(TREE.view.k * factor);
       TREE.view.x = px - (px - TREE.view.x) * (k / TREE.view.k);
       TREE.view.y = py - (py - TREE.view.y) * (k / TREE.view.k);
       TREE.view.k = k;
       applyTreeView(svg);
+    }
+
+    /** 前两根手指的距离与中点（Client 坐标）。第三根起忽略 ——
+     * 多点几下不该把画面甩飞。 */
+    function pinchPair() {
+      var list = [];
+      pointers.forEach(function (p) {
+        if (list.length < 2) list.push(p);
+      });
+      if (list.length < 2) return null;
+      return {
+        d: Math.max(1, Math.hypot(list[0].x - list[1].x, list[0].y - list[1].y)),
+        cx: (list[0].x + list[1].x) / 2,
+        cy: (list[0].y + list[1].y) / 2
+      };
+    }
+
+    function startPinch() {
+      var two = pinchPair();
+      if (!two) return;
+      var box = svg.getBoundingClientRect();
+      pinch = {
+        d0: two.d,
+        cx: two.cx - box.left,
+        cy: two.cy - box.top,
+        x0: TREE.view.x,
+        y0: TREE.view.y,
+        k0: TREE.view.k
+      };
+    }
+
+    /** 双指实时：距离比 = 倍数，中点 = 中心。
+     *
+     * 按**基准**算，不按上一帧累加：累加会把每帧的取整误差攒起来，两指拉开再
+     * 缩回去之后画面回不到原位。这里只用"开头中指在哪、开头视图是什么"，
+     * 所以**拉开再缩回就是原样**。
+     *
+     * 中点自己也会动（两指一起挪），`(当前中点 - 基准中点)` 这一项就同时把
+     * 手势里的平移带上了 —— 一行里既缩放又平移。 */
+    function applyPinch() {
+      var two = pinchPair();
+      if (!pinch || !two) return;
+      var box = svg.getBoundingClientRect();
+      var k = clampK(pinch.k0 * (two.d / pinch.d0));
+      var ratio = k / pinch.k0;
+      TREE.view.x = (two.cx - box.left) - (pinch.cx - pinch.x0) * ratio;
+      TREE.view.y = (two.cy - box.top) - (pinch.cy - pinch.y0) * ratio;
+      TREE.view.k = k;
+      applyTreeView(svg);
+    }
+
+    svg.addEventListener('wheel', function (event) {
+      event.preventDefault();
+      var box = svg.getBoundingClientRect();
+      // 触控板捏合走的也是这一条（它发的是带 ctrlKey 的 wheel）
+      zoomAt(event.clientX - box.left, event.clientY - box.top,
+             event.deltaY < 0 ? 1.12 : 1 / 1.12);
     });
 
     svg.addEventListener('pointerdown', function (event) {
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      // 第二根指头落下 = 这一手是要缩放，不是要平移。**当场把平移取消**，
+      // 否则第一根指头攒下的位移会先跳一下，再开始缩放。
+      if (pointers.size === 2) {
+        TREE.drag = null;
+        svg.classList.remove('is-panning');
+        startPinch();
+        return;
+      }
       // 落在节点上就**不要**接管：`setPointerCapture` 会把后续指针事件全部
       // 抢到 svg 自己身上，于是节点那个 `click` 永远不触发（"点节点没反应"
       // 就是这么来的 —— 切换逻辑本身是好的，是它根本没被调到）。
@@ -788,13 +869,28 @@
       svg.setPointerCapture(event.pointerId);
       svg.classList.add('is-panning');
     });
+
     svg.addEventListener('pointermove', function (event) {
+      var rec = pointers.get(event.pointerId);
+      if (rec) {
+        rec.x = event.clientX;
+        rec.y = event.clientY;
+      }
+      if (pinch) {
+        applyPinch();
+        return;
+      }
       if (!TREE.drag) return;
       TREE.view.x = TREE.drag.vx + (event.clientX - TREE.drag.x);
       TREE.view.y = TREE.drag.vy + (event.clientY - TREE.drag.y);
       applyTreeView(svg);
     });
-    var endDrag = function () {
+
+    var endDrag = function (event) {
+      if (event && event.pointerId !== undefined) pointers.delete(event.pointerId);
+      // 少于两根就结束缩放。剩下一根**不接着平移** —— 那一下会突然蹦一段；
+      // 想接着拖就抬手重按（地图类应用都是这个手感）。
+      if (pointers.size < 2) pinch = null;
       TREE.drag = null;
       svg.classList.remove('is-panning');
     };
