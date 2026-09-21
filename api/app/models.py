@@ -421,6 +421,17 @@ class Material(Base):
     source_path: Mapped[str] = mapped_column(Text, default="", nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     lines: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: 这份资料走到哪一步：`出题`（**信任语料** —— 抽候选点 / 归知识点 / 归概念 /
+    #: 出题 / 进图谱）还是 `检索`（**待查语料** —— **只到切片与向量为止**）。
+    #:
+    #: **它是按件定的，不是按来源定的**：资料库里的东西也可以标成 `出题`。
+    #: （用户原话："有的资料值得出题，有的资料看看就好，同样都是资料管理器里的资料，
+    #: 它们需要的工艺深度是完全不一样的"。）
+    #: 所以"两个库两种待遇"是错的框架 —— 是**一条链 + 一个开关**。
+    #:
+    #: 默认 `检索`：**"值得出题"是个判断，不该是默认**。写入口各自显式指定
+    #: （`pipeline.dbsync` 给出题链的入口 → `出题`；`pipeline.intake` → `检索`）。
+    depth: Mapped[str] = mapped_column(String(16), default="检索", index=True, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )

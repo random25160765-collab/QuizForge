@@ -575,6 +575,23 @@
         forks ? h('span.chat__treefork', { text: '⑂' + forks }) : null
       )
     );
+
+    // 分享：把这一条会话装配成**一个自带数据的网页**（对话正文 + 那棵对话树），
+    // 发给别人双击就能看。装配在服务端做（实测 158 条 37ms），所以**不做**"正在打包"
+    // 那一套 —— 成功与失败都由 toast 说清楚（见 onShare）。
+    barEl.appendChild(
+      h(
+        'button.chat__asidefold.chat__sharebtn',
+        {
+          type: 'button',
+          title: '分享这一条对话（生成一个能直接发出去的网页）',
+          'aria-label': '分享',
+          draggable: 'false',
+          onClick: onShare,
+        },
+        iconNode('share', 15)
+      )
+    );
   }
 
   function renderTree() {
@@ -4945,36 +4962,74 @@
    */
   function makeLive(row, body, msg) {
     var parts = [];
-    var timer = null;
     var caret = null;
-    var scrollQueued = false;
     //: 每个零件对应的 DOM 节点（与 parts 一一对应）。流式里绝大多数帧**只动最后一块**，
     //: 有了这张对照表就不必整棵重建 —— 一次重建的代价是"所有块重跑 Markdown + KaTeX"，
     //: 而它在流式里要做几十上百次。实测（150 块 / 1.5 万字）：上游 4.6 秒吐完，
     //: 页面还要再花 2 秒才画完，那段尾巴就是这些白干的重建。
     var nodes = [];
 
-    function render(immediate) {
-      if (immediate) {
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
-        }
-      } else {
-        // 每来一个字就重排一遍 Markdown 会又抖又费，攒 100ms 刷一次 ——
-        // 但这是**节流**，不是防抖：**已经在排队的那一帧不许被新字推迟**。
-        // 原来每来一个 chunk 都 `clearTimeout` 重设，而 chunk 间隔（几十毫秒）
-        // 永远小于 100ms → 计时器永远不触发 → 整个流式期间一次都不渲染，
-        // 只在收尾时画一遍 —— 用户看到的就是"基本一次生成好然后输出"。
-        if (!timer) {
-          timer = setTimeout(function () {
-            timer = null;
-            render(true);
-          }, 100);
-        }
-        return;
-      }
+    /* ---- 平滑吐字：把「到达」和「显示」拆开 -------------------------------
+     *
+     * 上游是**一段一段到**的：一个 SSE delta 可能是一整句话，而到达的间隔（几十
+     * 到几百毫秒）跟人看的节奏毫无关系。以前是收到就铺上去、靠节流重画，于是
+     * 文字"一小段一小段往外蹦"（用户原话："还是一小段一小段出来"）。
+     *
+     * 现在收到的先进 `queue`，由一个按帧跑的循环匀速往外吐：
+     *
+     *   * **每帧都动** —— 60Hz 的步进，眼睛看到的就是连续，像水；
+     *   * **落后越多吐得越快**（落后量的 1/CATCHUP）—— 所以**永远追得上**：
+     *     上游一次吐 500 字，也就多花几帧，不会把整段回答拖在最后
+     *     （"攒着最后一次性画完"是老毛病，这次不能换个形式犯回去）；
+     *   * 队列吐空就停 —— 不空转（上游可能几百毫秒没动静）。
+     *
+     * 队列按 `{type, text}` 保序：正文与思考交替到达时，先后顺序不能乱
+     *（乱了的话"思考 → 正文"会变成"正文夹在思考中间"）。
+     */
+    var queue = []; // 还没显示出去的 [{type, text}, …]
+    var pending = 0; // queue 里的总字数（省得每帧遍历一遍才知道还剩多少）
+    var frame = 0; // 挂着的 requestAnimationFrame id（0 = 没在跑）
+    //: 每帧吐掉"落后量"的几分之一。分母越小追得越急。
+    var CATCHUP = 4;
+    //: 两次重画之间**至少**隔多久。**16ms = 一帧** —— 也就是允许每帧都画。
+    //: 实测（会话里那段 1683 字的回答）整块 Markdown 重画只要 **0.1ms**，真正贵的是
+    //: 写 DOM 与随之而来的布局；原先这里是 33ms，那是还没量过成本时拍的保守值 ——
+    //: 量完发现"每帧画"完全付得起。做这个闸只为"块大到几十毫秒时退开"。
+    var PAINT_MIN_MS = 16;
+    //: 但**也不能比原来还卡**：固定 100ms 是改之前的值，自适应选出来的间隔不许超它。
+    var PAINT_MAX_MS = 100;
+    var lastPaintMs = 0; // 上一次重画实际花了多久（自适应就靠这个数）
+    var lastPaintAt = 0; // 上一次重画的时刻（与 `paintGap()` 一起决定这一帧画不画）
+    // ---- 尾巴渐隐（样式见 chat.css 的 `.chatmsg__flowing`）----------------
+    var flowHost = null; // 现在挂着渐隐的那个元素
+    var flowTail = 0; // 当前带子宽度（px，越宽尾巴越软）
+    var flowWant = 0; // 目标宽度
+    var flowIdleAt = 0; // 最后一次吐字的时刻
+    //: 盖住多高（px）。**别贪大**：这一层盖在正文最后一行上，盖住半行就成了
+    //: "整行一洗一清"，那比原先的"几个字蹦出来"还难看。
+    //: 12px ≈ 14.5px 字号那一行里、基线以下到字身下缘的那一点。
+    var FLOW_TAIL_PX = 12;
+    //: 停手多久就把带子收回去（毫秒）。220 是"比一次眨眼短、但确实算停了"：
+    //: 远大于一帧（不会每帧开合着闪），又短到模型一停下来雾就散。
+    var FLOW_HOLD_MS = 220;
+    //: 要不要缓动。`prefers-reduced-motion` 下直接到位 —— 全库同一条规矩。
+    var FLOW_EASE = !(
+      window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    );
+
+    /**
+     * 把 `parts` 画到 DOM 上。**什么时候画由调用方决定**（见 `tick` 里那道时间闸）。
+     *
+     * 这里**没有自己的计时器** —— 那是踩出来的：流式那条路每秒要画几十次，而
+     * *计时器与帧不对齐*会白白丢掉帧。实测（无头 Chromium，rAF 约 43fps）：
+     * `setTimeout(33ms)` 落在两帧中间，于是退化成"每两帧画一次"，只有 20 次/秒。
+     * 所以"画"这个动作放进 rAF 回调里（`tick` 本来就是），要不要画由
+     * `paintGap()` 那个时间闸判断 —— 一个时钟、一道闸，不再有第二种节奏。
+     */
+    function render() {
       var stick = nearBottom();
+      // 量这次重画花了多久 —— 下一次隔多久就按它定（见 `paintGap`）
+      var startedAt = nowMs();
       var last = parts.length ? parts[parts.length - 1] : null;
       // **只换最后一块**：流式里被追加的只有 text/think 两种，前面那些块（工具卡、
       // 引用…）一个字都没变。判据不满足（新增了块、或类型不是这两种）就整棵重建。
@@ -5028,6 +5083,8 @@
         body.appendChild(box);
         caret = null;
       }
+      // 尾巴渐隐跟着最后一块正文走（渐隐本身由 `tick` 撑开，这里只管它在哪一块上）
+      moveFlow();
       // 光标钉在末尾：节点**复用**（原先每帧新建一个，会闪）
       if (state.busy) {
         if (!caret) caret = h('span.chat__caret');
@@ -5036,6 +5093,163 @@
         caret = null;
       }
       if (stick) scrollToEnd(false);
+      lastPaintMs = nowMs() - startedAt;
+    }
+
+    /** 现在几点（毫秒）。用 `performance.now` 而不是 `Date.now`：单次重画常常只有
+     * 几毫秒，1ms 分辨率的时钟量出来一片 0，自适应就成了瞎调。 */
+    function nowMs() {
+      return window.performance && window.performance.now
+        ? window.performance.now()
+        : Date.now();
+    }
+
+    /** 下一次重画隔多久：**跟着上一次实际花的时间走**。
+     *
+     * 重画是整块 Markdown 重跑（含 KaTeX），成本随块长与公式数涨。固定 100ms 两头
+     * 不讨好：小块明明可以更顺，长块却可能一次就画掉几十毫秒。这里按"画一次最多
+     * 占一半时间"定下一帧的间隔，夹在 `[PAINT_MIN_MS, PAINT_MAX_MS]` 之间 ——
+     * 自适应，但**不许比改之前的 100ms 更卡**。
+     */
+    function paintGap() {
+      if (!lastPaintMs) return PAINT_MIN_MS;
+      return Math.max(PAINT_MIN_MS, Math.min(PAINT_MAX_MS, lastPaintMs * 2));
+    }
+
+    /** 正在流的那一块里、**装正文的那个元素** —— 尾巴渐隐打在它身上。
+     *
+     * 为什么不打在最外层：思考块的最外层是 `<details>`，上面还压着 `<summary>`
+     *（"思考过程"那四个字），一起罩住的话连标题都会跟着忽明忽暗。
+     *
+     * 也只在最后一块是 text / think 时才算数 —— 工具卡、题卡是**零件**，
+     * 它们不该有"正在流出来"的尾巴。
+     */
+    function streamHost() {
+      var last = parts.length ? parts[parts.length - 1] : null;
+      if (!last || (last.type !== 'text' && last.type !== 'think')) return null;
+      var node = nodes[parts.length - 1];
+      if (!node) return null;
+      if (last.type === 'think') return node.querySelector('.md');
+      return node.classList && node.classList.contains('md') ? node : null;
+    }
+
+    /** 把渐隐挪到当前该在的那一块上。 */
+    function moveFlow() {
+      var host = streamHost();
+      if (host === flowHost) return;
+      // 换块了就把旧的摘干净 —— 否则每插一个零件，前面那些块会各留一道糊着的底边
+      if (flowHost) {
+        flowHost.classList.remove('chatmsg__flowing');
+        flowHost.style.removeProperty('--qf-tail');
+      }
+      flowHost = host;
+      if (host) {
+        host.classList.add('chatmsg__flowing');
+        host.style.setProperty('--qf-tail', flowTail.toFixed(1) + 'px');
+      }
+    }
+
+    /** 带子走一步缓动，返回"还在动吗" —— 动就得继续挂帧（收一半停下会僵住）。 */
+    function stepFlow() {
+      flowWant = flowIdleAt && nowMs() - flowIdleAt < FLOW_HOLD_MS ? FLOW_TAIL_PX : 0;
+      var gap = flowWant - flowTail;
+      if (Math.abs(gap) < 0.4) {
+        // 到位了：**把最后那一点补上之后就不再写样式** —— 每帧写一次样式，
+        // 那一层就会每帧重画一次遮罩，而画面在几百分之一像素上没有区别。
+        if (flowTail !== flowWant) {
+          flowTail = flowWant;
+          if (flowHost) flowHost.style.setProperty('--qf-tail', flowTail.toFixed(1) + 'px');
+        }
+        return false;
+      }
+      flowTail = FLOW_EASE ? flowTail + gap * 0.22 : flowWant;
+      if (flowHost) flowHost.style.setProperty('--qf-tail', flowTail.toFixed(1) + 'px');
+      return true;
+    }
+
+    /** 收到一段文字：**不直接显示**，先进队列（理由见上面那段注释）。 */
+    function enqueue(type, text) {
+      if (!text) return;
+      var last = queue.length ? queue[queue.length - 1] : null;
+      if (last && last.type === type) last.text += text;
+      else queue.push({ type: type, text: text });
+      pending += text.length;
+      if (!frame) frame = window.requestAnimationFrame(tick);
+    }
+
+    /** 按帧往外吐。 */
+    function tick() {
+      frame = 0;
+      // 落后越多吐得越快：这样上游一次给一大段，也只是多花几帧就追平，
+      // 不会让"显示"落在"生成"后面越欠越多（那正是要避免的"攒到最后一次性画"）。
+      var step = 1 + Math.floor(pending / CATCHUP);
+      var revealed = false;
+      while (step > 0 && queue.length) {
+        var head = queue[0];
+        var take = Math.min(step, head.text.length);
+        pushPart(parts, head.type, head.text.slice(0, take));
+        head.text = head.text.slice(take);
+        pending -= take;
+        step -= take;
+        if (!head.text) queue.shift();
+        revealed = true;
+      }
+      // 有字刚出来 → 尾巴软一下；停手超过 `FLOW_HOLD_MS` 就自己收回去
+      //（模型在"想"的时候，那几个字不该一直糊着）。
+      // **记在这里而不是 `render` 里**：重画会被时间闸跳过，
+      // 而"刚才到底有没有新字"只有吐字这一侧知道。
+      if (revealed) flowIdleAt = nowMs();
+
+      // **就在这一帧里画**（已经在 rAF 回调里了，不必也不该再排计时器）。
+      // 要不要画由 `paintGap()` 那道闸定：渲染便宜时就是每帧一画（60 次/秒），
+      // 块大到一次几十毫秒时它会自己退开 —— 但**不许比改之前的 100ms 更卡**。
+      // 没吐出新字就**不画**：队列吐空之后还会为"收带子"多跑十几帧，
+      // 那些帧上 DOM 一个字都没变，重画纯属白干。
+      if (revealed) {
+        var now = nowMs();
+        if (now - lastPaintAt >= paintGap()) {
+          render();
+          lastPaintAt = now;
+        }
+      }
+      var flowing = stepFlow();
+      // **这里不滚**：改变布局的是重画，不是吐字 —— 而重画之后 `render` 自己会滚。
+      // 在这儿再滚一次等于每帧多摸一次 `scrollHeight`（强制布局），
+      // 而它带来的可见差别是零（DOM 还没变，滚了也一样）。原先 `pushText` 里
+      // 那个"合并到下一帧"的滚动就是为此存在的，现在随重画走，不需要了。
+      //
+      // **"还开着"和"还在收"都算**，两个都要，少一个就出上面那种僵住：
+      //   * 只看队列 —— 最后一个字吐完那帧带子已经到位（`flowing` 是 false），
+      //     帧就停了，220ms 后没有任何一帧来收它；
+      //   * 只看 `flowing` —— 同样漏掉"还没到期"的那 220ms。
+      var cooling = flowIdleAt && nowMs() - flowIdleAt < FLOW_HOLD_MS;
+      if (queue.length || cooling || flowing) {
+        frame = window.requestAnimationFrame(tick);
+      }
+    }
+
+    /** 把队列里剩下的**一次吐完**。
+     *
+     * 收尾路径必须调它：`settle` 之后 `parts` 可能被服务端那份整个替换（它才是
+     * 权威），而**那条路不一定带着 `parts`** —— 不先把队列补完，最后那一截
+     * 会凭空少掉（少的是回答的结尾，最难被发现的那种丢内容）。
+     */
+    function flush() {
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+        frame = 0;
+      }
+      // 带子直接收到位：`settle` 马上会把整棵 DOM 重建（新节点上没有渐隐），
+      // 再让帧循环多跑十几帧去收一个已经不在页面上的元素，纯属白干。
+      flowTail = 0;
+      flowWant = 0;
+      flowIdleAt = 0;
+      while (queue.length) {
+        var head = queue.shift();
+        pending -= head.text.length;
+        pushPart(parts, head.type, head.text);
+      }
+      pending = 0;
     }
 
     return {
@@ -5043,28 +5257,23 @@
       body: body,
       msg: msg,
       parts: function () {
+        // 调它的都是**收尾路径**（错误 / 中止，见 `send`）—— 先把没吐完的补上，
+        // 否则交给上层的是一份少了结尾的 parts（错误提示会长在半句话后面）。
+        flush();
         return parts;
       },
       pushText: function (chunk) {
-        pushPart(parts, 'text', chunk);
-        render(false);
-        // 滚动合并到下一帧：每个字都摸一次 scrollHeight 会强制布局，
-        // 高频流式时这一下比渲染本身还费
-        if (!scrollQueued) {
-          scrollQueued = true;
-          window.requestAnimationFrame(function () {
-            scrollQueued = false;
-            scrollToEnd(false);
-          });
-        }
+        // **不直接显示**：进队列，由 `tick` 按帧匀速吐出来（见上面那段注释）。
+        // 滚动也跟着"显示"走（在 `tick` 里），不再跟着"到达"走 —— 否则一大段
+        // 一次到达时，会先滚到底、再慢慢把内容吐出来，看着像页面在往下跳。
+        enqueue('text', chunk);
       },
       pushThink: function (chunk) {
-        pushPart(parts, 'think', chunk);
-        render(false);
+        enqueue('think', chunk);
       },
       pushNote: function (text) {
         parts.push({ type: 'summary', text: text });
-        render(true);
+        render();
       },
       // 工具事件立刻刷：用户最想知道的正是"它现在在干什么"，等 100ms 就没意思了
       toolStart: function (data) {
@@ -5077,7 +5286,7 @@
           ok: true,
           ms: 0,
         });
-        render(true);
+        render();
       },
       toolResult: function (data) {
         for (var i = parts.length - 1; i >= 0; i--) {
@@ -5088,29 +5297,29 @@
             break;
           }
         }
-        render(true);
+        render();
       },
       // 卡片一到就立刻画：用户最想马上做的就是动手答
       pushCard: function (card) {
         parts.push({ type: 'card', kind: 'question', payload: card });
-        render(true);
+        render();
       },
       // 凭条也一样：它得在回答说完之前就能点（不然用户干等）
       pushAction: function (proposal) {
         parts.push({ type: 'action', kind: proposal.kind, payload: proposal });
-        render(true);
+        render();
       },
       pushPart: function (part) {
         parts.push(part);
-        render(true);
+        render();
       },
       settle: function (m) {
+        // **先把队列补完**：`parts` 接下来可能被服务端那份整个替换（它才是权威），
+        // 但那条路不一定带着 `parts` —— 不补的话，还没吐出来的那一截会凭空少掉。
+        flush();
         if (m && m.parts && m.parts.length) parts = m.parts;
-        // 收尾了：挂着的节流帧别再来一次（它算的是收尾前的样子）
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
-        }
+        // 收尾了：下面整棵重建，不用再等吐字循环 —— `flush()` 已经把它停掉
+        //（它顺手 cancelAnimationFrame），不会再有帧往这份 parts 上追加。
         nodes = [];
         caret = null;
         row.dataset.id = String((m && m.id) || '');
@@ -5122,6 +5331,7 @@
         scrollToEnd(false);
       },
       text: function () {
+        flush(); // 同 `parts()`：收尾路径上不能漏掉还没吐出来的那截
         return textOf(parts);
       },
     };
@@ -5772,6 +5982,71 @@
     link.remove();
   }
 
+  /** 当前这条会话在列表里的那一条（分享要标题，列表里没有就现造一个薄的）。 */
+  function currentConv() {
+    var found = null;
+    state.list.forEach(function (one) {
+      if (one && one.id === state.current) found = one;
+    });
+    if (found) return found;
+    return state.current ? { id: state.current, title: '' } : null;
+  }
+
+  /**
+   * 分享当前会话：服务端装配成**一个自带数据的网页**，浏览器存成文件。
+   *
+   * 为什么是"存一个文件"而不是"复制一个链接"：那一页是**自包含**的 ——
+   * 没有后端可指，装配好的文件本身就是那份内容。发出去对方双击即可，
+   * 不需要装任何东西（装配见 `app/share.py`，那里也写着它跟"离线形态已淘汰"
+   * 那条决定的关系：否掉的是第二种应用形态，不是内联本身）。
+   *
+   * **为什么走 `fetch` 而不是直接 `<a download>`**：装配在服务端做，
+   * 失败时返回的是**一条 JSON 报错**，而 `<a download>` 会把它当成文件存下来 ——
+   * 用户拿到一个叫 `chat-xxxx.html` 的报错文件，还会以为是自己那边的问题
+   *（装配自检的失败就是这种：见 `app/share.py` 的 `ShareBuildError`）。
+   * 先看一眼状态码，错了当面说。
+   *
+   * 不做"正在打包"那套：实测 158 条消息装配 **37ms**，塞一个转圈只会闪一下。
+   */
+  function onShare() {
+    var conv = currentConv();
+    if (!conv) return;
+    if (!state.messages.length) {
+      ui.toast('这条对话还没有内容，没什么可分享的', 'warn');
+      return;
+    }
+    var name = 'chat-' + String(conv.id).slice(0, 8) + '.html';
+    fetch(QF.api.base + '/chat/conversations/' + conv.id + '/export?format=html', {
+      credentials: 'same-origin',
+    })
+      .then(function (res) {
+        if (res.ok) return res.blob();
+        return res
+          .json()
+          .catch(function () {
+            return {};
+          })
+          .then(function (data) {
+            throw new Error((data && data.detail) || '导出失败（' + res.status + '）');
+          });
+      })
+      .then(function (blob) {
+        var url = URL.createObjectURL(blob);
+        var link = h('a', { href: url, download: name });
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        // 立刻回收会让某些浏览器来不及取那份 blob，延后一拍
+        window.setTimeout(function () {
+          URL.revokeObjectURL(url);
+        }, 1000);
+        ui.toast('分享页已生成：' + name + '（' + (blob.size / 1048576).toFixed(1) + ' MB，直接发出去即可）');
+      })
+      .catch(function (err) {
+        ui.toast('没能生成分享页：' + ((err && err.message) || '未知原因'), 'warn');
+      });
+  }
+
   /** 打开"重命名"对话框。F2 与右键菜单都走这里 —— 只留一条路，别两份。 */
   function renameConversation(conv) {
     if (!conv) {
@@ -5884,6 +6159,16 @@
             },
           },
           'JSON（整棵树，给机器读）'
+        ),
+        h(
+          'button.btn.btn--ghost',
+          {
+            type: 'button',
+            onClick: function () {
+              download('/api/chat/conversations/' + conv.id + '/export?format=html');
+            },
+          },
+          'HTML（单页分享，能直接发出去）'
         ),
         h(
           'button.btn.btn--ghost',

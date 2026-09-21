@@ -56,11 +56,22 @@ from app.models import Material, MaterialSlice, SliceEmbedding  # noqa: E402
 #: 一次推理送多少窗。本地推理不按次计费，批量纯粹是为了把 CPU 吃满。
 BATCH = 16
 
-#: 一个窗口最多多少字。bge-m3 的可用上限是 1024 token，技术文档中英混排大约
-#: 2~3 字/token，取 2200 字留足余量 —— **宁可窗口小一点、多几个，也别被截掉尾巴**。
-WINDOW_CHARS = 2200
+#: 一个窗口最多多少字。
+#:
+#: **这是精度选择，不是速度选择** —— 实测纠正过一次：
+#: 单窗耗时大致**正比于 token 数**，所以"窗口减半"只是把同样多的 token 切成更多份，
+#: 总时间几乎不变（多出来的是每窗的固定开销，**反而略慢**）。
+#: 真正换来的是**更精确的行区间**：1200 字的窗口命中时，引用指的是更小的一段。
+#:
+#: （我在上一版里写过"注意力是 O(seq²)、所以窗口减半总成本减半"—— 实测把这个说法
+#: 否了：这个尺寸下逐层的 `O(seq·d²)` 矩阵乘占大头，压根不走 O(seq²) 那一项。
+#: 实测：2200 字 / 840ms 每窗，1200 字 / 515ms 每窗，而段数翻了近三倍。）
+#:
+#: 上界仍是模型的可用窗口（1024 token）：1200 字（英文约 300~400 token）留足余量、
+#: **不截断** —— 截断正是"前言永远赢"那次翻车的根因。
+WINDOW_CHARS = 1200
 #: 相邻窗口重叠多少字：免得一句关键的话正好被切开、两边都不完整。
-WINDOW_OVERLAP = 300
+WINDOW_OVERLAP = 200
 
 
 @lru_cache(maxsize=16)
@@ -234,6 +245,11 @@ def _run(args) -> int:  # noqa: ANN001
         for slice_row, _mat, windows, digest in todo:
             for ordinal, start, end, text in windows:
                 flat.append((slice_row, ordinal, start, end, text, digest))
+
+        # **按正文长度排序再分批**：`enable_padding()` 会补到**批内最长**那一条，
+        # 长短混在一批里，短的那些全是白算（实测混排时每批有一两成的 padding 浪费）。
+        # 排序不影响正确性 —— 写回是按片分组做的（见下面的 `cleared`）。
+        flat.sort(key=lambda item: len(item[4]))
 
         cleared: set[int] = set()  # 这一轮已经清过旧行的切片
         written = 0

@@ -29,7 +29,7 @@ WEB_OUT   ?= api/web
         api-venv api-dev api-test dev \
         db-up db-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
-        graph-export skills-link embed \
+        graph-export share skills-link embed intake \
         coverage coverage-gaps drive help
 
 vendor:
@@ -259,6 +259,15 @@ graph-relate-centric:
 graph-export:
 	@$(VENV)/bin/python -m pipeline.graph_build export --out $(CURDIR)/graph.json
 
+# 把一条会话打成**一个能发出去的网页**（对话正文 + 那棵对话树，`file://` 双击即用）。
+#   make share                # 最近更新的那一条
+#   make share CID=<uuid>     # 指定会话
+# 产物落在仓库根 `share-<id8>.html`。它**只读**、不需要后端 —— 装配进去的是构建好的
+# 页面本身（渲染器只有一份源码），为什么这样可以内联、以及装配时踩过的坑，
+# 见 tools/share.py 的文件头。
+share:
+	@$(VENV)/bin/python tools/share.py $(or $(CID),latest) $(ARGS)
+
 # 窗口向量化 —— 检索层的那一路（"换个说法问同一件事"靠它，见 docs/检索与向量化.md）。
 # 模型是**本地的小模型**（bge-m3 int8，约 600MB）：首次跑时自动下载到本机缓存，
 # 之后离线可用、零边际成本。**不进分发包** —— 那是"首启下载"，见 api/app/local_embed.py。
@@ -325,6 +334,11 @@ db-dump:
 db-restore:
 	@gunzip -c $(DB_DUMP) | PGPASSWORD=$${QF_DB_PASSWORD:-quizforge} psql -h $${QF_DB_HOST:-127.0.0.1} -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} -q
 	@echo "  已从 $(DB_DUMP) 恢复"
+
+# 资料库入库：登记 + 切片，**止步于此**（不抽点 / 不归概念 / 不出题 —— 见 pipeline/intake.py）。
+# 之后接 `make embed` 就有向量了。逐条确认要不要继续往下走看 `materials.depth`。
+intake:
+	@$(VENV)/bin/python -m pipeline.intake $(ARGS)
 
 # 覆盖率对账：哪些材料出过题、还剩多少点（与派工的"只补缺口"同一套判据）
 coverage:

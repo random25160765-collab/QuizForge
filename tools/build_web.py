@@ -88,6 +88,11 @@ RUNTIME_ORDER = [
     "router.js",
 ]
 
+#: 拷进产物，但**不挂进任何页面**的脚本。
+#: 目前只有 `share.js`（单页分享的引导）：它由 `tools/share.py` 与导出接口在装配
+#: 那一页时内联，在线页面一律不引 —— 它一跑就 `QF.chat.boot()`，挂别处会撞车。
+COPIED_ONLY_JS = ["share.js"]
+
 # 每个页面额外加载的脚本；boot.js 统一放在最后（它要调用页面的 boot）
 # 图谱页不需要 boot.js：它的数据来自公开的 /api/graph，自己启动
 PAGE_JS = {
@@ -345,6 +350,13 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     # 页面级脚本也要一起落地：它们和运行时脚本一样以 <script src> 引入，
     # 漏拷会导致页面 404 白屏（曾经就漏过 boot.js 与 app.js）
     scripts_to_copy = list(RUNTIME_ORDER)
+    # 拷进产物、但**不挂进任何页面**的脚本。
+    # `share.js` 是单页分享的引导：`make share` / 导出接口装配那一页时会把它内联进去，
+    # 而在线页面**一律不许引它** —— 它一跑就 `QF.chat.boot()`，挂在别的页上会当场撞车。
+    # 所以它不能进 `RUNTIME_ORDER`（那是"每一页都加载"的意思），只能走这里。
+    for name in COPIED_ONLY_JS:
+        if name not in scripts_to_copy:
+            scripts_to_copy.append(name)
     for page_js in PAGE_JS.values():
         for name in page_js:
             if name not in scripts_to_copy:

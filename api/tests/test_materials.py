@@ -26,7 +26,7 @@ def _register(client) -> None:  # noqa: ANN001
     local_user_id()
 
 
-def _material(db, path: Path, *, lines: int) -> Material:  # noqa: ANN001
+def _material(db, path: Path, *, lines: int, depth: str = "出题") -> Material:  # noqa: ANN001
     material = Material(
         slug="tt-metal-text-" + uuid.uuid4().hex[:6],
         subject="tt-metal",
@@ -34,6 +34,9 @@ def _material(db, path: Path, *, lines: int) -> Material:  # noqa: ANN001
         source_path=str(path),
         sha256="0" * 64,
         lines=lines,
+        # 默认这一档是"我在学的" —— `search_material` 只看它（另一档归 `search_library`）。
+        # 夹具不写这一句的话，模型的默认值是 `检索`，那个工具会一条都搜不到。
+        depth=depth,
     )
     db.add(material)
     db.flush()
@@ -204,3 +207,54 @@ def test_material_lines_endpoint(client, db_session, tmp_path) -> None:  # noqa:
     response = client.get(f"/api/knowledge/material?slug={gone.slug}")
     assert response.status_code == 503
     assert "文件不在这台机器上" in response.json()["detail"]
+
+
+# ------------------------------------------------------------------ 两个书架
+#
+# `materials.depth` 是**按件**的，不是按来源的：`出题` = 我在学的（值得精读与出题），
+# `检索` = 我查的（论文 / 白皮书这类"看看就好"的）。两条工具各看一档，
+# **正文与检索方式完全一样，差别只有这一个字段**。
+
+
+def test_the_two_tools_look_at_different_shelves(db_session, tmp_path) -> None:  # noqa: ANN001
+    """`search_material` 只看 `出题`、`search_library` 只看 `检索`。
+
+    造两份**一模一样**的材料（同样的正文、同样的词），只差 `depth` ——
+    这样任何一条工具能搜到另一档，都是错的。
+
+    断言用**归属**而不是"精确列表"：隔离夹具不清 `materials`（设计如此 ——
+    "题库与知识空间用例之间共享"），别的用例留下的材料也可能命中同一个词。
+    """
+    body = ["circular buffer 是核间通信的队列"]
+    on_chain = _material(db_session, _write(tmp_path / "a.md", body), lines=1, depth="出题")
+    for_reference = _material(db_session, _write(tmp_path / "b.md", body), lines=1, depth="检索")
+    db_session.commit()
+
+    ok, payload = tools.call(db_session, None, "search_material", {"query": "circular buffer"})
+    assert ok, payload
+    found = {hit["material"] for hit in payload["hits"]}
+    assert on_chain.slug in found, "出题档的材料没被 search_material 找到"
+    assert for_reference.slug not in found, "search_material 读到了检索档 —— 两个书架串了"
+
+    ok, payload = tools.call(db_session, None, "search_library", {"query": "circular buffer"})
+    assert ok, payload
+    found = {hit["material"] for hit in payload["hits"]}
+    assert for_reference.slug in found, "检索档的资料没被 search_library 找到"
+    assert on_chain.slug not in found, "search_library 读到了出题档 —— 两个书架串了"
+
+
+def test_an_empty_shelf_is_not_reported_as_a_missing_file(db_session, tmp_path) -> None:  # noqa: ANN001
+    """筛空 = 空结果，**不是**「这份材料不存在」。
+
+    踩过：`materials.search` 那条"一份都没选到"的分支无条件报
+    `没有这份材料：`（而 slug 还是空的）—— 按 `depth` 筛之后它被触发到了，
+    模型会以为自己问错了名字，而不是"换另一个书架再问一次"。
+    """
+    body = ["只有检索档里有这一个词 unique_on_theothershelf"]
+    _material(db_session, _write(tmp_path / "only-ref.md", body), lines=1, depth="检索")
+    db_session.commit()
+
+    ok, payload = tools.call(db_session, None, "search_material", {"query": "unique_on_theothershelf"})
+    assert ok, payload
+    assert payload.get("hits") == []
+    assert "error" not in payload, payload

@@ -143,7 +143,7 @@ def state(db) -> dict:  # noqa: ANN001
 # ----------------------------------------------------------------- 语义那一路
 
 
-def search(db, query_vec, *, limit: int = 8, slug: str = "") -> list[dict]:  # noqa: ANN001
+def search(db, query_vec, *, limit: int = 8, slug: str = "", depth: str = "") -> list[dict]:  # noqa: ANN001
     """按余弦找最像的几个**窗口**。
 
     返回的是窗口（含它自己的行区间），调用方不必认识"切片"这一层。
@@ -163,6 +163,8 @@ def search(db, query_vec, *, limit: int = 8, slug: str = "") -> list[dict]:  # n
     )
     if slug:
         stmt = stmt.where(Material.slug == slug)
+    if depth:
+        stmt = stmt.where(Material.depth == depth)
 
     rows = [
         (window, slice_row, material)
@@ -221,7 +223,7 @@ def rrf(*rankings, k: int = RRF_K) -> list[tuple]:  # noqa: ANN001
 # ------------------------------------------------------------ 字面 → 窗口 的归位
 
 
-def _window_index(db, slug: str = "") -> tuple[dict, dict, dict, dict]:  # noqa: ANN001
+def _window_index(db, slug: str = "", depth: str = "") -> tuple[dict, dict, dict, dict]:  # noqa: ANN001
     """把窗口与切片索引进内存，返回 `(按窗口 id, 窗口按材料, 切片按材料)`。
 
     千级窗口全量载入是微不足道的，换来的是融合那一步**不必为每个命中再查库**
@@ -239,6 +241,8 @@ def _window_index(db, slug: str = "") -> tuple[dict, dict, dict, dict]:  # noqa:
     )
     if slug:
         stmt = stmt.where(Material.slug == slug)
+    if depth:
+        stmt = stmt.where(Material.depth == depth)
     by_id: dict = {}
     windows: dict = {}
     for window, slice_row, material in db.execute(stmt).all():
@@ -254,6 +258,8 @@ def _window_index(db, slug: str = "") -> tuple[dict, dict, dict, dict]:  # noqa:
     )
     if slug:
         slice_stmt = slice_stmt.where(Material.slug == slug)
+    if depth:
+        slice_stmt = slice_stmt.where(Material.depth == depth)
     slices: dict = {}
     slice_by_id: dict = {}
     for slice_row, material in db.execute(slice_stmt).all():
@@ -312,6 +318,7 @@ def search_fused(  # noqa: ANN001
     slug: str = "",
     limit: int = 5,
     k: int = RRF_K,
+    depth: str = "",
 ) -> dict:
     """检索入口：**字面 + 向量**两路融合（第三路"图"不在这里，它回答的是另一个问题）。
 
@@ -324,14 +331,16 @@ def search_fused(  # noqa: ANN001
     并且会在 `semantic: false` 里说明，不假装。
     """
     window = max(int(limit) * 3, 8)
-    literal = materials.search(db, query, slug=slug, limit=window)
+    literal = materials.search(db, query, slug=slug, limit=window, depth=depth)
     if literal.get("error"):
         return literal  # 空查询之类：它的文案是写给模型看的，原样交回
 
     literal_hits = literal.get("hits") or []
-    vector_hits = search(db, query_vec, slug=slug, limit=window) if query_vec else []
+    vector_hits = (
+        search(db, query_vec, slug=slug, limit=window, depth=depth) if query_vec else []
+    )
 
-    by_id, windows, slices, slice_by_id = _window_index(db, slug)
+    by_id, windows, slices, slice_by_id = _window_index(db, slug, depth)
 
     # 两路各自排成"名次表"。**键统一成 `(类型, 标识)`**：字面那一路给的是**行**、
     # 向量那一路给的是**窗口**，融合要求两边可比 ——

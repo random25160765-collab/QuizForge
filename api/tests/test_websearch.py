@@ -657,3 +657,166 @@ def test_dns_resolution_has_a_wall_clock(monkeypatch):
 
     assert took < 3.0, "挂了 " + str(round(took, 1)) + " 秒：DNS 那一层没有墙钟"
     assert "解析超时" in str(err.value), str(err.value)
+
+
+# ------------------------------------------------------------------ 学术通道
+#
+# 这一路的理由见 `websearch.py` 模块 docstring 那张表：通用网页索引搜学术关键词
+# 是**结构性做不到**（缩写撞名），而它失败的样子是"有结果的搜索" ——
+# 有标题、有摘要、不报错，从"有没有结果"根本看不出错了。
+#
+# 这里钉四件事：出口形状与网页那条**一样**、摘要能从倒排**还原**、
+# 开放获取链接要**优先给**、以及**筛空不等于没搜到**。
+
+
+def _openalex_body(items: list[dict]) -> dict:
+    return {"meta": {"count": len(items)}, "results": items}
+
+
+def _paper(**over) -> dict:  # noqa: ANN003
+    base = {
+        "id": "https://openalex.org/W1",
+        "doi": "https://doi.org/10.1000/xyz",
+        "title": "Cache behavior prediction by abstract interpretation",
+        "publication_year": 1996,
+        "cited_by_count": 172,
+        "type": "conference-paper",
+        "authorships": [
+            {"author": {"display_name": "Christian Ferdinand"}},
+            {"author": {"display_name": "Florian Martin"}},
+        ],
+        "primary_location": {"source": {"display_name": "Lecture Notes in CS"}},
+        "best_oa_location": {},
+        "abstract_inverted_index": None,
+    }
+    base.update(over)
+    return base
+
+
+def test_the_scholar_channel_normalizes_papers(monkeypatch):  # noqa: ANN001
+    """论文走**同一个出口形状** —— 字段名一个不变，只是 `snippet` 变成了
+    「书目信息 + 摘要」。调用方不必认识两种结果。"""
+    with _serve(_openalex_body([_paper()])) as (url, handler):
+        monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
+        items = websearch.search_papers(_conf(url), "cache analysis abstract interpretation")
+
+    assert len(items) == 1
+    one = items[0]
+    assert set(one) == {"title", "url", "snippet", "site", "date"}, "出口形状不能变"
+    assert one["title"] == "Cache behavior prediction by abstract interpretation"
+    assert one["date"] == "1996"
+    assert one["site"] == "Lecture Notes in CS"
+    assert "Christian Ferdinand" in one["snippet"]
+    assert "被引 172" in one["snippet"]
+    # 请求形状：相关度检索（不是字面匹配）+ 只要显式列出的那几个字段
+    assert "search=cache" in handler.received["path"]
+    assert "select=" in handler.received["path"], "不列字段会拉回好几 MB"
+
+
+def test_the_abstract_is_rebuilt_from_the_inverted_index(monkeypatch):  # noqa: ANN001
+    """OpenAlex 给的是**倒排**（`{词: [位置, …]}`）—— 不还原，等于没有摘要，
+    而摘要是判断一篇文献要不要读的唯一依据。"""
+    with _serve(
+        _openalex_body(
+            [_paper(abstract_inverted_index={"Caches": [0], "bridge": [1], "the": [2], "gap": [3]})]
+        )
+    ) as (url, _handler):
+        monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
+        items = websearch.search_papers(_conf(url), "x")
+
+    assert items[0]["snippet"].endswith("Caches bridge the gap")
+
+
+def test_a_paper_without_an_abstract_does_not_get_a_fake_one(monkeypatch):  # noqa: ANN001
+    """实测有一部分作品**根本没有摘要**（`abstract_inverted_index` 缺席）——
+    那就留空，**不编**。"""
+    with _serve(_openalex_body([_paper(abstract_inverted_index=None)])) as (url, _handler):
+        monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
+        items = websearch.search_papers(_conf(url), "x")
+
+    assert "被引 172" in items[0]["snippet"], "书目信息该在"
+    assert "None" not in items[0]["snippet"]
+
+
+def test_the_open_access_pdf_wins_over_the_doi(monkeypatch):  # noqa: ANN001
+    """有免费 PDF 就优先给那个：DOI 点进去常常是付费墙，而 `read_web_page`
+    读不到正文时，模型会以为「这篇没内容」。"""
+    with _serve(
+        _openalex_body([_paper(best_oa_location={"pdf_url": "https://x.test/a.pdf"})])
+    ) as (url, _handler):
+        monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
+        items = websearch.search_papers(_conf(url), "x")
+
+    assert items[0]["url"] == "https://x.test/a.pdf"
+
+
+def test_the_venue_falls_back_to_raw_source_name(monkeypatch):  # noqa: ANN001
+    """实测不少 IEEE / ACM 记录的 `primary_location.source` 是 `null`，
+    而旁边那个 `raw_source_name` 有值 —— 只用前一个会把「发表在哪」整列丢空，
+    而那正是判断一篇文献可不可信的主要依据之一。"""
+    with _serve(
+        _openalex_body(
+            [_paper(primary_location={"source": None, "raw_source_name": "2011 17th IEEE RTAS"})]
+        )
+    ) as (url, _handler):
+        monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
+        items = websearch.search_papers(_conf(url), "x")
+
+    assert items[0]["site"] == "2011 17th IEEE RTAS"
+
+
+# ------------------------------------------------- 筛空 ≠ 没搜到（这条是实测踩的）
+
+
+def test_a_filter_that_empties_the_results_hands_the_tally_back():
+    """域名过滤是**本地筛**，所以「零结果」有两种完全不同的成因 ——
+    而 `stats` 就是把这两种分开的那个数。"""
+    body = _bocha_body([{"name": "别的站", "url": "https://other.test/a", "snippet": "x"}])
+    with _serve(body) as (url, _handler):
+        stats: dict = {}
+        items = websearch.search(_conf(url), "x", include_domains=["arxiv.org"], stats=stats)
+
+    assert items == []
+    assert stats == {"raw": 1, "kept": 0, "dropped": 1}
+
+
+def test_the_tool_says_filtered_instead_of_not_found(db_session, local_user, monkeypatch):  # noqa: ANN001
+    """**筛空要说成筛空。**
+
+    实测踩到过：限定 arxiv / ACM / IEEE / Springer 之后拿回「零结果」，
+    而实际是拿回的那几条**一条都不在**这些站上 —— 模型于是得出了
+    「这世上没有」的结论。这两种情况的下一步动作完全不同（去掉域名限制 vs 换词），
+    所以工具必须把话说清。
+    """
+    _no_beta(monkeypatch)
+    body = _bocha_body([{"name": "别的站", "url": "https://other.test/a", "snippet": "x"}])
+    with _serve(body) as (url, _h):
+        settings_store.put(
+            db_session,
+            search={"enabled": True, "kind": "bocha", "apiKey": _FAKE_KEY, "endpoint": url},
+        )
+        ok, payload = tools.call(
+            db_session, local_user, "web_search",
+            {"query": "WCET", "includeDomains": ["arxiv.org", "dl.acm.org"]},
+            {}, mounts={"web"}, allow=("read",),
+        )
+    assert ok is True, payload
+    assert payload["results"] == []
+    assert "筛掉" in payload["note"], payload["note"]
+    assert "includeDomains" in payload["note"], "要给出下一步动作"
+
+
+def test_the_paper_tool_is_declared_and_points_at_reading(db_session, local_user, monkeypatch):  # noqa: ANN001
+    """走真链路：工具声明得到、学术通道解析得对、note 指向「摘要不是全文」。"""
+    _no_beta(monkeypatch)
+    with _serve(_openalex_body([_paper()])) as (url, _h):
+        monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
+        ok, payload = tools.call(
+            db_session, local_user, "search_papers",
+            {"query": "cache analysis abstract interpretation"},
+            {}, mounts={"web"}, allow=("read",),
+        )
+
+    assert ok is True, payload
+    assert payload["results"][0]["title"].startswith("Cache behavior prediction")
+    assert "read_web_page" in payload["note"], "摘要不是全文，要指向读原文"

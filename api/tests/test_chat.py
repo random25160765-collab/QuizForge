@@ -822,6 +822,9 @@ def test_sources_become_citations(client, monkeypatch, db_session, tmp_path) -> 
             source_path=str(path),
             sha256="0" * 64,
             lines=3,
+            # `search_material` 只看"出题"这一档（另一档归 `search_library`）；
+            # 不写这句就是模型的默认值 `检索`，那个工具一条都搜不到。
+            depth="出题",
         )
     )
     db_session.commit()

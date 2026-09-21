@@ -43,6 +43,7 @@ from . import heavy_deps, mastery, materials, semantic
 from .models import (
     Concept,
     ConceptEdge,
+    Conversation,
     KnowledgePoint,
     Material,
     Message,
@@ -1715,6 +1716,16 @@ def search_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     `search_knowledge` 查的是**知识空间**（概念、点、题）；这个查的是**文本**。
     想知道"材料里原话怎么说的"，用这个；想知道"这个点在图谱里的位置"，用那个。
     """
+    return _search_by_depth(db, user, args, "出题")
+
+
+def _search_by_depth(db, user, args, depth: str) -> dict:  # noqa: ANN001
+    """两条检索工具共用的身子：只有"看哪一档资料"不同。
+
+    `sources` 是给宿主看的约定：router 会把它变成**引用零件**，
+    于是对话里每一处结论都能点回原文那几行（不只是"我看过材料"）。
+    其他工具（`search_knowledge` / `get_point_detail`）也照这个字段名返回。
+    """
     query = str(args.get("query") or "")
     result = semantic.search_fused(
         db,
@@ -1722,11 +1733,8 @@ def search_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         query_vec=_query_vector(db, user, query),
         slug=str(args.get("slug") or "").strip(),
         limit=_clamp(args.get("limit"), 1, 8, 5),
+        depth=depth,
     )
-
-    # `sources` 是给宿主看的约定：router 会把它变成**引用零件**，
-    # 于是对话里每一处结论都能点回原文那几行（不只是"我看过材料"）。其他
-    # 工具（search_knowledge / get_point_detail）也照这个字段名返回。
     hits = result.get("hits") or []
     if hits:
         result["sources"] = [
@@ -1740,6 +1748,27 @@ def search_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
             for hit in hits
         ]
     return result
+
+
+def search_library(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """在**资料库**里检索（`depth=检索` 的那一档）—— 和 `search_material` 是一对。
+
+    ## 和 `search_material` 的分工，只看一件事：**这份资料要不要出题**
+
+    * `search_material` → `depth=出题`：**我在学的**（值得精读、抽知识点、进图谱、
+      出成题的语料）。技术报告、手册这一档。
+    * `search_library` → `depth=检索`：**我查的**（拿来读、拿来引用、拿来对照，
+      但"灌水论文我也要出成题目做吗"）。论文、白皮书、别人的资料这一档。
+
+    两边的正文与检索方式**完全一样**（都是切片 + 向量 + 字面 RRF 融合，
+    都能点回原文行区间），**差别只有这一个档位**。
+
+    ## 一条使用规矩
+
+    **在一个里没找到，就去另一个里再问一次** —— 它们不是"同一个库的两种搜法"，
+    而是两个书架。只搜一个就下结论（"材料里没有"），是这里最容易犯的错。
+    """
+    return _search_by_depth(db, user, args, "检索")
 
 
 def read_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
@@ -2336,6 +2365,7 @@ def web_search(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     query = str(args.get("query") or "").strip()
     if not query:
         return {"error": "要搜什么？`query` 是空的。"}
+    stats: dict = {}
     try:
         conf = websearch.resolve(db)
         items = websearch.search(
@@ -2344,14 +2374,33 @@ def web_search(db, user, args, ctx=None) -> dict:  # noqa: ANN001
             count=args.get("count"),
             include_domains=args.get("includeDomains"),
             exclude_domains=args.get("excludeDomains"),
+            stats=stats,
         )
     except websearch.SearchError as exc:
         return {"error": str(exc)}
+    if not items and stats.get("dropped"):
+        # **筛空 ≠ 没搜到** —— 这两个的下一步动作完全不同（一个是去掉域名限制，
+        # 一个是换词或者承认查不到）。实测踩到过：限定 arxiv/ACM/IEEE/Springer
+        # 拿回"零结果"，而实际是那 10 条里**一条都不在**这些站上，
+        # 模型于是得出了"这世上没有"的结论。这条 note 就是拦这个的。
+        return {
+            "query": query,
+            "results": [],
+            "note": "**不是没搜到，是你给的域名限制把结果全筛掉了**：这次拿回 "
+            + str(stats.get("raw") or 0)
+            + " 条，没有一条落在你指定的站点上。「站点限定」是**拿回来之后本地筛**的"
+            "（免费那条连 `site:` 语法都不认），所以命中与否取决于前几条里恰好有没有那个站。"
+            "**去掉 `includeDomains` 再搜一次**，或者换更特别的词。"
+            "学术文献别在这儿硬搜 —— 用 `search_papers`。",
+        }
     if not items:
         return {
             "query": query,
             "results": [],
             "note": "一条都没搜到。换个说法、或者拆成更具体的关键词再试一次；"
+            "**学术文献（哪篇论文 / 谁做的 / 哪一年的）换 `search_papers`** —— "
+            "通用网页索引搜学术关键词会被**缩写撞名**（实测 `WCET` 搜回来的是同名协会、"
+            "造口治疗师协会与词典释义）。"
             "**别把「我没搜到」当成「这件事不存在」** —— 说清是没搜到，"
             "然后按你自己已有的理解回答，并说明这部分没有出处。",
         }
@@ -2360,6 +2409,38 @@ def web_search(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         "results": items,
         "note": "摘要只是**索引**，常常正好缺了你要的那一句：要引用事实、要给数字、"
         "要说「根据…」，先调 `read_web_page` 把那一页读了再开口。引用时把网址写上。",
+    }
+
+
+def search_papers(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """搜学术文献。走的是**学术索引**（OpenAlex，免密钥），不是通用网页索引。"""
+    from . import websearch
+
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return {"error": "要搜什么？`query` 是空的。"}
+    try:
+        conf = websearch.resolve(db)
+        items = websearch.search_papers(conf, query, count=args.get("count"))
+    except websearch.SearchError as exc:
+        return {"error": str(exc)}
+    if not items:
+        return {
+            "query": query,
+            "results": [],
+            "note": "这个学术索引里一条都没找到。换**更通用的主题词**再试 —— "
+            "它按相关度排，不要求你猜中作者写的原词（「缓存分析怎么用抽象解释做」"
+            "比「the WCET paper」更容易命中）；**别只搜一次就下结论**，"
+            "同一个东西换个说法常常就有了。",
+        }
+    return {
+        "query": query,
+        "results": items,
+        "note": "每条给了**年份 / 作者 / 发表处 / 被引数**，摘要通常是有的"
+        "（没有的就是那篇本身没提供，不是这里漏了）。**摘要不是全文**："
+        "要引用具体结论、数字、方法细节，先 `read_web_page` 读那一条的链接"
+        "（有开放获取 PDF 时优先给的就是它）。引用时把标题、作者、年份写上，"
+        "让他能自己核对 —— 只拿摘要下结论，等于换了个地方编。",
     }
 
 
@@ -2438,6 +2519,46 @@ def run_subagent(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         tools=sys.modules[__name__],
     )[1]
 
+
+def read_learning_tree(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """把**这次会话**的对话树，按「递归学习法」的形状读出来（实现见 `app/recursion.py`）。
+
+    用户的学习方式是**递归**的：一个概念不懂就求讲解，讲解里又冒出几个不懂的概念，
+    就**一个一个问出去**（每个是一支），弄明白了再回到主线。这个形状只存在于
+    `messages.parent_id` 里 —— 重放成一条扁平的消息列表就没了，所以得专门读。
+
+    树里三种记号**必须分清**（混了整份复盘就全错）：
+      * `◆` 他**挑出了多个概念、分别下钻** —— 递归学习法的动作本身，是主线
+      * `⟳` 同一个提问**又生成了一次** —— 重试（常见于上一次是空回复），不是新概念
+      * `↺` 他把**同一句话又发了一遍** —— 改写重发（"我上一句没说清"），不是新概念
+
+    还有一条**不许替他下结论**的：一支问完是"弄明白了"还是"先放着了"，树里
+    看不出来（两种都是叶子）。真要判断就结合内容说，或者干脆问他。
+    """
+    from . import recursion  # 延迟导入：它要用 Message 那一套模型
+
+    conv_id = (ctx or {}).get("conversationId")
+    if not conv_id:
+        return {"error": "这次调用没有带上会话 —— 复盘得说清是哪一条对话。"}
+    try:
+        conv = db.get(Conversation, uuid.UUID(str(conv_id)))
+    except (TypeError, ValueError):
+        return {"error": "会话 id 不是合法形式。"}
+    if conv is None or conv.user_id != user.id:
+        return {"error": "没找到这条会话。"}
+
+    ids = args.get("ids")
+    if ids:
+        return {"tree": recursion.read_nodes(db, conv, ids), "note": "这是你点名的那几条的全文。"}
+
+    stat = recursion.brief(db, conv)
+    return {
+        "tree": recursion.outline(db, conv),
+        "note": "上面是这次会话的树：%d 条 · 最深 %d 层 · %d 处下钻 · %d 个新概念 · "
+        "%d 次改写重发。行首 `#数字` 是消息 id —— 要看某几条的全文，"
+        "再调一次并把 id 放进 `ids`。"
+        % (stat["messages"], stat["depth"], stat["forks"], stat["drills"], stat["reasks"]),
+    }
 
 
 REGISTRY = {
@@ -2605,6 +2726,28 @@ REGISTRY = {
             "properties": {"limit": {"type": "integer", "description": "最多几条，默认 10"}},
         },
     },
+    "read_learning_tree": {
+        "access": "read",
+        "group": "quiz",
+        "fn": read_learning_tree,
+        "description": "把**这次对话**的学习轨迹读出来：他是一条主线顺下来的，还是"
+        "在每个不懂的概念处**分叉下钻**（递归学习法）。返回缩进过的树 + 下钻清单。"
+        "用户问「我这次学了什么」「复盘一下」「我是不是跑偏了」「我这样学对不对」"
+        "时用它 —— **不要凭上下文里的印象答**：树记在 `parent_id` 里，"
+        "你看到的历史是拍平过的一条线，分叉在其中看不见。"
+        "行首 `#数字` 是消息 id，要细看某几条就把 id 放进 `ids` 再调一次。"
+        "树里 `◆` 是下钻、`⟳` 是重新生成、`↺` 是改写重发 —— 三者不同义，别混。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "要看全文的那几条消息 id（省略则返回整棵树的骨架）",
+                }
+            },
+        },
+    },
     "run_python": {
         "access": "exec",
         "group": "sandbox",
@@ -2721,21 +2864,45 @@ REGISTRY = {
         "access": "read",
         "group": "library",
         "fn": search_material,
-        "description": "在**材料原文**里检索，返回命中的行区间与原文片段。两路合并："
+        "description": "在**材料原文**里检索（`depth=出题` 的那一档：我在学的、值得精读与出题的材料），"
+        "返回命中的行区间与原文片段。两路合并："
         "**字面**（你给的原词在原文里出现过）与**向量**（你换个说法问同一件事 —— "
         "「上三角屏蔽」与 causal mask 也算命中，不要求词一样）。"
         "被两路都找到的排在只被一路找到的前面，每条结果的 `via` 写着它是被哪条找到的。"
-        "想知道「材料里原话是怎么说的」时用它；想知道概念/点在知识空间里的位置，用 search_knowledge。"
+        "**另一个书架（论文 / 白皮书 / 别人的资料）用 `search_library`** —— 两边检索方式完全一样，"
+        "**在一个里没找到就去另一个里再问一次**，别只搜一个就说「没有」。"
+        "想知道概念/点在图谱里的位置，用 `search_knowledge`。"
         "词要给得特别（exp_approx_mode、circular buffer 这种原词最灵）—— "
         "字面那一路要求所有词在**同一行**同时出现才算命中，放宽就少给一个词。"
-        "返回里的 scanned/total 说明这次扫了多少份材料：没扫完就别说「材料里没有」。"
-        "**semantic 为 false 说明向量那一路这次没参与**（通道没配好）——"
+        "返回里的 scanned/total 说明这次扫了多少份：没扫完就别说「材料里没有」。"
+        "**semantic 为 false 说明向量那一路这次没参与**（本地小模型还没就绪）——"
         "那种情况下「换个说法就搜不到」是正常的，**别当成材料里没有这件事**。",
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "问一句话或给关键词都行：原词走字面，换个说法走向量"},
                 "slug": {"type": "string", "description": "只在这份材料里找（可省略）"},
+                "limit": {"type": "integer", "description": "最多几段，默认 5"},
+            },
+            "required": ["query"],
+        },
+    },
+    "search_library": {
+        "access": "read",
+        "group": "library",
+        "fn": search_library,
+        "description": "在**资料库**里检索，返回命中的行区间与原文片段。"
+        "和 search_material 的**唯一区别是看哪个书架**："
+        "这个查 `depth=检索` 的那一档（论文 / 白皮书 / 别人的资料 —— 拿来读、拿来引用，"
+        "但不必出成题），那个查 `depth=出题` 的那一档（我在学的、值得精读与出题的材料）。"
+        "**两边的检索方式完全一样**（字面 + 向量融合，`via` 会说清是哪条找到的）。"
+        "**在一个里没找到，就去另一个里再问一次** —— 它们是两个书架，不是同一堆东西的两种搜法；"
+        "只搜一个就说「没有」，是这里最容易犯的错。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "问一句话或给关键词都行：原词走字面，换个说法走向量"},
+                "slug": {"type": "string", "description": "只在这一条资料里找（引用键，可省略）"},
                 "limit": {"type": "integer", "description": "最多几段，默认 5"},
             },
             "required": ["query"],
@@ -2918,6 +3085,41 @@ REGISTRY = {
                     "items": {"type": "string"},
                     "description": "别要这几个站点的结果（可省），例如 [\"zhihu.com\"]",
                 },
+            },
+            "required": ["query"],
+        },
+    },
+    "search_papers": {
+        "access": "read",
+        "group": "web",
+        "fn": search_papers,
+        "description": (
+            "搜**学术文献**（论文 / 综述 / 技术报告），拿回标题、作者、年份、发表处、"
+            "被引数与摘要。免密钥。\n"
+            "**它与 `web_search` 不是同一个东西的两种搜法，是两个索引。**\n"
+            "**什么时候必须用它**：要找的是**文献** —— 哪篇论文、谁做的、哪一年的、"
+            "某个方法的出处、某个领域的综述。通用网页索引在这件事上是"
+            "**结构性做不到**：它按网页排序，而学术关键词常是**缩写或人名**。"
+            "实测搜 `WCET` 回来的是同名协会、世界造口治疗师协会与词典释义；"
+            "搜 `Ferdinand cache behavior prediction` 回来的是斐迪南大公与一部动画电影。"
+            "**而这些都是「成功的搜索」** —— 有结果、有摘要、不报错，"
+            "所以从「有没有结果」根本看不出错了。\n"
+            "**什么时候用 `web_search`**：现在怎么做、某个工具或型号的参数、官方文档、"
+            "下载地址这类**网页**上的东西。\n"
+            "**词的给法不一样**：这里按**相关度**排序，所以给**主题词**"
+            "（「cache analysis abstract interpretation」）比给精确短语或作者名更容易命中；"
+            "而在 `web_search` 里要挑特别的原词。\n"
+            "**摘要不是全文**：要引用具体结论、数字、方法细节，先 `read_web_page` "
+            "读那一条的链接（有开放获取 PDF 时优先给的就是它）。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "主题词，像论文检索框里会打的那样（英文命中率更高）",
+                },
+                "count": {"type": "integer", "description": "要几条（1-20，默认 6）"},
             },
             "required": ["query"],
         },
@@ -3111,6 +3313,14 @@ def output_text(payload: dict) -> str:
     if isinstance(sub, dict) and not payload.get("error"):
         head = str(payload.get("note") or "子代理的回报：")
         return head + "\n\n" + str(sub.get("report") or "（它没交回正文）")
+
+    # 对话树的骨架同理，而且理由更硬：**它的缩进就是它的意思**（谁从谁那里下钻）。
+    # 塞进 JSON 会把每一条的换行与缩进转义成 `\n` 和字面空格，整棵树塌成一行 ——
+    # 那正好把它唯一的价值（形状）毁掉。
+    tree = payload.get("tree")
+    if isinstance(tree, str) and not payload.get("error"):
+        head = str(payload.get("note") or "")
+        return (head + "\n\n" + tree).strip()
 
     trimmed = {key: value for key, value in payload.items() if key not in ("card", "draft")}
 
