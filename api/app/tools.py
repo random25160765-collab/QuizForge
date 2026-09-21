@@ -35,10 +35,11 @@ import time
 import uuid
 from pathlib import Path
 
+import httpx
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import heavy_deps, mastery, materials
+from . import heavy_deps, mastery, materials, semantic
 from .models import (
     Concept,
     ConceptEdge,
@@ -1642,24 +1643,83 @@ def explore_graph(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 材料正文
 
 
+def _query_vector(db, user, query: str):  # noqa: ANN001
+    """把查询句子变成向量。**拿不到就返回 None** —— 检索层会退回纯字面并说明。
+
+    两条护栏，都是为了"**别让一次向量化失败拖垮整次检索**"：
+
+    * 库里一片向量都没有（还没跑 `python -m pipeline.embed`）→ **连试都不试**。
+      试了也没有可比的东西，纯白花一次调用。
+    * 算不出查询向量（模型没就绪 / 通道不给 embedding）→ 返回 None，
+      字面那一路照常出结果。
+
+    两条路，**本地优先**：本地小模型离线可用、零边际成本，而这是每次检索都要走的路
+    （远程按次计费是随使用量长出来的，见 `local_embed` 的模块注释）。
+    本地没就绪才退到远程通道。
+
+    `user` 可能是 None（工具表允许脱离用户直接调，测试里就是这么调的）——
+    那种情况下取不到远程配置，但**本地模型不依赖用户**，所以仍然能用。
+    """
+    text = str(query or "").strip()
+    if not text:
+        return None
+    # 库里一片向量都没有：向量算得再准也没有东西可比
+    if not semantic.state(db).get("ready"):
+        return None
+
+    from . import local_embed  # 延迟导入：它要读设置，且要等模型下载完
+
+    if local_embed.is_ready():
+        try:
+            vectors = local_embed.embed([text], kind="query")
+        except (RuntimeError, ValueError, OSError, ImportError):
+            # 模型坏了（文件被删 / onnx 加载失败）不该让整次检索挂掉
+            vectors = []
+        if vectors:
+            return vectors[0]
+
+    if user is None:
+        return None
+    from . import ai_gateway as gateway  # 延迟导入：与 web_search 同一条理由
+
+    try:
+        conf = gateway.resolve_config(db, user.id)
+        vectors = gateway.embed_texts(conf, [text])
+    except (gateway.EmbeddingUnavailable, gateway.UpstreamError, httpx.HTTPError):
+        return None
+    return vectors[0] if vectors else None
+
+
 def search_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
-    """在材料**原文**里做字面检索 —— 不是概念库，是正文本身。
+    """在材料**原文**里检索 —— 不是概念库，是正文本身。
+
+    ## 两条路一起用，`via` 会告诉你哪条找到的
+
+    * **字面**：你给的原词在原文里出现过 —— 精确、可解释，命中哪几行说得清；
+    * **向量**：**你换个说法问同一件事**（「上三角屏蔽」↔ `causal mask`）——
+      它按"意思"找，不要求词一样。
+
+    两路结果用 RRF 融合，**被两路都找到的排在只被一路找到的前面**。
 
     ## 三条使用规则（也是给模型的）
 
     * 词给**特别的**：`exp_approx_mode`、`circular buffer` 这种原词最灵；
       给"地址""性能"这种到处都有的词，等于没筛。
-    * 所有词要在**同一行**同时出现才算命中（词之间是"与"）。放宽就少给一个词。
+    * 字面那一路要求所有词在**同一行**同时出现才算命中。放宽就少给一个词。
     * 返回里带 `scanned` / `total`：没扫完就是没扫完，别当成"全库没有"。
+      **`semantic` 为 false** 时说明这次只有字面参与了（通道没配好）——
+      别把"它接不住同义改写"当成"材料里没有这件事"。
 
     ## 与 `search_knowledge` 的分工
 
     `search_knowledge` 查的是**知识空间**（概念、点、题）；这个查的是**文本**。
     想知道"材料里原话怎么说的"，用这个；想知道"这个点在图谱里的位置"，用那个。
     """
-    result = materials.search(
+    query = str(args.get("query") or "")
+    result = semantic.search_fused(
         db,
-        str(args.get("query") or ""),
+        query,
+        query_vec=_query_vector(db, user, query),
         slug=str(args.get("slug") or "").strip(),
         limit=_clamp(args.get("limit"), 1, 8, 5),
     )
@@ -2661,15 +2721,20 @@ REGISTRY = {
         "access": "read",
         "group": "library",
         "fn": search_material,
-        "description": "在**材料原文**里做字面检索，返回命中的行区间与原文片段。"
+        "description": "在**材料原文**里检索，返回命中的行区间与原文片段。两路合并："
+        "**字面**（你给的原词在原文里出现过）与**向量**（你换个说法问同一件事 —— "
+        "「上三角屏蔽」与 causal mask 也算命中，不要求词一样）。"
+        "被两路都找到的排在只被一路找到的前面，每条结果的 `via` 写着它是被哪条找到的。"
         "想知道「材料里原话是怎么说的」时用它；想知道概念/点在知识空间里的位置，用 search_knowledge。"
         "词要给得特别（exp_approx_mode、circular buffer 这种原词最灵）—— "
-        "所有词要在**同一行**同时出现才算命中，放宽就少给一个词。"
-        "返回里的 scanned/total 说明这次扫了多少份材料：没扫完就别说「材料里没有」。",
+        "字面那一路要求所有词在**同一行**同时出现才算命中，放宽就少给一个词。"
+        "返回里的 scanned/total 说明这次扫了多少份材料：没扫完就别说「材料里没有」。"
+        "**semantic 为 false 说明向量那一路这次没参与**（通道没配好）——"
+        "那种情况下「换个说法就搜不到」是正常的，**别当成材料里没有这件事**。",
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "关键词或短语（按字面命中）"},
+                "query": {"type": "string", "description": "问一句话或给关键词都行：原词走字面，换个说法走向量"},
                 "slug": {"type": "string", "description": "只在这份材料里找（可省略）"},
                 "limit": {"type": "integer", "description": "最多几段，默认 5"},
             },

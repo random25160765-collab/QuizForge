@@ -342,6 +342,69 @@ def completion_endpoint(base_url: str) -> str:
     return base_url.rstrip("/") + "/chat/completions"
 
 
+def embeddings_endpoint(base_url: str) -> str:
+    return base_url.rstrip("/") + "/embeddings"
+
+
+#: 向量模型默认名。与 `pipeline/config.py` 的默认值保持一致 ——
+#: **它指向一个当前 provider 并不提供的模型**，这正是那个外部阻塞
+#: （见 `docs/检索与向量化.md` §1.4）。留着它是为了让"换一个能出向量的
+#: provider"只改配置，不用改代码。
+DEFAULT_EMBED_MODEL = "text-embedding-3-small"
+
+
+class EmbeddingUnavailable(RuntimeError):
+    """当前 provider 不提供 embedding（或它拒了这个模型名）。
+
+    与 `UpstreamError` 分开，是因为**下一步动作完全不同**：连不上要查密钥与网络，
+    而这个要换 provider 或换模型名。写成同一句，两种人都会白折腾一遍
+    （与 `connection_hint` 那条同一个理由）。
+    """
+
+
+def embed_texts(conf: dict, texts: list[str], *, model: str = "") -> list[list[float]]:
+    """向量化一批文本（运行时那一路）。
+
+    为什么单独写一条而不复用 `stream_completion`：那是 SSE 流式聊天，而
+    `/embeddings` 是**一次性 JSON**、返回体里连 `choices` 都没有 —— 硬塞进
+    同一条路只会把它弄复杂。
+
+    404 / 400 一律归成 `EmbeddingUnavailable`：这两者几乎总是"这个通道没有
+    向量模型"或"模型名不对"，而不是网络问题。
+    """
+    if not texts:
+        return []
+    body = {"model": model or str(conf.get("embedModel") or "") or DEFAULT_EMBED_MODEL,
+            "input": texts}
+    headers = {
+        "Authorization": "Bearer " + str(conf.get("apiKey") or ""),
+        "Content-Type": "application/json",
+    }
+    timeout = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.post(
+            embeddings_endpoint(str(conf.get("baseUrl") or "")), json=body, headers=headers
+        )
+    if response.status_code in (400, 404):
+        detail = response.text[:200]
+        raise EmbeddingUnavailable(
+            "这个接口没有可用的向量模型（HTTP %d）：%s\n"
+            "向量检索要一个能出向量的通道 —— 见 docs/检索与向量化.md §1.4。"
+            % (response.status_code, detail)
+        )
+    if response.status_code >= 400:
+        raise UpstreamError(
+            "向量化失败：接口返回 %d" % response.status_code,
+            kind="http",
+            status=response.status_code,
+            detail=response.text[:300],
+        )
+    items = (response.json() or {}).get("data") or []
+    if not items:
+        raise EmbeddingUnavailable("向量化返回为空（这个通道大概没有向量模型）。")
+    return [list(item.get("embedding") or []) for item in items]
+
+
 def today_usage(db, user_id) -> int:  # noqa: ANN001
     from datetime import date as date_type
 

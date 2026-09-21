@@ -35,6 +35,7 @@ from sqlalchemy import (
     Index,
     Integer,
     JSON,
+    LargeBinary,
     SmallInteger,
     String,
     Text,
@@ -657,6 +658,57 @@ class MaterialSlice(Base):
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
     __table_args__ = (UniqueConstraint("material_id", "slice_id", name="uq_slice_material"),)
+
+
+class SliceEmbedding(Base):
+    """切片内**一个窗口**的向量 —— 检索层的那一路（`docs/检索与向量化.md`）。
+
+    ## 为什么单位是「窗口」而不是「切片」
+
+    §3.1 那条"粒度直接用切片，不另切一遍"**对 embedding 是错的**，实测：
+
+    * 切片平均 **6979 字**、最长 36846 字；
+    * 而模型的可用窗口是 **1024 token**（约 2000~3000 字）—— 一条切片一条向量，
+      意味着**只嵌进了开头一小段**；
+    * 于是「前言」那种短切片能被**完整**嵌入 → **完整赢过残缺** →
+      所有中文问句都返回「前言」（实测：`环形缓冲区` 0.854 命中前言，真命中在 0.773）。
+
+    所以嵌入单位是**窗口**（切片内按行切、带重叠），**窗口仍带自己的行区间** ——
+    §3.3 那条"出处只认行区间"照样不破，而且比整片更精确。
+
+    ## 它是派生产物，不是权威
+
+    删了能重建（`python -m pipeline.embed`）。**向量只说"像不像"，绝不说"在哪一行"**；
+    一旦让向量去"生成"出处，引用就不能再当证据了。
+
+    ## 为什么存 BLOB 而不引向量库
+
+    千级窗口 × 1024 维 float32 ≈ 几 MB，暴力算余弦是几十毫秒的事；专用向量库会
+    引入一个和 SQLite 不同步的新服务 —— 与 `notelib.py` 拒绝倒排索引、
+    与"双击即用"是同一条理由。也**不用 JSON 存**：那会放大三到四倍体积。
+    """
+
+    __tablename__ = "slice_embeddings"
+
+    id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
+    slice_id: Mapped[int] = mapped_column(ForeignKey("material_slices.id"), nullable=False)
+    #: 片内第几窗（从 1 起）。重建时按它整片替换，不会留下孤儿行。
+    ordinal: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    #: 这个窗口自己的行区间（切片之内）—— **出处就是它**
+    start_line: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    end_line: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: 产出它的模型名。换模型 = 整批重算（判据就是这个列，见 `pipeline/embed.py`）
+    model: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: float32 紧凑打包（`semantic.pack`）
+    vec: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: 被向量化的那段正文的哈希：**没改就不重算**（改了才重算，见 embed.py）
+    text_hash: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (UniqueConstraint("slice_id", "ordinal", name="uq_embedding_window"),)
 
 
 class MaterialFigure(Base):

@@ -29,7 +29,7 @@ WEB_OUT   ?= api/web
         api-venv api-dev api-test dev \
         db-up db-down env-init db-backup db-dump db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
-        graph-export skills-link \
+        graph-export skills-link embed \
         coverage coverage-gaps drive help
 
 vendor:
@@ -258,6 +258,15 @@ graph-relate-centric:
 
 graph-export:
 	@$(VENV)/bin/python -m pipeline.graph_build export --out $(CURDIR)/graph.json
+
+# 窗口向量化 —— 检索层的那一路（"换个说法问同一件事"靠它，见 docs/检索与向量化.md）。
+# 模型是**本地的小模型**（bge-m3 int8，约 600MB）：首次跑时自动下载到本机缓存，
+# 之后离线可用、零边际成本。**不进分发包** —— 那是"首启下载"，见 api/app/local_embed.py。
+# **派生产物，随时可以重跑**：默认只算缺的与正文变了的；换了模型用 ARGS="--rebuild"。
+# 只把模型取到本机（不向量化）：`make embed ARGS="--fetch"`。
+# 先看要算什么而不动库：`make embed ARGS="--dry-run"`（这条连模型都不用）。
+embed:
+	@$(VENV)/bin/python -m pipeline.embed $(ARGS)
 
 # ---------------------------------------- 题库来自数据库（仓库里不留小文件）
 # 权威在 Postgres；构建与校验都先把库物化到一个**全新的临时目录**再读它。
