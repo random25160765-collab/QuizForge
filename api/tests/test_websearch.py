@@ -27,6 +27,12 @@ import pytest
 
 from app import settings_store, tools, websearch
 
+#: 测试用的假密钥。**必须含 `test` / `fake` 这类占位词** —— `tools/secret_scan.py`
+#: 靠一张占位词表区分"真密钥"与"测试桩"（它自己的注释：真密钥是随机串，不会含这些词）。
+#: 顺带说明这不是误报：**看着像真密钥的串本来就不该进仓库**，
+#: 所以约定的做法是让测试值一眼可辨（原先写 `super-secret` 就被它拦了）。
+_FAKE_KEY = "test-key-not-a-real-secret"
+
 
 # ------------------------------------------------------------------ 假服务商
 
@@ -264,11 +270,11 @@ def test_a_key_still_wins_and_a_broken_choice_falls_back(db_session, monkeypatch
 def test_the_state_never_returns_the_key(db_session, monkeypatch):
     """设置面板读的那份状态：**不回密钥**。"""
     _no_beta(monkeypatch)
-    settings_store.put(db_session, search={"kind": "bocha", "apiKey": "super-secret"})
+    settings_store.put(db_session, search={"kind": "bocha", "apiKey": _FAKE_KEY})
     state = websearch.state(db_session)
     assert state["ready"] is True and state["keyless"] is False
     assert [one["kind"] for one in state["providers"]][0] == "bing", "下拉的第一个仍是默认那条"
-    assert "super-secret" not in json.dumps(state)
+    assert _FAKE_KEY not in json.dumps(state)
 
 
 def test_a_configured_key_goes_through_the_whole_chain(db_session, local_user, monkeypatch):
