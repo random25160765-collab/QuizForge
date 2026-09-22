@@ -107,3 +107,34 @@ docs(pipeline): settle the retrieval layer and the authoring orchestration
 - **题目是唯一事实来源**：`dist/`、`api/web/`、数据库都是它的投影，不要手改
 - **出题依据优先级**：原材料内容 + 用户诉求 > 考纲；考纲只作归类、可随时重构
 - **layer / wing 不许留空**：它们是学习算法的坐标轴（见 `docs/THESIS.md`）
+
+## 查 CI 状态：用 badge，别用 API
+
+CI 跑在 GitHub Actions 上。想知道**过没过**，走 badge —— 它是静态 SVG，
+**不占 GitHub API 额度**：
+
+```bash
+curl -s https://github.com/random25160765-collab/QuizForge/actions/workflows/ci.yml/badge.svg \
+  | grep -o '<title>[^<]*</title>'
+# → <title>ci - passing</title>
+```
+
+**别拿 REST API 当状态看板**：未认证请求**每 IP 每小时只有 60 次**，密集排查几轮就用光
+（撞上得到 `403 rate limit exceeded`，看起来像仓库出事，其实只是查得太勤 ——
+而且额度是**按 IP** 算的，同一个出口下别的工具也在花）。
+
+只在需要 **job 级细节**（哪一步红了、日志内容）时才动 API，并且一次问够：
+
+```bash
+GET /repos/random25160765-collab/QuizForge/actions/runs?per_page=3   # 拿 run 列表
+GET .../actions/runs/{run_id}/jobs                                   # 拿某一个 run 的 job
+```
+
+额度还剩多少，响应头里一直有：
+
+```bash
+curl -s -D - -o /dev/null https://api.github.com/rate_limit | grep -i x-ratelimit
+```
+
+（顺带一句：GitHub 的 Actions **网页**是 JS 渲染的，抓下来拿不到状态；badge 是唯一
+既不吃额度、又能脚本读的路。）
