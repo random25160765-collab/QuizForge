@@ -30,13 +30,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "api"))
 
+from app.drive_paths import drive_roots  # noqa: E402  （路径要先插好，这里没法放顶部）
+
+
 def _default_roots() -> tuple[Path, ...]:
     """源库（笔记库）的候选位置 —— 它在**仓库之外**，没有一条写死的路径能通用。
 
     顺序：
       1. 环境变量 `QF_VAULT_ROOTS`（`os.pathsep` 分隔，想指哪都行）；
-      2. WSL 下扫 `/mnt/<盘>/Vaults`（F 盘只是其中一种可能）；
-      3. Windows 原生 Python 下的盘符写法。
+      2. 在各盘里找 `Vaults`（`app/drive_paths.py` —— WSL 的 `/mnt/<盘>` 与盘符写法都认）。
     踩过：这里原先写死 `F:` 盘（`/mnt/f/Vaults`、`F:\\Vaults`），
     换台机器换个盘符就得改代码。都没命中时返回空，由调用方报错并提示 `--root`。
     """
@@ -44,18 +46,8 @@ def _default_roots() -> tuple[Path, ...]:
     if env:
         return tuple(Path(p).expanduser() for p in env.split(os.pathsep) if p)
 
-    found: list[Path] = []
-    try:
-        # 只认单字母挂载点（`/mnt/c`、`/mnt/f` 才是 Windows 盘；
-        # `/mnt/wsl`、`/mnt/wslg` 是 WSL 自己的内部挂载，不是用户盘）
-        drives = sorted(
-            p for p in Path("/mnt").iterdir() if p.is_dir() and len(p.name) == 1
-        )
-    except OSError:  # pragma: no cover - 非 WSL 环境里 /mnt 不可读
-        drives = []
-    found += [drive / "Vaults" for drive in drives]
-    found += [Path(f"{letter}:/Vaults") for letter in ("C", "D", "E", "F", "G")]
-    return tuple(found)
+    return tuple(drive_roots("Vaults"))
+
 
 #: 不进语义的目录（配置、回收站之类）—— 不导入，**也不删**
 SKIP_DIRS = frozenset({".obsidian", ".trash", ".git", "__pycache__", ".smart-env"})
