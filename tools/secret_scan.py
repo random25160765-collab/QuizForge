@@ -5,7 +5,7 @@
 
 2026-09-17 撞过一次：开发库快照（当时是 `db/quizforge.sql.gz`，现在是
 `db/quizforge.db.gz`）是进版本控制的，而
-`app_settings` 里存着用户自己填的 API 密钥（见 `api/app/routers/ai.py` 里
+`user_settings` 里存着用户自己填的 API 密钥（见 `api/app/routers/ai.py` 里
 那个写明的取舍）—— 一把真的 DeepSeek 密钥就这么跟着快照上了公开仓库，
 追下去有十一个提交。**事后清理没有意义**（旧对象仍可按 SHA 取到，克隆与
 fork 里也有），只能换密钥。所以真正的解法是别再让它出去。

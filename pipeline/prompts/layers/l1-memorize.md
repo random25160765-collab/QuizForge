@@ -21,7 +21,7 @@
 | 问自己 | 是 | 否 |
 |---|---|---|
 | 不看选项，能否说出唯一答案？ | 继续 | 题干缺条件，先修 |
-| 答对是否只需要回忆，不需要推理？ | 是识记题 | 混进了理解层 → 用 `l2-understand` |
+| 答对是否只需要回忆，不需要推理？ | 是识记题 | 混进了理解层 → 用 `quizforge-l2-understand` |
 | 干扰项是否来自「真实会混淆的另一个东西」？ | 继续 | 干扰项是凑数的，重写 |
 
 **滑坡警告**：「请说明 X 与 Y 的区别」看起来像辨析，但它要求组织语言、解释机制，
@@ -105,7 +105,7 @@ python3 tools/build.py
 
 ## 参考
 
-（下列路径均相对仓库根；四份层契约都在 pipeline/prompts/layers/）
+（本仓库自包含这批 skill；下列路径均相对仓库根）
 
 - 完整格式契约：`.codebuddy/skills/quizforge-author/references/format.md`
 - 从材料出题的抽取与核对流程：`.codebuddy/skills/quizforge-author/references/from-source.md`
