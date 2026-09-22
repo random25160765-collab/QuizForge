@@ -230,7 +230,7 @@ def test_keyless_is_the_default(db_session, monkeypatch):
     assert state["ready"] is True and state["keyless"] is True
 
 
-def test_switched_off_says_so(db_session, local_user, monkeypatch):
+def test_switched_off_says_so(db_session, monkeypatch):
     """显式关掉时才真的用不了 —— 那时要说清是"你关的"，别让人以为坏了。"""
     _no_beta(monkeypatch)
     settings_store.put(db_session, search={"enabled": False})
@@ -241,7 +241,7 @@ def test_switched_off_says_so(db_session, local_user, monkeypatch):
     assert state["ready"] is False and "关掉" in state["message"]
     # 关着的时候模型也拿得到理由（而不是一条空的失败）
     ok, payload = tools.call(
-        db_session, local_user, "web_search", {"query": "x"}, {}, mounts={"web"}, allow=("read",)
+        db_session, "web_search", {"query": "x"}, {}, mounts={"web"}, allow=("read",)
     )
     assert ok is True and "关掉" in payload["error"]
 
@@ -277,7 +277,7 @@ def test_the_state_never_returns_the_key(db_session, monkeypatch):
     assert _FAKE_KEY not in json.dumps(state)
 
 
-def test_a_configured_key_goes_through_the_whole_chain(db_session, local_user, monkeypatch):
+def test_a_configured_key_goes_through_the_whole_chain(db_session, monkeypatch):
     """走真链路：设置 → `resolve` → 请求 → 交回模型的那份结果。"""
     _no_beta(monkeypatch)
     body = _bocha_body([{"name": "标题", "url": "https://example.com/x", "snippet": "摘要"}])
@@ -287,7 +287,7 @@ def test_a_configured_key_goes_through_the_whole_chain(db_session, local_user, m
             search={"enabled": True, "kind": "bocha", "apiKey": "k1", "endpoint": url},
         )
         ok, payload = tools.call(
-            db_session, local_user, "web_search", {"query": "梯度下降"}, {},
+            db_session, "web_search", {"query": "梯度下降"}, {},
             mounts={"web"}, allow=("read",),
         )
     assert ok is True
@@ -445,7 +445,7 @@ def test_read_page_refuses_something_that_is_not_a_page(monkeypatch):
 # ------------------------------------------------------------------ 整条链
 
 
-def test_the_agent_loop_declares_it_and_feeds_the_result_back(db_session, local_user, monkeypatch):
+def test_the_agent_loop_declares_it_and_feeds_the_result_back(db_session, monkeypatch):
     """挂上这一组之后：两个工具**真被声明**给模型，模型调了之后结果也**真回到它手里**。
 
     一组新工具最容易坏的地方不是它自己，而是**接线**：有没有被挂上、结果会不会在
@@ -499,7 +499,6 @@ def test_the_agent_loop_declares_it_and_feeds_the_result_back(db_session, local_
             events = list(
                 agent_loop.run(
                     db_session,
-                    local_user,
                     {"model": "fake"},
                     system="s",
                     history=[{"role": "user", "content": "帮我查一下梯度下降"}],
@@ -780,7 +779,7 @@ def test_a_filter_that_empties_the_results_hands_the_tally_back():
     assert stats == {"raw": 1, "kept": 0, "dropped": 1}
 
 
-def test_the_tool_says_filtered_instead_of_not_found(db_session, local_user, monkeypatch):  # noqa: ANN001
+def test_the_tool_says_filtered_instead_of_not_found(db_session, monkeypatch):  # noqa: ANN001
     """**筛空要说成筛空。**
 
     实测踩到过：限定 arxiv / ACM / IEEE / Springer 之后拿回「零结果」，
@@ -796,7 +795,7 @@ def test_the_tool_says_filtered_instead_of_not_found(db_session, local_user, mon
             search={"enabled": True, "kind": "bocha", "apiKey": _FAKE_KEY, "endpoint": url},
         )
         ok, payload = tools.call(
-            db_session, local_user, "web_search",
+            db_session, "web_search",
             {"query": "WCET", "includeDomains": ["arxiv.org", "dl.acm.org"]},
             {}, mounts={"web"}, allow=("read",),
         )
@@ -806,13 +805,13 @@ def test_the_tool_says_filtered_instead_of_not_found(db_session, local_user, mon
     assert "includeDomains" in payload["note"], "要给出下一步动作"
 
 
-def test_the_paper_tool_is_declared_and_points_at_reading(db_session, local_user, monkeypatch):  # noqa: ANN001
+def test_the_paper_tool_is_declared_and_points_at_reading(db_session, monkeypatch):  # noqa: ANN001
     """走真链路：工具声明得到、学术通道解析得对、note 指向「摘要不是全文」。"""
     _no_beta(monkeypatch)
     with _serve(_openalex_body([_paper()])) as (url, _h):
         monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
         ok, payload = tools.call(
-            db_session, local_user, "search_papers",
+            db_session, "search_papers",
             {"query": "cache analysis abstract interpretation"},
             {}, mounts={"web"}, allow=("read",),
         )

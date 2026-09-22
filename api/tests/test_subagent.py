@@ -33,7 +33,7 @@ def _names_in(specs) -> list[str]:
     return [str(((one.get("function") or {}).get("name")) or "") for one in (specs or [])]
 
 
-def test_subagent_gets_the_same_scope_and_cannot_recurse(db_session, local_user, monkeypatch):
+def test_subagent_gets_the_same_scope_and_cannot_recurse(db_session, monkeypatch):
     """一次真调用：走 `tools.call` 这个入口，验范围照抄与防递归。"""
     seen: list[list[str]] = []
 
@@ -71,13 +71,12 @@ def test_subagent_gets_the_same_scope_and_cannot_recurse(db_session, local_user,
 
     monkeypatch.setattr(agent_loop.gateway, "stream_completion", stream)
     monkeypatch.setattr(
-        subagent.gateway, "resolve_config", lambda db, uid: {"apiKey": "x", "model": "fake"}
+        subagent.gateway, "resolve_config", lambda db: {"apiKey": "x", "model": "fake"}
     )
 
     mounts = {"notes", "library", "graph"}
     ok, payload = tools.call(
         db_session,
-        local_user,
         "run_subagent",
         {"task": "把环形缓冲钉到原文"},
         {"conversationId": 1},
@@ -109,7 +108,7 @@ def test_subagent_gets_the_same_scope_and_cannot_recurse(db_session, local_user,
     assert subagent.REPORT_MAX >= len(REPORT)
 
 
-def test_only_the_final_words_are_the_delivery(db_session, local_user, monkeypatch):
+def test_only_the_final_words_are_the_delivery(db_session, monkeypatch):
     """子代理边查边念叨的那些话**不进报告** —— 只有收尾那一段算交付。
 
     实测撞到过：一次 24 次工具调用的检索，独白全挤进报告，把"结论 + 依据"
@@ -141,12 +140,11 @@ def test_only_the_final_words_are_the_delivery(db_session, local_user, monkeypat
 
     monkeypatch.setattr(agent_loop.gateway, "stream_completion", stream)
     monkeypatch.setattr(
-        subagent.gateway, "resolve_config", lambda db, uid: {"apiKey": "x", "model": "f"}
+        subagent.gateway, "resolve_config", lambda db: {"apiKey": "x", "model": "f"}
     )
 
     ok, payload = tools.call(
         db_session,
-        local_user,
         "run_subagent",
         {"task": "把那条钉到原文"},
         {"conversationId": 1},
@@ -163,7 +161,7 @@ def test_only_the_final_words_are_the_delivery(db_session, local_user, monkeypat
     assert "## 结论" in shown and "I'll start by locating" not in shown
 
 
-def test_subagent_says_so_when_it_brings_nothing_back(db_session, local_user, monkeypatch):
+def test_subagent_says_so_when_it_brings_nothing_back(db_session, monkeypatch):
     """它只 finish、没正文 → 必须明说「没交回正文」，不许装成"材料里没有"。"""
 
     def stream(conf, messages, tools=None, params=None):  # noqa: A002
@@ -180,12 +178,11 @@ def test_subagent_says_so_when_it_brings_nothing_back(db_session, local_user, mo
 
     monkeypatch.setattr(agent_loop.gateway, "stream_completion", stream)
     monkeypatch.setattr(
-        subagent.gateway, "resolve_config", lambda db, uid: {"apiKey": "x", "model": "fake"}
+        subagent.gateway, "resolve_config", lambda db: {"apiKey": "x", "model": "fake"}
     )
 
     ok, payload = tools.call(
         db_session,
-        local_user,
         "run_subagent",
         {"task": "查一下"},
         {"conversationId": 1},
@@ -197,7 +194,7 @@ def test_subagent_says_so_when_it_brings_nothing_back(db_session, local_user, mo
     assert payload["subagent"]["report"] == ""
 
 
-def test_a_plan_is_not_a_delivery(db_session, local_user, monkeypatch):
+def test_a_plan_is_not_a_delivery(db_session, monkeypatch):
     """最后只说了一句"接下来我要去查 X" → **不算交付**，而且必须明说。
 
     实测七次真调用里有**三次**这么收场，报回来的是
@@ -240,12 +237,11 @@ def test_a_plan_is_not_a_delivery(db_session, local_user, monkeypatch):
 
     monkeypatch.setattr(agent_loop.gateway, "stream_completion", stream)
     monkeypatch.setattr(
-        subagent.gateway, "resolve_config", lambda db, uid: {"apiKey": "x", "model": "fake"}
+        subagent.gateway, "resolve_config", lambda db: {"apiKey": "x", "model": "fake"}
     )
 
     ok, payload = tools.call(
         db_session,
-        local_user,
         "run_subagent",
         {"task": "把 SVD 到底记没记查清"},
         {"conversationId": 1},
@@ -267,7 +263,7 @@ def test_a_plan_is_not_a_delivery(db_session, local_user, monkeypatch):
     assert nudged and "工具已经收回" in nudged[0], nudged
 
 
-def test_a_long_report_is_cut_at_a_line_break(db_session, local_user, monkeypatch):
+def test_a_long_report_is_cut_at_a_line_break(db_session, monkeypatch):
     """回报超长要在**换行处**截 —— 切在半句话上，读的人会以为正文到那儿就完了。
 
     实测那条就是这样："…未扫的 20 份被列在 `skipped` 字段，且" 后面直接接一句
@@ -287,12 +283,11 @@ def test_a_long_report_is_cut_at_a_line_break(db_session, local_user, monkeypatc
 
     monkeypatch.setattr(agent_loop.gateway, "stream_completion", stream)
     monkeypatch.setattr(
-        subagent.gateway, "resolve_config", lambda db, uid: {"apiKey": "x", "model": "fake"}
+        subagent.gateway, "resolve_config", lambda db: {"apiKey": "x", "model": "fake"}
     )
 
     ok, payload = tools.call(
         db_session,
-        local_user,
         "run_subagent",
         {"task": "交一份长报告"},
         {"conversationId": 1},

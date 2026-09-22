@@ -61,11 +61,11 @@ def test_specs_follow_the_mount_set():
 
 def test_call_refuses_an_unmounted_module():
     """纵深防御：没挂载的模块，即使模型把名字报出来也不执行。"""
-    ok, payload = tools.call(None, None, "run_python", {"code": "print(1)"}, {}, mounts={"notes"})
+    ok, payload = tools.call(None, "run_python", {"code": "print(1)"}, {}, mounts={"notes"})
     assert ok is False
     assert "沙箱" in payload["error"], "拒的时候要说清是哪个模块没挂"
 
-    ok, payload = tools.call(None, None, "没这个工具", {}, {}, mounts={"notes"})
+    ok, payload = tools.call(None, "没这个工具", {}, {}, mounts={"notes"})
     assert ok is False and "没有这个工具" in payload["error"]
 
 
@@ -171,12 +171,12 @@ def test_access_filters_tools():
     assert len(full) == len(tools.REGISTRY)
 
 
-def test_call_refuses_off_level(db_session, local_user):
+def test_call_refuses_off_level(db_session):
     """报出名字也不执行：越档调用被拒，且给的是可读的错。"""
     from app import tools
 
     ok, payload = tools.call(
-        db_session, local_user, "write_note", {"note": "x", "text": "y"},
+        db_session, "write_note", {"note": "x", "text": "y"},
         {}, mounts=set(tools.ALL_GROUPS), allow=("read",),
     )
     assert ok is False

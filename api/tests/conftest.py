@@ -127,9 +127,8 @@ def _isolate_user_data(engine) -> Iterator[None]:  # noqa: ANN001
     """每个用例前把**属于本机用户的数据**清干净。
 
     原先的隔离是"每个用例注册一个新用户"顺带给的：进度、对话、附件、题单、
-    设置、AI 用量都挂在 user_id 上，换个用户就等于换个世界。
-    单用户本地形态下没有第二个用户（见 `app/deps.py`），所以隔离得显式做 ——
-    **在同一个用户下把这些行清掉**。
+    设置、AI 用量本来都挂在 user_id 上，换个用户就等于换个世界（那是账号时代的形状）。
+    账号系统整体拆除之后（2026-09-22），隔离就只剩**把这些行清掉**这一件事。
 
     清的是用户自己的数据；题库与知识空间（`questions` / `concepts` / …）不动 ——
     那些是会话级的 `imported_bank` 灌进来的，用例之间本来就该共享。
@@ -145,9 +144,9 @@ def _isolate_user_data(engine) -> Iterator[None]:  # noqa: ANN001
         "records",
         "attempts",
         "days",
-        "user_settings",
+        "app_settings",
         "ai_usage",
-        "user_questions",
+        "my_questions",
     )
     with get_engine().begin() as conn:
         for table in tables:
@@ -176,39 +175,6 @@ def client(engine) -> Iterator["object"]:  # noqa: ANN001
 
     with TestClient(create_app()) as test_client:
         yield test_client
-
-
-def local_user_id() -> str:
-    """本机用户的 id —— 单用户本地形态下就是那个唯一的用户。
-
-    原先测试靠 `POST /api/auth/register` 拿用户（顺带拿到会话与 CSRF），
-    账号面删掉之后（见 `app/deps.py`）就只剩这一件事要做：
-    把本机用户准备好、拿到它的 id。
-
-    自己开一个会话并提交：接口层每个请求用独立会话，只能看到已提交的数据。
-    """
-    from sqlalchemy.orm import Session
-
-    from app.db import get_engine
-    from app.deps import get_local_user
-
-    with Session(get_engine()) as session:
-        return str(get_local_user(session).id)
-
-
-@pytest.fixture()
-def local_user(engine) -> Iterator["object"]:  # noqa: ANN001
-    """本机用户对象（要直接读它字段的用例用这个）。"""
-    from sqlalchemy.orm import Session
-
-    from app.db import get_engine
-    from app.deps import get_local_user
-
-    session = Session(get_engine())
-    try:
-        yield get_local_user(session)
-    finally:
-        session.close()
 
 
 @pytest.fixture(scope="session")

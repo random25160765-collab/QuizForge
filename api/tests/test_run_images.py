@@ -40,7 +40,7 @@ def _image_messages(messages: list[dict]) -> list[dict]:
     ]
 
 
-def test_the_figure_reaches_the_model_once(db_session, local_user, monkeypatch):
+def test_the_figure_reaches_the_model_once(db_session, monkeypatch):
     run_id = "img-test-1"
     snapshots: list[list[dict]] = []
 
@@ -63,7 +63,7 @@ def test_the_figure_reaches_the_model_once(db_session, local_user, monkeypatch):
         yield ("delta", "图我看到了。")
         yield ("finish", "stop")
 
-    def fake_call(db, user, name, args, ctx, **kwargs):  # noqa: ANN001
+    def fake_call(db, name, args, ctx=None, **kwargs):  # noqa: ANN001
         """只替掉 `run_python` 的结果：让它返回"待运行"那个形状。
 
         必须替：真 `run_python` 会生成**它自己的** runId，而这条测试要报的是
@@ -96,7 +96,6 @@ def test_the_figure_reaches_the_model_once(db_session, local_user, monkeypatch):
         events = list(
             agent_loop.run(
                 db_session,
-                local_user,
                 {"apiKey": "x", "model": "vision-fake"},
                 system="系统",
                 history=[{"role": "user", "content": "画一张"}],
@@ -119,7 +118,7 @@ def test_the_figure_reaches_the_model_once(db_session, local_user, monkeypatch):
     assert "_fresh" not in with_image[0], "内部标记不该出现在请求里"
 
 
-def test_a_model_that_cannot_see_gets_no_image(db_session, local_user, monkeypatch):
+def test_a_model_that_cannot_see_gets_no_image(db_session, monkeypatch):
     """读不了图的模型**不发图**：给上游塞 image_url 会直接 400。"""
     snapshots: list[list[dict]] = []
 
@@ -137,7 +136,7 @@ def test_a_model_that_cannot_see_gets_no_image(db_session, local_user, monkeypat
 
     run_id = "img-test-2"
 
-    def fake_call(db, user, name, args, ctx, **kwargs):  # noqa: ANN001
+    def fake_call(db, name, args, ctx=None, **kwargs):  # noqa: ANN001
         return True, {
             "demo": {"title": "t", "runId": run_id},
             "await_run": True,
@@ -161,7 +160,6 @@ def test_a_model_that_cannot_see_gets_no_image(db_session, local_user, monkeypat
         list(
             agent_loop.run(
                 db_session,
-                local_user,
                 {"apiKey": "x", "model": "no-vision-fake"},
                 system="系统",
                 history=[{"role": "user", "content": "跑一段"}],

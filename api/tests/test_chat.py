@@ -27,11 +27,13 @@ PASSWORD = "password-1234"
 # ------------------------------------------------------------------ 脚手架
 
 
-def _register(client) -> None:  # noqa: ANN001
-    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
-    from conftest import local_user_id
+def _register(client, *args, **kwargs) -> str:  # noqa: ANN001
+    """不再需要做什么 —— 账号系统已整体拆除（2026-09-22，见 `app/models.py` 顶部）。
 
-    local_user_id()
+    保留这个空函数只是为了不动几十个调用点：它在用例里当"开工准备"用，
+    而现在没有任何准备工作要做（数据隔离由 conftest 的 autouse fixture 负责）。
+    """
+    return ""
 
 
 def _headers(client) -> dict:  # noqa: ANN001
@@ -335,7 +337,7 @@ def test_partial_output_is_in_the_db_before_the_stream_ends(client, monkeypatch,
     这里直接驱动那个生成器（不经过 HTTP），因为要测的正是**中途**：
     拉两块之后 `close()` —— 那就是 Starlette 在客户端断开时做的事。
     """
-    from app.models import Conversation, Message, User
+    from app.models import Conversation, Message
     from app.routers import chat
 
     _ready(client)
@@ -351,11 +353,10 @@ def test_partial_output_is_in_the_db_before_the_stream_ends(client, monkeypatch,
 
     conv = db_session.get(Conversation, uuid.UUID(cid))
     user_msg = Message(
-        conversation_id=conv.id, user_id=conv.user_id, role="user", content="问一句", status="ok"
+        conversation_id=conv.id, role="user", content="问一句", status="ok"
     )
     assistant = Message(
         conversation_id=conv.id,
-        user_id=conv.user_id,
         parent_id=None,
         role="assistant",
         content="",
@@ -363,11 +364,9 @@ def test_partial_output_is_in_the_db_before_the_stream_ends(client, monkeypatch,
     )
     db_session.add_all([user_msg, assistant])
     db_session.commit()
-    user_row = db_session.get(User, conv.user_id)
 
     gen = chat._stream(
         db_session,
-        user_row,
         conv,
         {"apiKey": "sk-x", "baseUrl": "http://127.0.0.1:9/v1", "model": "m", "timeoutMs": 1000},
         user_msg,
@@ -396,7 +395,7 @@ def test_stop_endpoint_finalizes_and_late_finish_does_not_overwrite(client, db_s
     服务端感知不到客户端断开，所以由前端点名收尾。若 `_finish` 之后照常覆盖，
     用户下次打开会看到一条自己明明停掉、却被标成完整的回答。
     """
-    from app.models import Conversation, Message, User
+    from app.models import Conversation, Message
     from app.routers import chat
 
     _ready(client)
@@ -404,7 +403,6 @@ def test_stop_endpoint_finalizes_and_late_finish_does_not_overwrite(client, db_s
     conv = db_session.get(Conversation, uuid.UUID(cid))
     assistant = Message(
         conversation_id=conv.id,
-        user_id=conv.user_id,
         role="assistant",
         content="已经吐出来的半段",
         status="streaming",
@@ -421,10 +419,8 @@ def test_stop_endpoint_finalizes_and_late_finish_does_not_overwrite(client, db_s
     # 迟到的收尾（上游其实还在生成）不该覆盖这次收尾
     db_session.expire_all()
     row = db_session.get(Message, assistant.id)
-    user_row = db_session.get(User, conv.user_id)
     chat._finish(
         db_session,
-        user_row,
         conv,
         row,
         [parts.text_part("半段"), parts.text_part("后半段")],
@@ -1481,8 +1477,7 @@ def test_stale_streaming_is_healed_on_read(client, db_session) -> None:  # noqa:
     db_session.add(
         Message(
             conversation_id=conv.id,
-            user_id=conv.user_id,
-            role="assistant",
+                role="assistant",
             content="收了一半",
             status="streaming",
             created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
@@ -1497,8 +1492,7 @@ def test_stale_streaming_is_healed_on_read(client, db_session) -> None:  # noqa:
     db_session.add(
         Message(
             conversation_id=conv.id,
-            user_id=conv.user_id,
-            parent_id=body["messages"][-1]["id"],
+                parent_id=body["messages"][-1]["id"],
             role="assistant",
             content="",
             status="streaming",
@@ -1783,8 +1777,7 @@ def _tree(client, db_session):  # noqa: ANN001
     def add(name: str, parent, role: str, text: str):  # noqa: ANN001
         row = Message(
             conversation_id=conv.id,
-            user_id=conv.user_id,
-            parent_id=parent,
+                parent_id=parent,
             role=role,
             content=text,
             status="ok",

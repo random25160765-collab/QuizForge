@@ -31,6 +31,10 @@ REMOVED_GUARDS = {
     "resolve_session",
     "set_session_cookie",
     "set_csrf_cookie",
+    # 2026-09-22：连"用户"这个概念也拆掉了（含 `users` 表与 10 张表的 `user_id`）。
+    # 这两个依赖只要挂回来一个，`users` 表就会跟着回来 —— 见下面那条测试。
+    "get_current_user",
+    "get_local_user",
 }
 
 
@@ -56,13 +60,39 @@ def test_no_route_depends_on_the_removed_account_layer() -> None:
 
 
 def test_the_auth_endpoints_are_gone() -> None:
-    """`/api/auth/*` 整块删掉了：本地单用户没有注册、登录、退出、改密。"""
+    """`/api/auth/*` 整块删掉了：本地单机没有注册、登录、退出、改密。"""
     stray = [
         f"{sorted(route.methods or [])} {route.path}"
         for route in _api_routes()
         if route.path.startswith("/api/auth")
     ]
     assert not stray, f"账号面的路由又出现了：{stray}"
+
+
+def test_the_user_model_is_gone() -> None:
+    """`users` 表与任何 `user_id` 列都不许回归 —— 这是 2026-09-22 那次拆除的护栏。
+
+    为什么这条要单独钉住：账号思维很容易悄悄渗回来（"加个 `user_id` 以后好做同步"），
+    而它比"路由上没挂依赖"更根本 —— 模型里只要还有 `users`，
+    那些依赖迟早会被写回来（2026-09-18 就是这么只拆了一半）。
+
+    单机里"用户"没有指代对象：没有第二个人，也就没有归属要记。
+    详见 `app/models.py` 顶部那段与 `docs/STATUS.md` §五。
+    """
+    from app.db import Base
+
+    tables = set(Base.metadata.tables)
+    assert "users" not in tables, "`users` 表又回来了"
+    assert "user_settings" not in tables, "`user_settings` 又回来了（应为 `app_settings`）"
+    assert "user_questions" not in tables, "`user_questions` 又回来了（应为 `my_questions`）"
+
+    leaked = sorted(
+        f"{table.name}.{column.name}"
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if column.name == "user_id"
+    )
+    assert not leaked, f"这些列又挂上了 user_id：{leaked}"
 
 
 #: 允许挂在 `/api` 之外的路由前缀 —— 只给**静态资源**这一类，

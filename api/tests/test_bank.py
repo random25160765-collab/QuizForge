@@ -206,9 +206,7 @@ def _ensure_logged_in(client, email: str = "") -> None:  # noqa: ANN001
     （原先这里是"注册或登录，保证这个 client 已持有会话"。单用户本地形态
       既没有注册也没有登录 —— 见 `app/deps.py`；名字留着是为了不动调用点。）
     """
-    from conftest import local_user_id
-
-    local_user_id()
+    return ""
 
 
 def _counts() -> tuple[int, int]:

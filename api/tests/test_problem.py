@@ -10,24 +10,21 @@ import json
 import uuid
 
 from app import tools
-from app.models import Question, Record, User
+from app.models import Question, Record
 from app.routers import problem as problem_router
 
 PASSWORD = "password-1234"
 
 
-def _register(client) -> None:  # noqa: ANN001
-    """本机用户就绪（各家测试各写一份，不互相 import）。见 `app/deps.py`。"""
-    from conftest import local_user_id
+def _register(client, *args, **kwargs) -> str:  # noqa: ANN001
+    """不再需要做什么 —— 账号系统已整体拆除（2026-09-22，见 `app/models.py` 顶部）。
 
-    local_user_id()
+    保留这个空函数只是为了不动几十个调用点：它在用例里当"开工准备"用，
+    而现在没有任何准备工作要做（数据隔离由 conftest 的 autouse fixture 负责）。
+    """
+    return ""
 
 
-def _me_id(client) -> str:  # noqa: ANN001
-    """本机用户的 id。"""
-    from conftest import local_user_id
-
-    return local_user_id()
 
 
 def _seed_problem(db, *, index: int = 1) -> Question:  # noqa: ANN001
@@ -91,7 +88,6 @@ def test_the_subagent_toolbox_is_narrowed(client, db_session) -> None:  # noqa: 
     给了它只会让它凭想象说"我算了一下"（那条坑刚填过）。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     box = problem_router._Toolbox(problem_router.GRADE_TOOLS)
 
     names = [spec["function"]["name"] for spec in box.specs()]
@@ -99,19 +95,17 @@ def test_the_subagent_toolbox_is_narrowed(client, db_session) -> None:  # noqa: 
     assert "run_python" not in names and "render_demo" not in names
 
     # 名单外的工具回一条结果（不是抛）：模型看得见"不在范围内"
-    ok, payload = box.call(db_session, user, "push_question", {})
+    ok, payload = box.call(db_session, "push_question", {})
     assert ok is False and "不在大题批改的范围内" in payload["error"]
 
 
 def test_grading_writes_into_the_same_records_as_other_questions(client, db_session) -> None:  # noqa: ANN001
     """批改落进 `records` —— 掌握度与间隔重复因此**不必为大题另立一套**。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     question = _seed_problem(db_session)
 
     ok, payload = tools.call(
         db_session,
-        user,
         "grade_problem",
         {
             "questionId": question.id,
@@ -127,7 +121,7 @@ def test_grading_writes_into_the_same_records_as_other_questions(client, db_sess
     assert payload["score"] == 0.5
 
     record = db_session.scalar(
-        select_record(db_session, user.id, question.id)
+        select_record(db_session, question.id)
     )
     assert record.attempts == 1
     assert record.partial == 1 and record.correct == 0 and record.wrong == 0
@@ -138,7 +132,7 @@ def test_grading_writes_into_the_same_records_as_other_questions(client, db_sess
     assert history[0]["verdicts"][1]["comment"].startswith("漏了 cache")
 
 
-def select_record(db, user_id, question_id):  # noqa: ANN001
+def select_record(db, question_id):  # noqa: ANN001
     from sqlalchemy import select
 
-    return select(Record).where(Record.user_id == user_id, Record.question_id == question_id)
+    return select(Record).where(Record.question_id == question_id)
