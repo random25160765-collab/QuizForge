@@ -48,37 +48,49 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "data" / "quizforge.db"
 
-#: 快照里必须被抹空的字段路径（`user_settings.data` 里那棵树）。
+#: 快照里必须被抹空的字段路径（设置表 `data` 里那棵树）。
 _SECRET_PATH = ("ai", "apiKey")
+
+#: 设置表的名字 —— 2026-09-22 从 `user_settings` 改名而来（账号系统整体拆除）。
+#: 留一个常量，改名时只动这一处。
+_SETTINGS_TABLE = "app_settings"
 
 
 def _strip_secrets(conn: sqlite3.Connection) -> int:
-    """把快照里 `user_settings.data.ai.apiKey` 抹空，返回改了几行。
+    """把快照里 `app_settings.data.ai.apiKey` 抹空，返回改了几行（0 或 1）。
 
     只在 `data` 能被解析成 JSON 对象、且里面真有 `ai` 对象时才动它 ——
-    一个字段都不多改，免得把用户设置里的别的东西搅坏。
+    一个字段都不多改，免得把设置里的别的东西搅坏。
+
+    表不存在时返回 0（不炸）：`app_settings` 是 2026-09-22 才改的名
+    （原 `user_settings`），而快照工具可能被指向一份更老的库。
+    那种库抹不了密钥，但也不该让整条命令失败 —— 出口的 `secret_scan` 会拦。
     """
-    touched = 0
-    rows = conn.execute("SELECT user_id, data FROM user_settings").fetchall()
-    for user_id, raw in rows:
-        try:
-            data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
-        except (ValueError, TypeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        node = data.get(_SECRET_PATH[0])
-        if not isinstance(node, dict) or _SECRET_PATH[1] not in node:
-            continue
-        if not node[_SECRET_PATH[1]]:
-            continue  # 本来就是空的，不必写回去
-        node[_SECRET_PATH[1]] = ""
-        conn.execute(
-            "UPDATE user_settings SET data = ? WHERE user_id = ?",
-            (json.dumps(data, ensure_ascii=False), user_id),
-        )
-        touched += 1
-    return touched
+    try:
+        row = conn.execute(f"SELECT id, data FROM {_SETTINGS_TABLE}").fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    if row is None:
+        return 0
+
+    row_id, raw = row
+    try:
+        data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+    except (ValueError, TypeError):
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    node = data.get(_SECRET_PATH[0])
+    if not isinstance(node, dict) or _SECRET_PATH[1] not in node:
+        return 0
+    if not node[_SECRET_PATH[1]]:
+        return 0  # 本来就是空的，不必写回去
+    node[_SECRET_PATH[1]] = ""
+    conn.execute(
+        f"UPDATE {_SETTINGS_TABLE} SET data = ? WHERE id = ?",
+        (json.dumps(data, ensure_ascii=False), row_id),
+    )
+    return 1
 
 
 def _verify(path: Path) -> list[str]:

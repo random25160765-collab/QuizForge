@@ -49,7 +49,7 @@ KEY_COUNTS = (
     ("题↔概念", "SELECT COUNT(*) FROM question_concepts"),
     ("作答记录", "SELECT COUNT(*) FROM records"),
     ("流水", "SELECT COUNT(*) FROM attempts"),
-    ("用户题", "SELECT COUNT(*) FROM user_questions"),
+    ("我的题单", "SELECT COUNT(*) FROM my_questions"),
     ("对话", "SELECT COUNT(*) FROM conversations"),
     ("消息", "SELECT COUNT(*) FROM messages"),
 )
@@ -121,103 +121,12 @@ def _insert_all(target, table, rows: list[dict]) -> int:  # noqa: ANN001
     return written
 
 
-def _prune_users(target, keep_email: str | None) -> list[str]:  # noqa: ANN001
-    """把账号收成**本机唯一用户**：留那个有数据的，其余连带数据删掉。
-
-    为什么必须做：库里躺着 17 个账号，其中 16 个是历次验证留下的
-    （`probe-…@example.com` 之类），真正的那个是 `random25160765@gmail.com`。
-    local-first 只有一个用户，"留哪个"不能靠运气 —— 默认取**消息最多的那个**
-    （谁在用一目了然），也可以用 `--keep-user` 指定。
-
-    为什么在**目标库**上做而不是源库：源库那份原样留着 —— 万一搬错了或者删错了，
-    源库还在，不用从备份里捞。
-
-    返回被删掉的邮箱清单（打印给人看）。
-    """
-    from app.models import (  # noqa: PLC0415
-        AiUsage,
-        Attempt,
-        Attachment,
-        Conversation,
-        DayStat,
-        Message,
-        Record,
-        User,
-        UserQuestion,
-        UserSettings,
-    )
-
-    # 显式按 user_id 删，**不靠外键级联**：搬运时没开外键强制（见 `_engine`），
-    # 这里就不该假设它会替我们兜底。顺序：先孩子（attachments / messages），再家长。
-    scoped = (
-        Attachment,
-        Message,
-        Conversation,
-        Record,
-        Attempt,
-        DayStat,
-        UserSettings,
-        AiUsage,
-        UserQuestion,
-    )
-
-    with Session(target) as session:
-        users = list(session.scalars(select(User).order_by(User.created_at)))
-        if not users:
-            return []
-        if keep_email:
-            keep = next((u for u in users if u.email == keep_email), None)
-            if keep is None:
-                raise SystemExit(f"--keep-user {keep_email} 不在库里")
-        else:
-            # 消息数最多的那个（并列时取更早建的）。
-            # 计数走 ORM 而不是拼 SQL 字符串：**UUID 在 SQLite 里是 32 位十六进制**，
-            # 拿 `str(uuid)`（带连字符）去比一条也匹配不上 —— 实测踩过，
-            # 结果"最活跃用户"全成了 0，挑出的是最早建的验证账号。
-            def messages_of(user) -> int:  # noqa: ANN001
-                return int(
-                    session.scalar(
-                        select(func.count()).select_from(Message).where(Message.user_id == user.id)
-                    )
-                    or 0
-                )
-
-            keep = sorted(users, key=lambda u: (-messages_of(u), u.created_at))[0]
-
-        dropped = [u.email for u in users if u.id != keep.id]
-        for user in users:
-            if user.id == keep.id:
-                continue
-            for model in scoped:
-                session.execute(delete(model).where(model.user_id == user.id))
-            session.delete(user)
-        session.commit()
-        print(f"\n账号收敛：留 {keep.email}（{keep.created_at:%Y-%m-%d}），删掉 {len(dropped)} 个验证残留")
-
-    # 删完确认一遍：级联真的生效了吗（SQLite 上外键默认是关的，这里能兜住配置错误）
-    leftovers = (
-        _count(target, "SELECT COUNT(*) FROM users"),
-        _count(target, "SELECT COUNT(*) FROM messages"),
-        _count(target, "SELECT COUNT(*) FROM records"),
-    )
-    if leftovers[0] != 1:
-        raise SystemExit(f"账号没收敛干净：还剩 {leftovers[0]} 个")
-    print(f"  账内数据：消息 {leftovers[1]} · 记录 {leftovers[2]}")
-    return dropped
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tools/migrate_to_local.py", description="PG → SQLite 搬运")
     parser.add_argument("--from", dest="source", default=DEFAULT_FROM, help="源连接串（Postgres）")
     parser.add_argument("--to", dest="target", default=DEFAULT_TO, help="目标连接串（SQLite 文件）")
     parser.add_argument("--force", action="store_true", help="目标已有数据也覆盖（先清空）")
     parser.add_argument("--dry-run", action="store_true", help="只报告，不写")
-    parser.add_argument(
-        "--keep-user",
-        default="",
-        help="收成哪一个账号（默认取消息最多的那个）",
-    )
-    parser.add_argument("--no-prune", action="store_true", help="不收敛账号（原样搬）")
     args = parser.parse_args(argv)
 
     from app.db import Base  # noqa: PLC0415
@@ -246,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     # 源库里**没有的**表：直接跳过，当作 0 行。
     #
     # 为什么必须容错：快照是某个时间点的 `pg_dump`，而模型一直在长 ——
-    # 之后新加的表（`conversation_folders` / `user_questions` / `slice_embeddings` /
+    # 之后新加的表（`conversation_folders` / `my_questions` / `slice_embeddings` /
     # `attachments` 这四张就是这样）在源库里根本不存在。它们的数据本来就是
     # 快照之后才产生的，所以"源里没有"就该搬 0 行，而不是报 UndefinedTable 崩掉。
     # 目标库那边 `create_all` 已经把这些空表建好了，什么都不缺。
@@ -293,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         if got != moved[table.name]:
             bad.append(f"{table.name}：源 {moved[table.name]} ≠ 目标 {got}")
     for label, sql in KEY_COUNTS:
-        # 源库里可能没有这张表（`user_questions` 就是快照之后才建的）——
+        # 源库里可能没有这张表（`my_questions` 就是快照之后才建的）——
         # 那种情况下"源 0 · 目标 0"才是对的，不能因为查不了就跳过这一项对账。
         src = _count(source, sql) if _table_of(sql) in source_tables else 0
         dst = _count(target, sql)
@@ -318,11 +227,6 @@ def main(argv: list[str] | None = None) -> int:
     total = sum(moved.values())
     print(f"\n逐表行数与关键计数全部一致（{len(tables)} 张表 · {total} 行）。")
     print("外键完整性：无悬空引用 ✓")
-
-    # 对账通过之后再收敛账号 —— 顺序很重要：先证明**搬得一模一样**，
-    # 再做一个"故意不一样"的动作（删掉验证残留），两件事不在一个数里打架。
-    if not args.no_prune and not args.dry_run:
-        _prune_users(target, args.keep_user or None)
 
     print(f"\n完成。数据落在：{args.target}")
     return 0
