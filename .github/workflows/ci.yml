@@ -23,12 +23,20 @@
 # 验收逻辑在 `tools/checks/serve_smoke.sh` 里（仓库里的一份可读文本，
 # 本地也能直接跑），这里只负责按 README 起服务再调它。
 #
-# ## 没纳入的
+# ## 后端测试也跑（2026-09-22 纳入）
 #
-# `make api-test`（后端 pytest）暂未纳入：当前有 5 项既存失败
-# （`test_beta_channel` 4 条 + `test_ai_per_user` 1 条，见 `docs/STATUS.md` §五）——
-# 它们假设"连不上上游时提示里带『内测通道』"，而那个"死地址"在不通与通（返回 5xx）
-# 两种情况下走的是不同分支。修掉再纳入，否则 CI 常红、然后大家就不看它了。
+# `make api-test`（474 项）此前一直没进 CI，理由是"有 5 项既存失败"：
+# `test_beta_channel` 4 条 + `test_ai_per_user` 1 条。它们假设"连不上上游时，
+# 错误里该带『内测通道』/『你填写的接口』"，而那条路径实际走不到 ——
+# 请求在连接阶段超时（`ConnectTimeout`），而它的父类是 `TimeoutException`
+# **不是** `ConnectError`，于是被 `except httpx.TimeoutException` 吞掉，
+# 用户只看到"AI 服务响应超时"。
+#
+# 也就是说：**测试是对的，代码是错的**。它发现了一个真缺陷 —— 够不着上游的人
+# 拿不到那半句指点（该去找站长，还是该查自己的地址）。
+#
+# 教训留在这里：拿"几项既存失败"当理由让整套测试不跑，等于用 5 个红灯
+# 换 469 个不设防。修好它们之后 474 项全绿，所以现在纳入。
 
 name: ci
 
@@ -100,3 +108,6 @@ jobs:
 
       - name: make test（题库校验 + 前端断言 + 语法门禁）
         run: make test
+
+      - name: make api-test（后端 pytest，474 项）
+        run: make api-test
