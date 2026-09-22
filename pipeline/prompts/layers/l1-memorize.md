@@ -1,7 +1,5 @@
----
-name: quizforge-l1-memorize
-description: 为 quizforge 出「识记层」题目——考核心术语、定义、公式、数值与枚举的准确回忆，重点是「不混淆」而不是「背得全」。产出 single / multi / blank，答案唯一且可逐字核对。当用户要求出识记层 / 记忆层 / 概念辨析类题目，或要求「考术语、考定义、考数值、考枚举」时使用。
----
+<!-- 出题契约 · 识记层。`pipeline/worker.py` 的 load_contract() 把它读进出题员的提示词 ——
+     改这里就是改出题行为（也会改变 prompt_version）。 -->
 
 # 出识记层题目
 
@@ -23,7 +21,7 @@ description: 为 quizforge 出「识记层」题目——考核心术语、定�
 | 问自己 | 是 | 否 |
 |---|---|---|
 | 不看选项，能否说出唯一答案？ | 继续 | 题干缺条件，先修 |
-| 答对是否只需要回忆，不需要推理？ | 是识记题 | 混进了理解层 → 用 `quizforge-l2-understand` |
+| 答对是否只需要回忆，不需要推理？ | 是识记题 | 混进了理解层 → 用 `l2-understand` |
 | 干扰项是否来自「真实会混淆的另一个东西」？ | 继续 | 干扰项是凑数的，重写 |
 
 **滑坡警告**：「请说明 X 与 Y 的区别」看起来像辨析，但它要求组织语言、解释机制，
@@ -107,7 +105,7 @@ python3 tools/build.py
 
 ## 参考
 
-（本仓库自包含这批 skill；下列路径均相对仓库根）
+（下列路径均相对仓库根；四份层契约都在 pipeline/prompts/layers/）
 
 - 完整格式契约：`.codebuddy/skills/quizforge-author/references/format.md`
 - 从材料出题的抽取与核对流程：`.codebuddy/skills/quizforge-author/references/from-source.md`

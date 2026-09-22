@@ -49,18 +49,22 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
    契约里写明：只有 `[OK] ... 全部通过` 才算完成；`make test` 再补一层前端自测。
 4. **出题依据的优先级：原材料内容 + 用户诉求 > 考纲。** 考纲只作归类、可随时重构；
    绝不为填考纲出题，也不因考纲没有合适的 key 就不出题（顺序是「先出题 → 最后归类 → 兜不住就改考纲」）。
-5. **层 skill 的判定表是审核项，不是建议。** 每道题都要能通过对应层的那张表。
+5. **层契约的判定表是审核项，不是建议。** 每道题都要能通过对应层的那张表。
 6. **`problem` 的问数不设上限**（原「建议 4–10 问」已删）；但每问必须能独立判分。
 7. **迁移层的题必须请用户过目** —— 「是不是真迁移」只有人读得出来。
 
 ## 任务 → 该加载哪个 skill
 
+> 出题的四层契约在 `pipeline/prompts/layers/` —— 它们是**出题机的内部提示词**
+> （`pipeline/worker.py` 每次出题把它们读进提示词），不是 CodeBuddy skill，
+> 所以不在 `.codebuddy/skills/` 里。
+
 | 要做的事 | 先读 |
 |---|---|
-| 出识记层题（术语、数值、枚举） | `quizforge-l1-memorize` |
-| 出理解层题（换说法、新情形、反例、**审读**） | `quizforge-l2-understand` |
-| 出应用层题（按规程算出确定结果） | `quizforge-l3-apply` |
-| 出迁移层题、综合大题 | `quizforge-l4-transfer` |
+| 出识记层题（术语、数值、枚举） | `pipeline/prompts/layers/l1-memorize.md` |
+| 出理解层题（换说法、新情形、反例、**审读**） | `pipeline/prompts/layers/l2-understand.md` |
+| 出应用层题（按规程算出确定结果） | `pipeline/prompts/layers/l3-apply.md` |
+| 出迁移层题、综合大题 | `pipeline/prompts/layers/l4-transfer.md` |
 | **人工手写了一道题**（尤其法式大题），要接进题库与图谱 | `quizforge-handmade` —— 它注入格式、元数据与「可解析出关系边」的句式，保证不成孤岛 |
 | 查字段怎么填、确认某题格式对不对 | `quizforge-author` + `references/format.md` |
 | 从一份材料出一批题（几道） | `references/from-source.md` |

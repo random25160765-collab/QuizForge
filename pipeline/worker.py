@@ -32,8 +32,17 @@ def load_prompt(name: str) -> str:
 
 
 def prompt_version(name: str) -> str:
-    """提示词版本号：写进任务记录，将来「为什么这批结果不一样」有据可查。"""
-    return hashlib.sha256(load_prompt(name).encode("utf-8")).hexdigest()[:8]
+    """提示词版本号：写进任务记录，将来「为什么这批结果不一样」有据可查。
+
+    **契约也算进去**：模板里用了 `{{CONTRACT}}` 的角色，它实际收到的提示词 = 模板 + 契约，
+    而契约就是仓库里那几个文件、改起来很顺手。只 hash 模板的话，改了契约版本号纹丝不动 ——
+    恰好漏掉最常变的那部分，而版本号本来要回答的正是「为什么这批结果不一样」。
+    """
+    template = load_prompt(name)
+    digest = hashlib.sha256(template.encode("utf-8"))
+    if "{{CONTRACT}}" in template:
+        digest.update(load_contract().encode("utf-8"))
+    return digest.hexdigest()[:8]
 
 
 def render(template: str, mapping: dict) -> str:
@@ -122,21 +131,38 @@ async def run_vision(llm: LLM, payload: dict):
 
 # -------------------------------------------------- 出题单元（A4 出题员 → A5 校验员）
 
+#: 出题员的契约文件，路径**仓库根相对**。
+#:
+#: 四层各一份 —— 派工时写得很清楚：「**四层共用这一条流水线**」（见
+#: `dispatch.dispatch_author`），一个包该出哪几层由知识点自己的 `layers` 决定，
+#: 所以四层的判定标准都得在手里。只给两层的话，另外两层的题就是在**没有判定表**
+#: 的情况下出的（库里那 199 道应用层题正是如此）。
+#:
+#: 层契约住在 `pipeline/prompts/layers/`（它们是**出题机的提示词**，跟着 pipeline 走）；
+#: 格式契约留在 `.codebuddy/skills/` 下 —— 那是**题目**的格式规范，人和 agent 改题时
+#: 同样要守，不是出题机私有。契约因此分散在两处，这里点名到文件，不假定同一个基目录。
 CONTRACT_FILES = [
-    "quizforge-l1-memorize/SKILL.md",
-    "quizforge-l2-understand/SKILL.md",
-    "quizforge-author/references/format.md",
+    "pipeline/prompts/layers/l1-memorize.md",
+    "pipeline/prompts/layers/l2-understand.md",
+    "pipeline/prompts/layers/l3-apply.md",
+    "pipeline/prompts/layers/l4-transfer.md",
+    ".codebuddy/skills/quizforge-author/references/format.md",
 ]
 
 
 def load_contract() -> str:
-    """契约**从仓库文件里读**，不在提示词里重抄——契约永远以文件为准。"""
-    base = config.ROOT / ".codebuddy" / "skills"
+    """契约**从仓库文件里读**，不在提示词里重抄——契约永远以文件为准。
+
+    读不到就报错，**不静默跳过**：少一份契约，出题照样能跑，只是出的题悄悄变差，
+    而任务记录里看不出任何异常 —— 这种失败最难回头发现（原先这里是
+    `if path.is_file()`，改一次文件名就少一份契约，谁也不会知道）。
+    """
     parts: list[str] = []
     for rel in CONTRACT_FILES:
-        path = base / rel
-        if path.is_file():
-            parts.append(f"<!-- 契约：{rel} -->\n{path.read_text(encoding='utf-8')}")
+        path = config.ROOT / rel
+        if not path.is_file():
+            raise LLMError(f"契约文件读不到：{rel}（找的是 {path}）")
+        parts.append(f"<!-- 契约：{rel} -->\n{path.read_text(encoding='utf-8')}")
     return "\n\n".join(parts)
 
 

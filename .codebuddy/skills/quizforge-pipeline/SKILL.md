@@ -89,6 +89,6 @@ make api-dev                                   # 后端 → http://127.0.0.1:810
 
 ## 指路
 
-- 出题契约与层 skill：`quizforge-author` / `quizforge-l1..l4` ✔
+- 出题契约：`quizforge-author`（格式）+ `pipeline/prompts/layers/l1..l4`（四层判定）✔
 - 项目定位与铁律：`quizforge-init` ✔
 - 当前进展：`docs/STATUS.md` ✔

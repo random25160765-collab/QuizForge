@@ -213,17 +213,21 @@ make db-restore     # 从它恢复（解压即用）
 
 ### 走 skill
 
-出题规则在 [`.codebuddy/skills/`](../.codebuddy/skills/README.md)（跟着仓库走，改了就在眼前）：
+开发 skill 在 [`.codebuddy/skills/`](../.codebuddy/skills/README.md)（跟着仓库走，改了就在眼前）：
 
 | skill | 管什么 |
 |---|---|
 | `quizforge-init` | 开局入口：目录地图、铁律、任务→skill 路由 |
 | `quizforge-author` | 格式契约：字段、五种题型的正文小节、LaTeX 与代码块写法、校验命令 |
-| `quizforge-l1-memorize` / `l2-understand` / `l3-apply` / `l4-transfer` | 四层各自「这题算不算这一层」|
 | `quizforge-handmade` | 人写的单题接进题库与知识图谱 |
 | `quizforge-pipeline` | 流水线怎么跑、卡住怎么判断、覆盖率怎么看 |
 
-说清**层**，agent 就会走到对应的 skill。"怎么判断这题真在这一层"是每个层 skill 的重头戏
+**出题的四层契约不在那里** —— 在 [`pipeline/prompts/layers/`](../pipeline/prompts/layers/)：
+`l1-memorize.md` / `l2-understand.md` / `l3-apply.md` / `l4-transfer.md`。
+这四个文件是**出题机的内部提示词**（出题时被读进提示词），不是"给人读的 skill"，
+所以跟着 pipeline 走，不放在 CodeBuddy 的 skill 目录里。
+
+说清**层**，agent 就会走到对应的契约。"怎么判断这题真在这一层"是每个层契约的重头戏
 （例如「只把 $64$ 换成 $128$」是假迁移）。
 
 ### 四层与四翼

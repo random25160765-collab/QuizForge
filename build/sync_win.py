@@ -36,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 #: 不进镜像的目录（相对仓库根）。理由写在每一项后面。
 SKIP_DIRS = (
     ".git",             # 版本库不进镜像：Windows 侧那份不提交任何东西
-    ".codebuddy",       # IDE 的工作草稿
+    ".codebuddy",       # CodeBuddy 的开发 skill：打包版用不到（出题机那几份契约在 pipeline/ 下，会跟着走）
     "api/.venv",        # venv 是平台专属的，Windows 侧自己建一个
     "build/dist",       # 产物：Windows 侧自己出，不从这边搬
     "build/.pyinstaller",  # PyInstaller 的工作目录

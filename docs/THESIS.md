@@ -112,10 +112,10 @@ agent 的错大多不在"某个词不认识"，而在**"每个词都对、顺序
 
 | 立论里的主张 | 仓库里的实现 |
 |---|---|
-| 判断不能外包，审读是主战场 | L2 的第四形态「审读」（`.codebuddy/skills/quizforge-l2-understand`） |
-| 只出「有后果的词」 | L1 构造规则 4（`.codebuddy/skills/quizforge-l1-memorize`） |
+| 判断不能外包，审读是主战场 | L2 的第四形态「审读」（`pipeline/prompts/layers/l2-understand.md`） |
+| 只出「有后果的词」 | L1 构造规则 4（`pipeline/prompts/layers/l1-memorize.md`） |
 | 广度优先、知识点出满 | 派工按知识点打包、每点至少一道（`references/pipeline.md` §1） |
-| 顶级题少而精且必须人审 | 迁移题"点名请人过目"（`quizforge-l4-transfer`）；四层同一流水线，不分批 |
+| 顶级题少而精且必须人审 | 迁移题"点名请人过目"（`pipeline/prompts/layers/l4-transfer.md`）；四层同一流水线，不分批 |
 | 大题要能指引学习 | 大题组织原则：问序不可交换 + 必须带分支点（`references/format.md` §4.6） |
 | 关系是日志，不是项目 | 五类边由题目字段解析（`references/pipeline.md` §4） |
 | 智适应用前置约束，不用向量库 | `api/app/mastery.py` + SM2 + 覆盖矩阵的 `requires` |
