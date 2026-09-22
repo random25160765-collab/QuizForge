@@ -76,7 +76,23 @@ def grade(payload: dict, db: DbSession) -> dict:
                     "Content-Type": "application/json",
                 },
             )
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        # **够不着上游**（DNS 失败 / 连接被拒 / 连接阶段就超时）—— 与"上游慢"
+        # 是两件事，所以这条必须排在下面的 `TimeoutException` **之前**。
+        #
+        # `ConnectTimeout` 的父类是 `TimeoutException` 而**不是** `ConnectError`，
+        # 所以要显式列两个；否则它被超时那条吞掉，用户只看到"响应超时"，
+        # 而最该给的那半句指点（走内测通道的人去找站长、自带密钥的人查地址与网络）
+        # 恰恰丢了 —— 2026-09-22 由 `test_beta_channel` 那几条测试发现。
+        gateway.record_usage(
+            db, ok=False, latency_ms=gateway.elapsed_ms(started), detail=f"连不上：{exc}"[:200]
+        )
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            gateway.connection_hint(conf) + "（" + str(exc)[:120] + "）",
+        ) from None
     except httpx.TimeoutException:
+        # 连上了、但没按时回完 —— 这是"慢"，重试有意义（与上面那条不同）
         gateway.record_usage(
             db, ok=False, latency_ms=gateway.elapsed_ms(started), detail="超时"
         )
@@ -85,7 +101,8 @@ def grade(payload: dict, db: DbSession) -> dict:
         gateway.record_usage(
             db, ok=False, latency_ms=gateway.elapsed_ms(started), detail=str(exc)[:200]
         )
-        # 连不上时该做什么，取决于是"你自己的密钥"还是"内测通道的本地模型"
+        # 其它传输层错误（协议错、连接被中途掐断…）：同样属于"够不着"，
+        # 该说的话与上面第一条一样，取决于用的是自己的密钥还是内测通道
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY,
             gateway.connection_hint(conf) + "（" + str(exc)[:120] + "）",
@@ -97,11 +114,19 @@ def grade(payload: dict, db: DbSession) -> dict:
         detail = response.text[:300]
         gateway.record_usage(db, ok=False, latency_ms=latency_ms, detail=detail)
         # 状态码原样透传：前端已经按 401/404/429 区分提示，
-        # 用户看到「你的密钥被拒」比看到「服务端错误」有用得多
-        raise HTTPException(
-            response.status_code,
-            f"接口返回 {response.status_code}：{detail}",
-        )
+        # 用户看到「你的密钥被拒」比看到「服务端错误」有用得多。
+        #
+        # 一个例外：**5xx 且 body 是空的** —— 那通常不是模型供应商在说话，
+        # 而是路上的代理/网关替它回的（实测：本机代理会把一个根本连不上的地址
+        # 变成一个空体 502）。这时只说"接口返回 502："等于什么都没说，
+        # 得把 connection_hint 那半句补上，否则用户不知道该找谁。
+        message = f"接口返回 {response.status_code}：{detail}"
+        if response.status_code >= 500 and not detail.strip():
+            message = (
+                gateway.connection_hint(conf)
+                + f"（网关回了 {response.status_code}，没有内容）"
+            )
+        raise HTTPException(response.status_code, message)
 
     data = response.json()
     usage = data.get("usage") or {}
