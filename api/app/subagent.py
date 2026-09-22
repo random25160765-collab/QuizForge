@@ -133,7 +133,6 @@ SUBAGENT_SYSTEM = (
 
 def run(  # noqa: ANN001
     db,
-    user,
     *,
     task: str,
     wants: str = "",
@@ -154,7 +153,7 @@ def run(  # noqa: ANN001
         return False, {"error": "内部错误：子代理没拿到工具模块。"}
 
     try:
-        conf = gateway.resolve_config(db, user.id)
+        conf = gateway.resolve_config(db)
     except Exception as exc:  # noqa: BLE001 —— 没密钥 / 关了 AI，都如实回一条
         detail = getattr(exc, "detail", None) or str(exc)
         return False, {"error": "派不出去：" + str(detail)}
@@ -172,7 +171,6 @@ def run(  # noqa: ANN001
     # `thinking=True`（参数已经接好在 `agent_loop.run` 上）。
     for event in agent_loop.run(
         db,
-        user,
         conf,
         system=system,
         history=[{"role": "user", "content": goal}],

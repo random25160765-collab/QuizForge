@@ -205,7 +205,6 @@ def _specs_without(specs: list[dict], drop: tuple[str, ...]) -> list[dict]:
 
 def run(  # noqa: ANN001
     db,
-    user,
     conf,
     *,
     system: str,
@@ -416,7 +415,7 @@ def run(  # noqa: ANN001
                 ok, payload = False, {"error": "这个工具在这一次调用里不可用。"}
             else:
                 ok, payload = tools.call(
-                    db, user, call["name"], args, tool_context, mounts=mounts, allow=allow
+                    db, call["name"], args, tool_context, mounts=mounts, allow=allow
                 )
             elapsed = gateway.elapsed_ms(started)
             text = clip(tools.output_text(payload))

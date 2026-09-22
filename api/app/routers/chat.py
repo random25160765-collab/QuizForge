@@ -69,7 +69,7 @@ from .. import runs
 from .. import websearch
 from ..config import get_settings
 from ..db import as_json
-from ..deps import AuthenticatedWriter, CurrentUser, DbSession
+from ..deps import DbSession
 from ..models import Attachment, Conversation, ConversationFolder, Message
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -431,14 +431,10 @@ STALE_STREAM_SECONDS = 300
 # ------------------------------------------------------------------ 小工具
 
 
-def _own_conversation(db: DbSession, user_id, cid: uuid.UUID) -> Conversation:  # noqa: ANN001
-    """取出属于这个用户的会话。
-
-    别人的会话按 **404** 处理而不是 403：403 等于承认「这个 id 存在」，
-    多租户下不该泄露这种信息。
-    """
+def _own_conversation(db: DbSession, cid: uuid.UUID) -> Conversation:  # noqa: ANN001
+    """取出这条会话（不存在就 404）。"""
     conv = db.get(Conversation, cid)
-    if conv is None or conv.user_id != user_id:
+    if conv is None:
         raise HTTPException(404, "没有这个对话")
     return conv
 
@@ -467,7 +463,7 @@ def _message_out(m: Message) -> dict:
     }
 
 
-def _ensure_folder(db, user_id, path: str) -> None:  # noqa: ANN001
+def _ensure_folder(db, path: str) -> None:  # noqa: ANN001
     """保证这个分组**及其各级父分组**都登记在册（幂等；不提交）。"""
     if not path:
         return
@@ -477,10 +473,10 @@ def _ensure_folder(db, user_id, path: str) -> None:  # noqa: ANN001
         exists = db.execute(
             select(func.count())
             .select_from(ConversationFolder)
-            .where(ConversationFolder.user_id == user_id, ConversationFolder.path == one)
+            .where(ConversationFolder.path == one)
         ).scalar()
         if not exists:
-            db.add(ConversationFolder(user_id=user_id, path=one))
+            db.add(ConversationFolder(path=one))
 
 
 def _conversation_out(c: Conversation, count: int, preview: str) -> dict:
@@ -524,7 +520,7 @@ def _leaf_id(db: DbSession, conv: Conversation) -> int | None:  # noqa: ANN001
     """
     return db.scalar(
         select(Message.id)
-        .where(Message.conversation_id == conv.id, Message.user_id == conv.user_id)
+        .where(Message.conversation_id == conv.id)
         .order_by(Message.id.desc())
         .limit(1)
     )
@@ -555,7 +551,7 @@ def _active_path(db: DbSession, conv: Conversation) -> list[Message]:  # noqa: A
     """当前分支 = 最新那条消息所在的链。"""
     node = db.scalar(
         select(Message)
-        .where(Message.conversation_id == conv.id, Message.user_id == conv.user_id)
+        .where(Message.conversation_id == conv.id)
         .order_by(Message.id.desc())
         .limit(1)
     )
@@ -575,7 +571,6 @@ def _heal_stale(db: DbSession, conv: Conversation) -> None:  # noqa: ANN001
     rows = db.scalars(
         select(Message).where(
             Message.conversation_id == conv.id,
-            Message.user_id == conv.user_id,
             Message.status == "streaming",
             Message.created_at < cutoff,
         )
@@ -795,7 +790,7 @@ def _history(db: DbSession, messages: list[Message], *, vision: bool = False, mo
 # ------------------------------------------------------------------ 会话
 
 
-def _heal_folder_archived(db: DbSession, user_id) -> None:  # noqa: ANN001
+def _heal_folder_archived(db: DbSession) -> None:  # noqa: ANN001
     """把「在分组里却没归档」的会话修回来。
 
     这个组合是**旧代码**造出来的：`create_conversation` 收下 `folder` 时没有
@@ -809,7 +804,6 @@ def _heal_folder_archived(db: DbSession, user_id) -> None:  # noqa: ANN001
     """
     rows = db.scalars(
         select(Conversation).where(
-            Conversation.user_id == user_id,
             Conversation.folder != "",
             Conversation.archived.is_(False),
         )
@@ -822,21 +816,20 @@ def _heal_folder_archived(db: DbSession, user_id) -> None:  # noqa: ANN001
 
 
 @router.get("/conversations")
-def list_conversations(user: CurrentUser, db: DbSession) -> dict:
+def list_conversations(db: DbSession) -> dict:
     """会话列表：标题、条数、最后一句话的预览。
 
-    排序 = **置顶的在前**，各自按最近活动倒序。置顶是用户自己钉的
+    排序 = **置顶的在前**，各自按最近活动倒序。置顶是自己钉的
     （"这条我在攻"），所以它必须压过"谁最近动过"。
     """
     # 先把"在分组里却没归档"的历史数据修回来（见 `_heal_folder_archived`）。
-    # 不修的话它们在树上不显示，用户既看不见也挪不动 —— 只能对着一个删不掉的
-    # 分组发呆（那正是用户报上来的现象）。
-    _heal_folder_archived(db, user.id)
+    # 不修的话它们在树上不显示，既看不见也挪不动 —— 只能对着一个删不掉的
+    # 分组发呆（那正是报上来的现象）。
+    _heal_folder_archived(db)
 
     rows = db.execute(
         select(Conversation, func.count(Message.id))
         .join(Message, Message.conversation_id == Conversation.id, isouter=True)
-        .where(Conversation.user_id == user.id)
         .group_by(Conversation.id)
         .order_by(Conversation.pinned.desc(), Conversation.updated_at.desc())
         .limit(200)
@@ -854,7 +847,6 @@ def list_conversations(user: CurrentUser, db: DbSession) -> dict:
             .over(partition_by=Message.conversation_id, order_by=Message.id.desc())
             .label("rank"),
         )
-        .where(Message.user_id == user.id)
         .subquery()
     )
     last = {
@@ -865,7 +857,7 @@ def list_conversations(user: CurrentUser, db: DbSession) -> dict:
     # 一次请求全给出去：左栏那棵树要"目录 + 会话"一起才画得出来。
     names = {
         str(row[0])
-        for row in db.execute(select(ConversationFolder.path).where(ConversationFolder.user_id == user.id))
+        for row in db.execute(select(ConversationFolder.path))
     }
     for c, _n in rows:
         if c.folder:
@@ -898,12 +890,11 @@ def _clean_folder(raw) -> str:  # noqa: ANN001
     return "/".join(p for p in parts if p and p not in (".", ".."))[:MAX_FOLDER_LEN]
 
 
-def _folder_rows(db, user_id, path: str):  # noqa: ANN001, ANN202
+def _folder_rows(db, path: str):  # noqa: ANN001, ANN202
     """这个分组**及其子树**（按路径前缀认子树）。"""
     return (
         db.execute(
             select(ConversationFolder).where(
-                ConversationFolder.user_id == user_id,
                 or_(ConversationFolder.path == path, ConversationFolder.path.like(path + "/%")),
             )
         )
@@ -913,7 +904,7 @@ def _folder_rows(db, user_id, path: str):  # noqa: ANN001, ANN202
 
 
 @router.post("/folders")
-def create_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
+def create_folder(payload: dict, db: DbSession) -> dict:
     """新建一个分组（连同它的各级父分组）。**幂等**：同名再点一次不报错。
 
     父级一起建：`a/b` 建出来而 `a` 不在的话，树里会凭空多出一层没有名字的中间层。
@@ -921,13 +912,13 @@ def create_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> di
     path = _clean_folder((payload or {}).get("path"))
     if not path:
         raise HTTPException(400, "分组名不能为空")
-    _ensure_folder(db, user.id, path)
+    _ensure_folder(db, path)
     db.commit()
     return {"ok": True, "path": path}
 
 
 @router.patch("/folders")
-def rename_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
+def rename_folder(payload: dict, db: DbSession) -> dict:
     """改名 / 搬家：整个子树一起走（分组记录 + 里面的会话）。
 
     目标已存在时**拒绝**，不合并：两个分组悄悄并成一个，用户回头会找不到东西。
@@ -944,7 +935,7 @@ def rename_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> di
     exists = db.execute(
         select(func.count())
         .select_from(ConversationFolder)
-        .where(ConversationFolder.user_id == user.id, ConversationFolder.path == new)
+        .where(ConversationFolder.path == new)
     ).scalar()
     if exists:
         raise HTTPException(409, "已经有这个分组了")
@@ -953,7 +944,6 @@ def rename_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> di
     for conv in (
         db.execute(
             select(Conversation).where(
-                Conversation.user_id == user.id,
                 or_(Conversation.folder == old, Conversation.folder.like(old + "/%")),
             )
         )
@@ -961,19 +951,19 @@ def rename_folder(payload: dict, user: AuthenticatedWriter, db: DbSession) -> di
         .all()
     ):
         conv.folder = new + (conv.folder or "")[len(old):]
-    for folder in _folder_rows(db, user.id, old):
+    for folder in _folder_rows(db, old):
         folder.path = new + folder.path[len(old):]
     # 先把上面的改名**落库**，再问"新名字在不在"。
     # 踩过：会话是 `autoflush=False`，不 flush 的话 `_ensure_folder` 数的还是改名前的
     # 库（数到 0）→ 又插一条新名字 → 提交时撞 UNIQUE（子树自己已经占着那个名字了）。
     db.flush()
-    _ensure_folder(db, user.id, new)
+    _ensure_folder(db, new)
     db.commit()
     return {"ok": True, "path": new}
 
 
 @router.delete("/folders")
-def delete_folder(path: str, user: AuthenticatedWriter, db: DbSession) -> dict:
+def delete_folder(path: str, db: DbSession) -> dict:
     """删一个分组。**里面还有东西就拒绝** —— 与 `rmdir` 一样。
 
     用户的会话是最贵的产物，一个误点不该连带删掉一堆；想清空就先自己挪出来。
@@ -981,7 +971,7 @@ def delete_folder(path: str, user: AuthenticatedWriter, db: DbSession) -> dict:
     target = _clean_folder(path)
     if not target:
         raise HTTPException(400, "分组名不能为空")
-    rows = _folder_rows(db, user.id, target)
+    rows = _folder_rows(db, target)
     if not rows:
         raise HTTPException(404, "没有这个分组")
     if len(rows) > 1:
@@ -990,7 +980,6 @@ def delete_folder(path: str, user: AuthenticatedWriter, db: DbSession) -> dict:
         select(func.count())
         .select_from(Conversation)
         .where(
-            Conversation.user_id == user.id,
             or_(Conversation.folder == target, Conversation.folder.like(target + "/%")),
         )
     ).scalar()
@@ -1004,7 +993,6 @@ def delete_folder(path: str, user: AuthenticatedWriter, db: DbSession) -> dict:
 
 @router.get("/search")
 def search_messages(
-    user: CurrentUser,
     db: DbSession,
     q: str = Query("", description="在消息正文里搜一段字"),
     limit: int = Query(20, ge=1, le=50),
@@ -1025,7 +1013,7 @@ def search_messages(
     rows = db.execute(
         select(Message, Conversation.title)
         .join(Conversation, Conversation.id == Message.conversation_id)
-        .where(Message.user_id == user.id, Message.content.ilike("%" + query + "%"))
+        .where(Message.content.ilike("%" + query + "%"))
         .order_by(Message.id.desc())
         .limit(limit)
     ).all()
@@ -1058,7 +1046,7 @@ def _snippet(content: str, query: str, span: int = 40) -> str:
 
 
 @router.post("/conversations")
-def create_conversation(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
+def create_conversation(payload: dict, db: DbSession) -> dict:
     """新建一个空会话。标题留空，等第一条消息自动生成。
 
     可以带 `folder` 指定它落在哪个分组里 —— 在某个分组上右键「新建对话」时，
@@ -1066,10 +1054,10 @@ def create_conversation(payload: dict, user: AuthenticatedWriter, db: DbSession)
     """
     body = payload or {}
     title = str(body.get("title") or "").strip()[:120]
-    conv = Conversation(user_id=user.id, title=title)
+    conv = Conversation(title=title)
     if body.get("folder"):
         conv.folder = _clean_folder(body.get("folder"))
-        _ensure_folder(db, user.id, conv.folder)
+        _ensure_folder(db, conv.folder)
         # **进分组就是归档** —— 与拖放同一条规矩（前端 `moveConvTo` 也是两个字段一起发）。
         #
         # 少了这一句会造出「在分组里却没归档」的会话：左栏那棵树是按 `archived`
@@ -1084,7 +1072,7 @@ def create_conversation(payload: dict, user: AuthenticatedWriter, db: DbSession)
 
 
 @router.get("/conversations/{cid}")
-def get_conversation(cid: uuid.UUID, user: CurrentUser, db: DbSession) -> dict:
+def get_conversation(cid: uuid.UUID, db: DbSession) -> dict:
     """一个会话的**全部消息**（树），当前分支由前端按 `parentId` 算。
 
     为什么把树整个给出去，而不是只在服务端切好一条线（LibreChat 也是这么做的）：
@@ -1092,12 +1080,12 @@ def get_conversation(cid: uuid.UUID, user: CurrentUser, db: DbSession) -> dict:
     每次切换都回服务端问一次，会让翻分支变成一件有延迟的事。
     消息量是千级、一次读回内存，比来回问便宜。
     """
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     _heal_stale(db, conv)
 
     rows = db.scalars(
         select(Message)
-        .where(Message.conversation_id == conv.id, Message.user_id == conv.user_id)
+        .where(Message.conversation_id == conv.id)
         .order_by(Message.id)
     ).all()
     active = _active_path(db, conv)
@@ -1112,10 +1100,10 @@ def get_conversation(cid: uuid.UUID, user: CurrentUser, db: DbSession) -> dict:
 
 
 @router.patch("/conversations/{cid}")
-def rename_conversation(cid: uuid.UUID, payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
+def rename_conversation(cid: uuid.UUID, payload: dict, db: DbSession) -> dict:
     """改标题 / 置顶。两个字段都**按需**更新（`pinned` 只认真正的布尔值，
     否则 `pinned: false` 会被 `or` 当成"没给"）。"""
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     body = payload or {}
 
     if "title" in body:
@@ -1141,7 +1129,7 @@ def rename_conversation(cid: uuid.UUID, payload: dict, user: AuthenticatedWriter
     if "folder" in body:
         # 挪进某个分组：目标分组顺手登记一次（拖放时用户常常没先建过它）
         conv.folder = _clean_folder(body.get("folder"))
-        _ensure_folder(db, user.id, conv.folder)
+        _ensure_folder(db, conv.folder)
         # 反过来：**进分组就是归档** —— 与 `create_conversation` 和前端
         # `moveConvTo` 同一条规矩。移出分组（`folder: ""`）时不动归档：
         # "在归档区里挪到最外层"是个真实动作，不该顺手把它扔回未归档。
@@ -1155,13 +1143,13 @@ def rename_conversation(cid: uuid.UUID, payload: dict, user: AuthenticatedWriter
 
 
 @router.delete("/conversations/{cid}")
-def delete_conversation(cid: uuid.UUID, user: AuthenticatedWriter, db: DbSession) -> dict:
+def delete_conversation(cid: uuid.UUID, db: DbSession) -> dict:
     """删会话并连带它的消息（外键 CASCADE）。
 
     这里**不是**「标记退役」—— 那道规矩是给题目与知识点的（历史统计不能有空洞）。
     对话是用户自己的东西，他说删就该真删。
     """
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     db.delete(conv)
     db.commit()
     return {"ok": True}
@@ -1172,7 +1160,7 @@ def delete_conversation(cid: uuid.UUID, user: AuthenticatedWriter, db: DbSession
 
 @router.post("/attachments")
 async def upload_attachment(
-    user: AuthenticatedWriter, db: DbSession, file: UploadFile = File(...)
+    db: DbSession, file: UploadFile = File(...)
 ) -> dict:
     """上传一个附件。**先传、再在发消息时引用它**。
 
@@ -1184,17 +1172,17 @@ async def upload_attachment(
     图片抽不出正文，但照常存下来给人看。
     """
     data = await file.read()
-    result = attach.save(db, user, file.filename or "附件", file.content_type or "", data)
+    result = attach.save(db, file.filename or "附件", file.content_type or "", data)
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
 
 
 @router.get("/attachments/{aid}")
-def read_attachment(aid: uuid.UUID, user: CurrentUser, db: DbSession) -> FileResponse:
+def read_attachment(aid: uuid.UUID, db: DbSession) -> FileResponse:
     """取回附件本身（图片直接显示、文本可预览）。别人的附件按 404 处理。"""
     row = db.get(Attachment, aid)
-    if row is None or row.user_id != user.id:
+    if row is None:
         raise HTTPException(404, "没有这个附件")
     path = attach.path_of(row)
     if not path.exists():
@@ -1219,7 +1207,7 @@ def _messages_of(db: DbSession, conv: Conversation) -> list[Message]:  # noqa: A
     return list(
         db.scalars(
             select(Message)
-            .where(Message.conversation_id == conv.id, Message.user_id == conv.user_id)
+            .where(Message.conversation_id == conv.id)
             .order_by(Message.id)
         ).all()
     )
@@ -1274,7 +1262,6 @@ def _markdown_of(conv: Conversation, messages: list[Message]) -> str:
 @router.get("/conversations/{cid}/export")
 def export_conversation(
     cid: uuid.UUID,
-    user: CurrentUser,
     db: DbSession,
     format: str = Query(
         "md", description="md（给人读，当前分支）/ json（给机器读，全树）/ html（单页分享）"
@@ -1288,7 +1275,7 @@ def export_conversation(
     `html` 是**发给别人**的那一种：一个自带数据的网页，对话正文那棵对话树都在，
     对方双击就能看，不需要装任何东西（见 `app/share.py`）。
     """
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     all_messages = _messages_of(db, conv)
 
     if format == "html":
@@ -1340,13 +1327,12 @@ def export_conversation(
 
 @router.get("/export")
 def export_all(
-    user: CurrentUser,
     db: DbSession,
     format: str = Query("json", description="只有 json：全部分支 + 全部零件"),
 ) -> PlainTextResponse:
     """把所有对话导出成一个文件 —— 这是"我的轨迹"的完整备份。"""
     conversations = db.scalars(
-        select(Conversation).where(Conversation.user_id == user.id).order_by(Conversation.created_at)
+        select(Conversation).order_by(Conversation.created_at)
     ).all()
     payload = {
         "format": EXPORT_FORMAT,
@@ -1370,7 +1356,7 @@ def export_all(
 
 @router.post("/conversations/{cid}/messages")
 def post_message(
-    cid: uuid.UUID, payload: dict, user: AuthenticatedWriter, db: DbSession
+    cid: uuid.UUID, payload: dict, db: DbSession
 ) -> StreamingResponse:
     """追加一条用户消息，并以 SSE 流式回一条助手消息。
 
@@ -1380,7 +1366,7 @@ def post_message(
     配置与配额在**开流之前**校验：一旦开始发 SSE，状态码就发出去了，
     那时再报「没填密钥」用户只会看到一个空白的错误。
     """
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     body = payload or {}
     content = str(body.get("content") or "").strip()
     reply_to = body.get("replyTo")
@@ -1390,8 +1376,8 @@ def post_message(
     _deep = body.get("thinking")
     thinking = True if _deep is None else bool(_deep)
 
-    conf = gateway.resolve_config(db, user.id)
-    gateway.enforce_quota(db, user.id)
+    conf = gateway.resolve_config(db)
+    gateway.enforce_quota(db)
 
     cont = False
 
@@ -1401,7 +1387,7 @@ def post_message(
         except (TypeError, ValueError):
             raise HTTPException(400, "replyTo 不是合法的消息 id") from None
         parent = db.get(Message, parent_id)
-        if parent is None or parent.conversation_id != conv.id or parent.user_id != user.id:
+        if parent is None or parent.conversation_id != conv.id:
             raise HTTPException(404, "没有这条消息")
         if parent.role != "user":
             raise HTTPException(400, "只能针对用户消息重新生成")
@@ -1440,13 +1426,12 @@ def post_message(
             except (TypeError, ValueError):
                 raise HTTPException(400, "parentId 不是合法的消息 id") from None
             parent = db.get(Message, wanted)
-            if parent is None or parent.conversation_id != conv.id or parent.user_id != user.id:
+            if parent is None or parent.conversation_id != conv.id:
                 raise HTTPException(404, "没有这条消息")
             parent_id = parent.id
 
         user_msg = Message(
             conversation_id=conv.id,
-            user_id=user.id,
             parent_id=parent_id,
             role="user",
             content=content[:MAX_CONTENT],
@@ -1466,7 +1451,7 @@ def post_message(
                     row = db.get(Attachment, uuid.UUID(str(raw)))
                 except (TypeError, ValueError):
                     continue
-                if row is not None and row.user_id == user.id and row.message_id is None:
+                if row is not None and row.message_id is None:
                     attached.append(row)
             if attached:
                 user_msg.parts = [
@@ -1514,7 +1499,6 @@ def post_message(
 
     assistant = Message(
         conversation_id=conv.id,
-        user_id=user.id,
         parent_id=user_msg.id,
         role="assistant",
         content="",
@@ -1526,7 +1510,7 @@ def post_message(
     db.refresh(assistant)
 
     return StreamingResponse(
-        _stream(db, user, conv, conf, user_msg, assistant, history, thinking=thinking),
+        _stream(db, conv, conf, user_msg, assistant, history, thinking=thinking),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1562,7 +1546,7 @@ def deliver_run(run_id: str, body: dict, db: DbSession) -> dict:
 
 @router.post("/conversations/{cid}/messages/{mid}/run")
 def attach_run(
-    cid: uuid.UUID, mid: int, payload: dict, user: AuthenticatedWriter, db: DbSession
+    cid: uuid.UUID, mid: int, payload: dict, db: DbSession
 ) -> dict:
     """把沙箱那次运行的结果**回填到消息上**。
 
@@ -1577,7 +1561,7 @@ def attach_run(
 
     按 `runId` 认领：一次运行对应一个零件；认不出来就当没这回事（不静默写坏零件）。
     """
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     message = db.get(Message, mid)
     if message is None or message.conversation_id != conv.id:
         raise HTTPException(404, "没有这条消息")
@@ -1624,7 +1608,7 @@ def attach_run(
 
 
 @router.post("/conversations/{cid}/messages/{mid}/stop")
-def stop_message(cid: uuid.UUID, mid: int, user: AuthenticatedWriter, db: DbSession) -> dict:
+def stop_message(cid: uuid.UUID, mid: int, db: DbSession) -> dict:
     """前端按了停止 —— 把这条正在生成的消息收尾成「已中断」。
 
     为什么要专门开一个端点：服务端**自己感知不到**客户端断开（见模块 docstring），
@@ -1634,9 +1618,9 @@ def stop_message(cid: uuid.UUID, mid: int, user: AuthenticatedWriter, db: DbSess
     `_finish` 会尊重这次收尾，不再覆盖（否则"停止"过一会儿会自己变回 `ok`，
     用户下次打开看到一条他没读完却被标成完整的回答）。
     """
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     m = db.get(Message, mid)
-    if m is None or m.conversation_id != conv.id or m.user_id != user.id:
+    if m is None or m.conversation_id != conv.id:
         raise HTTPException(404, "没有这条消息")
 
     if m.status == "streaming":
@@ -1674,7 +1658,7 @@ def _subtree_size(db, cid: uuid.UUID, mid: int) -> int:
 
 
 @router.delete("/conversations/{cid}/messages/{mid}")
-def delete_message(cid: uuid.UUID, mid: int, user: AuthenticatedWriter, db: DbSession) -> dict:
+def delete_message(cid: uuid.UUID, mid: int, db: DbSession) -> dict:
     """删掉一条消息，**连同它下面的整棵子树**（对话树界面上"删掉这个分支"那一步）。
 
     为什么连子树一起删：这是棵树，留下孩子就等于留下**指不到根的孤枝**
@@ -1688,9 +1672,9 @@ def delete_message(cid: uuid.UUID, mid: int, user: AuthenticatedWriter, db: DbSe
 
     回给界面 `deleted`（这一支一共几条），好让它说的是确数而不是"删好了"。
     """
-    conv = _own_conversation(db, user.id, cid)
+    conv = _own_conversation(db, cid)
     m = db.get(Message, mid)
-    if m is None or m.conversation_id != conv.id or m.user_id != user.id:
+    if m is None or m.conversation_id != conv.id:
         raise HTTPException(404, "没有这条消息")
 
     deleted = _subtree_size(db, conv.id, mid)
@@ -1733,7 +1717,6 @@ def _spill(db: DbSession, assistant: Message, parts: list[dict]) -> None:  # noq
 
 def _finish(  # noqa: ANN001
     db: DbSession,
-    user,
     conv: Conversation,
     assistant: Message,
     parts: list[dict],
@@ -1762,7 +1745,6 @@ def _finish(  # noqa: ANN001
 
     gateway.record_usage(
         db,
-        user,
         ok=(status == "ok"),
         latency_ms=latency_ms,
         prompt_tokens=assistant.prompt_tokens,
@@ -1773,7 +1755,6 @@ def _finish(  # noqa: ANN001
 
 def _stream(  # noqa: ANN001
     db: DbSession,
-    user,
     conv: Conversation,
     conf: dict,
     user_msg: Message,
@@ -1845,7 +1826,6 @@ def _stream(  # noqa: ANN001
 
         for event in agent_loop.run(
             db,
-            user,
             conf,
             # 提示词随**这一版挂载的组**变（极简模式是一份完全不同的提示词：
             # 它不该知道用户有笔记/资料/题库，见 build_prompt 的说明）
@@ -2033,7 +2013,6 @@ def _stream(  # noqa: ANN001
         )
         _finish(
             db,
-            user,
             conv,
             assistant,
             parts,
@@ -2050,7 +2029,7 @@ def _stream(  # noqa: ANN001
         status = "error"
         error = str(exc)[:300]
 
-    _finish(db, user, conv, assistant, parts, status, error, finish, gateway.elapsed_ms(started), usage)
+    _finish(db, conv, assistant, parts, status, error, finish, gateway.elapsed_ms(started), usage)
 
     if status == "error":
         if not error_sent:

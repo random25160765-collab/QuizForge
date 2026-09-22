@@ -72,7 +72,7 @@ def _stem(question: Question, limit: int = 120) -> str:
 # ---------------------------------------------------------------- 检索
 
 
-def search_knowledge(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def search_knowledge(db, args, ctx=None) -> dict:  # noqa: ANN001
     query = str(args.get("query") or "").strip()
     limit = _clamp(args.get("limit"), 1, 20, 8)
     if not query:
@@ -148,7 +148,7 @@ def search_knowledge(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def get_point_detail(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def get_point_detail(db, args, ctx=None) -> dict:  # noqa: ANN001
     key = str(args.get("key") or "").strip()
     if not key:
         return {"error": "key 不能为空"}
@@ -164,7 +164,7 @@ def get_point_detail(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         return _concept_detail(db, concept)
 
     # 退一步：既不是点也不是概念 key 时，用模糊搜给个线索，而不是干巴巴一句"没有"
-    preview = search_knowledge(db, user, {"query": key, "limit": 5})
+    preview = search_knowledge(db, {"query": key, "limit": 5})
     return {"error": f"没有 key 为 {key} 的点或概念", "similar": preview}
 
 
@@ -318,7 +318,7 @@ def _concept_detail(db, concept: Concept) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 状态
 
 
-def get_existing_questions(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def get_existing_questions(db, args, ctx=None) -> dict:  # noqa: ANN001
     point_key = str(args.get("pointKey") or "").strip()
     layer = str(args.get("layer") or "").strip()
     qtype = str(args.get("type") or "").strip()
@@ -380,7 +380,7 @@ def _record_dict(record: Record | None) -> dict:  # noqa: ANN001
     }
 
 
-def _bands_by_point(db, user, keys=None):  # noqa: ANN001
+def _bands_by_point(db, keys=None):  # noqa: ANN001
     """按知识点算掌握档位 —— `get_mastery` 与图检索**共用**这一份口径。
 
     为什么必须共用：图检索里"这个前置还没打牢"的判据，与 `get_mastery`
@@ -392,7 +392,7 @@ def _bands_by_point(db, user, keys=None):  # noqa: ANN001
     now = int(time.time() * 1000)
     records = {
         record.question_id: record
-        for record in db.scalars(select(Record).where(Record.user_id == user.id)).all()
+        for record in db.scalars(select(Record)).all()
     }
     rows = db.execute(
         select(QuestionPoint.question_id, KnowledgePoint.key)
@@ -426,9 +426,9 @@ def _bands_by_point(db, user, keys=None):  # noqa: ANN001
     return out
 
 
-def get_mastery(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def get_mastery(db, args, ctx=None) -> dict:  # noqa: ANN001
     keys = [str(k) for k in (args.get("pointKeys") or []) if str(k).strip()]
-    bands = _bands_by_point(db, user, keys or None)
+    bands = _bands_by_point(db, keys or None)
     items = sorted(bands.values(), key=lambda item: (item["score"], item["key"]))
     return {
         "items": items[:40],
@@ -436,14 +436,13 @@ def get_mastery(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def get_due_reviews(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def get_due_reviews(db, args, ctx=None) -> dict:  # noqa: ANN001
     limit = _clamp(args.get("limit"), 1, 30, 10)
     now = int(time.time() * 1000)
 
     rows = db.execute(
         select(Record.question_id, Record.patch, Question.layer, Question.type)
         .join(Question, Question.id == Record.question_id)
-        .where(Record.user_id == user.id)
         .where(Question.retired_at.is_(None))
     ).all()
 
@@ -569,7 +568,7 @@ def _pushed_ids(db, ctx) -> set[str]:  # noqa: ANN001
     return out
 
 
-def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def push_question(db, args, ctx=None) -> dict:  # noqa: ANN001
     """推一道题给学生做：返回一张题卡（不含答案）。
 
     ## 选题规则刻意写得笨
@@ -616,7 +615,7 @@ def push_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 
     records = {
         record.question_id: record
-        for record in db.scalars(select(Record).where(Record.user_id == user.id)).all()
+        for record in db.scalars(select(Record)).all()
     }
     pushed = _pushed_ids(db, ctx)
 
@@ -1117,7 +1116,7 @@ def _python_page(title: str, code: str, packages: list[str], run_id: str) -> str
     )
 
 
-def run_python(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def run_python(db, args, ctx=None) -> dict:  # noqa: ANN001
     """在沙箱里**真跑**一段 Python（Pyodide），结果落在演示面板里。
 
     ## 为什么要有它
@@ -1372,7 +1371,7 @@ def _demo_page(page: str, title: str) -> str:
     )
 
 
-def render_demo(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
     """产出一个**可运行的演示**，界面在沙箱 iframe 里跑它。
 
     ## 什么时候值得用
@@ -1511,7 +1510,7 @@ def _graph_seed(db, key: str, query: str):  # noqa: ANN001
     )
 
 
-def explore_graph(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def explore_graph(db, args, ctx=None) -> dict:  # noqa: ANN001
     """从一个概念出发，走**语义关系**看邻域。
 
     ## 与 `search_knowledge` 的分工
@@ -1602,7 +1601,7 @@ def explore_graph(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     ).all():
         keys_by_concept.setdefault(concept_id, []).append(point_key)
     bands = _bands_by_point(
-        db, user, [key for keys in keys_by_concept.values() for key in keys] or None
+        db, [key for keys in keys_by_concept.values() for key in keys] or None
     )
 
     def band_of(concept_id: int) -> str:
@@ -1644,22 +1643,22 @@ def explore_graph(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 材料正文
 
 
-def _query_vector(db, user, query: str):  # noqa: ANN001
+def _query_vector(db, query: str):  # noqa: ANN001
     """把查询句子变成向量。**拿不到就返回 None** —— 检索层会退回纯字面并说明。
 
-    两条护栏，都是为了"**别让一次向量化失败拖垮整次检索**"：
+    三条护栏，都是为了"**别让一次向量化失败拖垮整次检索**"：
 
     * 库里一片向量都没有（还没跑 `python -m pipeline.embed`）→ **连试都不试**。
       试了也没有可比的东西，纯白花一次调用。
     * 算不出查询向量（模型没就绪 / 通道不给 embedding）→ 返回 None，
       字面那一路照常出结果。
+    * **没配密钥 / AI 被关掉**（工具表允许脱离请求直接调，测试里就是这么调的）
+      → 同样返回 None。这条不能漏：`resolve_config` 在那种情况下抛 503，
+      漏了它会让"纯字面检索"这条本应可用的路整条炸掉。
 
     两条路，**本地优先**：本地小模型离线可用、零边际成本，而这是每次检索都要走的路
     （远程按次计费是随使用量长出来的，见 `local_embed` 的模块注释）。
     本地没就绪才退到远程通道。
-
-    `user` 可能是 None（工具表允许脱离用户直接调，测试里就是这么调的）——
-    那种情况下取不到远程配置，但**本地模型不依赖用户**，所以仍然能用。
     """
     text = str(query or "").strip()
     if not text:
@@ -1679,19 +1678,22 @@ def _query_vector(db, user, query: str):  # noqa: ANN001
         if vectors:
             return vectors[0]
 
-    if user is None:
-        return None
+    from fastapi import HTTPException
+
     from . import ai_gateway as gateway  # 延迟导入：与 web_search 同一条理由
 
     try:
-        conf = gateway.resolve_config(db, user.id)
+        conf = gateway.resolve_config(db)
+    except HTTPException:
+        return None
+    try:
         vectors = gateway.embed_texts(conf, [text])
     except (gateway.EmbeddingUnavailable, gateway.UpstreamError, httpx.HTTPError):
         return None
     return vectors[0] if vectors else None
 
 
-def search_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def search_material(db, args, ctx=None) -> dict:  # noqa: ANN001
     """在材料**原文**里检索 —— 不是概念库，是正文本身。
 
     ## 两条路一起用，`via` 会告诉你哪条找到的
@@ -1716,10 +1718,10 @@ def search_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     `search_knowledge` 查的是**知识空间**（概念、点、题）；这个查的是**文本**。
     想知道"材料里原话怎么说的"，用这个；想知道"这个点在图谱里的位置"，用那个。
     """
-    return _search_by_depth(db, user, args, "出题")
+    return _search_by_depth(db, args, "出题")
 
 
-def _search_by_depth(db, user, args, depth: str) -> dict:  # noqa: ANN001
+def _search_by_depth(db, args, depth: str) -> dict:  # noqa: ANN001
     """两条检索工具共用的身子：只有"看哪一档资料"不同。
 
     `sources` 是给宿主看的约定：router 会把它变成**引用零件**，
@@ -1730,7 +1732,7 @@ def _search_by_depth(db, user, args, depth: str) -> dict:  # noqa: ANN001
     result = semantic.search_fused(
         db,
         query,
-        query_vec=_query_vector(db, user, query),
+        query_vec=_query_vector(db, query),
         slug=str(args.get("slug") or "").strip(),
         limit=_clamp(args.get("limit"), 1, 8, 5),
         depth=depth,
@@ -1750,7 +1752,7 @@ def _search_by_depth(db, user, args, depth: str) -> dict:  # noqa: ANN001
     return result
 
 
-def search_library(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def search_library(db, args, ctx=None) -> dict:  # noqa: ANN001
     """在**资料库**里检索（`depth=检索` 的那一档）—— 和 `search_material` 是一对。
 
     ## 和 `search_material` 的分工，只看一件事：**这份资料要不要出题**
@@ -1768,10 +1770,10 @@ def search_library(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     **在一个里没找到，就去另一个里再问一次** —— 它们不是"同一个库的两种搜法"，
     而是两个书架。只搜一个就下结论（"材料里没有"），是这里最容易犯的错。
     """
-    return _search_by_depth(db, user, args, "检索")
+    return _search_by_depth(db, args, "检索")
 
 
-def read_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def read_material(db, args, ctx=None) -> dict:  # noqa: ANN001
     """按 (slug, 行区间) 读材料原文。
 
     这是"引用能点回原文"的服务端一半：前端点开引用时读的是同一个函数，
@@ -1813,7 +1815,7 @@ def read_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 大题批改写回
 
 
-def grade_problem(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def grade_problem(db, args, ctx=None) -> dict:  # noqa: ANN001
     """把一次**大题批改**的结果写进答题记录。
 
     这是这一层里唯一会改状态的工具，而它改的是 `records` —— 与选择题/填空题
@@ -1864,12 +1866,9 @@ def grade_problem(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         status = "partial"
 
     now = int(time.time() * 1000)
-    record = db.scalar(
-        select(Record).where(Record.user_id == user.id, Record.question_id == question.id)
-    )
+    record = db.scalar(select(Record).where(Record.question_id == question.id))
     if record is None:
         record = Record(
-            user_id=user.id,
             question_id=question.id,
             attempts=0,
             correct=0,
@@ -1926,7 +1925,7 @@ def grade_problem(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 _ACTION_FIELDS = {"flag": "flagged", "mastered": "mastered"}
 
 
-def _question_proposal(db, user, question_id, kind: str, on) -> dict:  # noqa: ANN001
+def _question_proposal(db, question_id, kind: str, on) -> dict:  # noqa: ANN001
     """组装一张凭条。**只读不写** —— 这是它存在的全部意义。"""
     question_id = str(question_id or "").strip()
     if not question_id:
@@ -1936,9 +1935,7 @@ def _question_proposal(db, user, question_id, kind: str, on) -> dict:  # noqa: A
         return {"error": "题库里没有这道题：" + question_id}
 
     field = _ACTION_FIELDS[kind]
-    record = db.scalar(
-        select(Record).where(Record.user_id == user.id, Record.question_id == question_id)
-    )
+    record = db.scalar(select(Record).where(Record.question_id == question_id))
     current = bool(getattr(record, field, False)) if record is not None else False
 
     return {
@@ -1956,7 +1953,7 @@ def _question_proposal(db, user, question_id, kind: str, on) -> dict:  # noqa: A
     }
 
 
-def flag_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def flag_question(db, args, ctx=None) -> dict:  # noqa: ANN001
     """提案：把某道题加入收藏夹 / 移出收藏夹。**不改任何东西**。
 
     ## 为什么是提案而不是直接写
@@ -1965,16 +1962,16 @@ def flag_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     但按下去的那一下得是他自己 —— 界面上会出现一张凭条，
     他点确认才落到记录里（走的是收藏夹那条老路）。
     """
-    return _question_proposal(db, user, args.get("questionId"), "flag", args.get("on", True))
+    return _question_proposal(db, args.get("questionId"), "flag", args.get("on", True))
 
 
-def mark_mastered(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def mark_mastered(db, args, ctx=None) -> dict:  # noqa: ANN001
     """提案：把某道题标成「已掌握」（错题本不再催它）/ 取消这个标记。**不改任何东西**。
 
     这道题的作答记录**不会**因此变化 —— 标记掌握是"别再催我了"，
     不是"我答对了"。掌握度仍然只从作答长出来。
     """
-    return _question_proposal(db, user, args.get("questionId"), "mastered", args.get("on", True))
+    return _question_proposal(db, args.get("questionId"), "mastered", args.get("on", True))
 
 
 # ---------------------------------------------------------------- 登记
@@ -2001,7 +1998,7 @@ def _draft_options(raw: object) -> list[dict]:
     return out
 
 
-def create_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def create_question(db, args, ctx=None) -> dict:  # noqa: ANN001
     """自己出一道题 —— **临时题**：先只留在对话里，用户按「存进题单」才落库。
 
     ## 为什么要这个工具
@@ -2013,7 +2010,7 @@ def create_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     ## 临时题与题库的关系
 
     * **默认不落库**：返回的是一张草稿卡，用户看着它作答；他觉得值得留，按「存进题单」
-      才写进 `user_questions`（与公共题库分开，见 `routers/mybank.py`）。
+      才写进 `my_questions`（与公共题库分开，见 `routers/mybank.py`）。
     * **随出随改**：要改就再调一次这个工具（或让用户说哪里不对）—— 每次都是新草稿，
       不必去动题单里已有的那道。
     * 答案**随草稿一起发给界面**（前端要判分），但**不进模型的上下文回放**
@@ -2118,7 +2115,7 @@ def create_question(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # ---------------------------------------------------------------- 笔记 / 资料（可挂载）
 
 
-def read_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def read_note(db, args, ctx=None) -> dict:  # noqa: ANN001
     """读一篇笔记：正文 + 大纲 + 反链。
 
     与 `search_notes` 的分工：那个回答"命中在哪"，这个回答"那一篇写了什么"。
@@ -2189,7 +2186,7 @@ def read_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     return out
 
 
-def list_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def list_notes(db, args, ctx=None) -> dict:  # noqa: ANN001
     """列出笔记库；带 `lib` 时给那个库的笔记清单。
 
     为什么需要：`search_notes` 是**按关键词**找 —— 用户问"我笔记里都记了什么"时，
@@ -2253,7 +2250,7 @@ def list_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def search_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def search_notes(db, args, ctx=None) -> dict:  # noqa: ANN001
     """在笔记里找。**跨所有笔记库**（Math / Personal / Philosophy / Tech）。
 
     与 `search_material` 的分工：那份材料在**资料根**下（PDF、手册、别人的东西），
@@ -2307,7 +2304,7 @@ def _excerpt(text: str, start: int, length: int, pad: int = 60) -> str:
     return ("…" if lo > 0 else "") + text[lo:hi] + ("…" if hi < len(text) else "")
 
 
-def edit_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def edit_note(db, args, ctx=None) -> dict:  # noqa: ANN001
     """改一篇笔记里的**某一处**：给一段原文（`old`），换成新的（`new`）。
 
     与 `write_note` 的分工：那个只在**末尾**接一段；这个能改中间、能替换，也能删
@@ -2389,7 +2386,7 @@ def edit_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def write_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def write_note(db, args, ctx=None) -> dict:  # noqa: ANN001
     """把一段话**追加到某篇笔记的末尾**。
 
     **只在"接到末尾"时用它**（用户说"记到那篇笔记里""把这段结论挂上去"）。
@@ -2424,7 +2421,7 @@ def write_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def attach_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def attach_material(db, args, ctx=None) -> dict:  # noqa: ANN001
     """把一份资料挂进这次对话：给出它的元数据与一段正文。
 
     "挂"的实际含义是**把正文交给这一轮的模型上下文**（条目粒度是计划里定死的：
@@ -2490,7 +2487,7 @@ def attach_material(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 # 模型会念给用户听，那比一句"搜索失败"有用得多（本模块 docstring 那条"异常边界"）。
 
 
-def web_search(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def web_search(db, args, ctx=None) -> dict:  # noqa: ANN001
     """搜一次公开网页。"""
     from . import websearch  # 延迟导入：它要读设置，而设置在导入期还没就位
 
@@ -2544,7 +2541,7 @@ def web_search(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def search_papers(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def search_papers(db, args, ctx=None) -> dict:  # noqa: ANN001
     """搜学术文献。走的是**学术索引**（OpenAlex，免密钥），不是通用网页索引。"""
     from . import websearch
 
@@ -2576,7 +2573,7 @@ def search_papers(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def read_web_page(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def read_web_page(db, args, ctx=None) -> dict:  # noqa: ANN001
     """把一个网页读成正文（`web_search` 之后的下一步）。"""
     from . import websearch
 
@@ -2628,7 +2625,7 @@ ACCESS_LEVELS: tuple[str, ...] = ("read", "propose", "write", "exec")
 META_TOOLS: tuple[str, ...] = ("run_subagent",)
 
 
-def run_subagent(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def run_subagent(db, args, ctx=None) -> dict:  # noqa: ANN001
     """把一条长工具链派给子代理（实现见 `app/subagent.py`）。
 
     **权限照抄当前这一份**（`ctx` 里的 `mounts` / `allow`，由 `call` 顺手放进来的）——
@@ -2642,7 +2639,6 @@ def run_subagent(db, user, args, ctx=None) -> dict:  # noqa: ANN001
 
     return subagent.run(
         db,
-        user,
         task=str(args.get("task") or ""),
         wants=str(args.get("wants") or ""),
         mounts=(ctx or {}).get("mounts"),
@@ -2652,7 +2648,7 @@ def run_subagent(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     )[1]
 
 
-def read_learning_tree(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+def read_learning_tree(db, args, ctx=None) -> dict:  # noqa: ANN001
     """把**这次会话**的对话树，按「递归学习法」的形状读出来（实现见 `app/recursion.py`）。
 
     用户的学习方式是**递归**的：一个概念不懂就求讲解，讲解里又冒出几个不懂的概念，
@@ -2676,7 +2672,7 @@ def read_learning_tree(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         conv = db.get(Conversation, uuid.UUID(str(conv_id)))
     except (TypeError, ValueError):
         return {"error": "会话 id 不是合法形式。"}
-    if conv is None or conv.user_id != user.id:
+    if conv is None:
         return {"error": "没找到这条会话。"}
 
     ids = args.get("ids")
@@ -3417,7 +3413,6 @@ def access_of(name: str) -> str:
 
 def call(
     db,
-    user,
     name: str,
     args: dict,
     ctx: dict | None = None,
@@ -3467,7 +3462,7 @@ def call(
         scope = dict(ctx or {})
         scope.setdefault("mounts", mounts)
         scope.setdefault("allow", allow)
-        return True, spec["fn"](db, user, args or {}, scope)
+        return True, spec["fn"](db, args or {}, scope)
     except Exception as exc:  # noqa: BLE001
         return False, {"error": type(exc).__name__ + ": " + str(exc)[:200]}
 

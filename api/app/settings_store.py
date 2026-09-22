@@ -1,28 +1,29 @@
-"""这台机器的设置：单用户形态下唯一的那一行 `user_settings`。
+"""这台机器的设置：`app_settings` 表里唯一的那一行。
 
-**为什么还要一层**：表按 `user_id` 分行是登录时代的形状 —— `deps.py` 的注释
-交代了为什么不动 `user_id`（单用户下 `user_id == user.id` 恒真，删它是一次全库
-重构）。但"取设置"这件事在**业务代码**里不该再看见"用户"：谁在调、是哪个用户，
-这一层自己解决。
+**为什么还要一层**：设置整份存一个 JSON（`AppSettings.data`），
+读写的调用点很多（挂载开关、主题、选题篮……），让它们各写一次
+`db.get(AppSettings, 1)` 既啰嗦、又容易忘 `create=True`（于是读到一个 None，
+表现是"我的开关自己重置了"）。这一层自己解决"那一行在不在、要不要建"。
 
-这样还顺手挡住一类错误：调用点把 `user_id` 传错（比如传了别的 id），静默读到
-另一行 —— 单用户下读到的会是空设置，看起来像"我的开关自己重置了"。
+（2026-09-22 之前这里是 `user_settings` 表 + `get_local_user`：
+取的是"本机唯一用户"名下那一行。用户没了，那层间接也没了。）
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from .deps import get_local_user
-from .models import UserSettings
+from .models import AppSettings
+
+#: 单例那一行固定用它 —— 表本来就是个单行表，主键只是个占位。
+SETTINGS_ID = 1
 
 
 def row(db: Any, *, create: bool = False) -> Any:
     """那唯一一行。`create=True` 时不存在就建出来。"""
-    user = get_local_user(db)
-    found = db.get(UserSettings, user.id)
+    found = db.get(AppSettings, SETTINGS_ID)
     if found is None and create:
-        found = UserSettings(user_id=user.id, data={})
+        found = AppSettings(id=SETTINGS_ID, data={})
         db.add(found)
         db.commit()
     return found
