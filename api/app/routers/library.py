@@ -27,6 +27,7 @@ from .. import library as lib
 from .. import library_meta
 from .. import notelib
 from ..deps import DbSession
+from ..drive_paths import drive_roots
 from ..models import AppSettings
 from ..settings_store import row as settings_row
 
@@ -97,8 +98,9 @@ def default_roots() -> list[Path]:
     """默认资料根。
 
     优先 `QF_LIBRARY_ROOTS`（冒号或分号分隔，测试与"另有安排"时用），
-    否则用仓库里的 `reference/`（开发环境它是指向 `F:\\Documents` 的软链），
-    再否则用 `F:/Documents`（Windows 上的正式默认）。
+    否则用仓库里的 `reference/`（它是**仓库外**那份资料目录的软链），
+    再否则在盘里找 `Documents` —— **不写死盘符**：素材挂在哪块盘是这台机器的事，
+    写死一个 `F:` 在换机器时就悄悄失效（不报错，只是"找不到资料"）。
     """
     env = os.environ.get(ROOTS_ENV, "").strip()
     if env:
@@ -106,8 +108,9 @@ def default_roots() -> list[Path]:
     link = Path(__file__).resolve().parents[3] / "reference"
     if link.is_dir():
         return [link]
-    if Path("F:/Documents").is_dir():
-        return [Path("F:/Documents")]
+    for candidate in drive_roots("Documents"):
+        if candidate.is_dir():
+            return [candidate]
     return []
 
 

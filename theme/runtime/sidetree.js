@@ -715,7 +715,7 @@
   function addVault() {
     var input = h('input.input', {
       type: 'text',
-      placeholder: '文件夹的完整路径，例如 F:\\Vaults\\Math',
+      placeholder: '文件夹的完整路径，例如 D:\\我的笔记',
     });
     var box = ui.modal({
       title: '添加笔记库',
