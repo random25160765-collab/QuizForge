@@ -30,8 +30,32 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "api"))
 
-#: 源库的默认位置：开发在 WSL 里看 F 盘是 `/mnt/f`，Windows 上是 `F:\`
-DEFAULT_ROOTS = ("/mnt/f/Vaults", "F:/Vaults", "F:\\Vaults")
+def _default_roots() -> tuple[Path, ...]:
+    """源库（笔记库）的候选位置 —— 它在**仓库之外**，没有一条写死的路径能通用。
+
+    顺序：
+      1. 环境变量 `QF_VAULT_ROOTS`（`os.pathsep` 分隔，想指哪都行）；
+      2. WSL 下扫 `/mnt/<盘>/Vaults`（F 盘只是其中一种可能）；
+      3. Windows 原生 Python 下的盘符写法。
+    踩过：这里原先写死 `F:` 盘（`/mnt/f/Vaults`、`F:\\Vaults`），
+    换台机器换个盘符就得改代码。都没命中时返回空，由调用方报错并提示 `--root`。
+    """
+    env = os.environ.get("QF_VAULT_ROOTS")
+    if env:
+        return tuple(Path(p).expanduser() for p in env.split(os.pathsep) if p)
+
+    found: list[Path] = []
+    try:
+        # 只认单字母挂载点（`/mnt/c`、`/mnt/f` 才是 Windows 盘；
+        # `/mnt/wsl`、`/mnt/wslg` 是 WSL 自己的内部挂载，不是用户盘）
+        drives = sorted(
+            p for p in Path("/mnt").iterdir() if p.is_dir() and len(p.name) == 1
+        )
+    except OSError:  # pragma: no cover - 非 WSL 环境里 /mnt 不可读
+        drives = []
+    found += [drive / "Vaults" for drive in drives]
+    found += [Path(f"{letter}:/Vaults") for letter in ("C", "D", "E", "F", "G")]
+    return tuple(found)
 
 #: 不进语义的目录（配置、回收站之类）—— 不导入，**也不删**
 SKIP_DIRS = frozenset({".obsidian", ".trash", ".git", "__pycache__", ".smart-env"})
@@ -91,12 +115,12 @@ def _configure_console() -> None:
                 pass
 
 
-def _default_root() -> Path:
-    for candidate in DEFAULT_ROOTS:
-        path = Path(candidate)
-        if path.is_dir():
-            return path
-    return Path(DEFAULT_ROOTS[0])
+def _default_root() -> Path | None:
+    """第一个真实存在的候选位置；一个都没有就给 None，交给调用方报错。"""
+    for candidate in _default_roots():
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -400,7 +424,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="把笔记库导入应用数据目录（非破坏、幂等、可核对）"
     )
-    parser.add_argument("--root", default="", help=f"库的根目录，默认按序找：{DEFAULT_ROOTS}")
+    parser.add_argument(
+        "--root",
+        default="",
+        help="库的根目录（放各个 vault 的那个目录）。默认候选见 _default_roots()："
+        "先看环境变量 QF_VAULT_ROOTS，否则扫 /mnt/<盘>/Vaults 与盘符写法",
+    )
     parser.add_argument("--vault", action="append", default=[], help="要导入哪个库，可重复")
     parser.add_argument("--notes-root", default="", help="导入到哪（默认 <数据目录>/notes）")
     parser.add_argument("--data-dir", default="", help="整个应用数据目录（会覆盖 QF_DATA_DIR）")
@@ -415,8 +444,9 @@ def main(argv: list[str] | None = None) -> int:
     settings = get_settings()
     notes_root = Path(args.notes_root) if args.notes_root else settings.data_dir / "notes"
     root = Path(args.root) if args.root else _default_root()
-    if not root.is_dir():
-        print(f"找不到库的根目录：{root}（用 --root 指一下）")
+    if root is None or not root.is_dir():
+        print("找不到库的根目录。用 --root 指一下（放各个 vault 的那个目录），")
+        print("或设 QF_VAULT_ROOTS=/mnt/<盘>/Vaults（多个用 os.pathsep 分隔）。")
         return 2
 
     names = args.vault or sorted(

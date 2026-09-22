@@ -287,7 +287,7 @@ def sync_pyodide(force: bool = False) -> int:
                     print(f"[ERROR] 来源目录缺 {name}：{source_dir}", file=sys.stderr)
                     return 2
                 shutil.copyfile(origin, VENDOR_PYODIDE / name)
-            origin_text = str(source_dir)
+            origin_text = _origin(source_dir)
         else:
             print(f"[INFO] 从 CDN 取 Pyodide {PYODIDE_VERSION} 运行时（约 13MB，只此一次）")
             for name in PYODIDE_FILES:
@@ -408,7 +408,7 @@ def sync_demo_kit(force: bool = False) -> int:
                 print(f"[ERROR] 来源目录缺 {name}：{source_dir}", file=sys.stderr)
                 return 2
             shutil.copyfile(origin, VENDOR_DEMO_KIT / name)
-        origin_text = str(source_dir)
+        origin_text = _origin(source_dir)
     else:
         for name, url in DEMO_KIT_SOURCES.items():
             print(f"[INFO] 取 {name} …")
@@ -547,7 +547,7 @@ def sync_katex(force: bool = False) -> int:
     (VENDOR_KATEX / "SOURCE.md").write_text(
         "# vendored KaTeX\n\n"
         f"- version: {version}\n"
-        f"- source: {src}\n"
+        f"- source: {_origin(src)}\n"
         f"- synced_at: {_dt.datetime.now().isoformat(timespec='seconds')}\n"
         f"- fonts: {copied} woff2 (woff/ttf fallbacks stripped)\n"
         f"- katex.min.js sha256: {_sha256(VENDOR_KATEX / 'katex.min.js')}\n"
@@ -593,6 +593,26 @@ def _sha256(path: Path) -> str:
 def _rel(path: Path) -> str:
     try:
         return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _origin(path: Path) -> str:
+    """写进 `SOURCE.md` 的**来源位置** —— 不写开发机的绝对路径。
+
+    三级退化：仓库内给相对仓库根的路径；家目录下给 `~/...`；都不沾
+    （比如挂在别处的盘）才原样输出。
+
+    `SOURCE.md` 是进版本库的（仓库公开），而绝对路径里带着某台机器的用户名和
+    目录结构：换台机器就不成立，对别人也没有信息量。这里要说清的是
+    \"从哪儿同步来的\"，而不是\"这台机器上是谁的目录\"。
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        pass
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
     except ValueError:
         return str(path)
 
