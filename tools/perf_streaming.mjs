@@ -18,7 +18,8 @@
  * 历史：2026-09-20 首次用它量出"拖尾 2s+、整个流式期间一次都不渲染"——
  * 根因是那个 100ms 的节流写成了防抖（每个 chunk 都重设计时器、永不触发）。
  *
- * 注：playwright-core 是外部依赖（本机装在哪就找哪），见 resolvePlaywright()。
+ * 注：playwright-core 是外部依赖，脚本**不猜**它装在哪 —— 先看你有没有用
+ * PLAYWRIGHT_CORE 显式指，再退回按包名解析。见 resolvePlaywright()。
  * ========================================================================= */
 import { createRequire } from 'node:module';
 
@@ -28,7 +29,6 @@ function resolvePlaywright() {
   const tries = [
     process.env.PLAYWRIGHT_CORE,
     'playwright-core',
-    '/home/rd/.npm-global/lib/node_modules/@playwright/cli/node_modules/playwright-core',
   ];
   for (const one of tries) {
     if (!one) continue;
