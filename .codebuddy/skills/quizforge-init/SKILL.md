@@ -37,8 +37,8 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 | `docs/` | `STATUS.md`（当前状态）· `THESIS.md`（**业务立论**：为什么这么设计）· `DESIGN.md`（设计说明）· 截图 |
 | `draft/` | 人写的手写题与草稿（与机器生成的 `maps/` 分开） |
 | `maps/` | 机器生成的切片索引、覆盖矩阵与暂存区（可重建） |
-| `reference/` | → `/mnt/f/Documents` 的**只读**软链：手册、论文、教科书 |
-| `Codebase/` | → `/home/rd/Source/` 的**只读**软链：QEMU 书稿、CUTLASS、Tenstorrent ISA |
+| `reference/` | **仓库外**的只读软链：手册、论文、教科书（指向哪由本机决定，不进版本库）|
+| `Codebase/` | **仓库外**的只读软链：QEMU 书稿、CUTLASS、Tenstorrent ISA（同上）|
 
 ## 铁律（违反会出事）
 

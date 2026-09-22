@@ -100,7 +100,7 @@ A
 3. 校验：
 
 ```bash
-cd /home/rd/Desktop/quizforge          # 仓库根
+cd "$(git rev-parse --show-toplevel)"  # 仓库根（克隆在哪都行）
 python3 tools/check.py questions/<subject>/<file>.md
 python3 tools/build.py
 ```
@@ -109,7 +109,7 @@ python3 tools/build.py
 
 ## 参考
 
-（本仓库自包含这批 skill；下列路径均相对仓库根，当前仓库根为 `/home/rd/Desktop/quizforge`）
+（本仓库自包含这批 skill；下列路径均相对仓库根）
 
 - 完整格式契约：`.codebuddy/skills/quizforge-author/references/format.md`
 - 从材料出题的抽取与核对流程：`.codebuddy/skills/quizforge-author/references/from-source.md`

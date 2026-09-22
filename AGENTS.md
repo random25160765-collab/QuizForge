@@ -102,7 +102,7 @@ docs(pipeline): settle the retrieval layer and the authoring orchestration
 
 ## 其它硬规则
 
-- **材料只读**：`reference/` → `/mnt/f/Documents`、`Codebase/` → `/home/rd/Source/` 都是只读软链，
+- **材料只读**：`reference/` 与 `Codebase/` 都是**仓库外**的只读软链（各自指向哪由本机决定），
   进 git 的只能是题目
 - **题目是唯一事实来源**：`dist/`、`api/web/`、数据库都是它的投影，不要手改
 - **出题依据优先级**：原材料内容 + 用户诉求 > 考纲；考纲只作归类、可随时重构

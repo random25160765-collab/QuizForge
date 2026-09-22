@@ -795,7 +795,7 @@
   }
 
   function promptRootByHand(why) {
-    var input = h('input.lib__field', { type: 'text', value: '', placeholder: '例如 /mnt/f/Documents' });
+    var input = h('input.lib__field', { type: 'text', value: '', placeholder: '例如 ~/Documents' });
     ui.modal({
       title: '手动填写资料目录',
       size: 'sm',

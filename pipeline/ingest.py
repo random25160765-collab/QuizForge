@@ -10,9 +10,9 @@
 切的是**结构**（Markdown 标题），不是长度；长度只做兜底约束（太长的拆、太碎并）。
 产物与 `dispatch` 读的三件套一致：`material.yaml` / `slices.yaml` / `figures.yaml`。
 
-用法：
-    api/.venv/bin/python -m pipeline.ingest /home/rd/Source/tt-metal/METALIUM_GUIDE.md
-    api/.venv/bin/python -m pipeline.ingest /home/rd/Source/tt-metal/tech_reports --glob "**/*.md"
+用法（路径给**仓库外**那份材料的实际位置，谁在哪都不影响）：
+    api/.venv/bin/python -m pipeline.ingest ~/Source/tt-metal/METALIUM_GUIDE.md
+    api/.venv/bin/python -m pipeline.ingest ~/Source/tt-metal/tech_reports --glob "**/*.md"
 """
 
 from __future__ import annotations

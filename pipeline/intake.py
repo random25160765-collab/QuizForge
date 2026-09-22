@@ -70,11 +70,17 @@ def _text_dir() -> Path:
 
 
 def _subject_of(meta: dict) -> str:
-    """从原件路径取学科（`/mnt/f/Documents/cuda/x.pdf` → `cuda`）。
+    """从原件路径取学科（`<资料根>/cuda/x.pdf` → `cuda`）。
 
-    取 `Documents` 之下的**第一级目录** —— 资料根的约定就是"一个学科一个目录"
-    （实测 59 条正好落在 swe / cuda / nvidia / stm32 / riscv / ic / python /
-    amd / toolchain / linux / other / math）。取不到就退回 `library`，**不猜**。
+    实现按"路径里有一段叫 `documents`"来认资料根（`/mnt/f/Documents`、
+    `F:\\Documents` 都命中），取它的**下一级目录**当学科 —— 资料根的约定就是
+    "一个学科一个目录"（实测 59 条正好落在 swe / cuda / nvidia / stm32 / riscv /
+    ic / python / amd / toolchain / linux / other / math）。取不到就退回
+    `library`，**不猜**。
+
+    ⚠️ 这个启发式**绑着目录名**（已记进 `docs/STATUS.md` 的未决事项）：
+    资料放在不叫 `Documents` 的根下时，会全部退回 `library`。要根治，
+    得让"资料根"成为一个配置项，而不是从路径里猜一段。
     """
     parts = [
         part

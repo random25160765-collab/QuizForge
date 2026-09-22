@@ -188,10 +188,10 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
 
 | 路径 | 指向 | 内容 |
 |---|---|---|
-| `reference/` | `/mnt/f/Documents`（软链） | 15 个学科目录（amd / c / cuda / cxl / ic / linux / math / nvidia / python / riscv / stm32 / swe / toolchain / verilog / other），约 282MB，以 PDF 为主，混着少量 md / py；**多数尚未盘点** |
-| `/home/rd/Source/tt-metal/tech_reports/` | 库外本地目录 | **当前真正在用的材料**：60 份 tech report（71M）。库只存坐标（`materials.source_path` + `sha256` + 行区间），正文按行回读 —— 所以换台机器要让这些文件也在 |
-| `/mnt/f/Vaults`（Windows `F:\Vaults`） | 笔记库（只读待导入） | **4 个独立 vault**：Math / Personal / Philosophy / Tech；**1113 篇 md**（362 篇带 YAML 头、335 篇用双链，其余纯 markdown）、424 png、189 pdf、**7 个 `.canvas`**、1 个 `.base`；**没有任何社区插件** |
-| `/home/rd/Source/...tech_report` 之外的散件 | 任意目录 | 资料**不止上面两处**（例如不在 Document 下的网页文档），所以资料库按**多根**设计 |
+| `reference/` | 仓库外的只读软链 | 15 个学科目录（amd / c / cuda / cxl / ic / linux / math / nvidia / python / riscv / stm32 / swe / toolchain / verilog / other），约 282MB，以 PDF 为主，混着少量 md / py；**多数尚未盘点** |
+| `~/Source/tt-metal/tech_reports/` | 库外本地目录 | **当前真正在用的材料**：60 份 tech report（71M）。库只存坐标（`materials.source_path` + `sha256` + 行区间），正文按行回读 —— 所以换台机器要让这些文件也在 |
+| 笔记库（库外，只读待导入） | 独立目录 | **4 个独立 vault**：Math / Personal / Philosophy / Tech；**1113 篇 md**（362 篇带 YAML 头、335 篇用双链，其余纯 markdown）、424 png、189 pdf、**7 个 `.canvas`**、1 个 `.base`；**没有任何社区插件** |
+| `~/Source/...tech_report` 之外的散件 | 任意目录 | 资料**不止上面两处**（例如不在 Document 下的网页文档），所以资料库按**多根**设计 |
 
 ## 七、下一版路线（2026-09-18 定，按 C → B → A 顺序做）
 
@@ -249,8 +249,7 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
    用现成的 `library.rename_text` 改回裸键，可用条目 **49 → 55**。
    ⚠️ 资料库那份 yaml（authors / year / kind / topics）**不进版本库也不进快照**
    （`data/` 被 gitignore，快照只装数据库里的东西）—— 换台机器就没了，这笔账另算。
-7. `layer` / `wing` 的取值现在由流水线写死，`tools/check.py` 仍不校验（要不要加）
-8. 五个 skill 里写死的本机路径 `/home/rd/Desktop/quizforge`（仓库已公开）
+8. `layer` / `wing` 的取值现在由流水线写死，`tools/check.py` 仍不校验（要不要加）
 9. HIG Foundations 逐条体检（UI 收尾，用户原话「明天再说」）
 10. **1 道现行题的 `layer` / `wing` 为空**（2026-09-22 实测）——
     现行 1623 题里，1622 有层有翼，剩 1 道两项都空：**`tt-arch-0001`**（`multi`，
@@ -267,9 +266,26 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
     库里的考纲树会全部消失，而命令照常打印「导入：新增 N · 更新 M · 主题 K 个」
     （那个 K 只报了个数，一行都没写进去）—— 不报错，所以最坏的那种失败方式。
     import 侧少了 `topics` 与 `topic_groups` 两张表的写入。
+12. **`pipeline/intake.py` 的学科归类绑着目录名 `documents`**（2026-09-22 顺手发现）——
+    `_subject_of` 在原件路径里找"那一段叫 `documents`"（`/mnt/f/Documents`、`F:\Documents`
+    都命中），取它的下一级当学科。等于把**资料根的位置写进了逻辑**：资料一旦放在
+    不叫 `Documents` 的根下，那 59 条的学科会**全部退回 `library`**。
+    它的 docstring 原先写的是"取 `Documents` 之下的第一级目录"，与实现（按名字找）
+    并不是一回事，已改成与实现一致、并把坑标出来。
+    要根治得让"**资料根**"成为一个配置项（多根早就支持了，缺的是"根在哪"这件事
+    进配置，而不是从路径里猜一段）。
 
 **已了结（原先列在这儿，实测已不成立）：**
 
+- ~~五个 skill 里写死的本机路径~~（2026-09-22 **已修**）—— 当时 5 个 skill 里写着
+  一条 `cd <开发机上的某个绝对路径>`，而那个目录**在本机也不存在**（仓库不在那儿），
+  照 skill 走的 agent 第一条命令就失败。现在一律改成
+  `cd "$(git rev-parse --show-toplevel)"`（克隆在哪都行）；仓库外的素材位置改写成
+  `~/Source/...` 或「仓库外的只读软链」。顺带把**全仓库**扫了一遍开发机绝对路径：
+  `tools/desktop-beta.vbs` 不再写死发行版与仓库路径（改为从自身被打开的路径推断，
+  可用 `QF_DISTRO` / `QF_REPO` 覆盖），`tools/vendor.py` 生成的 `SOURCE.md`
+  也不再写绝对路径（家目录折成 `~`），`tools/perf_streaming.mjs` 里那条指向本机
+  `~/.npm-global` 的兜底路径直接删掉（它本来就是个偶然）。
 - ~~新机器拉下来没有可走通的数据恢复路径~~（2026-09-22 **已修**）—— 当时的问题是：
   local-first 正路写着「拷一份 `data/quizforge.db`」，但那份文件不在版本库里；
   版本库里唯一的数据副本是 `db/quizforge.sql.gz`（Postgres dump），恢复它要
