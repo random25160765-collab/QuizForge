@@ -547,6 +547,18 @@ def stream_completion(
             ) as response:
                 if response.status_code >= 400:
                     detail = response.read().decode("utf-8", "replace")[:300]
+                    # 5xx 且上游一个字都没说 —— 那通常不是供应商在说话，而是路上的
+                    # 代理/网关替它回的（实测：本机代理会把一个根本连不上的地址变成
+                    # 空体 502）。这时归 `connect` 而不是 `http`：既补上该找谁的提示，
+                    # 也让前端标成可重试（网关抖动是暂时的）—— 与非流式那条路同一判据。
+                    if response.status_code >= 500 and not detail.strip():
+                        raise UpstreamError(
+                            connection_hint(conf)
+                            + f"（网关回了 {response.status_code}，没有内容）",
+                            kind="connect",
+                            status=response.status_code,
+                            detail=detail,
+                        )
                     raise UpstreamError(
                         f"接口返回 {response.status_code}",
                         kind="http",
@@ -629,9 +641,14 @@ def stream_completion(
                 f"（已收到 {received} 字，{why}）",
                 kind="timeout",
             ) from None
+        # **一个字都没收到 = 够不着上游**，不是"上游慢" —— 这是最该给指点的一种失败。
+        # 只说"没有任何响应"，走内测通道的人不知道该去找站长、自带密钥的人不知道
+        # 该查地址与网络：`connection_hint` 就是为这半句写的。
         raise UpstreamError(
-            f"上游 {waited:.0f} 秒内没有任何响应（{why}）",
+            connection_hint(conf) + f"（上游 {waited:.0f} 秒内没有任何响应，{why}）",
             kind="timeout",
         ) from None
     except httpx.HTTPError as exc:
-        raise UpstreamError(str(exc)[:200], kind="connect") from None
+        raise UpstreamError(
+            connection_hint(conf) + "（" + str(exc)[:160] + "）", kind="connect"
+        ) from None
