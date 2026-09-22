@@ -78,7 +78,7 @@ make drive        # 状态机自动跑：出题 → 校验 → 发布 → 打回
 make check        # 题库校验，必须 0 error（题库来自数据库，物化到临时目录后即删）
 make test         # 校验 + 前端逻辑自测（判分 / 渲染 / SM2 / 掌握度 / 合并口径）
 make web          # 前端 → api/web/
-make db-up        # PostgreSQL 容器（127.0.0.1:5432）
+make db-restore   # 解压快照 → data/quizforge.db（首启要有题就跑它，不需要 Docker）
 make api-dev      # 后端热重载（127.0.0.1:8100）
 make api-test     # 后端 pytest
 make new TOPIC=<主题> TYPE=<题型>   # 生成一道新题骨架（另加 --title/--difficulty 需走 python3 tools/new_question.py）
@@ -91,7 +91,7 @@ cd api && .venv/bin/python -m app.cli.import_bank --dry-run
 
 - [ ] 读 `docs/STATUS.md`（当前进展与未决事项都在那儿）
 - [ ] `make check` —— 确认题库基线还是绿的
-- [ ] 需要在线版时：`docker compose ps` + `curl -s localhost:8100/api/health`
+- [ ] 需要在线版时：`curl -s localhost:8100/api/health`（起服务用 `make api-dev`）
 - [ ] 把本次任务对到上面那张路由表，**只加载对应的那一个 skill**
 - [ ] 若这批题涉及新材料：先按 `pipeline.md` §2 的分档切法产出骨架，**给用户过一眼再往下切**
 

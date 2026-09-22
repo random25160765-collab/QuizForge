@@ -12,19 +12,18 @@
 
 ```bash
 make api-venv     # 建后端环境（venv + 依赖）
+make db-restore   # 解压快照 → data/quizforge.db（题库 + 考纲 + 知识空间）
 make api-dev      # 构建前端并起服务 → http://127.0.0.1:8100
 ```
 
-**不需要先起数据库** —— 首启会用 SQLite 建好表（`data/quizforge.db`，alembic 已退役）。
+**不需要 Docker，也不需要 Postgres。** 数据就是本机一个 SQLite 文件
+（`data/quizforge.db`）；首启会自动建好表（alembic 已退役）。
 `.env` 可选（`make env-init` 从 `.env.example` 生成，里面是端口与用量上限）。
 
-库里一开始是空的。要题，两条路：
-
-- **拷一份现成的 `data/quizforge.db`** —— local-first 的正路；
-- **从版本库里的快照搬**：`db/quizforge.sql.gz` 是 Postgres dump，要
-  `make db-up && make db-restore`（起一个 Postgres 容器）再
-  `python tools/migrate_to_local.py`。搬运会**逐表对账**（行数 + 几项关键计数），
-  任何一项对不上就非零退出 —— 宁可报错也不要"搬了一半"。
+**库里一开始是空的，题在快照里**：`db/quizforge.db.gz` **就是 SQLite 库本身**，
+`make db-restore` 解压即用，不用起任何服务。反向的 `make db-snapshot`
+把现状压回那个文件、提交它 —— 那是"换台机器接着干"唯一的载体
+（落盘前会自动抹掉 AI 密钥，因为它进的是公开仓库）。
 
 要用 AI 相关的功能，得在 `config/ai.local.json` 里填自己的 key
 （`baseUrl` / `apiKey` / `model`；这个文件已被 git 忽略，不会跟着仓库走）。
@@ -86,7 +85,7 @@ agent 把"推导"的边际成本压到近零，于是**验证与审读成了不�
 
 **题目、考纲、知识图谱都在数据库里 —— 仓库里没有题目文件。**
 
-版本库里唯一的副本是快照 `db/quizforge.sql.gz`；根目录的 `bank.json` 是旧的导出格式，
+版本库里唯一的副本是快照 `db/quizforge.db.gz`（就是库本身）；根目录的 `bank.json` 是旧的导出格式，
 只是投影，别拿它当权威。校验与测试会把库**物化到临时目录**再读，避免用到跨轮残渣。
 
 内容来源是几个只读目录（材料 PDF、笔记 vault、文档仓库）—— 它们**只读**，

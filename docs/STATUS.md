@@ -47,7 +47,7 @@
 
 - **1623 现行**：published 1619 + verified 4，**草稿 0**（单一学科 tt-metal）
 - **权威在库，不在文件**：`questions/` 已不是仓库目录 —— `make check` / `make test`
-  现场把库物化到临时目录再校验；`db/quizforge.sql.gz` 是库里唯一带进版本控制的副本
+  现场把库物化到临时目录再校验；`db/quizforge.db.gz` 是库里唯一带进版本控制的副本
 - 层：识记 683 · 理解 740 · 应用 199 · **迁移 0**
 - 翼：基础 1398 · 应用 200 · 综合 24 · **创新 0**
 - **游离题 0**（没挂概念的现行题）：曾经 86 道 —— 不是手工补的，是 `graph_build merge` 里的
@@ -82,14 +82,24 @@
 测试：`make api-test`（后端 **433 项**，跑在临时 SQLite 文件上，**不需要数据库服务**）·
 `make test`（题库校验 + 前端 3170 断言 + `node --check` 语法门禁）。
 
-老路径（只剩"搬历史数据"时用）：Docker Desktop + `make db-up` 起 Postgres 容器当**源库**，
-`tools/migrate_to_local.py` 搬运；`db/quizforge.sql.gz` 是换引擎之前的快照。
+**Postgres 与 Docker 已彻底清出这条链**（2026-09-22）：`docker-compose.yml` 与
+`db-up` / `db-down` / `db-restore` / `db-dump` / `db-backup` 五个目标全部删除，
+旧快照 `db/quizforge.sql.gz` 也已删。数据快照换成 **`db/quizforge.db.gz`（就是 SQLite
+库本身）**：`make db-restore` 解压即用，`make db-snapshot` 反向存回，存取都在
+`tools/db_snapshot.py`（落盘前抹密钥、载入前校验完整性 + 外键）。仓库里**不再有任何
+需要 Docker 或 Postgres 的路径**。
+
+`tools/migrate_to_local.py` 保留着，但降级为**一次性搬运**工具（历史数据还在
+Postgres 里的那种场合）；为此它补了两处容错：源库缺表时按 0 行搬、对账不因查不到
+表而跳过。同时 `api/app/db.py` 的 `_ADDITIVE_COLUMNS` 补上两个漏登记的漂移列
+（`conversations.pinned`、`concepts.centric_at`）—— 它们是"模型里有、老库里没有、
+却没进自动补列表"，真实用户的旧库升级时也会撞上。
 
 **换引擎这一刀的账**（`tools/migrate_to_local.py` 的输出，可复跑）：
-26 张表 23831 行搬到 `data/quizforge.db`，**逐表行数 + 12 项关键计数全部一致**
-（已发布题 1640 / 现行题 1623 / 概念 912 / 边 3992 / 题↔概念 1644 / 记录 21 …），
-`PRAGMA foreign_key_check` 无悬空引用；17 个账号收敛成 **1 个**（留下真正在用的那个，
-删掉 16 个历次验证的残留）。搬运**不动源库**，删错也还在。
+28 张表 30734 行搬到 `data/quizforge.db`，**逐表行数 + 12 项关键计数全部一致**
+（已发布题 1640 / 现行题 1623 / 概念 912 / 概念边 11224 / 题↔概念 1558 / 记录 16 …），
+`PRAGMA foreign_key_check` 无悬空引用；9 个账号收敛成 **1 个**（留下真正在用的那个，
+删掉 8 个历次验证的残留）。搬运**不动源库**，删错也还在。
 
 **三个上下文**（别混 —— `make dev` 是开发通道，两个包是给人下载的）：
 
@@ -209,13 +219,30 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
    而 `_text_paths` 只认裸键 → 那 6 条在界面上一直显示"没抓过"。
    用现成的 `library.rename_text` 改回裸键，可用条目 **49 → 55**。
    ⚠️ 资料库那份 yaml（authors / year / kind / topics）**不进版本库也不进快照**
-   （`data/` 被 gitignore，`make db-dump` 只导库）—— 换台机器就没了，这笔账另算。
+   （`data/` 被 gitignore，快照只装数据库里的东西）—— 换台机器就没了，这笔账另算。
 7. `layer` / `wing` 的取值现在由流水线写死，`tools/check.py` 仍不校验（要不要加）
 8. 五个 skill 里写死的本机路径 `/home/rd/Desktop/quizforge`（仓库已公开）
 9. HIG Foundations 逐条体检（UI 收尾，用户原话「明天再说」）
+10. **1 道现行题的 `layer` / `wing` 为空**（2026-09-22 实测）——
+    现行 1623 题里，1622 有层有翼，剩 1 道两项都空。`AGENTS.md` 明说
+    「layer / wing 不许留空」，所以这道题是违例的；得查是哪道、为什么没写上。
+11. **`pipeline.bankfile` 的 import 与 export 不对称**（2026-09-22 实测，是 bug）——
+    `export_bundle` 导出 `topics` + `documents` + `questions`（`bankfile.py:77`），
+    但 `import_bundle` 只写 `questions` 与 `documents`（`bankfile.py:99-131`），
+    **`topics` 被静默丢弃**。于是 `make bank-export && make bank-import` 走一圈，
+    库里的考纲树会全部消失，而命令照常打印「导入：新增 N · 更新 M · 主题 K 个」
+    （那个 K 只报了个数，一行都没写进去）—— 不报错，所以最坏的那种失败方式。
+    import 侧少了 `topics` 与 `topic_groups` 两张表的写入。
 
 **已了结（原先列在这儿，实测已不成立）：**
 
+- ~~新机器拉下来没有可走通的数据恢复路径~~（2026-09-22 **已修**）—— 当时的问题是：
+  local-first 正路写着「拷一份 `data/quizforge.db`」，但那份文件不在版本库里；
+  版本库里唯一的数据副本是 `db/quizforge.sql.gz`（Postgres dump），恢复它要
+  `make db-up && make db-restore && python tools/migrate_to_local.py` —— 依赖一台活的
+  Postgres。于是新环境首启得到的是**空壳库**（`questions` / `topics` 都是 0 行）。
+  现在快照换成 **`db/quizforge.db.gz`（就是 SQLite 库本身）**，`make db-restore`
+  解压即用；Postgres 与 Docker 已从这条链上彻底清除（见 §五）。
 - ~~86 道题没挂概念~~ —— 实测**游离题 0**。§三 那条 `link_questions` 回填已兑现，
   `make coverage` 现在拿「游离题为零」当硬断言盯着。
 
@@ -229,7 +256,11 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
   字面答案已补上供展示，判分刻意没动 —— 要收紧得先确认那道题的答案集
 - `theme/app.css` 的 `.browsecard:first-of-type` 选择器**失效**（面板里第一个 `<div>` 是
   `.panel__head`），想按原意去掉首卡上方的分隔线得改成 `.panel__head + .browsecard`
-- `bank.json` 与当前库**不一致**（109 道旧学科的题）：它是旧的传输格式，权威在库
+- `bank.json` 与当前库**不一致**（109 道旧学科的题）：它是旧的传输格式，权威在库。
+  **2026-09-22 实测补全**：它不只是"少"，而是**违反硬规则** —— 109 道题的 `layer` / `wing`
+  **全是空字符串**（`AGENTS.md` 明说「layer / wing 不许留空」），`exportedAt` 停在 09-16。
+  它是四层四翼体系上线**之前**的导出，所以拿它填库等于把一批无坐标的题放回坐标系里。
+  169 个主题里也**没有 `topic_groups`**（分组中文名只在库里那张表）。**不要拿它当恢复手段。**
 - 真题里**只有 34 道大题**，而 `push_question` 只推 `CARD_TYPES`（single/multi/blank/short）——
   测试里挑题必须带类型条件，否则会挑中推不动的大题（2026-09-18 修掉的那条「时好时坏」）
 

@@ -53,7 +53,7 @@ RRF_K = 60
 
 def pack(vec) -> bytes:  # noqa: ANN001
     """float32 紧凑打包。**小端定死**：库文件是本地一个文件，但它可能被拷到
-    别的架构上（`db/quizforge.sql.gz` 就会跨机器），所以不能让字节序跟着机器走。"""
+    别的架构上（`db/quizforge.db.gz` 就会跨机器），所以不能让字节序跟着机器走。"""
     return struct.pack("<%df" % len(vec), *[float(x) for x in vec])
 
 

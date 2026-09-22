@@ -150,10 +150,16 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("conversations", "folder", "VARCHAR(240) NOT NULL DEFAULT ''"),
     # 归档（一层，不分级）：老的对话一律是 False = 未归档，正是想要的默认
     ("conversations", "archived", "BOOLEAN NOT NULL DEFAULT 0"),
+    # 置顶：老对话一律 False = 未置顶，正是想要的默认
+    ("conversations", "pinned", "BOOLEAN NOT NULL DEFAULT 0"),
     ("messages", "mounts", "TEXT NOT NULL DEFAULT ''"),
     # 资料走到哪一步（检索 / 出题）。默认给"检索"是给**以后新来的行**选的，
     # 老行得靠下面那张回填表 —— 见 `_BACKFILLS`。
     ("materials", "depth", "VARCHAR(16) NOT NULL DEFAULT '检索'"),
+    # 「以概念为中心」的判边问过它了吗（`graph_build relate-centric`）。
+    # 缺省 NULL = **还没问过**，正是想要的语义（补上之后那些概念会被重新选中，
+    # 这是对的：老库里的边本来就少，正该把没问过的补问一遍）。
+    ("concepts", "centric_at", "DATETIME"),
 )
 
 #: 补完列之后要跑**一次**的回填：`(表, 列) → SQL`，只在那一列**刚补上**时跑。

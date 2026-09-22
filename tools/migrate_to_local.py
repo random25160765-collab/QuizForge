@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -95,6 +96,16 @@ def _tables():  # noqa: ANN202
 def _count(engine, sql: str) -> int:  # noqa: ANN001
     with engine.connect() as conn:
         return int(conn.execute(text(sql)).scalar() or 0)
+
+
+def _table_of(sql: str) -> str:
+    """从 `KEY_COUNTS` 的 SQL 里抠出表名（`SELECT COUNT(*) FROM <表> [WHERE …]`）。
+
+    只给"源库里有没有这张表"这一处判断用 —— 拼 SQL 是这里唯一省事的做法，
+    但表名不能靠猜，所以用一个窄正则，认不出来就返回空串（当作"没有"）。
+    """
+    match = re.search(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_]*)", sql)
+    return match.group(1) if match else ""
 
 
 def _insert_all(target, table, rows: list[dict]) -> int:  # noqa: ANN001
@@ -232,9 +243,26 @@ def main(argv: list[str] | None = None) -> int:
                 conn.execute(table.delete())
         print(f"已清空目标（原有 {existing} 行）")
 
+    # 源库里**没有的**表：直接跳过，当作 0 行。
+    #
+    # 为什么必须容错：快照是某个时间点的 `pg_dump`，而模型一直在长 ——
+    # 之后新加的表（`conversation_folders` / `user_questions` / `slice_embeddings` /
+    # `attachments` 这四张就是这样）在源库里根本不存在。它们的数据本来就是
+    # 快照之后才产生的，所以"源里没有"就该搬 0 行，而不是报 UndefinedTable 崩掉。
+    # 目标库那边 `create_all` 已经把这些空表建好了，什么都不缺。
+    from sqlalchemy import inspect as _inspect  # noqa: PLC0415
+
+    source_tables = set(_inspect(source).get_table_names())
+    absent = [table.name for table in tables if table.name not in source_tables]
+    if absent:
+        print(f"源库里没有这些表（快照早于建表，按 0 行搬）：{'、'.join(absent)}\n")
+
     moved: dict[str, int] = {}
     with Session(source) as session:
         for table in tables:
+            if table.name not in source_tables:
+                moved[table.name] = 0
+                continue
             rows = [dict(row) for row in session.execute(select(table)).mappings()]
             moved[table.name] = len(rows)
 
@@ -247,6 +275,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # 真正搬：一张一张来，边搬边报，出事能一眼看出卡在哪张表
     for table in tables:
+        if table.name not in source_tables:
+            print(f"  {table.name:<26}{0:>8}  （源库无此表）")
+            continue
         rows = []
         with Session(source) as session:
             rows = [dict(row) for row in session.execute(select(table)).mappings()]
@@ -262,7 +293,10 @@ def main(argv: list[str] | None = None) -> int:
         if got != moved[table.name]:
             bad.append(f"{table.name}：源 {moved[table.name]} ≠ 目标 {got}")
     for label, sql in KEY_COUNTS:
-        src, dst = _count(source, sql), _count(target, sql)
+        # 源库里可能没有这张表（`user_questions` 就是快照之后才建的）——
+        # 那种情况下"源 0 · 目标 0"才是对的，不能因为查不了就跳过这一项对账。
+        src = _count(source, sql) if _table_of(sql) in source_tables else 0
+        dst = _count(target, sql)
         mark = "✓" if src == dst else "✗"
         print(f"  {mark} {label:<22}源 {src:>7} · 目标 {dst:>7}")
         if src != dst:
