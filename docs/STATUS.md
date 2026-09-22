@@ -3,7 +3,7 @@
 > **唯一易变的状态落点。** 稳定的约定在 `.codebuddy/skills/`，这里只放会变的东西。
 > 开工先读它，收工更新它。
 >
-> 最后更新：2026-09-21
+> 最后更新：2026-09-22
 
 ## 一、形态（一句话）
 
@@ -15,8 +15,8 @@
 | 来处 | 谁生成 | 落在哪 |
 |---|---|---|
 | 题库里挑（`push_question`） | 预先出好 | `questions`（权威表） |
-| **模型现编**（`create_question`） | 当场 | **不落库**，只挂一张**临时题卡**；按「存进我的题单」才进 `user_questions` |
-| 自己攒的 | 用户 / 上面那条存下来的 | `user_questions`（与公共题库**分开的一张表**） |
+| **模型现编**（`create_question`） | 当场 | **不落库**，只挂一张**临时题卡**；按「存进我的题单」才进 `my_questions` |
+| 自己攒的 | 用户 / 上面那条存下来的 | `my_questions`（与公共题库**分开的一张表**） |
 
 ## 二、这条线的落点（2026-09-18）
 
@@ -27,8 +27,8 @@
 | 工具集 | `api/app/tools.py` | **23 个**（六组 + 一个元能力）：笔记 4 · 资料 3 · 图谱 3 · 出题 8 · 沙箱 2 · 联网 2 · 元能力 `run_subagent`。分组是唯一出处，界面开关与提示词都读它（`mounts.py` / `GROUP_PROMPTS`） |
 | 联网搜索 | `api/app/websearch.py` | **默认免密钥**（必应的 RSS 输出，零配置可用）；填了密钥可切博查 / Tavily / Serper。`read_web_page` 抓正文（启发式抽取），**本机与内网地址一律拒**（见该模块的 `_guard_url`） |
 | 大题批改 | `api/app/routers/problem.py` | 独立子代理批改（看不到聊天记录）；批完**回写一条 assistant 消息进对话** —— 主 agent 下一轮才看得见「他做过这道大题、批成什么样」 |
-| 我的题单 | `api/app/routers/mybank.py` · `user_questions` | 自己出的题**另开一张表**：公共 `questions` 挂着覆盖率对账、图谱的 `question_concepts`、流水线状态机（draft→verified→published），混进去会污染统计、让流水线管它、而且**删不掉** |
-| 单用户 | `api/app/deps.py` | **没有账号**：注册 / 登录 / 会话 / CSRF 全删；`CurrentUser` 这个名字留着，取的是**本机唯一用户**（没有就当场建）。护栏在 `test_route_contract.py`：那些守卫不许挂回来 |
+| 我的题单 | `api/app/routers/mybank.py` · `my_questions` | 自己出的题**另开一张表**：公共 `questions` 挂着覆盖率对账、图谱的 `question_concepts`、流水线状态机（draft→verified→published），混进去会污染统计、让流水线管它、而且**删不掉** |
+| 无账号 | `api/app/deps.py` | **连"用户"这个概念都没有**。登录面（注册 / 登录 / 会话 / CSRF）2026-09-18 删掉；`users` 表与 10 张表的 `user_id` 外键 2026-09-22 一并拆除 —— `deps.py` 现在只剩 `DbSession`。护栏在 `test_route_contract.py`：那批守卫不许挂回来 |
 | 图谱体检 | `pipeline/graph_build.py check` · `make graph-check` | 硬不变量（无环 / 同向不双向 / 同一对既前置又组成 / 考纲挂靠）+ 进度尺（`unrooted`）；破了退出码非零，可直接当闸门 |
 | 判边 | `make graph-relate`（配对）· `make graph-relate-centric`（**以概念为中心**） | 后者是主力：一次问一个概念 + 同材料候选，问过就记 `centric_at`；实测 337 个概念 → 471 条边 |
 | 根因诊断 | `api/app/graph.py diagnose` · 错题本页 | 题 → 考点 → **整条前置链**（远 → 近）+ 起点 + 步数 + 每步依据；不下"你掌握了没有"的判语（掌握度在客户端） |
@@ -37,7 +37,7 @@
 | 向量检索 | `api/app/semantic.py` · `slice_embeddings` · `pipeline/embed.py` | 切片向量 + 字面/向量 **RRF 融合**（`search_material` 走它）。没配通道时**退回纯字面并在返回里说明**；向量只说"像不像"，**出处仍只认行区间** |
 | AI 网关 | `api/app/ai_gateway.py` | 配置 / 配额 / 记账 / 流式；批改与对话共用一份 |
 | 前端 | `theme/runtime/chat.js` · `theme/chat.css` · `theme/pages/chat.body.html` | 手写 DOM 层；`make web` → `api/web` |
-| 表 | `conversations` · `messages` · `user_questions` | 消息带 `parent_id` 与流式中间态（`status=streaming` 也落库） |
+| 表 | `conversations` · `messages` · `my_questions` | 消息带 `parent_id` 与流式中间态（`status=streaming` 也落库） |
 
 **零件的分工**：题卡（可作答，判分与写回走 `QF.engine` + `QF.store.applyResult`）·
 **临时题卡**（模型现编的，本地判分**不等网络**；三个动作：存进我的题单 / 再改一版 / 对答案）·
@@ -98,8 +98,37 @@ Postgres 里的那种场合）；为此它补了两处容错：源库缺表时�
 **换引擎这一刀的账**（`tools/migrate_to_local.py` 的输出，可复跑）：
 28 张表 30734 行搬到 `data/quizforge.db`，**逐表行数 + 12 项关键计数全部一致**
 （已发布题 1640 / 现行题 1623 / 概念 912 / 概念边 11224 / 题↔概念 1558 / 记录 16 …），
-`PRAGMA foreign_key_check` 无悬空引用；9 个账号收敛成 **1 个**（留下真正在用的那个，
-删掉 8 个历次验证的残留）。搬运**不动源库**，删错也还在。
+`PRAGMA foreign_key_check` 无悬空引用。搬运**不动源库**，删错也还在。
+
+**账号系统整体拆除（2026-09-22）** —— 2026-09-18 那次只删掉了**登录面**，
+数据模型里的"用户"整条链路原样留着：`users` 表（还带着 `password_hash`）、
+10 张表的 `user_id` 外键、`deps.py` 的"取本机唯一用户"、`schemas.py` 里零引用的
+账号 schema。当时的理由是"那是将来多设备同步最自然的接口"——这条不成立：
+这是 local-first 单机应用（见 `docs/THESIS.md`），**没有第二个人，也就没有归属要记**。
+
+拆除范围（一次性做完，中间态跑不起来）：
+
+| 动了什么 | 结果 |
+|---|---|
+| `users` 表 / `User` 模型 | 删除（含 `password_hash` / `display_name` / `last_login_at`） |
+| 10 张表的 `user_id` | 删除；`records`→PK `question_id`、`days`→PK `date`、`ai_usage`→PK `date`、`app_settings`→恒为 1 的 `id` |
+| `user_settings` / `user_questions` | 改名 `app_settings` / `my_questions`（"user" 在库里已有明确含义：账号） |
+| `deps.py` | 只剩 `DbSession`；`CurrentUser` / `AuthenticatedWriter` / `get_local_user` 全删 |
+| 8 个 router + `tools.py`(35 个工具) + `agent_loop` / `subagent` / `sync_ops` / `ai_gateway` / `attachments` | 摘掉 `user` 参数与 `user_id` 过滤约 150 处 |
+| `schemas.py` | 整个文件删掉（账号 schema 零引用，早就是死代码） |
+| 测试 | 17 个文件：删 `local_user_id` / `local_user` fixture，`_register` 变空函数 |
+
+**顺带解决了"快照里带私人数据"**：重建库时**只搬内容资产**（题目 / 考纲 / 概念 / 边 /
+材料 / 向量 = 28832 行），个人数据一行都不带 —— 原来的库里躺着 8 条开发期会话、
+做题记录与设置，那些是 9 个自动生成的验证账号（`card-…@example.com` 这种）跑出来的，
+**没有一个真人**。按 1 个用户的库、按 28 张表对账：资产逐表行数全 ✓
+（2055 题 / 454 主题 / 912 概念 / 11224 概念边 / 981 知识点 / 60 材料），
+`conversations` / `messages` / `records` / `attempts` / `days` / `ai_usage` /
+`app_settings` / `my_questions` 全部为 **0 行**，`PRAGMA foreign_key_check` 无悬空引用。
+
+`make api-test` 468 项通过（另 5 项失败是**既存问题**，与本次无关：`test_beta_channel` /
+`test_ai_per_user` 的 4+1 条断言要求"连不上上游时提示里带『内测通道』"，而当前网络下
+那个"死地址"返回了 5xx、走的是"上游返回了错误"那条分支）。
 
 **三个上下文**（别混 —— `make dev` 是开发通道，两个包是给人下载的）：
 
@@ -224,8 +253,13 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
 8. 五个 skill 里写死的本机路径 `/home/rd/Desktop/quizforge`（仓库已公开）
 9. HIG Foundations 逐条体检（UI 收尾，用户原话「明天再说」）
 10. **1 道现行题的 `layer` / `wing` 为空**（2026-09-22 实测）——
-    现行 1623 题里，1622 有层有翼，剩 1 道两项都空。`AGENTS.md` 明说
-    「layer / wing 不许留空」，所以这道题是违例的；得查是哪道、为什么没写上。
+    现行 1623 题里，1622 有层有翼，剩 1 道两项都空：**`tt-arch-0001`**（`multi`，
+    主题 `tt-tensix-riscv`）。`AGENTS.md` 明说「layer / wing 不许留空」，所以这道题
+    是违例的；得查为什么没写上，然后补上。
+    ⚠️ 它**恰好是所有导出与物化排序里的第一题**（`ORDER BY id`），所以
+    `make bank-export` 出来的首题、`materialize` 出来的 `tt-arch-0001-*.md`
+    都会显示空层空翼 —— 那是**这一道题**的问题，不是导出丢了字段
+    （第 2 题起 `识记`/`基础` 齐全，实测 1640 题里只有它 1 道空）。
 11. **`pipeline.bankfile` 的 import 与 export 不对称**（2026-09-22 实测，是 bug）——
     `export_bundle` 导出 `topics` + `documents` + `questions`（`bankfile.py:77`），
     但 `import_bundle` 只写 `questions` 与 `documents`（`bankfile.py:99-131`），
@@ -245,6 +279,13 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
   解压即用；Postgres 与 Docker 已从这条链上彻底清除（见 §五）。
 - ~~86 道题没挂概念~~ —— 实测**游离题 0**。§三 那条 `link_questions` 回填已兑现，
   `make coverage` 现在拿「游离题为零」当硬断言盯着。
+- ~~根目录的 `bank.json` 与库不一致~~（2026-09-22 **已删**）—— 它是**最早测试期**留下的
+  一份导出（109 题 / 159 主题，`layer` / `wing` 全是空字符串，违 `AGENTS.md` 的硬规则；
+  停更在 09-16，即四层四翼上线之前）。当时的记录只写了"它比库少"，实测更严重：
+  它**没有 `topic_groups`**（分组中文名只在库里那张表），拿它填库等于把一批无坐标的题
+  放回坐标系里。而它躺在根目录还有个实际风险 —— `make bank-import` 读的就是这个路径，
+  顺手一跑就会把旧题导进库，还顺带撞上 §八.11 那个"import 不导 topics"的 bug。
+  **它从来不是"另一个载体"**，只是投影：要交换文件随时 `make bank-export` 现生一份。
 
 ## 九、已知小问题
 
@@ -256,16 +297,20 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
   字面答案已补上供展示，判分刻意没动 —— 要收紧得先确认那道题的答案集
 - `theme/app.css` 的 `.browsecard:first-of-type` 选择器**失效**（面板里第一个 `<div>` 是
   `.panel__head`），想按原意去掉首卡上方的分隔线得改成 `.panel__head + .browsecard`
-- `bank.json` 与当前库**不一致**（109 道旧学科的题）：它是旧的传输格式，权威在库。
-  **2026-09-22 实测补全**：它不只是"少"，而是**违反硬规则** —— 109 道题的 `layer` / `wing`
-  **全是空字符串**（`AGENTS.md` 明说「layer / wing 不许留空」），`exportedAt` 停在 09-16。
-  它是四层四翼体系上线**之前**的导出，所以拿它填库等于把一批无坐标的题放回坐标系里。
-  169 个主题里也**没有 `topic_groups`**（分组中文名只在库里那张表）。**不要拿它当恢复手段。**
 - 真题里**只有 34 道大题**，而 `push_question` 只推 `CARD_TYPES`（single/multi/blank/short）——
   测试里挑题必须带类型条件，否则会挑中推不动的大题（2026-09-18 修掉的那条「时好时坏」）
 
 ## 十、最近的决策
 
+- **2026-09-22** —— **账号系统整体拆除，连 `users` 表一起**。2026-09-18 那次只删了
+  登录面，留了 `users` 表与 10 张表的 `user_id` 外键，理由是"那是将来多设备同步
+  最自然的接口"。这条被否掉：local-first 单机应用里"用户"这个词没有指代对象 ——
+  **没有第二个人，也就没有归属要记**。而留着它的真实代价一直在付：`password_hash`
+  这种毫无意义的列躺在库里，每个新功能都要先想一遍"这个 user_id 怎么办"，
+  快照里还会跟着带出私人数据。**唯一的代价**是将来真要做多设备同步得另设归属键 ——
+  到那时再加，比现在假装需要它更诚实。详见 §五（拆除范围与对账）。
+  顺带把「快照该装什么」这件事定了：**只装内容资产**（题目 / 考纲 / 图谱 / 材料 / 向量），
+  对话、做题记录、设置这类个人痕迹不进版本库。
 - **2026-09-21** —— **资料库接进检索，但止步于此；档位改成"按件"**。三件事：
   ① **`materials.depth`（`出题` / `检索`）** —— 档位是**按件**的，不是按来源的。用户原话：
   "有的资料值得出题，有的资料看看就好，同样都是资料管理器里的资料，它们需要的工艺深度
@@ -353,7 +398,7 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
   把 `tt-arch`（人写的学科根）**误判成镜像叶子**——它恰好有个同名知识点，判据补了
   "并且不是任何节点的父节点"，再加"往上走到最近的人写节点"与"借同材料多数票"两层兜底。
 - **2026-09-18** —— **模型能自己出题**：`create_question` 产出**临时题卡**（默认不落库、
-  随出随改），用户按「存进我的题单」才写进 `user_questions`；答案随卡交给界面判分，
+  随出随改），用户按「存进我的题单」才写进 `my_questions`；答案随卡交给界面判分，
   但**不进模型的回放**（`output_text` 把它裁到 id / 题型 / 题干 / 答案）。
 - **2026-09-18** —— **题源分开但同池练习**：`/api/picks?scope=public|mine|all`，
   每条结果带 `source`；`scope=mine` 时公共题一道都不进池子，`scope=all` 时给自己的题

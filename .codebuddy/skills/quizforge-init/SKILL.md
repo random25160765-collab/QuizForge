@@ -14,9 +14,10 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 
 ## 这是什么项目
 
-Markdown 写题（5 种题型，混排 LaTeX 与代码）的刷题工具。**只有在线一种形态**：
-FastAPI + PostgreSQL 提供数据，前端产物落在 `api/web/`，是普通静态资源 + `/api` 调用；
-进度按账号隔离、支持跨设备同步。
+**local-first 单机**的学习台：对话是前台，题与图是后台。FastAPI + **SQLite**
+（数据就是 `data/quizforge.db` 一个文件）提供数据，前端产物落在 `api/web/`，
+是普通静态资源 + `/api` 调用。**没有账号** —— 连 `users` 表与 `user_id` 外键
+都在 2026-09-22 整体拆掉了（见 `docs/STATUS.md` §五）。
 
 `store.js` 对外始终是同步接口（本地先写、后台按流水增量回传），所以 UI 调用点不必关心同步。
 
@@ -27,11 +28,11 @@ FastAPI + PostgreSQL 提供数据，前端产物落在 `api/web/`，是普通静
 
 | 路径 | 是什么 |
 |---|---|
-| `questions/<学科>/*.md` | 题库，一道题一个文件 —— **唯一事实来源** |
-| `meta/topics.yaml` | 考纲主题树（学科 → 单元 → 知识点），**只作归类**、可随时重构 |
-| `tools/` | `check.py` 校验 · `build_web.py` 构建前端（入口）· `assemble.py` 外壳装配 · `question_parser.py` 解析 · `topics.py` 考纲解析 · `new_question.py` 脚手架 |
+| `data/quizforge.db` | **权威在库**：题库 / 考纲 / 知识空间 / 材料都在这个 SQLite 文件里，仓库里**没有**题目的文件形态 |
+| `db/quizforge.db.gz` | 库的快照（**就是库本身**，不是导出版本）；`make db-snapshot` 存、`make db-restore` 解压即用 |
+| `tools/` | `check.py` 校验 · `build_web.py` 构建前端（入口）· `assemble.py` 外壳装配 · `question_parser.py` 解析 · `topics.py` 考纲解析 · `new_question.py` 脚手架 · `db_snapshot.py` 快照存取 |
 | `theme/` | 前端运行时：`app.css` + `runtime/*.js`；改完要 `make web`（新增脚本还要登记进 `build_web.py` 的 `RUNTIME_ORDER`）|
-| `api/` | FastAPI 后端：题库导入、跨设备增量同步、按账号隔离的 AI 转发 |
+| `api/` | FastAPI 后端：题库导入、进度增量同步、AI 转发（用本机设置里那份密钥）|
 | `.codebuddy/skills/` | 出题 skill（本仓自包含，跟着仓库走） |
 | `docs/` | `STATUS.md`（当前状态）· `THESIS.md`（**业务立论**：为什么这么设计）· `DESIGN.md`（设计说明）· 截图 |
 | `draft/` | 人写的手写题与草稿（与机器生成的 `maps/` 分开） |
