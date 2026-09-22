@@ -43,7 +43,9 @@ L1/L2 占大头是**结果**而不是计划。理由是推理已被外包给 age
 
 ## 项目位置
 
-仓库根目录：`/home/rd/Desktop/quizforge/`
+仓库根目录：**就是这个仓库的根** —— 下文所有路径都相对它。
+克隆到哪台机器、哪个目录都行；skill 里不写死绝对路径
+（要拿根目录：`git rev-parse --show-toplevel`）。
 
 ```
 quizforge/
@@ -74,7 +76,7 @@ quizforge/
 6. 新增或改完题目后，**必须**依次运行：
 
 ```bash
-cd /home/rd/Desktop/quizforge          # 仓库根
+cd "$(git rev-parse --show-toplevel)"  # 仓库根（克隆在哪都行）
 python3 tools/check.py          # 必须先到 0 error
 python3 tools/build.py          # 构建成功即表示前端能解析
 ```

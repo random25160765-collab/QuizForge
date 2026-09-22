@@ -4,7 +4,7 @@
 
 ## 可用素材位置
 
-**主参考目录：`reference/`**（仓库根的软链 → `/mnt/f/Documents`，**只读**）。
+**主参考目录：`reference/`**（仓库根的软链，指向仓库外那份只读的资料目录）。
 按学科分目录，形态以 PDF 为主（手册 / 论文 / 教科书），夹少量 `.md` 与 `.py`。
 切片前先按 `pipeline.md` §2 的分档表处理，**不要指望它整洁**。
 
@@ -17,7 +17,7 @@
 | 其余学科 | `reference/{amd,c,cxl,ic,math,nvidia,python,riscv,stm32,toolchain,verilog}/` | 尚未盘点体积与形态 |
 
 另有历史素材（QEMU 书稿、CUTLASS、Tenstorrent ISA 等）在 `Codebase/`，
-它是指向 `/home/rd/Source/` 的软链，同样是**只读**，不要写入上游仓库。
+它是**仓库外**的软链，同样是**只读**，不要写入上游仓库。
 
 **材料只读是硬约束**：进 git 的只能是题目；这些材料目录已在 `.gitignore` 里排除。
 
@@ -103,7 +103,7 @@ grep -rn "关键词" Codebase/<仓库>/ | head -20
 ### 5. 落盘与校验
 
 ```bash
-cd /home/rd/Desktop/quizforge
+cd "$(git rev-parse --show-toplevel)"   # 仓库根（克隆在哪都行）
 python3 tools/new_question.py --topic qemu --type short --chapter "设备模型"
 # 编辑生成的文件
 python3 tools/check.py questions/qemu/qemu-000X-xxx.md   # 单文件快速自检

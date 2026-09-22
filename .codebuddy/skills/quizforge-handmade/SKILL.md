@@ -99,7 +99,7 @@ source: "<材料文件>: <小节标题>"   # 人类可读线索，不做机器�
 ## 四、跑完这些才算接上
 
 ```bash
-cd /home/rd/Desktop/quizforge
+cd "$(git rev-parse --show-toplevel)"               # 仓库根（克隆在哪都行）
 python3 tools/check.py questions/<学科>/<file>.md   # 单题：必须 0 error
 make check                                          # 全库基线不能变红
 make test                                           # 前端逻辑自测：渲染与判分都过一遍
