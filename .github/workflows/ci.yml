@@ -1,0 +1,145 @@
+# 每次推送都验一遍：**照着 README 能不能在干净环境里把服务跑起来**。
+#
+# ## 为什么要有它
+#
+# 这条路径的失败方式全是"只有新机器才暴露"的那种。实测抓到过两次，
+# 都是干净克隆才现形、在开发机上永远不复现：
+#
+#   * **快照恢复到一半崩了** —— `tools/db_snapshot.py` 里建 `data/` 目录那一步
+#     排在解压之后，而新机器上那个目录根本不存在。于是 README 的**第二条命令**
+#     直接失败，人还没走到起服务就断了。
+#   * **三个入口各指一页** —— 顶层 `/` 跳 `quiz.html`（刷题）、`make api-dev`
+#     提示 `notes.html`（笔记）、README 说"对话是主入口"（`chat.html`）。
+#     单独看每个都合理，合起来就是"打开首页看到的不是首页"。
+#
+# 这两类问题 `make test` 一条都抓不到 —— 它跑在"已经跑起来的机器"上。
+#
+# ## 所以这个 job 刻意不做的事
+#
+# **不用任何快捷目标绕过 README 的路径。** 跑的就是那三条命令本身，
+# 一步不改、顺序不动。少一条、顺序错了、或者哪一步在干净环境里其实会崩，
+# 它就会红 —— 这才是"给 agent 一句话就能拉起服务"的兜底。
+#
+# ## 没纳入的
+#
+# `make api-test`（后端 pytest）暂未纳入：当前有 5 项既存失败
+# （`test_beta_channel` 4 条 + `test_ai_per_user` 1 条，见 `docs/STATUS.md` §五），
+# 原因是它们假设"连不上上游时提示里带『内测通道』"，而那个"死地址"在网络不通时
+# 返回的是连接错误、通了时返回 5xx，两者走的分支不同。修掉再纳入，
+# 否则 CI 常红、然后大家就不看它了。
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------- 干净克隆 → 跑起来
+  fresh-clone:
+    name: 干净克隆 → 照 README 跑起来
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ================= README「跑起来」那三条，一步不改 =================
+      - name: ① make api-venv
+        run: make api-venv
+
+      - name: ② make db-restore
+        run: make db-restore
+
+      - name: ③ make api-dev（前台阻塞，所以丢后台）
+        run: nohup make api-dev > /tmp/quizforge.log 2>&1 &
+      # ================== 到此为止是 README 的全部 ==================
+
+      # 下面只是"怎么知道它真的起来了"—— 也是"用户拿到手能不能用"的判据
+      - name: 服务就绪
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/api/health || true)
+            if [ "$code" = "200" ]; then
+              echo "服务就绪（等了约 $((i * 2)) 秒）"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::服务没起来"
+          cat /tmp/quizforge.log
+          exit 1
+
+      - name: 题库不是空壳（快照真的恢复出来了）
+        run: |
+          python3 -c "
+          import sqlite3
+          c = sqlite3.connect('data/quizforge.db')
+          n = c.execute('SELECT COUNT(*) FROM questions WHERE retired_at IS NULL').fetchone()[0]
+          t = c.execute('SELECT COUNT(*) FROM topics').fetchone()[0]
+          print(f'现行题 {n} · 主题 {t}')
+          assert n > 1000, '题库没恢复出来'
+          assert t > 100, '考纲没恢复出来'
+          "
+
+      - name: 接口给的题库与库里对得上
+        run: |
+          python3 -c "
+          import json, sqlite3, urllib.request
+          served = json.load(urllib.request.urlopen('http://127.0.0.1:8100/api/bank'))['questions']
+          c = sqlite3.connect('data/quizforge.db')
+          live = c.execute(
+              \"SELECT COUNT(*) FROM questions WHERE retired_at IS NULL AND status IN ('verified','published')\"
+          ).fetchone()[0]
+          print(f'接口 {len(served)} · 库 {live}')
+          assert served, '接口给的题库是空的'
+          assert len(served) == live, '接口与库对不上'
+          "
+
+      - name: 入口一致（/ 跳对话页，而对话页能开）
+        run: |
+          index=$(curl -s http://127.0.0.1:8100/)
+          echo "$index" | grep -q 'url=\./chat.html' || {
+            echo "::error::首页没有跳向对话页"; echo "$index"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/chat.html)
+          [ "$code" = "200" ] || { echo "::error::对话页返回 $code"; exit 1; }
+          echo "首页 → chat.html → 200"
+
+      - name: 起不来时把服务日志带出来
+        if: failure()
+        run: cat /tmp/quizforge.log || true
+
+  # ------------------------------------------------------------- 常规校验
+  check:
+    name: 题库校验 + 前端自测
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 下面两步的先后是有讲究的：`db-restore` 走的是 venv 里的 python
+      # （`tools/db_snapshot.py`），所以环境得先建好。
+      - name: make api-venv
+        run: make api-venv
+
+      - name: make db-restore
+        run: make db-restore
+
+      - name: make check（密钥扫描 + 题库校验）
+        run: make check
+
+      - name: make test（题库校验 + 前端断言 + 语法门禁）
+        run: make test
