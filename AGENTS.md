@@ -136,5 +136,6 @@ GET .../actions/runs/{run_id}/jobs                                   # 拿某一
 curl -s -D - -o /dev/null https://api.github.com/rate_limit | grep -i x-ratelimit
 ```
 
-（顺带一句：GitHub 的 Actions **网页**是 JS 渲染的，抓下来拿不到状态；badge 是唯一
-既不吃额度、又能脚本读的路。）
+（顺带两句：① GitHub 的 Actions **网页**是 JS 渲染的，抓下来拿不到状态 —— badge 是唯一
+既不吃额度、又能脚本读的路；② badge 走 CDN，**可能有几分钟缓存**：刚推完就查、
+看到的也许是上一次的结果，别急着下结论 —— 要立刻确认就破例用 API 查一次。）
