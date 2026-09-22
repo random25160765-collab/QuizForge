@@ -20,13 +20,15 @@
 # 一步不改、顺序不动。少一条、顺序错了、或者哪一步在干净环境里其实会崩，
 # 它就会红 —— 这才是"给 agent 一句话就能拉起服务"的兜底。
 #
+# 验收逻辑在 `tools/checks/serve_smoke.sh` 里（仓库里的一份可读文本，
+# 本地也能直接跑），这里只负责按 README 起服务再调它。
+#
 # ## 没纳入的
 #
 # `make api-test`（后端 pytest）暂未纳入：当前有 5 项既存失败
-# （`test_beta_channel` 4 条 + `test_ai_per_user` 1 条，见 `docs/STATUS.md` §五），
-# 原因是它们假设"连不上上游时提示里带『内测通道』"，而那个"死地址"在网络不通时
-# 返回的是连接错误、通了时返回 5xx，两者走的分支不同。修掉再纳入，
-# 否则 CI 常红、然后大家就不看它了。
+# （`test_beta_channel` 4 条 + `test_ai_per_user` 1 条，见 `docs/STATUS.md` §五）——
+# 它们假设"连不上上游时提示里带『内测通道』"，而那个"死地址"在不通与通（返回 5xx）
+# 两种情况下走的是不同分支。修掉再纳入，否则 CI 常红、然后大家就不看它了。
 
 name: ci
 
@@ -56,59 +58,14 @@ jobs:
       - name: ② make db-restore
         run: make db-restore
 
-      - name: ③ make api-dev（前台阻塞，所以丢后台）
-        run: nohup make api-dev > /tmp/quizforge.log 2>&1 &
+      # ③ 与验收合在一步里：`make api-dev` 是**前台阻塞**的（README 里写明了），
+      # 这里丢后台，然后**必须在同一个 shell 里**等验完 ——
+      # 跨 step 的后台进程在 Actions 上会随 shell 一起被收走。
+      - name: ③ make api-dev（丢后台）+ 验收
+        run: |
+          nohup make api-dev > /tmp/quizforge.log 2>&1 &
+          bash tools/checks/serve_smoke.sh http://127.0.0.1:8100
       # ================== 到此为止是 README 的全部 ==================
-
-      # 下面只是"怎么知道它真的起来了"—— 也是"用户拿到手能不能用"的判据
-      - name: 服务就绪
-        run: |
-          for i in $(seq 1 60); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/api/health || true)
-            if [ "$code" = "200" ]; then
-              echo "服务就绪（等了约 $((i * 2)) 秒）"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::服务没起来"
-          cat /tmp/quizforge.log
-          exit 1
-
-      - name: 题库不是空壳（快照真的恢复出来了）
-        run: |
-          python3 -c "
-          import sqlite3
-          c = sqlite3.connect('data/quizforge.db')
-          n = c.execute('SELECT COUNT(*) FROM questions WHERE retired_at IS NULL').fetchone()[0]
-          t = c.execute('SELECT COUNT(*) FROM topics').fetchone()[0]
-          print(f'现行题 {n} · 主题 {t}')
-          assert n > 1000, '题库没恢复出来'
-          assert t > 100, '考纲没恢复出来'
-          "
-
-      - name: 接口给的题库与库里对得上
-        run: |
-          python3 -c "
-          import json, sqlite3, urllib.request
-          served = json.load(urllib.request.urlopen('http://127.0.0.1:8100/api/bank'))['questions']
-          c = sqlite3.connect('data/quizforge.db')
-          live = c.execute(
-              \"SELECT COUNT(*) FROM questions WHERE retired_at IS NULL AND status IN ('verified','published')\"
-          ).fetchone()[0]
-          print(f'接口 {len(served)} · 库 {live}')
-          assert served, '接口给的题库是空的'
-          assert len(served) == live, '接口与库对不上'
-          "
-
-      - name: 入口一致（/ 跳对话页，而对话页能开）
-        run: |
-          index=$(curl -s http://127.0.0.1:8100/)
-          echo "$index" | grep -q 'url=\./chat.html' || {
-            echo "::error::首页没有跳向对话页"; echo "$index"; exit 1; }
-          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8100/chat.html)
-          [ "$code" = "200" ] || { echo "::error::对话页返回 $code"; exit 1; }
-          echo "首页 → chat.html → 200"
 
       - name: 起不来时把服务日志带出来
         if: failure()
@@ -130,7 +87,7 @@ jobs:
         with:
           node-version: "20"
 
-      # 下面两步的先后是有讲究的：`db-restore` 走的是 venv 里的 python
+      # 这两步的先后是有讲究的：`db-restore` 走的是 venv 里的 python
       # （`tools/db_snapshot.py`），所以环境得先建好。
       - name: make api-venv
         run: make api-venv
