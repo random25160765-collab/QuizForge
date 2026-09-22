@@ -109,5 +109,12 @@ jobs:
       - name: make test（题库校验 + 前端断言 + 语法门禁）
         run: make test
 
+      # `make web` 必须排在它前面：后端有 3 项测试要 `api/web` 这个产物 ——
+      # `test_startup` 查首页在不在，`test_chat` 与 `test_tools` 要 demo-kit。
+      # 本地没暴露是因为开发机上 `api/web` 早就在了（跑过一次 `make web` 就一直在）；
+      # CI 每次都是干净的，所以只有它会红。
+      - name: make web（构建前端产物 —— 后端测试有 3 项依赖它）
+        run: make web
+
       - name: make api-test（后端 pytest，474 项）
         run: make api-test
