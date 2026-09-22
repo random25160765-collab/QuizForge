@@ -12,8 +12,9 @@
 #   make test           上面的校验 + 前端逻辑自测
 #   make graph-check    图谱体检（无环 / 能走到根 / 闭包不矛盾）
 #
-# 老路径（只在"把历史数据从 Postgres 搬过来"时用得上，见 tools/migrate_to_local.py）：
-#   make db-up / db-down / db-restore
+# 数据快照（**唯一进版本库的数据形态**，就是 SQLite 库本身）：
+#   make db-snapshot   库里 → db/quizforge.db.gz（提交它）
+#   make db-restore    db/quizforge.db.gz → data/quizforge.db（解压即用）
 # ============================================================================
 
 PYTHON ?= python3
@@ -27,7 +28,7 @@ WEB_OUT   ?= api/web
 .PHONY: vendor check test new web web-watch web-full package pyodide-manifest notes-import \
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
-        db-up db-down env-init db-backup db-dump db-restore \
+        env-init db-snapshot db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
         graph-export share skills-link embed intake \
         coverage coverage-gaps drive help
@@ -140,15 +141,24 @@ api-venv:
 	@$(VENV)/bin/pip install -q -r api/requirements.txt
 	@echo "后端依赖就绪：$(VENV)"
 
-# ---- 老路径：只在搬历史数据时用（应用本身不再需要 Postgres）----
+# ---- 数据快照：**唯一进版本库的数据形态**（SQLite 库本身，不是某种导出版本）----
+#
+# 权威是 `data/quizforge.db`（本机一个文件）；`db/quizforge.db.gz` 是它的快照，
+# 用来"换台机器接着干"。这里刻意**不再有 Postgres**：
+#   * 快照就是 SQLite 库本身，解压即用，没有"先起一台库再灌 dump"这一步；
+#   * 载入即校验（完整性 + 外键悬空），坏快照当场拒绝，不会悄悄给出一个半库。
+#
+# 快照**必须抹掉 AI 密钥**再落盘：它是进版本库的（仓库公开），而 `user_settings`
+# 里存着用户自己填的密钥。踩过：2026-09-17 导出的快照里带过一把真密钥。
+DB_SNAPSHOT ?= db/quizforge.db.gz
 
-db-up:
-	@docker compose up -d db
-	@echo "PostgreSQL 已在 127.0.0.1:5432 启动（仅供 tools/migrate_to_local.py 当源库用）"
-	@echo "  搬完记得 make db-down；要更新快照就 make db-dump"
+# 库里 → 快照。用 SQLite 的 backup API 取一致性快照（有 WAL 也不会读到半写状态）。
+db-snapshot:
+	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_SNAPSHOT)
 
-db-down:
-	@docker compose down
+# 快照 → 库里（`--force` 覆盖已有的库）。这是**换新机器/首次上手**那条路。
+db-restore:
+	@$(VENV)/bin/python tools/db_snapshot.py load --path $(DB_SNAPSHOT) $(ARGS)
 
 # 起开发服务前**必构建前端**：前端是静态产物，不构建看到的就是上一次的样子 ——
 # 实测踩过（"开发端找不到笔记入口"，其实是产物还是旧的）。构建戳会打出来，
@@ -182,27 +192,17 @@ api-test:
 # 整套跑在容器里（含构建镜像与迁移）
 # docker-up / docker-down 已删（2026-09-20）：它们起的是「api 容器」那套部署，
 # 而应用现在是本机单文件（PyInstaller）或本机 uvicorn —— api/Dockerfile 也一起删了。
-# 只起 Postgres 当源库请用 `make db-up` / `make db-down`。
+# Postgres 那一套（db-up / db-restore / db-dump）也在 2026-09-22 全部删掉：
+# 换引擎的搬运**已经做完了**，快照现在就是 SQLite 库本身（见 `db-snapshot`），
+# 仓库里不再有任何需要 Docker 或 Postgres 的路径。
 
-# 生成 .env（本机跑服务时读它；`docker compose` 也读同目录这一份）
+# 生成 .env（本机跑服务时读它）
 # 已有 .env 时拒绝覆盖 —— 里面可能有按机器调整过的端口等设置。
 # 注意这里**没有密钥要填**：AI 密钥在 `config/ai.local.json`（已 gitignore），
 # 那是本机自己的那一份，不随仓库走。
 env-init:
 	@test -f .env && { echo ".env 已存在，未覆盖"; exit 0; } || cp .env.example .env
 	@echo "已生成 .env（按需修改端口 / 用量上限 / 内测通道开关）"
-
-# 数据备份。
-# 数据现在落在 VPS 磁盘的 docker 卷上 —— 这是选择轻量服务器的代价，
-# 必须有一条随手可用的备份路径。默认写到仓库之外，避免被误提交。
-DB_BACKUP_DIR ?= $(HOME)/quizforge-backups
-
-db-backup:
-	@mkdir -p $(DB_BACKUP_DIR)
-	@docker compose exec -T db pg_dump -U quizforge -d quizforge --clean --if-exists \
-		| gzip > $(DB_BACKUP_DIR)/quizforge-$$(date +%Y%m%d-%H%M%S).sql.gz
-	@echo "已备份到 $(DB_BACKUP_DIR)："
-	@ls -lh $(DB_BACKUP_DIR) | tail -3
 
 # ============================================================================
 # 出题 skill
@@ -320,21 +320,6 @@ test:
 	$(PYTHON) -c "import shutil,sys; [shutil.rmtree(p, ignore_errors=True) for p in sys.argv[1:]]" $$BANK $$PUB; \
 	exit $$status
 
-# ---------------------------------------------- 数据库快照（必须进版本库）
-# 题库、考纲、知识空间的**唯一权威在数据库**；仓库里已经没有它们的小文件，
-# 所以数据库必须被推送 —— 否则这份数据只存在于一台机器上。
-DB_DUMP ?= db/quizforge.sql.gz
-# 导出开发库。**落盘前先把 API 密钥抹掉**：这份快照是进版本控制的（仓库公开），
-# 而 `user_settings` 里存着用户自己填的密钥（见 api/app/routers/ai.py 里那个取舍），
-# 内测通道的密钥也在同一张表里出现过。抹的是**快照里的那份**，库里照旧。
-# 踩过的坑：2026-09-17 导出的快照里带过一把真密钥（幸运的是那个提交还没 push）。
-db-dump:
-	@mkdir -p db && docker compose exec -T db pg_dump -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} --no-owner --no-privileges | sed -E 's/"apiKey": "[^"]*"/"apiKey": ""/g' | gzip -9 > $(DB_DUMP)
-	@ls -lh $(DB_DUMP) | awk '{print "  已导出 " $$9 "（" $$5 "，密钥已抹）"}'
-db-restore:
-	@gunzip -c $(DB_DUMP) | PGPASSWORD=$${QF_DB_PASSWORD:-quizforge} psql -h $${QF_DB_HOST:-127.0.0.1} -U $${QF_DB_USER:-quizforge} -d $${QF_DB_NAME:-quizforge} -q
-	@echo "  已从 $(DB_DUMP) 恢复"
-
 # 资料库入库：登记 + 切片，**止步于此**（不抽点 / 不归概念 / 不出题 —— 见 pipeline/intake.py）。
 # 之后接 `make embed` 就有向量了。逐条确认要不要继续往下走看 `materials.depth`。
 intake:
@@ -361,6 +346,6 @@ help:
 	@echo "              四步：dispatch → worker → promote --apply → rework --apply（drive 已含）"
 	@echo "  校验        make check（密钥扫描 + 题库校验）· make test · make graph-check"
 	@echo "  构建发布    make web（前端 → api/web/）· make package / dist-linux（单文件）"
-	@echo "  备份搬运    make db-up && make db-restore → python tools/migrate_to_local.py"
-	@echo "              然后 make db-dump 更新快照 · 另见 bank-export / bank-import"
+	@echo "  数据快照    make db-restore（快照 → data/quizforge.db，解压即用）"
+	@echo "              make db-snapshot（库里 → 快照，提交它）· 另见 bank-export / bank-import"
 	@echo "  其它        make env-init（生成 .env）· make skills-link · make help"

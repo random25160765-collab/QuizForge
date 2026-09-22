@@ -22,36 +22,44 @@
 
 | | 要求 |
 |---|---|
-| 数据库与部署形态 | Docker + Docker Compose |
+| 数据库与部署形态 | **无外部服务**：数据就是本机一个 SQLite 文件（`data/quizforge.db`）|
 | 构建 / 校验 / 流水线 | Python 3.12+（只依赖标准库 + PyYAML 等轻量件）|
 | 前端 | **不需要 Node**（运行时是手写 JS 按固定顺序拼接）|
+
+**不需要 Docker，也不需要 Postgres** —— 这条链上已经没有任何一处依赖它们。
 
 ### 在线版（本机开发）
 
 ```bash
 make api-venv      # 后端依赖 → api/.venv
 make env-init      # 生成 .env（没有密钥要填）
-make db-up         # PostgreSQL → 127.0.0.1:5432
-make db-restore    # 灌入 db/quizforge.sql.gz（题库 + 考纲 + 知识空间）
+make db-restore    # 解压快照 → data/quizforge.db（题库 + 考纲 + 知识空间）
 make web           # 构建在线前端 → api/web
 make api-dev       # → http://127.0.0.1:8100
 ```
 
-打开页面即可开始（没有注册账号那一步）。库里空时按下面「从快照搬题」灌一次。
+打开页面即可开始（没有注册账号那一步）。首次运行会自动建好表；**库里空时
+用 `make db-restore` 把快照解压进来**（见下）。
 
-### 从快照搬题（可选）
+### 从快照恢复数据
 
-仓库里带着一份快照 `db/quizforge.sql.gz`（Postgres dump）。它不进应用，
-只是**搬历史数据**的入口 —— 搬完落到本机的 `data/quizforge.db`：
+仓库里带着一份快照 `db/quizforge.db.gz` —— **就是 SQLite 库本身**，gzip 压缩。
+一条命令解压即用，不需要起任何服务：
 
 ```bash
-make env-init
-make db-up         # 起一个 Postgres 容器当源库
-make db-restore    # 用快照灌进去
-python tools/migrate_to_local.py    # 逐表搬到 SQLite，搬完对账；之后 make db-down
+make db-restore            # db/quizforge.db.gz → data/quizforge.db
+make db-restore ARGS=--force   # 覆盖已有的库（先删掉它再解压）
 ```
 
-更省事的办法是直接拷一份现成的 `data/quizforge.db` —— local-first 的正路。
+载入前会校验（完整性 + 外键悬空），坏快照当场拒绝 —— 不会给你一份
+"看着能跑、其实少了一半题"的库。
+
+反向操作是 `make db-snapshot`：把库里的现状压回 `db/quizforge.db.gz`，
+**提交它** —— 这是"换台机器接着干"唯一的载体（快照落盘前会自动抹掉 AI 密钥，
+因为这个文件进的是公开仓库）。
+
+> 历史数据还在 Postgres 里的那种场合，才用得上 `tools/migrate_to_local.py`
+> （逐表搬到 SQLite，含对账与账号收敛）。它是**一次性搬运**工具，日常用不到。
 
 首次准备 KaTeX（只从本机副本同步，不联网）：
 
@@ -167,20 +175,22 @@ base  = acc × (0.55 + 0.45 × fresh) × (0.6 + 0.4 × ev)
 
 ### 权威在哪
 
-**数据库是唯一权威**：题目、考纲、知识空间、图谱全部以 PostgreSQL 为准。
+**数据库是唯一权威**：题目、考纲、知识空间、图谱全部以 `data/quizforge.db`（SQLite）为准。
 仓库里没有题目文件，`api/web/`（前端产物）、`bank.json`（导出）、`graph.json`（图谱快照）都是**投影**
 —— 改题改库，然后重新物化构建；**不要手改投影**。
 
 ### 快照与备份
 
 ```bash
-make db-dump        # → db/quizforge.sql.gz（这是唯一进版本库的数据形态）
-make db-restore     # 从它恢复
-make db-backup      # → ~/quizforge-backups/quizforge-<时间戳>.sql.gz（仓库外）
+make db-snapshot    # 库里 → db/quizforge.db.gz（这是唯一进版本库的数据形态）
+make db-restore     # 从它恢复（解压即用）
 ```
 
-规矩是：**数据进版本库只走快照**。改了题、补了概念、跑完流水线，就 `make db-dump` 一次，
-把 `db/quizforge.sql.gz` 一起提交 —— 换台机器 `make db-restore` 就能接着干。
+规矩是：**数据进版本库只走快照**。改了题、补了概念、跑完流水线，就 `make db-snapshot` 一次，
+把 `db/quizforge.db.gz` 一起提交 —— 换台机器 `make db-restore` 就能接着干。
+快照就是**库本身**（不是某种导出版本），落盘前会自动抹掉 AI 密钥（它进的是公开仓库）。
+
+库在本机时，备份它就是拷贝 `data/quizforge.db` 那一个文件。
 
 ### 文件形态（导入导出）
 
@@ -298,14 +308,13 @@ make graph-export   # → graph.json（图谱页取不到接口时的降级快�
 ### 运维
 
 ```bash
-make db-down        # 停掉那个搬数据用的 Postgres（搬完就可以停）
-make db-dump        # 把快照更新进版本库（db/quizforge.sql.gz）
-make db-backup      # 数据文件的备份
+make db-snapshot    # 把快照更新进版本库（db/quizforge.db.gz）
+make db-restore     # 从快照恢复（解压即用，ARGS=--force 覆盖）
 ```
 
 应用自己不带服务：数据就是 `data/quizforge.db` 一个文件，**备份它就是备份一切**。
-打包版（`make package` / `dist-linux`）是单文件，双击即用，不需要 Docker。
-代价是**改前端必须重建镜像**（见第一节）。
+打包版（`make package` / `dist-linux`）是单文件，双击即用。
+改前端跑一次 `make web` 即可（见第一节）。
 
 ---
 
@@ -319,7 +328,7 @@ make db-backup      # 数据文件的备份
 | `make web` | 构建前端 → `api/web` |
 | `make check` / `test` | 题库校验 / 校验 + 前端自测 |
 | `make coverage` / `drive` | 知识空间对账 / 跑一整轮流水线 |
-| `make db-dump` / `db-restore` | 快照进版本库 / 恢复 |
+| `make db-snapshot` / `db-restore` | 快照进版本库 / 从快照恢复 |
 | `make bank-export` / `bank-import` | 题目文件形态的导出 / 导入 |
 | `make skills-link` | 把 `.codebuddy/skills` 链到工作区根（工作区不是本仓库时用）|
 | `make help` | 全部命令 |
@@ -364,12 +373,12 @@ make api-migration M="说明"    # 再 autogenerate
 会，而且不会互相覆盖：作答按**增量**上送，服务端对真正插入成功的流水累加。
 
 **数据存在哪？**
-权威在服务端该账号名下（PostgreSQL，容器化时在 docker 卷上）；本机只留一份乐观缓存与
-待传队列（浏览器 localStorage）。设置里可导出 / 导入 JSON 备份；整库走 `make db-dump`。
+权威在本机唯一那个库（`data/quizforge.db`，SQLite 一个文件）；浏览器里只留一份乐观缓存与
+待传队列（localStorage）。设置里可导出 / 导入 JSON 备份；整库走 `make db-snapshot`。
 
 **忘了密码怎么办？**
 目前没有找回功能 —— 这是刻意的（未做邮箱验证）。请自行保管密码，
-数据可以用 `make db-backup` 备份恢复。
+数据可以用 `make db-snapshot` 备份恢复。
 
 **题目里能放图片吗？**
 能写 `![说明](地址)`，但要清楚现在**没有**打包题面图片的路径：构建只产前端与 KaTeX 资源，

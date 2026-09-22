@@ -7,11 +7,12 @@ description: quizforge 出题流水线的运行手册——权威在哪（数据
 
 ## 一句话前提
 
-**题库、考纲、切片、图清单、知识点、点候选的权威全在 Postgres。**
+**题库、考纲、切片、图清单、知识点、点候选的权威全在库（`data/quizforge.db`，SQLite）。**
 仓库里**没有**题目文件、没有 `maps/`、没有 `meta/topics.yaml` —— 那些都已经入库。
 所以：**不要去找文件，去查库**（`make coverage` / `python -m pipeline.status`）。
 
-数据要进版本库的唯一形态是快照：`db/quizforge.sql.gz`（`make db-dump` / `make db-restore`）。
+数据要进版本库的唯一形态是快照：`db/quizforge.db.gz` —— **就是 SQLite 库本身**，
+`make db-snapshot` 存、`make db-restore` 取（解压即用，**不需要 Docker 或 Postgres**）。
 
 ## 状态机（一张图）
 
@@ -56,7 +57,7 @@ make drive ARGS="--dry-run"                  # 只看它要做什么
 | 知识空间同步（历史 maps 用） | `python -m pipeline.dbsync` |
 | 考纲增删改（库为正） | `python -m app.cli.topics tree / add / rename / move / retire / export`（在 `api/` 下） |
 | 校验构建 | `make check` · `make test` · `make api-test` |
-| 数据库快照 | `make db-dump` / `make db-restore` |
+| 数据库快照 | `make db-snapshot` / `make db-restore` |
 
 ## 不可违反的六条
 
@@ -66,12 +67,12 @@ make drive ARGS="--dry-run"                  # 只看它要做什么
    （跑完一轮就 `make drive` 或 `python -m pipeline.rework --apply`，别让草稿越积越多 ✗）
 4. **编号在库内分配** ✗（咨询锁 + 最大值 ✗），不许扫目录取号 ✔
 5. **退役而不是删除** ✗：题目 id 是稳定资产，删了就解释不了"这道题去哪了" ✔
-6. **数据库必须推送** ✔：`db/quizforge.sql.gz` 是唯一的数据形态 ✔
+6. **数据库必须推送** ✔：`db/quizforge.db.gz` 是唯一的数据形态 ✔
 
 ## 新机器上手
 
 ```bash
-git clone … && make db-up && make db-restore   # 起库 + 灌数据
+git clone … && make db-restore                 # 解压快照 → data/quizforge.db（即用）
 make check && make test                        # 题库与前端自检
 make api-dev                                   # 后端 → http://127.0.0.1:8100
 ```

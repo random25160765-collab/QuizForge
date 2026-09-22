@@ -242,16 +242,15 @@ Last-Modified 做启发式缓存 —— 部署新版本后老用户会继续跑�
 表现为「改了前端，刷新看不到」。
 
 **镜像自包含**（这一段是历史：容器部署形态已随 local-first + 单文件打包退役，
-`api/Dockerfile` 已删，见 `docker-compose.yml` 顶部。下面那个"绑定挂载会白屏"的坑
-仍然成立 —— 它适用于任何"把 `api/web` 当外部目录挂进去"的做法）：Dockerfile 是多阶段的，
-前端产物在镜像内用 `tools/build_web.py` 生成，不依赖宿主先跑 `make web`。
-之前靠 `./api/web:/app/web` 绑定挂载提供前端，而 `api/web` 在 `.gitignore` 里 ——
-干净机器上部署时挂载目录是空的，页面直接白屏。
+`api/Dockerfile` 与 `docker-compose.yml` 都已删，Postgres 那套也在 2026-09-22 清出。
+下面那个"绑定挂载会白屏"的坑仍然成立 —— 它适用于任何"把 `api/web` 当外部目录挂进去"
+的做法）：Dockerfile 是多阶段的，前端产物在镜像内用 `tools/build_web.py` 生成，
+不依赖宿主先跑 `make web`。之前靠 `./api/web:/app/web` 绑定挂载提供前端，
+而 `api/web` 在 `.gitignore` 里 —— 干净机器上部署时挂载目录是空的，页面直接白屏。
 
-代价要说清楚：**去掉挂载之后，改前端必须重建镜像**（`docker compose up -d --build`），
-`make web` 只写到宿主目录，进不到已经在跑的容器里。
-所以本机改前端走 `make api-dev`（宿主 uvicorn + 热重载，直接读 `api/web`），
-容器只用于「部署形态的验证」。
+代价要说清楚：**去掉挂载之后，改前端必须重建镜像**，`make web` 只写到宿主目录，
+进不到已经在跑的容器里。所以本机改前端走 `make api-dev`
+（宿主 uvicorn + 热重载，直接读 `api/web`）。
 
 **密钥不进入任何产物**：`dist/` 是「可以对外发布」的目录，永远不含密钥；
 `dist-local/` 是本机自用（`make build-local` 会把 `config/ai.local.json` 内联进去）。
@@ -298,4 +297,4 @@ grep -c '<密钥前缀>' dist/*.html    # 期望全为 0
   不是 bug；但如果将来要做「从流水重算」的功能，需要先补一张基线表。
 - **`attempts` 的 `id` 是全局主键**：理论上两个用户生成同一个 UUID 会撞
   （v4 碰撞概率可忽略）。日后若要更严谨，可以改成 `(user_id, id)` 复合主键。
-- **没有找回密码**：未做邮箱验证，刻意如此。密码丢失只能靠 `make db-backup` 的备份恢复数据。
+- **没有找回密码**：未做邮箱验证，刻意如此。密码丢失只能靠 `make db-snapshot` 的备份恢复数据。
