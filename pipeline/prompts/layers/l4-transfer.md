@@ -25,7 +25,7 @@
 
 | 问自己 | 是 | 否 |
 |---|---|---|
-| 把应用层的解法步骤背下来，能否直接套用？ | 那是应用题，回 `quizforge-l3-apply` | 继续 |
+| 把应用层的解法步骤背下来，能否直接套用？ | 那是应用题，回 `l3-apply` | 继续 |
 | 是否需要**重新组合已知原理**才能解？ | 继续 | 只是套公式 → 回应用层 |
 | 情境是否真的换了（不是只换数值）？ | 继续 | 只换数值 → 假迁移，重做 |
 | 是否超纲（需要材料之外的领域知识）？ | 降级或补材料 | 继续 |
@@ -111,7 +111,7 @@ python3 tools/build.py
 
 ## 参考
 
-（本仓库自包含这批 skill；下列路径均相对仓库根）
+（下列路径均相对仓库根；四份层契约都在 pipeline/prompts/layers/）
 
 - 完整格式契约（大题小问的精确写法）：`.codebuddy/skills/quizforge-author/references/format.md`
 - 从材料出题的抽取与核对流程：`.codebuddy/skills/quizforge-author/references/from-source.md`
