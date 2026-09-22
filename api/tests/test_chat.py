@@ -1760,3 +1760,108 @@ def test_new_conversation_lands_in_its_folder(client) -> None:  # noqa: ANN001
     assert resp.status_code == 200, resp.text
     assert resp.json()["conversation"]["folder"] == "考研/数学"
     assert "考研/数学" in _folders(client)["folders"]
+
+
+# ------------------------------------------------------------------ 删掉一支
+
+
+def _tree(client, db_session):  # noqa: ANN001
+    """造一棵**有分叉**的小树，返回 `(cid, {名字: 消息 id})`。
+
+    形状：`回答一` 下面分两支 —— 甲那支是要删的，乙那支一条都不该动：
+
+        第一问 ─ 回答一 ─┬─ 追问甲 ─ 回答甲   ← 删「追问甲」
+                         └─ 追问乙 ─ 回答乙
+    """
+    from app.models import Conversation, Message
+
+    _ready(client)
+    cid = _new_conversation(client)
+    conv = db_session.get(Conversation, uuid.UUID(cid))
+    ids: dict = {}
+
+    def add(name: str, parent, role: str, text: str):  # noqa: ANN001
+        row = Message(
+            conversation_id=conv.id,
+            user_id=conv.user_id,
+            parent_id=parent,
+            role=role,
+            content=text,
+            status="ok",
+        )
+        db_session.add(row)
+        db_session.commit()
+        ids[name] = row.id
+        return row.id
+
+    q1 = add("q1", None, "user", "第一问")
+    a1 = add("a1", q1, "assistant", "回答一")
+    ua = add("ua", a1, "user", "追问甲")
+    add("aa", ua, "assistant", "回答甲")
+    ub = add("ub", a1, "user", "追问乙")
+    add("ab", ub, "assistant", "回答乙")
+    return cid, ids
+
+
+def test_delete_message_takes_the_whole_branch(client, db_session) -> None:  # noqa: ANN001
+    """删一条 = 删掉**以它为根的那棵子树**；另一支与上游一条都不动。
+
+    这是对话树上「删掉这一支」背后的语义。为什么只有这一种：树上留一个
+    `parent_id` 指向已删消息的孩子，就是**指不到根的孤枝** —— 读会话、算当前
+    分支、画树三处会各自崩一次。所以没有"只删这一个、把孩子留下"这个选项。
+
+    这条同时**实测了级联删除真的生效**：靠的是 `messages.parent_id` 上的
+    `ondelete="CASCADE"` 加上引擎启动时那句 `PRAGMA foreign_keys=ON`（`db.py`）。
+    `foreign_keys` 是**每连接**的开关、SQLite 默认是关的 —— 哪一天那句 PRAGMA
+    被删掉，这个测试会立刻红，而不是等到用户发现删了下游还在。
+    """
+    from sqlalchemy import select
+
+    from app.models import Message
+
+    cid, ids = _tree(client, db_session)
+
+    res = client.delete(
+        f"/api/chat/conversations/{cid}/messages/{ids['ua']}", headers=_headers(client)
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["deleted"] == 2, "「追问甲」与它下面的「回答甲」一起走"
+
+    db_session.expire_all()
+    left = {
+        row.id
+        for row in db_session.scalars(
+            select(Message).where(Message.conversation_id == uuid.UUID(cid))
+        )
+    }
+    assert left == {ids["q1"], ids["a1"], ids["ub"], ids["ab"]}, "另一支与上游不许动"
+
+
+def test_delete_message_refuses_unknown_and_foreign(client, db_session) -> None:  # noqa: ANN001
+    """不存在的 id、**另一个会话**里的 id —— 都 404。
+
+    后半条是重点：`mid` 是路径上的裸数字。不校验归属的话，拿着 A 会话的 id 去
+    B 会话那条路径上删，会**删掉另一个对话里的东西** —— 而且从 URL 上看不出来。
+    """
+    from sqlalchemy import select
+
+    from app.models import Message
+
+    cid, _ids = _tree(client, db_session)
+    other, other_ids = _tree(client, db_session)
+
+    missing = client.delete(
+        f"/api/chat/conversations/{cid}/messages/99999999", headers=_headers(client)
+    )
+    assert missing.status_code == 404
+
+    foreign = client.delete(
+        f"/api/chat/conversations/{cid}/messages/{other_ids['q1']}", headers=_headers(client)
+    )
+    assert foreign.status_code == 404, "别的会话里的消息，不许从这条路径删"
+
+    db_session.expire_all()
+    still = db_session.scalars(
+        select(Message).where(Message.conversation_id == uuid.UUID(other))
+    ).all()
+    assert len(still) == 6, "另一个会话必须一条不少"

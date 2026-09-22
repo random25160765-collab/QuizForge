@@ -40,7 +40,11 @@ body[data-page='chat'] .chat {
   /* 宽度只认 `--chat-aside-w` 这一个变量（会右拖动时由 JS 写它）。
    * 248px 是没拖过时的默认值 —— 与资源树的缩进节奏接近，再宽就喧宾夺主。 */
   grid-template-columns: var(--chat-aside-w, 248px) minmax(0, 1fr);
-  /* **一行**，且不留 gap：这一格里还有几个隐藏的浮层（对话树 / 演示 / 便签 / 大题），
+  /* 展开/收起要**有过程**：这一格是栅格列，动它就等于动这一栏的宽度
+   *（与笔记页分组树用 `grid-template-rows` 收起是同一个手法）。
+   * 拖动调宽时由 `body.is-colresize` 关掉 —— 不然宽度会追着手指慢慢爬。 */
+  transition: grid-template-columns 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* **一行**，且不留 gap：这一格里还有几个隐藏的浮层（对话树 / 演示 / 批注 / 大题），
      它们也是栅格子项 —— 每个空行照样吃掉一条 16px 的 gap，五条就是 64px，
      于是"输入框下面总有一段空白"（实测 .chat 900、.chat__main 只有 836）。 */
   grid-template-rows: minmax(0, 1fr);
@@ -78,6 +82,10 @@ body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
   border: 0;
   overflow: hidden;
   visibility: hidden;
+  /* **延迟到动画跑完再隐藏**：立刻 hidden 的话，框还在收、内容已经没了 ——
+   * 看着是闪一下而不是收进去。内距与边框跟着一起过渡，否则宽度滑到一半，
+   * 那 13px（12 内距 + 1 边框）会突然一跳。 */
+  transition: visibility 0s linear 180ms, padding 180ms ease, border-width 180ms ease;
 }
 
 /* 工作台那一格里的对话（`QF.panes.register('chat')`，见 runtime/workbench.js）。
@@ -95,6 +103,10 @@ body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
 .panes__host > .chat {
   display: grid;
   grid-template-columns: var(--chat-aside-w, 264px) minmax(0, 1fr);
+  /* 展开/收起要**有过程**：这一格是栅格列，动它就等于动这一栏的宽度
+   *（与笔记页分组树用 `grid-template-rows` 收起是同一个手法）。
+   * 拖动调宽时由 `body.is-colresize` 关掉 —— 不然宽度会追着手指慢慢爬。 */
+  transition: grid-template-columns 180ms cubic-bezier(0.4, 0, 0.2, 1);
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
   align-items: stretch;
@@ -112,6 +124,10 @@ body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
   border: 0;
   overflow: hidden;
   visibility: hidden;
+  /* **延迟到动画跑完再隐藏**：立刻 hidden 的话，框还在收、内容已经没了 ——
+   * 看着是闪一下而不是收进去。内距与边框跟着一起过渡，否则宽度滑到一半，
+   * 那 13px（12 内距 + 1 边框）会突然一跳。 */
+  transition: visibility 0s linear 180ms, padding 180ms ease, border-width 180ms ease;
 }
 
 /* ------------------------------------------------- 能力选择栏（工具挂载） */
@@ -448,6 +464,11 @@ body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
    *   4. 现在用户："这个东西和左边右边两个边界，间隔都太大了" → 对称收到 **10**
    *      （与行内距 `--cm-pad-x` 同一个数，量级一致），仍然居中。 */
   padding: 12px 10px;
+  /* **min-width: 0 是动效的前提**：栅格子项默认不肯缩到内容宽度以下，
+   * 于是列宽滑到一半就被顶住、最后一下才跳过去（看着像卡住）。 */
+  min-width: 0;
+  /* 展开时立刻可见；延迟只声明在 closed 那一侧（那才是收进去的方向） */
+  transition: visibility 0s, padding 180ms ease, border-width 180ms ease;
 }
 
 /* ---------------------------------------------------------- 会话栏的右边界 */
@@ -1831,7 +1852,7 @@ body.is-colresize {
   border-color: var(--line);
 }
 
-/* **输入区那两颗**（附件 / 便签）：正圆 + 常态就有边框
+/* **输入区那两颗**（附件 / 批注）：正圆 + 常态就有边框
  *（用户："这两个按钮做成圆形，要有边框"）。
  * 只写在这一层，是为了不动消息行下面那一组 —— 它们共用 `.chaticon`。 */
 .chat__tools .chaticon {
@@ -2264,6 +2285,51 @@ body.is-colresize {
   fill: var(--amber);
 }
 
+/* 收起之后那枚角标换了含义（"藏了多少条"），颜色也换一个 —— 与"这里有分叉"
+ * 的琥珀分得开，不然读起来是同一件事的两个数。 */
+.ctnode__fork.is-folded {
+  fill: var(--pri);
+}
+
+/* 被收起的那一支：边框改成虚线 —— "这儿本来还有东西，是收起来了"，
+ * 而不是"这一支就这么短"。 */
+.ctnode.is-folded .ctnode__box {
+  stroke-dasharray: 5 4;
+}
+
+/* 节点右上角那个「⋯」（收起 / 删除这一支）。
+ *
+ * **常驻显示**：手机上根本没有 hover，藏起来等于没有 —— 要这个功能的正是手机上
+ * 那个人。所以它平时是一枚很淡的字符（不抢正文），鼠标悬到节点上时才浮出边框。 */
+.ctnode__more {
+  cursor: pointer;
+}
+
+/* 命中区：看不见，但要**收得到指针事件** —— `fill: transparent`（不是 `none`）
+ * 才是可命中的透明。比看得见那枚方块大一圈，好在缩小的树上也能点中。 */
+.ctnode__morehit {
+  fill: transparent;
+  stroke: none;
+}
+
+.ctnode__morebox {
+  fill: none;
+  stroke: none;
+}
+
+.ctnode:hover .ctnode__morebox {
+  stroke: var(--line);
+}
+
+.ctnode__moredots {
+  font-size: 13px;
+  fill: var(--fg3);
+}
+
+.ctnode:hover .ctnode__moredots {
+  fill: var(--fg);
+}
+
 /* 连线 */
 .ctedge {
   fill: none;
@@ -2581,7 +2647,7 @@ body.is-colresize {
   color: var(--fg3);
 }
 
-/* ---------------------------------------------------------------- 便签 */
+/* ---------------------------------------------------------------- 批注 */
 
 .chatnotes__backdrop {
   position: fixed;
@@ -2592,7 +2658,25 @@ body.is-colresize {
   background: color-mix(in srgb, #000 45%, transparent);
 }
 
+/* 弹出要有过程：背景淡进来、面板从右边滑进来。
+ * 用 keyframes 而不是 transition —— 这是**挂上去就存在**的元素（没有"从无到有"
+ * 的属性过渡可依），动画在插入那一刻自己就会跑。 */
+@keyframes chatnotes-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes chatnotes-slide-in {
+  from { transform: translateX(26px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.chatnotes__backdrop {
+  animation: chatnotes-fade-in 150ms ease both;
+}
+
 .chatnotes__sheet {
+  animation: chatnotes-slide-in 200ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
   display: flex;
   flex-direction: column;
   width: min(420px, 92vw);
@@ -2937,6 +3021,21 @@ body.is-colresize {
 
   .chatlist__item {
     min-width: 200px;
+  }
+
+  /* **横排的三栏要均分**。
+   *
+   * 不写这两条会怎样（实测 749px 宽）：三栏是 352 / 129 / 322 —— 中间那栏被挤到
+   * 129px，标题全被截成「看一下大模型…」；合计 803 又超过可视的 703，于是整排横滚、
+   * 最右那栏还被窗口裁掉。用户："窄边框的时候，前端显示不正常。"
+   *
+   * `flex: 1 1 0` + `min-width: 0` = 三栏各分三分之一；栏里条目自己的
+   * `min-width: 200px` 仍保证不被压扁，压不下时**由这一栏自己横滚**，
+   * 而不是把它推出去、让整排涨到窗口外面。 */
+  .chatzone {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow-x: auto;
   }
 
   .chat__thread {
@@ -3657,4 +3756,63 @@ body.is-colresize {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
+}
+
+/* 拖动调宽期间**关掉过渡**：宽度是跟着指针一帧一帧写进去的，再叠一层 180ms
+ * 缓动，手感就变成追着指针慢慢爬。只关这一条 —— 其余过渡与拖动无关。 */
+body.is-colresize .chat,
+body.is-colresize .panes__host > .chat {
+  transition: none;
+}
+
+/* 系统里开了"减少动效"就别位移 —— 动效是锦上添花，不是必需品。 */
+@media (prefers-reduced-motion: reduce) {
+  .chatnotes__backdrop,
+  .chatnotes__sheet {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------- 批注 */
+
+/* 高亮：批注钉住的那一段。底色用 --amber（与"这里有个分叉"同一色系），
+ * 文字保持继承色 —— 高亮是给眼睛做标记，不该改变正文的可读性。 */
+.chatmark {
+  background: color-mix(in srgb, var(--amber) 24%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+  cursor: pointer;
+}
+
+.chatmark:hover {
+  background: color-mix(in srgb, var(--amber) 42%, transparent);
+}
+
+/* 面板里那条"标的是哪句"（原文摘录）：一道竖线 + 灰一档，与批注正文分开 */
+.chatnotes__quote {
+  border-left: 2px solid var(--amber);
+  padding: 2px 0 2px 8px;
+  color: var(--fg2);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-height: 68px;
+  overflow: hidden;
+}
+
+/* 只有高亮、没写字的那条：说清它是"光标记"，而不是一条空内容 */
+.chatnotes__text.is-bare {
+  color: var(--fg3);
+}
+
+.chatnotes__searchrow {
+  padding: 10px 14px 0;
+}
+
+/* 没有待批注时，输入框的位置上放"怎么用" —— 这里不摆一个能打字却存不了的框。 */
+.chatnotes__howto {
+  padding: 2px 0;
+  color: var(--fg3);
+  font-size: 12.5px;
+  line-height: 1.7;
 }

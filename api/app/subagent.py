@@ -56,6 +56,51 @@ MAX_TURNS = 8
 #: 我们的说明后面再截一刀，变得两截截断。这里先自己截，并把话说清楚。
 REPORT_MAX = 3500
 
+#: 短于这个长度、**又是在说"接下来要做什么"**的，就不算一份回报（见 `_looks_like_intent`）。
+#:
+#: 为什么需要它：子代理干活期间会**边查边念叨**，而它真正交的只有最后一次开口。
+#: 于是当它还没收口就用完轮数时，"最后一次开口"就是半句**打算** —— 实测七次调用里
+#: 有三次如此，报回来的是 "Excellent — … Let me read it in different regions …"、
+#: "I have read all the target notes … Now let me verify …"，而主线会把它当成任务结果。
+REPORT_MIN = 700
+
+#: "这是在说接下来要做什么"，不是"这是我查到的"。中英都收 —— 实测子代理的**工作独白**
+#: 是英文、**交付**是中文，但这条不靠语言判断（那份 975 字的真回报也是英文的）。
+_INTENT_MARKS = (
+    "let me ",
+    "let's ",
+    "now let me",
+    "i'll ",
+    "i will ",
+    "i have read",
+    "让我",
+    "接下来我",
+    "我先去",
+    "我这就",
+)
+
+#: 最后一轮工具收回去了 —— 跟它明说一句。见 `agent_loop.run` 用它的那处。
+FINAL_NUDGE = (
+    "（工具已经收回，这一轮不能再调用了。）现在**交付**：按上面那四块把结果写出来 ——"
+    "结论、依据（带出处与原文摘录）、试过什么（含零命中的）、还有什么没解决。"
+    "**不要再写「让我再看看」这类过渡句** —— 你这次开口就是交给上级的东西。"
+)
+
+
+def _looks_like_intent(text: str) -> bool:
+    """这段是"打算去做"的念叨，而不是"查到了什么"的交付？
+
+    只在**短文本**上判：一份长回报里出现一次 "let me" 不算什么（实测那份 975 字的
+    真回报就是英文写的，不能因为语言或某个词就把它判下去）。
+
+    判错了也不致命 —— 正文照样带回去，只是**换了名字**（`report` → `lastWords`）
+    并加一句说明，让主线知道该再派一次或自己查，而不是拿着半句念叨当结论。
+    """
+    if len(text) >= REPORT_MIN:
+        return False
+    low = text.lower()
+    return any(mark in low for mark in _INTENT_MARKS)
+
 
 SUBAGENT_SYSTEM = (
     "你是主对话派出来的**子代理**：一个任务落到你手上，你把它做完，只交回结果。\n"
@@ -138,6 +183,9 @@ def run(  # noqa: ANN001
         allow=allow,
         # **声明里摘掉、调用也拦住**（见 SUBAGENT_DENY 的说明）
         drop=SUBAGENT_DENY,
+        # 最后一轮工具会被收回，而模型察觉不到 —— 明说一句，好让它交**结论**
+        # 而不是半句"让我再看看"（见 agent_loop 里用它的那处）
+        final_nudge=FINAL_NUDGE,
     ):
         kind = event.get("kind")
         if kind == "text":
@@ -159,8 +207,16 @@ def run(  # noqa: ANN001
 
     report = "".join(texts).strip()
     if len(report) > REPORT_MAX:
-        # 截断要**说清**：不声不响地砍掉半截，上级会以为那就是全部
-        report = report[:REPORT_MAX] + "\n\n（回报太长，这里截住了；需要细节就让上级再问一次。）"
+        # 截断要**说清**，而且要切在**换行处**：切在半句话上，读的人会以为正文
+        # 到那儿就完了（实测："…未扫的 20 份被列在 `skipped` 字段，且" 后面
+        # 直接接一句说明，看起来像原文写了一半）。
+        cut = report.rfind("\n", 0, REPORT_MAX)
+        if cut < REPORT_MAX // 2:
+            cut = REPORT_MAX  # 整段就是一大行（实测真有，2 行 3500 字）：退化成硬截
+        report = report[:cut] + "\n\n（回报太长，在换行处截住了；需要细节就让上级再问一次。）"
+
+    # **交付了没有**：短、而且是在说"接下来要做什么" —— 那是干活时的念叨，不是回报。
+    delivered = bool(report) and not _looks_like_intent(report)
 
     calls = len(used)
     tools_used = sorted(set(name for name in used if name))
@@ -170,12 +226,22 @@ def run(  # noqa: ANN001
     if not report:
         # **失败显式**：没正文就说没正文 —— 不许让它变成一句"材料里没有"的假阴性
         head += "，但**它没交回正文**" + ("（" + failed + "）" if failed else "") + "。"
+    elif not delivered:
+        head += (
+            "，但它**没交回回报**（只留了半句还在干活的话）—— "
+            "要结论就换个更具体的任务再派一次，或者自己查。"
+        )
 
     payload: dict = {
         "subagent": {
             "calls": calls,
             "used": tools_used,
-            "report": report,
+            # 没交付时 `report` **留空**：这个名字就是"交付"，名不副实比空着更糟
+            "report": report if delivered else "",
+            "delivered": delivered,
+            # 它最后那句话**换个名字**带上：有时能看出它卡在哪（"Let me read it in
+            # different regions…"说明它还没读完），但它不配叫 report —— 名字就是承诺。
+            "lastWords": "" if delivered else report,
             "failed": failed,
         },
         "note": head,

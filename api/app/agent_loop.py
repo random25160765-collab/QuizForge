@@ -218,6 +218,7 @@ def run(  # noqa: ANN001
     allow: tuple[str, ...] | set[str] | None = None,
     drop: tuple[str, ...] = (),
     thinking: bool = False,
+    final_nudge: str = "",
 ):
     """驱动若干轮，产出事件字典（宿主按 kind 分发）：
 
@@ -237,6 +238,8 @@ def run(  # noqa: ANN001
 
     usage = {"promptTokens": 0, "completionTokens": 0}
     allow_tools = True
+    #: 收尾那句"工具收走了，现在交付"只插一次（见循环里那处）
+    nudged = False
 
     for _turn in range(max_turns):
         chunks: list[str] = []
@@ -283,6 +286,14 @@ def run(  # noqa: ANN001
                 #
                 # 条件写在调用处（而不是循环外算一次）：降级重试时 `allow_tools`
                 # 会变，算在外面的话重试还会带着工具上去，等于没降级。
+                # 最后一轮工具已经被收走（上面那句 `_turn < max_turns - 1`）——
+                # 但模型**常常察觉不到**：它会说"让我再查一下"，于是交回来的是半句
+                # **打算**而不是结论（实测子代理七次里有三次如此，报回来的是
+                # "Let me do targeted searches across the library for the six keywords."，
+                # 而主线会把它当成任务的结果）。这一句就是明说：工具没了，现在交东西。
+                if final_nudge and _turn >= max_turns - 1 and not nudged:
+                    nudged = True
+                    messages.append({"role": "user", "content": final_nudge})
                 # 发之前先把**旧图**剥掉（沙箱那张 base64 只给模型看一次，见 _strip_images）
                 _strip_images(messages)
                 for kind, value in gateway.stream_completion(

@@ -199,8 +199,10 @@ DOMAIN = (
 GROUP_PROMPTS = {
     "notes": (
         "笔记（他自己的，只在他的库里找）：`search_notes` 跨库按内容找；"
-        "`write_note` 把一段话**追加**到某篇的末尾（写前自动留快照）。"
-        "他说「记下来 / 记到笔记里」时才写，写完把那句原文念给他听。"
+        "`read_note` 读正文（长的要分次读 —— 别只看开头就下结论）。"
+        "写有两种：`write_note` **追加到末尾**，`edit_note` **改某一处**"
+        "（给它一段原文换成新的，要删就给它空串）—— **要改已有的内容用后者**，"
+        "别拿追加去凑。两个写前都自动留快照、能撤回，写完把那句原文念给他听。"
     ),
     "library": (
         "资料：`attach_material` 按标题找条目、把正文节选读进上下文，`read_material` 精读某几十行。"
@@ -286,7 +288,7 @@ GROUP_TOOLS = {
     # `list_notes` / `read_note` 原先漏在这儿了 —— 而这一条正是"清单会漂"的现场：
     # 它是**兜底**，正常路径由调用方传入真声明的工具名，所以漂了也看不出来。
     # 兜底一旦被用到（`declared` 没传），模型会被告知"你只有那两个工具"。
-    "notes": ("list_notes", "read_note", "search_notes", "write_note"),
+    "notes": ("list_notes", "read_note", "search_notes", "write_note", "edit_note"),
     "library": ("attach_material", "search_material", "search_library", "read_material"),
     "graph": ("search_knowledge", "get_point_detail", "explore_graph"),
     "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews", "read_learning_tree",
@@ -1644,6 +1646,58 @@ def stop_message(cid: uuid.UUID, mid: int, user: AuthenticatedWriter, db: DbSess
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
     return {"ok": True, "status": m.status}
+
+
+def _subtree_size(db, cid: uuid.UUID, mid: int) -> int:
+    """这条消息连同它下面一共几条（**删之前**先数一下）。
+
+    为什么要数：用户是在对话树上点了一个节点，而他**看不见那下面挂了多少** ——
+    一声不吭删掉十几条，那不是"操作成功"，那是悄悄删了他的东西。数出来之后，
+    界面能把它写进确认框、也写进返回值里，这一步才是有交代的。
+
+    用显式队列而不是递归：这棵树是用户随手点出来的，没有深度上限；
+    顺带带一道 `seen` 与上限，碰到病态数据（万一绕着环）也不至于把请求拖死。
+    """
+    total = 0
+    frontier = [mid]
+    seen = {mid}
+    while frontier and total < 10000:
+        total += len(frontier)
+        rows = db.scalars(
+            select(Message.id).where(
+                Message.conversation_id == cid, Message.parent_id.in_(frontier)
+            )
+        ).all()
+        frontier = [one for one in rows if one not in seen]
+        seen.update(frontier)
+    return total
+
+
+@router.delete("/conversations/{cid}/messages/{mid}")
+def delete_message(cid: uuid.UUID, mid: int, user: AuthenticatedWriter, db: DbSession) -> dict:
+    """删掉一条消息，**连同它下面的整棵子树**（对话树界面上"删掉这个分支"那一步）。
+
+    为什么连子树一起删：这是棵树，留下孩子就等于留下**指不到根的孤枝**
+    （`parent_id` 指向一条已经不在的消息），读会话、算分支、画树三处会各自崩一次。
+    所以语义只有一种：**删一个节点 = 删掉以它为根的那一棵子树** ——
+    删一条"提问"，就是把从那次提问长出去的东西一起删掉。
+
+    删除动作交给 `messages.parent_id` 上的 `ondelete="CASCADE"`（引擎启动时
+    `PRAGMA foreign_keys=ON`，见 `db.py`）—— **不自己递归删**：递归要写"防环 + 上限"
+    的遍历，而数据库那条是原子的、也不可能绕成环。
+
+    回给界面 `deleted`（这一支一共几条），好让它说的是确数而不是"删好了"。
+    """
+    conv = _own_conversation(db, user.id, cid)
+    m = db.get(Message, mid)
+    if m is None or m.conversation_id != conv.id or m.user_id != user.id:
+        raise HTTPException(404, "没有这条消息")
+
+    deleted = _subtree_size(db, conv.id, mid)
+    db.delete(m)
+    conv.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"ok": True, "deleted": deleted}
 
 
 def _push_text(parts: list[dict], chunk: str) -> None:
