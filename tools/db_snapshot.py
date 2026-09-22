@@ -184,6 +184,12 @@ def load(path: Path, target: Path, force: bool = False) -> int:
 
     # 先解到一个临时文件并**校验**，通过了再替换正式库：
     # 校验失败的快照不该先把好库毁掉 —— "解压一半失败"要留下可回退的现场。
+    #
+    # `mkdir` 必须在这里（**写之前**）：新机器上 `data/` 根本不存在，
+    # 而这一步是首次落盘的地方。原先它排在下面替换正式库之前 ——
+    # 结果"解压"先撞上"目录不存在"，干净克隆的第二条命令就断在这儿
+    #（实测：新 agent 照着 README 走，`make api-venv` 成功、`make db-restore` 直接崩）。
+    target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_suffix(target.suffix + ".incoming")
     staging.unlink(missing_ok=True)
     with gzip.open(path, "rb") as fi, open(staging, "wb") as fo:
@@ -197,7 +203,6 @@ def load(path: Path, target: Path, force: bool = False) -> int:
             print(f"  ✗ {item}", file=sys.stderr)
         return 1
 
-    target.parent.mkdir(parents=True, exist_ok=True)
     for sidecar in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
         sidecar.unlink(missing_ok=True)  # 旧库的 WAL 不能留着和新库混在一起
     staging.replace(target)
