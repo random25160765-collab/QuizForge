@@ -25,6 +25,15 @@ API_PORT ?= 8100
 VENV      ?= api/.venv
 WEB_OUT   ?= api/web
 
+# 跑 `tools/` 下那些**校验类**脚本时用哪个 python —— **venv 里那个**。
+#
+# 为什么不是 `$(PYTHON)`（系统 python3）：`tools/check.py` 经 `tools/topics.py`
+# 要 `import yaml`，而系统 python **不保证**装了 PyYAML（开发机上碰巧有，
+# CI 里那个干净的 3.12 就没有 —— 实测第一次跑 `make check` 就红在这儿）。
+# 这条链路本来就已经依赖 venv（物化题目走 `$(VENV)/bin/python`），
+# 所以统一用它：只要跑过 `make api-venv`（README 的第一步）就一定能用。
+CHECK_PYTHON = $(VENV)/bin/python
+
 .PHONY: vendor check test new web web-watch web-full package pyodide-manifest notes-import \
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
@@ -295,11 +304,11 @@ BANK_MATERIALIZE = $(VENV)/bin/python -m pipeline.bankfile materialize
 # **先扫密钥再校题**：前者一秒就跑完，且一旦命中就该立刻停下 ——
 # 密钥只要推出去了，后面所有校验都变得没有意义（收不回来，只能换）。
 check:
-	@$(PYTHON) tools/secret_scan.py
+	@$(CHECK_PYTHON) tools/secret_scan.py
 	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
 	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
-	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(PYTHON) tools/check.py; \
-	status=$$?; $(PYTHON) -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" $$BANK; \
+	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(CHECK_PYTHON) tools/check.py; \
+	status=$$?; $(CHECK_PYTHON) -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" $$BANK; \
 	exit $$status
 
 test:
@@ -309,7 +318,7 @@ test:
 	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
 	PUB=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
 	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
-	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(PYTHON) tools/check.py; \
+	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(CHECK_PYTHON) tools/check.py; \
 	status=$$?; \
 	if [ $$status -eq 0 ]; then \
 	  $(BANK_MATERIALIZE) --out $$PUB >/dev/null; \
@@ -318,7 +327,7 @@ test:
 	  status=$$?; \
 	fi; \
 	if [ $$status -eq 0 ]; then QF_BANK_JSON=$$PUB/bank.json node tools/selftest.mjs; status=$$?; fi; \
-	$(PYTHON) -c "import shutil,sys; [shutil.rmtree(p, ignore_errors=True) for p in sys.argv[1:]]" $$BANK $$PUB; \
+	$(CHECK_PYTHON) -c "import shutil,sys; [shutil.rmtree(p, ignore_errors=True) for p in sys.argv[1:]]" $$BANK $$PUB; \
 	exit $$status
 
 # 资料库入库：登记 + 切片，**止步于此**（不抽点 / 不归概念 / 不出题 —— 见 pipeline/intake.py）。
