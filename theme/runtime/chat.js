@@ -65,6 +65,24 @@
     current: null, // 当前会话 id
     messages: [], // **整棵树**（一条不落），当前分支是按 parentId 算出来的
     picks: {}, // 用户在某个分叉上选过哪一支：{ 父节点 key: 子消息 id }
+    //: 正在被「重试」顶掉的那一条（见 `regenerate`）；没有替代在飞时为 null。
+    //:
+    //: 干什么用：重试一条**失败**的消息时，那一行（就一行报错）要**立刻**从屏幕上撤掉。
+    //: 它跟"重新回答一条成功的回答"不是一回事 —— 成功那条有内容可读，"留在原处、
+    //: 新回答在下面慢慢长"是舒服的；失败那条留着就是让人**盯着一行报错等十几秒**
+    //:（用户："旧的出错信息要等到新的信息完全生成才会消失"）。
+    //:
+    //: 但**只从 DOM 删是不够的**：`activePath()` 的兜底是"跟着最新那一支"，而按下
+    //: 重试的那一瞬间替代品还没落地 —— 中间任何一次重画都会把那行报错放回来。
+    //: 所以记一笔、让**兜底**跳过它；这一轮尝试一结束就清掉（`send()` 末尾），
+    //: 于是"替代品压根没生成出来"时它会**自己回来**（连同那个重试按钮 ——
+    //: 不然下一次失败就没地方点了）。
+    replacing: null,
+    //: 对话树里**被收起**的那几支：`{ 消息 id: true }`（见 `toggleBranchFold`）。
+    //:
+    //: 纯界面状态：不进库、也不影响数据 —— "收起"只是**这张图上先不画它下面那一段**，
+    //: 消息一条都没少，展开、翻分支、接着问都照旧。
+    treeFolded: {},
     busy: false, // 正在流式
     controller: null, // AbortController：停止按钮用它
     live: null, // 正在长的那条
@@ -116,7 +134,24 @@
     view: { x: 0, y: 0, k: 1 },
     drag: null,
     bounds: null,
+    //: 这一版树**摆过位置没有**（也就是"适配窗口"算过没有）。见 `resetTreeView`。
+    fitted: false,
   };
+
+  /** 让**下一次**画树重新适配窗口。
+   *
+   * 干什么用：画树有很多种原因（打开、收起一支、删掉一支、切分支、换会话…），
+   * 但**不是每一种都该重算缩放**。原先 `drawTree` 里那段适配是无条件的，于是
+   * 任何一次重画都会把用户刚放大、刚拖到的位置一把扔掉 —— 表现就是
+   * "我放大了删，删完页面跳回了全局视图"（用户原话）。
+   *
+   * 现在只有这里显式声明过"该重算"时才重算，其余情况保持当前视角。
+   * 想手动回全局视图有现成入口：工具栏那个「适应窗口」。
+   */
+  function resetTreeView() {
+    TREE.view = { x: 0, y: 0, k: 1 };
+    TREE.fitted = false;
+  }
 
   function sv(tag, attrs, kids) {
     var node = document.createElementNS(SVG_NS, tag);
@@ -288,6 +323,10 @@
       });
     });
     var kidsOf = function (id) {
+      // 被收起的那一支**当作它没有孩子** —— 于是"自底向上量宽度"与"自顶向下摆位置"
+      // 那两趟会自然跳过整棵子树，不必在布局算法里到处加判断（"收起"能一行接进现有
+      // 布局，就靠这一处）。
+      if (state.treeFolded[keyOf(id)]) return [];
       return byParent[keyOf(id)] || [];
     };
 
@@ -561,7 +600,8 @@
           'aria-label': label,
           onClick: function () {
             state.treeOpen = !state.treeOpen;
-            if (state.treeOpen) TREE.view = { x: 0, y: 0, k: 1 };
+            // 打开 = 重新适配一次（关掉再开，就该是"重新看这张图"）
+            if (state.treeOpen) resetTreeView();
             renderBar();
             renderTree();
           },
@@ -637,7 +677,7 @@
         {
           type: 'button',
           onClick: function () {
-            TREE.view = { x: 0, y: 0, k: 1 };
+            resetTreeView();
             renderTree();
           },
         },
@@ -700,7 +740,9 @@
           ' mode-' +
           modeKeyOf(anchor) +
           (message.status === 'error' ? ' is-error' : '') +
-          (message.id === state.editing ? ' is-editing' : ''),
+          (message.id === state.editing ? ' is-editing' : '') +
+          // 被收起的一支：边框换成虚线（"这儿本来还有东西，是收起来了"）
+          (state.treeFolded[keyOf(message.id)] ? ' is-folded' : ''),
         transform: 'translate(' + node.x + ',' + (node.y - node.h / 2) + ')',
       });
       group.appendChild(
@@ -711,13 +753,65 @@
           document.createTextNode(message.role === 'user' ? '我' : 'AI'),
         ])
       );
-      if (node.forks > 1) {
+      // 右上角那枚角标：分叉数（这里有几个兄弟分支）／这一支被收起时，换成"藏了多少条"
+      var hidden = state.treeFolded[keyOf(message.id)] ? descendantsOf(message.id).length : 0;
+      var badge = hidden ? '＋' + hidden : node.forks > 1 ? '⑂' + node.forks : '';
+      if (badge) {
         group.appendChild(
-          sv('text', { class: 'ctnode__fork', x: TREE.w - 12, y: 18, 'text-anchor': 'end' }, [
-            document.createTextNode('⑂' + node.forks),
-          ])
+          sv(
+            'text',
+            {
+              class: 'ctnode__fork' + (hidden ? ' is-folded' : ''),
+              x: TREE.w - 34,
+              y: 18,
+              'text-anchor': 'end',
+            },
+            [document.createTextNode(badge)]
+          )
         );
       }
+      // 「⋯」= 这一支上能做的事（收起 / 删除）。
+      // **常驻显示，不做"hover 才出现"** —— 手机上根本没有 hover，藏起来等于没有，
+      // 而提这个需求的正是手机上的那个人。
+      var more = sv('g', { class: 'ctnode__more' });
+      // **命中区比看得见的方块大一圈**：这棵树要缩到装得下（158 个节点时 k≈0.31），
+      // 一个 22px 的方块到屏幕上只剩 7px，手指根本点不准 —— 而催这个功能的正是
+      // 手机上那个人。`fill: transparent`（不是 `none`）才收得到指针事件。
+      more.appendChild(
+        sv('rect', {
+          class: 'ctnode__morehit',
+          x: TREE.w - 38,
+          y: -2,
+          width: 36,
+          height: 30,
+        })
+      );
+      more.appendChild(
+        sv('rect', {
+          class: 'ctnode__morebox',
+          x: TREE.w - 28,
+          y: 5,
+          width: 22,
+          height: 18,
+          rx: 5,
+          ry: 5,
+        })
+      );
+      more.appendChild(
+        sv('text', { class: 'ctnode__moredots', x: TREE.w - 17, y: 18, 'text-anchor': 'middle' }, [
+          document.createTextNode('⋯'),
+        ])
+      );
+      more.addEventListener('click', function (event) {
+        // 不 stop 的话会连带触发节点那个"跳到这条消息"：面板当场关掉，菜单也跟着没了
+        event.stopPropagation();
+        event.preventDefault();
+        var box = more.getBoundingClientRect();
+        chatMenuX = box.left;
+        chatMenuY = box.bottom + 4;
+        openNodeMenu(message);
+      });
+      group.appendChild(more);
       node.lines.forEach(function (line, index) {
         group.appendChild(
           sv('text', { class: 'ctnode__line', x: 12, y: 36 + index * 15 }, [
@@ -761,11 +855,16 @@
     });
     if (!isFinite(minX)) return;
     var pad = 40;
-    var scale = Math.min((width - pad * 2) / Math.max(1, maxX - minX), (height - pad * 2) / Math.max(1, maxY - minY), 1.1);
     TREE.bounds = { minX: minX, minY: minY, maxX: maxX, maxY: maxY };
-    TREE.view.k = scale;
-    TREE.view.x = (width - (maxX - minX) * scale) / 2 - minX * scale;
-    TREE.view.y = (height - (maxY - minY) * scale) / 2 - minY * scale;
+    // **只在还没摆过的时候适配窗口**，其余情况保持用户当前的缩放与位置。
+    // 这里每重画一次就重算一次的话，用户刚在图上找到的位置就没了（见 `resetTreeView`）。
+    if (!TREE.fitted) {
+      var scale = Math.min((width - pad * 2) / Math.max(1, maxX - minX), (height - pad * 2) / Math.max(1, maxY - minY), 1.1);
+      TREE.view.k = scale;
+      TREE.view.x = (width - (maxX - minX) * scale) / 2 - minX * scale;
+      TREE.view.y = (height - (maxY - minY) * scale) / 2 - minY * scale;
+      TREE.fitted = true;
+    }
     applyTreeView(svg);
 
     // ---- 手势：一根指头拖动 = 平移，两根指头 = 缩放 ----------------------
@@ -940,7 +1039,18 @@
       for (var i = 0; i < kids.length; i++) {
         if (String(kids[i].id) === String(picked)) chosen = kids[i];
       }
-      if (!chosen) chosen = kids[kids.length - 1];
+      if (!chosen) {
+        // 兜底：跟着最新那一支。**跳过正在被重试顶掉的那条**（见 `state.replacing`）：
+        // 它已经从屏幕上撤了，而替代品可能还要几秒才落地 —— 这中间不该把它放回来。
+        for (var j = kids.length - 1; j >= 0; j--) {
+          if (!state.replacing || String(kids[j].id) !== String(state.replacing.id)) {
+            chosen = kids[j];
+            break;
+          }
+        }
+      }
+      // 这一层暂时没有可显示的（刚按下重试就是这个形状）：流式那条会接在它后面
+      if (!chosen) break;
       path.push(chosen);
       parentId = chosen.id;
     }
@@ -955,6 +1065,101 @@
 
   function siblingsOf(message) {
     return childrenOf(message.parentId);
+  }
+
+  /** 一个节点下面的**所有后代**（不含它自己）—— "收起"与"删除"两处都要先数清楚。 */
+  function descendantsOf(id) {
+    var out = [];
+    var frontier = childrenOf(id);
+    var guard = 0;
+    while (frontier.length && guard++ < 500) {
+      var next = [];
+      frontier.forEach(function (one) {
+        out.push(one);
+        next = next.concat(childrenOf(one.id));
+      });
+      frontier = next;
+    }
+    return out;
+  }
+
+  /** 收起 / 展开一支（只影响这张图，见 `state.treeFolded`）。 */
+  function toggleBranchFold(id) {
+    var key = keyOf(id);
+    if (state.treeFolded[key]) delete state.treeFolded[key];
+    else state.treeFolded[key] = true;
+    renderTree();
+  }
+
+  /** 删掉一个节点，**连带它下面的整棵子树**（服务端只认这一种语义，见 `delete_message`）。
+   *
+   * 确认框里写的是**确数**（"连同它下面 N 条"）：用户是在树上点了一个节点，
+   * 他看不见那下面挂了多少 —— 只说"确定要删吗"，他没法判断自己在删什么。
+   */
+  function deleteBranch(message) {
+    var doomed = descendantsOf(message.id);
+    var total = doomed.length + 1;
+    ui.confirm(
+      total > 1
+        ? '连它下面那 ' + doomed.length + ' 条一起删掉。删了不能恢复。'
+        : '删掉这一条。删了不能恢复。',
+      { title: '删掉这一支（' + total + ' 条）？', okLabel: '删掉', danger: true }
+    ).then(function (yes) {
+      if (!yes) return;
+      api
+        .del('/chat/conversations/' + state.current + '/messages/' + message.id)
+        .then(function () {
+          var gone = {};
+          gone[String(message.id)] = true;
+          doomed.forEach(function (one) {
+            gone[String(one.id)] = true;
+          });
+          state.messages = state.messages.filter(function (one) {
+            return !gone[String(one.id)];
+          });
+          // 刚删掉的 id 可能还留在"收起"与"选过哪一支"里。留着不会当场报错，
+          // 但那是**听不懂的残留** —— 下一次撞上同一个 id（虽然几乎不可能）
+          // 就会指向一条已经不存在的消息。顺手清干净。
+          Object.keys(state.treeFolded).forEach(function (key) {
+            if (gone[key]) delete state.treeFolded[key];
+          });
+          Object.keys(state.picks).forEach(function (key) {
+            if (gone[String(state.picks[key])]) delete state.picks[key];
+          });
+          if (state.treeOpen) renderTree();
+          paintThread();
+        })
+        .catch(function (err) {
+          ui.toast('删除失败：' + ((err && err.message) || '未知原因'), 'bad');
+        });
+    });
+  }
+
+  /** 树节点右上角那个「⋯」：这一支上能做的两件事。 */
+  function openNodeMenu(message) {
+    var hidden = descendantsOf(message.id).length;
+    var folded = !!state.treeFolded[keyOf(message.id)];
+    var items = [];
+    if (hidden) {
+      items.push({
+        icon: folded ? 'unfold' : 'fold',
+        label: folded ? '展开这一支' : '收起这一支',
+        hint: folded ? '放回 ' + hidden + ' 条' : '藏起 ' + hidden + ' 条',
+        run: function () {
+          toggleBranchFold(message.id);
+        },
+      });
+    }
+    items.push({
+      icon: 'trash',
+      danger: true,
+      label: hidden ? '删掉这一支' : '删掉这一条',
+      hint: hidden + 1 + ' 条',
+      run: function () {
+        deleteBranch(message);
+      },
+    });
+    showChatMenu(items);
   }
 
   var LOCAL_ID = 0;
@@ -1151,21 +1356,29 @@
     });
   }
 
-  /* ------------------------------------------------------------ 便签 */
+  /* ------------------------------------------------------------ 批注 */
 
   /**
-   * 聊天时的便签：想到什么随手记一笔，不打断对话。
+   * 批注：钉在**它的回答**某一段上的一句话（也可以只有一段高亮、不写字）。
    *
-   * 存在 settings 里（`QF.store.notes`），所以本地优先、跨设备跟着账号走 ——
-   * 没有新表、新接口、新的冲突规则。代价是每条都跟着设置整份同步，
-   * 因此有条数与字数上限（见 store.js 里那两个常量）。
+   * 入口只有一个：在回答里**选中一段 → 右键** →「高亮这一段」/「批注这一段」。
+   * 点在已有高亮上右键，菜单换成「改这条批注」/「取消这条批注」—— 不这样，
+   * 一条批注就再也改不动了。
    *
-   * 「写进输入框」是它与对话之间唯一的接口，而且**只填不发** ——
-   * 便签是素材，什么时候用、怎么用，由人决定。
+   * 钉的是**渲染后正文里的字符区间**：正文由 `QF.md.render` 出来，同一份正文
+   * 每次渲染的结果一致，所以区间是稳的（给 Markdown 源码算偏移得先理解语法）。
+   * 同时存下**选中的原文**（`quote`）：万一将来渲染变了样，还能认出标的是哪句。
+   *
+   * 存储与原批注同源（settings，本地优先 + 跨设备跟账号走）：
+   * 不新开表、不新开接口、不新增冲突规则。
    */
   var notesOpen = false;
   var notesDraft = '';
   var notesEditing = '';
+  //: 右键选了「批注这一段」但还没落字的那一段：{cid, mid, quote, start, end}
+  var pendingMark = null;
+  //: 面板里那个搜索框（批注多了就要找）
+  var markQuery = '';
 
   function openNotes() {
     notesOpen = true;
@@ -1177,6 +1390,7 @@
     notesOpen = false;
     notesDraft = '';
     notesEditing = '';
+    pendingMark = null;   // 关掉面板 = 放弃这次批注（那段话还选着也没用）
     renderNotes();
   }
 
@@ -1198,30 +1412,214 @@
     );
   }
 
+  /** 落一条批注。`pendingMark` = 新的一条；`notesEditing` = 在改已有的那条。 */
   function saveNote() {
     var text = String(notesDraft || '').trim();
-    if (!text) return;
     if (notesEditing) {
+      if (!text) return;
       QF.store.updateNote(notesEditing, text);
-    } else if (!QF.store.addNote(text, state.current)) {
-      ui.toast('便签满了（200 条）—— 先清理几条再记新的', 'warn', 3200);
+      notesEditing = '';
+      notesDraft = '';
+      renderNotes();
+      paintThread();
       return;
     }
+    if (!pendingMark) return;
+    if (
+      !QF.store.addMark({
+        cid: pendingMark.cid,
+        mid: pendingMark.mid,
+        quote: pendingMark.quote,
+        start: pendingMark.start,
+        end: pendingMark.end,
+        text: text,
+      })
+    ) {
+      ui.toast('批注满了（500 条）—— 先删几条再加', 'warn', 3200);
+      return;
+    }
+    pendingMark = null;
     notesDraft = '';
-    notesEditing = '';
     renderNotes();
-    ui.toast('已记下', 'info', 1200);
+    paintThread();
+    ui.toast('已批注', 'info', 1200);
   }
 
-  /** 把便签写进输入框（**不发送**）：便签是素材，怎么用由人决定。 */
-  function insertNote(text) {
-    var body = String(text || '').trim();
-    if (!body || !inputEl) return;
-    var current = String(inputEl.value || '');
-    inputEl.value = current ? current.replace(/\s+$/, '') + '\n' + body : body;
-    growInput();
-    closeNotes();
-    inputEl.focus();
+  /** 选区落在哪一段上：返回 {cid, mid, quote, start, end}，不在回答正文里就是 null。
+   *
+   * 只认**助手消息的零件区**（`.chatmsg__parts`）：批的是"它的输出"，不批自己那几条；
+   * 而且要钉在一条真有 id 的消息上 —— `local-` 开头的乐观节点服务端还没有它，
+   * 钉上去刷新就失效。
+   */
+  function selectionMark() {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    var range = sel.getRangeAt(0);
+    var node = range.commonAncestorContainer;
+    var el = node.nodeType === 1 ? node : node.parentNode;
+    var host = el && el.closest ? el.closest('.chatmsg__parts') : null;
+    if (!host) return null;
+    var row = host.closest('.chatmsg');
+    var mid = row && row.dataset ? row.dataset.id : '';
+    if (!mid || String(mid).indexOf('local-') === 0) return null;
+    var span = textOffsetsIn(host, range);
+    if (!span || span.end <= span.start) return null;
+    return {
+      cid: state.current || '',
+      mid: String(mid),
+      quote: String(sel.toString() || '').slice(0, 600),
+      start: span.start,
+      end: span.end,
+    };
+  }
+
+  /** 区间在正文里的**线性字符位置**：走一遍文本节点、把长度累加起来。 */
+  function textOffsetsIn(root, range) {
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var pos = 0;
+    var start = -1;
+    var end = -1;
+    var node = walker.nextNode();
+    while (node) {
+      var len = node.nodeValue ? node.nodeValue.length : 0;
+      if (node === range.startContainer) start = pos + range.startOffset;
+      if (node === range.endContainer) end = pos + range.endOffset;
+      pos += len;
+      node = walker.nextNode();
+    }
+    if (start >= 0 && end >= 0) return { start: start, end: end };
+    // 边界落在元素上（整段被选中那种）：退化成"按原文找一次"
+    var text = root.textContent || '';
+    var picked = String(range.toString() || '');
+    var at = picked ? text.indexOf(picked) : -1;
+    if (at < 0) return null;
+    return { start: at, end: at + picked.length };
+  }
+
+  /** 把批注画成高亮。每次重画正文都要重来（重画会换掉 DOM，包好的 mark 自然也没了）。 */
+  function paintMarks(bodyEl, m) {
+    if (!bodyEl || !m || m.id == null || !QF.store.marksOf) return;
+    var marks = QF.store.marksOf(m.id);
+    if (!marks.length) return;
+    var host = bodyEl.querySelector('.chatmsg__parts');
+    if (!host) return;
+    // **从后往前包**：先包前面那段会把后面节点的偏移顶掉。
+    marks
+      .slice()
+      .sort(function (a, b) {
+        return b.start - a.start;
+      })
+      .forEach(function (mark) {
+        wrapOnce(host, mark);
+      });
+  }
+
+  /** 把 [mark.start, mark.end) 包进 <mark class="chatmark">；对不上就静静跳过。 */
+  function wrapOnce(host, mark) {
+    var walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, null);
+    var pos = 0;
+    var from = null;
+    var to = null;
+    var node = walker.nextNode();
+    while (node) {
+      var len = node.nodeValue ? node.nodeValue.length : 0;
+      if (!from && pos + len > mark.start) from = { node: node, at: mark.start - pos };
+      if (!to && pos + len >= mark.end) to = { node: node, at: mark.end - pos };
+      pos += len;
+      node = walker.nextNode();
+    }
+    if (!from || !to) return;
+    try {
+      var range = document.createRange();
+      range.setStart(from.node, from.at);
+      range.setEnd(to.node, to.at);
+      var box = document.createElement('mark');
+      box.className = 'chatmark';
+      box.dataset.mark = mark.id;
+      if (mark.text) box.title = mark.text;
+      try {
+        range.surroundContents(box);
+      } catch (err) {
+        // 选区跨了两个块（比如横跨两段）：surroundContents 会抛，换成"抽出来再包"
+        var frag = range.extractContents();
+        box.appendChild(frag);
+        range.insertNode(box);
+      }
+    } catch (err2) {
+      /* 区间对不上就只是不高亮 —— 别把整条消息搞坏 */
+    }
+  }
+
+  /** 右键：选中一段 → 高亮 / 批注；点在已有高亮上 → 改 / 取消。 */
+  function onMarkContextMenu(event) {
+    var hit = event.target && event.target.closest ? event.target.closest('.chatmark') : null;
+    var pick = hit ? null : selectionMark();
+    if (!hit && !pick) return;   // 既没选中也没点在批注上：让浏览器自己的菜单出来
+    event.preventDefault();
+    chatMenuX = event.clientX;
+    chatMenuY = event.clientY;
+    var items = [];
+    if (hit) {
+      var id = hit.dataset.mark;
+      var one = (QF.store.notes() || []).filter(function (each) {
+        return each.id === id;
+      })[0];
+      items.push({
+        icon: 'pencil',
+        label: '改这条批注',
+        hint: one && one.text ? one.text.slice(0, 10) : '只有高亮',
+        run: function () {
+          notesEditing = id;
+          pendingMark = null;
+          notesDraft = one ? one.text : '';
+          openNotes();
+        },
+      });
+      items.push({
+        icon: 'trash',
+        danger: true,
+        label: '取消这条批注',
+        run: function () {
+          if (QF.store.removeNote(id)) {
+            paintThread();
+            if (notesOpen) renderNotes();
+          }
+        },
+      });
+    } else {
+      items.push({
+        icon: 'marker',
+        label: '高亮这一段',
+        hint: '不写字',
+        run: function () {
+          if (
+            !QF.store.addMark({
+              cid: pick.cid,
+              mid: pick.mid,
+              quote: pick.quote,
+              start: pick.start,
+              end: pick.end,
+            })
+          ) {
+            ui.toast('批注满了（500 条）—— 先删几条再加', 'warn', 3200);
+            return;
+          }
+          paintThread();
+        },
+      });
+      items.push({
+        icon: 'note',
+        label: '批注这一段',
+        hint: '写一句',
+        run: function () {
+          pendingMark = pick;
+          notesEditing = '';
+          notesDraft = '';
+          openNotes();
+        },
+      });
+    }
+    showChatMenu(items);
   }
 
   function noteNode(note) {
@@ -1276,31 +1674,43 @@
         null,
         h('span.chatnotes__time', { text: noteTime(note) }),
         note.cid && note.cid === state.current
-          ? h('span.chatnotes__tag', { text: '记于本次对话' })
-          : null
+          ? h('span.chatnotes__tag', { text: '本次对话' })
+          : note.cid
+            ? h('span.chatnotes__tag', { text: '另一段对话' })
+            : null
       )
     );
-    box.appendChild(h('div.chatnotes__text', { text: note.text }));
+    if (note.quote) {
+      box.appendChild(h('div.chatnotes__quote', { text: note.quote }));
+    }
+    box.appendChild(
+      h('div.chatnotes__text' + (note.text ? '' : '.is-bare'), {
+        text: note.text || '（只有高亮，没写字）',
+      })
+    );
     box.appendChild(
       h(
         'div.chatnotes__acts',
         null,
-        h(
-          'button.chatnotes__act.is-pri',
-          {
-            type: 'button',
-            onClick: function () {
-              insertNote(note.text);
-            },
-          },
-          '写进输入框'
-        ),
+        note.mid
+          ? h(
+              'button.chatnotes__act.is-pri',
+              {
+                type: 'button',
+                onClick: function () {
+                  closeNotes();
+                  revealMessage(note.mid);
+                },
+              },
+              '跳到这句话'
+            )
+          : null,
         h(
           'button.chatnotes__act',
           {
             type: 'button',
             onClick: function () {
-              copyText(note.text, '便签已复制');
+              copyText(note.text || note.quote, '批注已复制');
             },
           },
           '复制'
@@ -1369,6 +1779,13 @@
       },
     });
 
+    var needle = String(markQuery || '').trim().toLowerCase();
+    var shown = needle
+      ? notes.filter(function (one) {
+          var hay = String(one.text || '') + ' ' + String(one.quote || '');
+          return hay.toLowerCase().indexOf(needle) >= 0;
+        })
+      : notes;
     notesEl.appendChild(
       h(
         'div.chatnotes__backdrop',
@@ -1383,22 +1800,51 @@
           h(
             'div.chatnotes__head',
             null,
-            h('span.chatnotes__title', { text: '便签' }),
+            h('span.chatnotes__title', { text: '批注' }),
             h('span.chatnotes__count', {
               text: notes.length ? notes.length + ' 条' : '',
             }),
             iconButton('close', '关闭（Esc）', closeNotes)
           ),
-          h('div.chatnotes__compose', null, draft, saveBtn),
-          notes.length
-            ? h('div.chatnotes__list', null, notes.map(noteNode))
+          h(
+            'div.chatnotes__searchrow',
+            null,
+            h('input.input.chatnotes__search', {
+              type: 'search',
+              placeholder: '搜批注与原文…',
+              value: markQuery,
+              onInput: function (event) {
+                markQuery = event.target.value;
+                renderNotes();
+                var again = notesEl.querySelector('.chatnotes__search');
+                if (again) {
+                  again.focus();
+                  again.setSelectionRange(again.value.length, again.value.length);
+                }
+              },
+            })
+          ),
+          h(
+            'div.chatnotes__compose',
+            null,
+            pendingMark ? h('div.chatnotes__quote', { text: pendingMark.quote }) : null,
+            pendingMark || notesEditing
+              ? [draft, saveBtn]
+              : h('div.chatnotes__howto', {
+                  text: '选中它的回答里的一段，右键 →「高亮这一段」或「批注这一段」。',
+                })
+          ),
+          shown.length
+            ? h('div.chatnotes__list', null, shown.map(noteNode))
             : h('div.chatnotes__empty', {
-                text: '还没有便签。聊天时想到什么就记一笔 —— 它会跟着你的账号同步，也能一键写进输入框。',
+                text: notes.length
+                  ? '没有匹配的批注。'
+                  : '还没有批注。在它的回答里选中一段话，右键 →「高亮这一段」或「批注这一段」。',
               })
         )
       )
     );
-    draft.focus();
+    if (pendingMark || notesEditing) draft.focus();
   }
 
   /* ------------------------------------------------------------ 大题（子窗口） */
@@ -1752,6 +2198,8 @@
     );
     threadEl = h('div.chat__thread', { role: 'log', 'aria-live': 'polite' });
     // 滚上去就露出「回到最新」（见 refreshJump）
+    // 在回答里选中一段 → 右键 → 高亮 / 批注（见 onMarkContextMenu）
+    threadEl.addEventListener('contextmenu', onMarkContextMenu);
     threadEl.addEventListener('scroll', function () {
       // 用户**自己**滚动时才更新跟随状态。程序化的 `scrollTop = scrollHeight`
       // 也会走到这里，但那时本来就贴着底，判定为真、状态不变。
@@ -1782,7 +2230,7 @@
     barEl = h('div.chat__bar');
     treeEl = h('div.chattree', { role: 'dialog', 'aria-label': '对话树' });
     demoEl = h('div.chatdemo', { role: 'dialog', 'aria-label': '演示' });
-    notesEl = h('div.chatnotes', { role: 'dialog', 'aria-label': '便签' });
+    notesEl = h('div.chatnotes', { role: 'dialog', 'aria-label': '批注' });
     problemEl = h('div.chatproblem', { role: 'dialog', 'aria-label': '大题' });
     try {
       var savedAside = window.localStorage.getItem('qf.chat.aside');
@@ -1826,7 +2274,7 @@
                 iconButton('clip', '附件', function () {
                   if (clipInput) clipInput.click();
                 }),
-                iconButton('note', '便签', function () {
+                iconButton('note', '批注', function () {
                   if (notesOpen) closeNotes();
                   else openNotes();
                 }),
@@ -1875,7 +2323,7 @@
         problemEl
       )
     );
-    // `.chat` 是刚建出来的（对话树 / 便签 / 大题那几个浮层是它的**兄弟**，
+    // `.chat` 是刚建出来的（对话树 / 批注 / 大题那几个浮层是它的**兄弟**，
     // 不能塞进它里面），所以挂完再取引用、落上"会话栏开没开"—— 第一帧就对，不会闪。
     chatEl = rootEl.querySelector('.chat');
     if (chatEl) chatEl.setAttribute('data-aside', asideOpen ? 'open' : 'closed');
@@ -2627,6 +3075,13 @@
     rename: '<path d="M4.5 19.5h4L19 9a2.1 2.1 0 0 0-3-3L5.5 16.5z"/><path d="M14.8 7.2l2 2"/>',
     pin: '<path d="M9 4.5h6l-.8 5.2 3.3 3.3H6.5l3.3-3.3z"/><path d="M12 13v6.5"/>',
     unpin: '<path d="M9 4.5h6l-.8 5.2 3.3 3.3H6.5l3.3-3.3z"/><path d="M12 13v6.5"/><path d="M4.5 4.5l15 15"/>',
+    // 对话树里"收起/展开一支"：折下去 / 折上来。与归档那两只盒子分得开。
+    // 批注那两项：荧光笔（高亮）与一页纸（批注）
+    marker: '<path d="M5 18.5h5l9-9-2.5-2.5-9 9z"/><path d="M14.5 6.5L17 4l3 3-2.5 2.5"/>',
+    note: '<path d="M6 4.5h12v15H6z"/><path d="M9 9h6"/><path d="M9 13h4"/>',
+    pencil: '<path d="M4.5 19.5h4L19 9a2.1 2.1 0 0 0-3-3L5.5 16.5z"/>',
+    fold: '<path d="M6 9.5l6 6 6-6"/>',
+    unfold: '<path d="M6 14.5l6-6 6 6"/>',
     trash: '<path d="M5 7h14"/><path d="M9.5 7V5h5v2"/><path d="M7 7l1 12h8l1-12"/>',
     // 归档 = 一个带盖的盒子（与"删除"那只垃圾桶要一眼分得开）
     archive: '<path d="M4.5 8.5h15V19h-15z"/><path d="M3.5 5h17v3.5h-17z"/><path d="M10 12.5h4"/>',
@@ -3081,6 +3536,8 @@
       body.appendChild(
         partsNode(m.parts && m.parts.length ? m.parts : [{ type: 'text', text: m.content || '' }])
       );
+      // 正文刚渲染完，把钉在这一条上的批注画成高亮（重画会换 DOM，所以每次都来一遍）
+      paintMarks(body, m);
     }
     // **消息框右上角那盏信号灯**：这一条输入用的是哪个模式。
     // 用户："我说的是发出来的消息框的右上角 —— 因为每次发送的模式都不一样。"
@@ -5789,6 +6246,12 @@
                 .catch(function () {});
             }
           }
+          // 这一轮尝试结束了，`state.replacing` 的使命到此为止 —— **必须赶在下面那次
+          // 重画之前清掉**：那条被顶掉的报错回不回来，就看重画时它还挡不挡路。
+          //   * 替代品已经在链上（生成成功，或者又失败了一条**新的**）→ 它照旧不露面；
+          //   * 压根没生成出来（连接就没建起来那类）→ 它连着重试按钮一起回来，
+          //     否则下一次失败用户就没地方点了。
+          state.replacing = null;
           updateComposer();
           // 重生成 / 编辑并重发之后都要重画：新分支成了当前这一支，旧那条退到切换器后面去。
           // 不重画的话，界面会同时留着两条（它们现在是兄弟，不是一条线上的两条）
@@ -5803,6 +6266,21 @@
     // 旧那条**留着**（它是树上的一个分支，随时能翻回去看）。把这一层的选择清掉，
     // 于是新答案一落地就自然成为当前这一支 —— 不需要额外告诉界面"看新的"
     delete state.picks[keyOf(m.parentId)];
+    // 但**失败/中断的那条，按下重试就从屏幕上撤掉**。
+    //
+    // 收尾时那次重画本来就会把它收走（见 `send()` 末尾那句 `paintThread()`，
+    // "旧那条退到切换器后面去"）—— 这里只是把那一刻**从"新回答生成完"提前到
+    // "按下重试"**。中间那段等待是十几秒，而失败那条只有一行报错，留着纯是噪音。
+    //
+    // 成功的那条**不撤**：它还有内容可读，一边读旧的、一边等新的，比空着强。
+    //
+    // 分支没丢：树里还在（`is-error` 那个节点），切进切换器照样能翻到它
+    //（`pickBranch` / `revealMessage` 是明确的选择，优先级高于 `state.replacing`）。
+    if (m.status && m.status !== 'ok') {
+      state.replacing = m;
+      var row = threadEl ? threadEl.querySelector('[data-id="' + m.id + '"]') : null;
+      if (row && row.parentNode) row.parentNode.removeChild(row);
+    }
     send({ replyTo: m.parentId });
   }
 
@@ -5995,6 +6473,9 @@
         if (state.current !== id) return;
         state.messages = (res && res.messages) || [];
         state.picks = {}; // 默认跟最新那一支
+        state.replacing = null; // 换会话了，上一轮"被顶掉的那条"与这里无关
+        state.treeFolded = {}; // 收起状态也是按会话算的，换个对话就不该还收着
+        resetTreeView(); // 换了会话就是另一张图，下次打开重新适配
         state.live = null;
         // 这里**不再调 renderAside()**：左栏内容一条没变（变的只有"哪条是当前"，
         // 上面已经切过）。整块重建的代价见 `markCurrent` 的说明。

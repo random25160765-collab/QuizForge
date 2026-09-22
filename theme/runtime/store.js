@@ -152,10 +152,10 @@
     return settings();
   }
 
-  /* 便签的两个上限：条数与单条字数。
+  /* 批注的两个上限：条数与单条字数。
      它是"聊天时随手记"，不是知识库 —— 到了上限就该整理，而不是继续堆
      （而且每条都要跟着设置整份同步，见 QF.store.notes 的说明）。 */
-  var NOTES_MAX = 200;
+  var NOTES_MAX = 500;
   var NOTE_MAX_CHARS = 4000;
 
   function notesAll() {
@@ -1134,30 +1134,46 @@
       saveSettings({ pinnedTopics: list });
       return list;
     },
-    /* ------------------------------------------------------------ 便签
+    /* ------------------------------------------------------------ 批注
      *
      * 为什么放在 settings 里：它已经是**会被同步的东西**（本地优先 + 跨设备按
-     * rev 合并），于是便签不用另开一张表、一条接口、一套冲突规则。
-     * 代价是每次同步整份带上 —— 所以下面有两个上限：便签是"随手记"，
-     * 不是知识库，塞满 200 条就该去整理，而不是继续堆。
+     * rev 合并），于是批注不用另开一张表、一条接口、一套冲突规则。
+     * 代价是每次同步整份带上 —— 所以下面有两个上限：一条批注就是一句话，
+     * 但它是**按段落**标的，比原来的随手记密得多，所以条数给得宽一点。
      */
     notes: function () {
       return notesAll();
     },
-    addNote: function (text, cid) {
-      var body = String(text || '').trim().slice(0, NOTE_MAX_CHARS);
-      if (!body) return null;
+    /** 加一条批注（或纯高亮）。
+     *
+     * `mid` / `start` / `end` 是"钉在哪一段上"：消息 id，加那段在**渲染后正文**里的
+     * 字符区间；`quote` 是当时选中的原文 —— 万一渲染变了样，靠它还能认出标的是哪句。
+     * `text` 给空串 = 只有高亮不写字（那也是批注的一种，有时你只是想标记一下）。
+     */
+    addMark: function (mark) {
+      var one = mark || {};
       var list = notesAll();
       if (list.length >= NOTES_MAX) return null;
-      var note = {
-        id: 'n' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-        text: body,
+      var piece = {
+        id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        text: String(one.text || '').trim().slice(0, NOTE_MAX_CHARS),
+        quote: String(one.quote || '').slice(0, 600),
+        mid: one.mid == null ? '' : String(one.mid),
+        start: Math.max(0, parseInt(one.start, 10) || 0),
+        end: Math.max(0, parseInt(one.end, 10) || 0),
         at: Date.now(),
-        cid: cid ? String(cid) : '',
+        cid: one.cid ? String(one.cid) : '',
       };
-      list.unshift(note); // 新的在最前：便签是往前翻的
+      list.unshift(piece); // 新的在最前：批注也是往前翻的
       saveSettings({ notes: list });
-      return note;
+      return piece;
+    },
+    /** 某条消息上钉着的批注（渲染高亮时按它找区间）。 */
+    marksOf: function (mid) {
+      var key = mid == null ? '' : String(mid);
+      return notesAll().filter(function (one) {
+        return String(one.mid) === key;
+      });
     },
     updateNote: function (id, text) {
       var body = String(text || '').trim().slice(0, NOTE_MAX_CHARS);

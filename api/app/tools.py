@@ -2125,9 +2125,9 @@ def read_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     这一步原先**是断的** —— `search_notes` 的说明里写着"要读全文，让用户打开它"，
     等于模型搜到了却读不到（用户："chat 这边还没接上笔记库"）。
 
-    与资料侧的 `read_material` 对齐：那边按行读原文，这边整篇给 —— 笔记通常不长，
-    而且正文本来就是给人读的 Markdown。大纲与反链一起带上：模型常常正是为了
-    "这篇和别的什么有关"才要读它。
+    与资料侧的 `read_material` 对齐：那边按**行区间**读原文，这边按**字区间**读正文
+    （笔记没有行号那套东西，但"一次读不完要能接着读"是同一个要求 —— 见 `startChar`）。
+    大纲与反链一起带上：模型常常正是为了"这篇和别的什么有关"才要读它。
     """
     from . import notelib  # noqa: PLC0415
 
@@ -2136,26 +2136,48 @@ def read_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         return {"error": "要给我笔记的相对路径（`search_notes` / `list_notes` 的结果里都有）。"}
     lib_name = str(args.get("lib") or "").strip()
     try:
-        note = notelib.read_note(notelib.library(lib_name), rel)
+        # 走共用的那个：它把"`lib` 可省"变成真的（原来 `library("")` 会抛
+        # "没有这个库"，于是这里声明可省、实际不传就报错）。
+        note = notelib.read_note(_note_library(args), rel)
     except notelib.NoteNotFound as exc:
         return {"error": str(exc)}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"读不到：{exc}"}
 
     body = str(note.get("body") or "")
-    limit = _clamp(args.get("maxChars"), 800, 40000, 12000)
+    #: 这一次最多给多少字。**默认 12000 → 40000**：12000 那会儿连一篇 4.5 万字的
+    #: 笔记都读不完（库里实测就有），模型只能看到开头。
+    limit = _clamp(args.get("maxChars"), 800, 100000, 40000)
+    #: 从第几个字开始读。**这个参数是在补一个断掉的约定**：原来的提示语写着
+    #: "想接着看就说清要看哪一段"，可那时**根本没有任何参数能取到后半段** ——
+    #: 一篇 13.7 万字的笔记，永远只有前 40000 字是可见的，剩下的一直够不着。
+    #: 资料侧早就不是这样：`read_material` 按**行区间**读，"想接着往下看就把
+    #: startLine 往后挪"。笔记这边缺的是同一个东西，只是单位是字、不是行。
+    start = _clamp(args.get("startChar"), 0, len(body), 0)
+    chunk = body[start:start + limit]
+    #: 下一次该从哪儿接着读；`None` = 已经到结尾了
+    tail = start + len(chunk) if start + len(chunk) < len(body) else None
     out: dict = {
         "lib": note.get("lib") or lib_name,
         "path": note.get("path") or rel,
         "title": note.get("title") or "",
         "kind": note.get("kind") or "note",
         "chars": len(body),
-        "truncated": len(body) > limit,
-        "text": body[:limit],
+        "startChar": start,
+        "truncated": tail is not None,
+        "text": chunk,
         "note": (
-            f"正文只给了前 {limit} 字（原文 {len(body)} 字）—— 想接着看就说清要看哪一段。"
-            if len(body) > limit
-            else "这是全文。"
+            "这是全文。"
+            if tail is None and not start
+            else "给的是第 %d–%d 字（原文 %d 字）。%s"
+            % (
+                start + 1,
+                start + len(chunk),
+                len(body),
+                "后面还有 —— 要接着读就再调一次这个工具、传 startChar=%d。" % tail
+                if tail is not None
+                else "已经到结尾了。",
+            )
         ),
     }
     if note.get("outline"):
@@ -2255,8 +2277,124 @@ def search_notes(db, user, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+def _note_library(args):  # noqa: ANN001
+    """按 `lib` 找笔记库；**省了就取第一个**。
+
+    三个笔记工具共用这一段。抽出来是因为原来是**两份**，且行为不一致：
+    `read_note` 直接 `notelib.library(name)`，而 `library("")` 会抛"没有这个库" ——
+    于是它工具说明里写的"`lib` 可省"**是假的**（不传就报错）；`write_note` 则自己
+    写了一遍"没给就取第一个"。同一件事写两处，就会有一处是错的。
+    """
+    from . import notelib  # noqa: PLC0415
+
+    name = str(args.get("lib") or "").strip()
+    if name:
+        return notelib.library(name)
+    found = notelib.libraries()
+    if not found:
+        raise notelib.NoteNotFound("还没有任何笔记库")
+    return found[0]
+
+
+def _excerpt(text: str, start: int, length: int, pad: int = 60) -> str:
+    """给出 `text` 里 `[start, start+length)` 那一段，前后各带一点上下文。
+
+    干什么用：改完之后**把落下去的那一段念一遍** —— 模型据此能自己核对"改的是不是
+    我想改的地方"，比一句"已修改"有用得多（笔记是**用户的文件**，改错地方代价很大）。
+    """
+    lo = max(0, start - pad)
+    hi = min(len(text), start + length + pad)
+    return ("…" if lo > 0 else "") + text[lo:hi] + ("…" if hi < len(text) else "")
+
+
+def edit_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
+    """改一篇笔记里的**某一处**：给一段原文（`old`），换成新的（`new`）。
+
+    与 `write_note` 的分工：那个只在**末尾**接一段；这个能改中间、能替换，也能删
+    （`new` 给空串）。
+
+    **为什么非要"给一段原文"，而不是行号或"第几小节"**：行号会随上一次写入漂移；
+    "第三小节"要靠自然语言猜，而小节名在长笔记里很容易重复。两者都会**改错地方
+    而且不报错**。给一段逐字原文，找不到就当场拒绝 —— 这是唯一一种"错了会自己喊"
+    的改法。所以 `old` 必须从 `read_note` 的结果里**逐字**复制（空白、换行、
+    全角半角都算差异）。
+
+    **同名段落的坑**：一段话出现两次以上（两个小节写着同一句很常见），默认
+    **拒绝**并列出它在哪几处 —— 多带一行上下文再试，或者传 `all=true` 明确表示
+    "这些地方都要改"。**不设"只改第一处"这种默认**：那是最容易悄悄改错的一种设计。
+
+    写入走的是**笔记页保存的同一条路**（`notelib.write_body`）：YAML 头原样保留、
+    改前自动留快照（能撤回）。元数据头（标题/标签）不归它管 —— 那是 `set_meta`。
+    """
+    from . import notelib  # noqa: PLC0415
+
+    rel = str(args.get("path") or "").strip()
+    if not rel:
+        return {"error": "得给 path（笔记在库里的相对路径）"}
+    old = args.get("old")
+    if not isinstance(old, str) or not old:
+        return {"error": "得给 old：要被替换掉的那段原文（从 `read_note` 的结果里逐字复制）"}
+    if args.get("new") is None:
+        return {"error": '得给 new（换成什么）。想**删掉**这一段就给个空串：""'}
+    new = args.get("new")
+    if not isinstance(new, str):
+        return {"error": 'new 得是字符串；想删掉这一段就给个空串：""'}
+    if old == new:
+        return {"error": "old 与 new 一模一样，等于没改"}
+
+    try:
+        target = _note_library(args)
+        note = notelib.read_note(target, rel)
+    except notelib.NoteError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"读不到：{exc}"}
+
+    body = str(note.get("body") or "")
+    hits: list[int] = []
+    at = body.find(old)
+    while at >= 0 and len(hits) < 20:
+        hits.append(at)
+        at = body.find(old, at + len(old))
+    if not hits:
+        return {
+            "error": "正文里找不到这段原文（一个字符都没匹配上）。最可能是没逐字复制 —— "
+            "空白、换行、全角半角都算差异。**先 `read_note` 把那段读回来、原样复制**"
+            "（长笔记还要用 startChar 读到那一段所在的位置：没读到的部分当然也匹配不上）。"
+        }
+    if len(hits) > 1 and not args.get("all"):
+        return {
+            "error": "这段原文在正文里出现了 %d 次，**我不知道你要改哪一处**。"
+            "把上下文多带一点（前后各带一行）再试；如果这些地方都要改，传 all=true。" % len(hits),
+            "occurrences": [
+                {"at": one, "context": _excerpt(body, one, len(old), pad=40)}
+                for one in hits[:5]
+            ],
+        }
+
+    merged = body.replace(old, new) if args.get("all") else body.replace(old, new, 1)
+    try:
+        notelib.write_body(target, rel, merged, why="ai_edit")
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"没写成：{exc}"}
+    return {
+        "ok": True,
+        "lib": target.name,
+        "path": rel,
+        "replaced": len(hits) if args.get("all") else 1,
+        "chars": {"before": len(body), "after": len(merged)},
+        # 把**落下去的那一段**念一遍：模型据此能自己核对改的位置对不对
+        "after": _excerpt(merged, hits[0], len(new)),
+        "note": "已改。改动前的版本留在快照里，笔记页可以撤回。",
+    }
+
+
 def write_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
-    """把一段话写进某篇笔记（**追加到正文末尾**）。
+    """把一段话**追加到某篇笔记的末尾**。
+
+    **只在"接到末尾"时用它**（用户说"记到那篇笔记里""把这段结论挂上去"）。
+    要改已有的某一段、删某一句、替换某个词，用 `edit_note` —— 拿这个去改中间
+    是做不到的，它只会把新内容堆到文末。
 
     写入前会留一份快照，所以"写错了"随时能撤回（与笔记页那个撤销同源）。
     只写**正文**，不动元数据头 —— 头是笔记的属性，不该被一次追加顺手改掉。
@@ -2269,14 +2407,8 @@ def write_note(db, user, args, ctx=None) -> dict:  # noqa: ANN001
         return {"error": "得给 path（笔记在库里的相对路径）"}
     if not text:
         return {"error": "得给 text（要写进去的内容）"}
-    lib_name = str(args.get("lib") or "").strip()
-    targets = notelib.libraries()
-    if not targets:
-        return {"error": "还没有任何笔记库"}
-    target = next((one for one in targets if one.name == lib_name), None) if lib_name else targets[0]
-    if target is None:
-        return {"error": f"没有这个笔记库：{lib_name}"}
     try:
+        target = _note_library(args)
         note = notelib.read_note(target, path)
         body = str(note.get("body") or "").rstrip()
         merged = (body + "\n\n" + text).strip() + "\n"
@@ -2583,7 +2715,10 @@ REGISTRY = {
         "fn": read_note,
         "description": "读一篇笔记的正文（Markdown），一并给大纲与反链。"
         "`search_notes` 只告诉你命中在哪，**要看他写了什么必须调这个** —— "
-        "别让用户自己去打开。",
+        "别让用户自己去打开。"
+        "长笔记一次给不完：结果里的 `note` 会写清这次给到第几字，"
+        "**要接着往下读就再调一次、把 startChar 传成它给的那个数**"
+        "（别只看开头就开始总结）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -2592,7 +2727,14 @@ REGISTRY = {
                     "description": "笔记在库里的相对路径，如 信号与系统/卷积.md",
                 },
                 "lib": {"type": "string", "description": "哪个笔记库（可省）"},
-                "maxChars": {"type": "integer", "description": "最多给多少字，默认 12000"},
+                "maxChars": {
+                    "type": "integer",
+                    "description": "这一次最多给多少字（默认 40000，上限 100000）",
+                },
+                "startChar": {
+                    "type": "integer",
+                    "description": "从第几个字开始（默认 0）。要接着上一次往下读，就传上一次 note 里给的那个数",
+                },
             },
             "required": ["path"],
         },
@@ -2619,8 +2761,9 @@ REGISTRY = {
         "access": "write",
         "group": "notes",
         "fn": write_note,
-        "description": "把一段话**追加到某篇笔记的末尾**。用户说\"记到我的笔记里\""
-        "\"写进那篇\"时用它。写入前会自动留快照，可以撤回。"
+        "description": "把一段话**追加到某篇笔记的末尾**。只在用户说\"记到我的笔记里\""
+        "\"把这段结论挂上去\"时用它 —— **要改已有的内容用 `edit_note`**"
+        "（这个只会往末尾堆，改不了中间）。写入前会自动留快照，可以撤回。"
         "**先跟用户确认写哪一篇**（路径要准确），别自己挑一篇就写。",
         "parameters": {
             "type": "object",
@@ -2630,6 +2773,39 @@ REGISTRY = {
                 "lib": {"type": "string", "description": "哪个笔记库（可省）"},
             },
             "required": ["path", "text"],
+        },
+    },
+    "edit_note": {
+        "access": "write",
+        "group": "notes",
+        "fn": edit_note,
+        "description": "改一篇笔记里的**某一处**：给一段原文（old），换成新的（new）。"
+        "用户说\"把那段改一下\"\"这句不太对\"\"删掉这句\"\"把 X 换成 Y\"时用它；"
+        "只想追加到末尾才用 `write_note`。"
+        "`old` 必须是**从 `read_note` 结果里逐字复制**的一段原文 ——"
+        "不是行号、也不是\"第三小节\"这种描述。找不到、或同一段出现多次，"
+        "它会**拒绝并把原因说清**（列出那几处长什么样），照它说的多带点上下文再试，"
+        "别换个说法硬撞。`new` 给空串就是删掉这一段，所以它**不能省**。"
+        "改前自动留快照；YAML 头（标题/标签）不归它管。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "笔记在库里的相对路径，如 信号与系统/卷积.md"},
+                "old": {
+                    "type": "string",
+                    "description": "要被替换掉的那段原文，逐字复制；要够独特（同一段出现多次会被拒绝）",
+                },
+                "new": {
+                    "type": "string",
+                    "description": '换成什么（Markdown）。给空串 "" = 删掉这一段',
+                },
+                "lib": {"type": "string", "description": "哪个笔记库（可省）"},
+                "all": {
+                    "type": "boolean",
+                    "description": "这段原文出现多次时，明确表示全都要改（默认拒绝，好让你先看清是哪几处）",
+                },
+            },
+            "required": ["path", "old", "new"],
         },
     },
     "attach_material": {
@@ -3312,7 +3488,16 @@ def output_text(payload: dict) -> str:
     sub = payload.get("subagent")
     if isinstance(sub, dict) and not payload.get("error"):
         head = str(payload.get("note") or "子代理的回报：")
-        return head + "\n\n" + str(sub.get("report") or "（它没交回正文）")
+        report = str(sub.get("report") or "")
+        if report:
+            return head + "\n\n" + report
+        # 没交付：把它最后那句话**另起一段**带上，并写明它**不是**回报 ——
+        # 让它挂在 `report` 名下，主线就会拿半句念叨当结论
+        #（见 subagent.py 的 `_looks_like_intent`）。
+        words = str(sub.get("lastWords") or "")
+        if words:
+            return head + "\n\n**它最后说的话（不是回报，是干活时的念叨）**：\n" + words
+        return head + "\n\n（它没交回正文）"
 
     # 对话树的骨架同理，而且理由更硬：**它的缩进就是它的意思**（谁从谁那里下钻）。
     # 塞进 JSON 会把每一条的换行与缩进转义成 `\n` 和字面空格，整棵树塌成一行 ——

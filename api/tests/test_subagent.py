@@ -195,3 +195,113 @@ def test_subagent_says_so_when_it_brings_nothing_back(db_session, local_user, mo
     assert ok, payload
     assert "没交回正文" in payload["note"], payload["note"]
     assert payload["subagent"]["report"] == ""
+
+
+def test_a_plan_is_not_a_delivery(db_session, local_user, monkeypatch):
+    """最后只说了一句"接下来我要去查 X" → **不算交付**，而且必须明说。
+
+    实测七次真调用里有**三次**这么收场，报回来的是
+    "Excellent — … Let me read it in different regions …"、
+    "I have read all the target notes in the folder. Now let me verify …" —— 主线拿到
+    这句话会以为任务结果就是这个，而真相是**它还没干完**（用户报的就是这一条：
+    "子代理两次都没把报告交回来"）。
+
+    所以两件事都要：
+      * 这种话**不许挂在 `report` 名下**（名字就是承诺，名不副实比空着更糟）；
+      * 但也不能丢 —— 换个名字带上，有时正好看出它卡在哪。
+    """
+    nudged: list[str] = []
+
+    def stream(conf, messages, tools=None, params=None):  # noqa: A002
+        system = str((messages or [{}])[0].get("content") or "")
+        if "子代理" in system:
+            if tools is None:
+                # 最后一轮：工具被收走了。此时**应当**已经插了一句明示（`final_nudge`）
+                nudged.append(
+                    " ".join(
+                        str(one.get("content") or "")
+                        for one in messages
+                        if one.get("role") == "user"
+                    )
+                )
+                # 而它照样只念叨一句"接下来要做什么"（真事：模型察觉不到工具没了）
+                yield ("delta", "I have read the notes. Now let me verify the formulas.")
+                yield ("finish", "stop")
+                return
+            yield ("delta", "Let me read it in different regions. ")
+            yield (
+                "tool_calls",
+                [{"id": "s1", "name": "search_material", "arguments": '{"query": "x"}'}],
+            )
+            yield ("finish", "tool_calls")
+            return
+        yield ("delta", "好。")
+        yield ("finish", "stop")
+
+    monkeypatch.setattr(agent_loop.gateway, "stream_completion", stream)
+    monkeypatch.setattr(
+        subagent.gateway, "resolve_config", lambda db, uid: {"apiKey": "x", "model": "fake"}
+    )
+
+    ok, payload = tools.call(
+        db_session,
+        local_user,
+        "run_subagent",
+        {"task": "把 SVD 到底记没记查清"},
+        {"conversationId": 1},
+        mounts={"library"},
+        allow=("read",),
+    )
+    assert ok, payload
+    sub = payload["subagent"]
+    assert sub["delivered"] is False
+    assert sub["report"] == "", "半句打算不许挂在 report 名下"
+    assert "Now let me verify" in sub["lastWords"], "但它说了什么要带回去"
+    assert "没交回回报" in payload["note"], payload["note"]
+
+    # 面板与模型看到的那段要**写明这不是回报**
+    shown = tools.output_text(payload)
+    assert "不是回报" in shown and "Now let me verify" in shown
+    # 收尾那句明示真的发出去了（`agent_loop.run` 的 `final_nudge`）——
+    # 这是"病因"那一半：模型察觉不到工具被收走，就得有人告诉它
+    assert nudged and "工具已经收回" in nudged[0], nudged
+
+
+def test_a_long_report_is_cut_at_a_line_break(db_session, local_user, monkeypatch):
+    """回报超长要在**换行处**截 —— 切在半句话上，读的人会以为正文到那儿就完了。
+
+    实测那条就是这样："…未扫的 20 份被列在 `skipped` 字段，且" 后面直接接一句
+    截断说明，看起来像原文只写到一半。
+    """
+    long = "## 依据\n" + "".join("- 第 %d 行：%s END\n" % (i, "x" * 120) for i in range(1, 80))
+    assert len(long) > subagent.REPORT_MAX, "得真的超长，不然测不到截断"
+
+    def stream(conf, messages, tools=None, params=None):  # noqa: A002
+        system = str((messages or [{}])[0].get("content") or "")
+        if "子代理" in system:
+            yield ("delta", long)
+            yield ("finish", "stop")
+            return
+        yield ("delta", "好。")
+        yield ("finish", "stop")
+
+    monkeypatch.setattr(agent_loop.gateway, "stream_completion", stream)
+    monkeypatch.setattr(
+        subagent.gateway, "resolve_config", lambda db, uid: {"apiKey": "x", "model": "fake"}
+    )
+
+    ok, payload = tools.call(
+        db_session,
+        local_user,
+        "run_subagent",
+        {"task": "交一份长报告"},
+        {"conversationId": 1},
+        mounts={"library"},
+        allow=("read",),
+    )
+    assert ok, payload
+    report = payload["subagent"]["report"]
+    assert "回报太长" in report, "截了就要说清"
+    body = report.split("\n\n（回报太长")[0]
+    assert body.endswith("END"), "该停在某一行的行尾，不该切在行的中间"
+    assert len(body) <= subagent.REPORT_MAX
