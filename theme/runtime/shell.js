@@ -320,7 +320,7 @@
     var apiKeyInput = h('input.input.input--mono', {
       type: 'password',
       autocomplete: 'off',
-      placeholder: 'sk-…（保存在你的账号里）',
+      placeholder: 'sk-…（存在本机）',
       value: aiConf.apiKey || '',
       onInput: function (event) {
         store.saveSettings({ ai: { apiKey: event.target.value.trim() } });
@@ -355,7 +355,7 @@
       },
     });
 
-    // **每个用户用自己的密钥**：填好之后存在自己的账号里，换设备不用重填。
+    // **用本机自己那份密钥**：填好之后存在本机库里，下次打开就在。
     // 服务端只做转发（不少模型供应商不允许浏览器直连），不持有任何共享密钥。
     var connectionBlock = h('div', null,
       h('div.form__grid', { style: { marginTop: '12px' } },
@@ -364,7 +364,7 @@
         field('上下文预算（token）', '越大能带进的对话越多；小窗口模型可调低，服务端另设上限', contextInput)),
       h('div', { style: { marginTop: '12px' } },
         field('API 密钥',
-          '你自己的密钥，保存在你的账号里 —— 换设备不用重填。本站不提供共享密钥，用量记在你的账上。',
+          '你自己的密钥，存在本机库里（不随仓库走）。用量按天记在本机，方便看花了多少。',
           apiKeyInput)));
 
     // **现在到底走哪条通道**：这句话原先挂在对话页输入框下面，用户让搬到设置里

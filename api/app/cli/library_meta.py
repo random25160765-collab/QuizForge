@@ -27,7 +27,7 @@ from .. import library as lib
 from .. import library_meta
 from ..config import get_settings
 from ..db import get_session_factory
-from ..models import UserSettings
+from ..settings_store import row as settings_row
 from ..routers import library as libapi
 
 
@@ -49,7 +49,7 @@ def _config() -> dict[str, Any]:
         }
     session = get_session_factory()()
     try:
-        row = session.query(UserSettings).first()
+        row = settings_row(session)
         conf = ((row.data if row else {}) or {}).get("ai") or {}
     finally:
         session.close()

@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from ..bank_import import current_bank
-from ..deps import CurrentUser, DbSession
+from ..deps import DbSession
 from ..models import BankVersion
 
 router = APIRouter(prefix="/api", tags=["bank"])
@@ -49,7 +49,7 @@ def _current_hash(db) -> str:  # noqa: ANN001
 
 
 @router.get("/bank")
-def get_bank(request: Request, user: CurrentUser, db: DbSession) -> Response:
+def get_bank(request: Request, db: DbSession) -> Response:
     """返回整份题库。
 
     需要登录：题目是本产品的核心内容，不该让未登录的请求拉走全量。
@@ -77,7 +77,7 @@ def get_bank(request: Request, user: CurrentUser, db: DbSession) -> Response:
 
 
 @router.get("/bank/version")
-def bank_version(user: CurrentUser, db: DbSession) -> dict:
+def bank_version(db: DbSession) -> dict:
     """轻量版本探测：题库更新后前端可以据此提示刷新。"""
     version = db.scalars(
         select(BankVersion).where(BankVersion.is_current.is_(True)).order_by(BankVersion.id.desc())

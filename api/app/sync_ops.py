@@ -5,12 +5,12 @@
 
 ## 为什么计数必须来自流水
 
-旧实现让客户端上传记录对象，多设备下按 `client_rev` 做 last-write-wins。
-问题是客户端上传的是「我这台设备看到的累计值」——一台设备离线作答后回传，
-若它的 rev 已被另一台超过，这次作答就被**静默丢弃**：计数不增，用户毫无察觉。
+旧实现让客户端上传记录对象，按 `client_rev` 做 last-write-wins。
+问题是客户端上传的是「它本地看到的累计值」——浏览器里那份乐观缓存离线攒了一阵，
+回传时若 rev 已被另一侧超过，这段作答就被**静默丢弃**：计数不增，用户毫无察觉。
 
 现在改成：每次判分产生一条**流水**（增量），服务端只对**真正插入成功**的
-流水累加。插入是精确一次的，累加就天然正确，跨设备直接相加而不是取较大值。
+流水累加。插入是精确一次的，累加就天然正确，多批提交直接相加而不是取较大值。
 
 ## 为什么 `ON CONFLICT DO NOTHING` + `RETURNING` 是这里的核心
 
@@ -210,7 +210,7 @@ def _as_day(value: Any) -> date_type | None:
 # ---------------------------------------------------------------- 流水的写入
 
 
-def insert_attempts(db: OrmSession, user_id: uuid.UUID, rows: list[dict]) -> list[dict]:
+def insert_attempts(db: OrmSession, rows: list[dict]) -> list[dict]:
     """幂等插入流水，返回**本次真正新插入**的那些。
 
     返回新插入的行是关键：调用方据此累加计数与每日统计。
@@ -222,7 +222,6 @@ def insert_attempts(db: OrmSession, user_id: uuid.UUID, rows: list[dict]) -> lis
     values = [
         {
             "id": row["id"],
-            "user_id": user_id,
             "question_id": row["questionId"],
             "at": datetime.fromtimestamp(row["atMs"] / 1000, tz=UTC),
             "day": row["day"],
@@ -269,13 +268,13 @@ def insert_attempts(db: OrmSession, user_id: uuid.UUID, rows: list[dict]) -> lis
 # ------------------------------------------------------------------ 计数累加
 
 
-def bump_records(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> None:
+def bump_records(db: OrmSession, attempts: list[dict]) -> None:
     """把新插入的流水累加进 `records`。
 
     先按题目聚合，一道题只发一条 `UPDATE`：既减少往返，也让「同批次内乱序」
     自动消失（求和可交换，min/max 也是）。
 
-    乱序**跨批次**到达（离线设备补传旧流水）由 SQL 里的 `LEAST / GREATEST /
+    乱序**跨批次**到达（离线期间攒下的旧流水补传）由 SQL 里的 `LEAST / GREATEST /
     CASE WHEN :at >= last_at` 兜住：第一次作答的时间只会更早、最近作答只会更晚，
     且补传的旧流水不会把 `last_status` 改回过去 —— 否则界面上的判定条会显示
     一个已经过期的答案。
@@ -309,7 +308,6 @@ def bump_records(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> No
         db.execute(
             sqlite_insert(Record)
             .values(
-                user_id=user_id,
                 question_id=question_id,
                 attempts=group["n"],
                 correct=group["correct"],
@@ -324,7 +322,7 @@ def bump_records(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> No
                 client_rev=0,
             )
             .on_conflict_do_update(
-                index_elements=["user_id", "question_id"],
+                index_elements=["question_id"],
                 set_={
                     # 计数是纯增量，直接相加
                     "attempts": Record.attempts + group["n"],
@@ -381,19 +379,17 @@ def bump_records(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> No
         )
 
 
-def bump_days(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> None:
+def bump_days(db: OrmSession, attempts: list[dict]) -> None:
     """把新插入的流水累加进 `days`。
 
-    这里是「跨设备不再少算」的落点：累加而不是取较大值，
-    两台设备同一天各练 10 题就是 20。
+    累加而不是取较大值：同一天分几批提交（做完一批、隔一会儿又做一批）各算各的。
 
     先用 `ON CONFLICT DO NOTHING` 确保行存在，再读改写。
     `topics` 的键是动态的（学科名），JSON 列没有「按路径自增」的原子写法，
     所以只能「读出来 + 改 + 写回去」。
 
-    并发：单用户本地形态下这一整段本来就在一个写事务里，而 SQLite 的写事务
-    是**全库排他**的 —— 不需要再 `FOR UPDATE`（SQLite 也没有行锁）。
-    所以这里从"锁行 + 读改写"简化成"读改写"。
+    并发：这一整段本来就在一个写事务里，而 SQLite 的写事务是**全库排他**的 ——
+    不需要再 `FOR UPDATE`（SQLite 也没有行锁）。所以是"读改写"。
     """
     if not attempts:
         return
@@ -415,11 +411,11 @@ def bump_days(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> None:
     for day, agg in per_day.items():
         db.execute(
             sqlite_insert(DayStat)
-            .values(user_id=user_id, date=day, answers=0, correct=0, topics={})
-            .on_conflict_do_nothing(index_elements=["user_id", "date"])
+            .values(date=day, answers=0, correct=0, topics={})
+            .on_conflict_do_nothing(index_elements=["date"])
         )
         row = db.execute(
-            select(DayStat).where(DayStat.user_id == user_id, DayStat.date == day)
+            select(DayStat).where(DayStat.date == day)
         ).scalar_one()
 
         row.answers += agg["answers"]
@@ -430,13 +426,13 @@ def bump_days(db: OrmSession, user_id: uuid.UUID, attempts: list[dict]) -> None:
         row.topics = merged
 
 
-def apply_days_seed(db: OrmSession, user_id: uuid.UUID, seed: Any) -> list[str]:
+def apply_days_seed(db: OrmSession, seed: Any) -> list[str]:
     """导入备份时用的「历史热力图种子」。
 
     导入进来的每日统计是**绝对值**且没有对应流水，所以既不能走累加
     （那要靠流水），也不能像旧实现那样无条件覆盖（会把真实统计抹掉）。
 
-    折中办法是**按日期把关**：只接受「该用户在这一天还没有任何流水」的日期，
+    折中办法是**按日期把关**：只接受「这一天还没有任何流水」的日期，
     并且取较大值。于是：
       * 从离线版迁移过来（服务端零流水）→ 历史热力图完整保留
       * 已经有真实作答的日期 → 种子被忽略，不会被伪造的数字盖掉
@@ -445,7 +441,7 @@ def apply_days_seed(db: OrmSession, user_id: uuid.UUID, seed: Any) -> list[str]:
     if not isinstance(seed, dict):
         return []
 
-    busy_dates = set(db.scalars(select(Attempt.day).where(Attempt.user_id == user_id).distinct()))
+    busy_dates = set(db.scalars(select(Attempt.day).distinct()))
     accepted: list[str] = []
 
     for key, value in seed.items():
@@ -455,11 +451,11 @@ def apply_days_seed(db: OrmSession, user_id: uuid.UUID, seed: Any) -> list[str]:
 
         db.execute(
             sqlite_insert(DayStat)
-            .values(user_id=user_id, date=day, answers=0, correct=0, topics={})
-            .on_conflict_do_nothing(index_elements=["user_id", "date"])
+            .values(date=day, answers=0, correct=0, topics={})
+            .on_conflict_do_nothing(index_elements=["date"])
         )
         row = db.execute(
-            select(DayStat).where(DayStat.user_id == user_id, DayStat.date == day)
+            select(DayStat).where(DayStat.date == day)
         ).scalar_one()
 
         row.answers = max(row.answers, _as_int(value.get("answers")) or 0)
@@ -494,12 +490,12 @@ def _resolve_subjects(db: OrmSession, topic_keys: set[str]) -> dict[str, str]:
 # ------------------------------------------------------------------ 补丁通道
 
 
-def apply_patches(db: OrmSession, user_id: uuid.UUID, patches: Any) -> dict[str, dict]:
+def apply_patches(db: OrmSession, patches: Any) -> dict[str, dict]:
     """按 `client_rev` 合并补丁，返回被拒绝的那些（附权威值）。
 
     **彻底忽略计数字段**：客户端即便上传 `attempts/correct/...` 也不会被采纳。
     这条硬约束是整个改造的前提 —— 只要还允许上传计数，
-    一台设备的快照就会覆盖另一台的增量。
+    浏览器里那份乐观缓存就会把服务端的增量覆盖掉。
     """
     if not isinstance(patches, dict):
         return {}
@@ -519,13 +515,12 @@ def apply_patches(db: OrmSession, user_id: uuid.UUID, patches: Any) -> dict[str,
             if key in incoming:
                 column_patch[_COLUMN_BY_PATCH_FIELD[key]] = incoming[key]
 
-        row = db.get(Record, (user_id, question_id))
+        row = db.get(Record, question_id)
         if row is None:
             # 补丁可能先于流水到达（客户端只标了星标、还没作答）。
             # 计数留 0 —— 它们只能由流水填。
             db.add(
                 Record(
-                    user_id=user_id,
                     question_id=question_id,
                     patch=sanitized,
                     client_rev=rev,
@@ -552,7 +547,7 @@ def apply_patches(db: OrmSession, user_id: uuid.UUID, patches: Any) -> dict[str,
 # ------------------------------------------------------------------ 重置基线
 
 
-def apply_resets(db: OrmSession, user_id: uuid.UUID, resets: Any) -> list[str]:
+def apply_resets(db: OrmSession, resets: Any) -> list[str]:
     """「重新设基线」：直接设定计数，不动流水。
 
     **刻意不删流水**。流水是幂等键的载体：删掉之后，客户端重发一条旧流水
@@ -570,7 +565,7 @@ def apply_resets(db: OrmSession, user_id: uuid.UUID, resets: Any) -> list[str]:
     touched: list[str] = []
     for question_id, value in resets.items():
         question_id = str(question_id)[:96]
-        row = db.get(Record, (user_id, question_id))
+        row = db.get(Record, question_id)
 
         if value is None:
             if row is not None:
@@ -589,7 +584,7 @@ def apply_resets(db: OrmSession, user_id: uuid.UUID, resets: Any) -> list[str]:
             continue
 
         if row is None:
-            row = Record(user_id=user_id, question_id=question_id, patch={})
+            row = Record(question_id=question_id, patch={})
             db.add(row)
 
         row.attempts = _as_int(value.get("attempts")) or 0
@@ -610,28 +605,26 @@ def apply_resets(db: OrmSession, user_id: uuid.UUID, resets: Any) -> list[str]:
 # -------------------------------------------------------------------- 快照
 
 
-def snapshot(db: OrmSession, user_id: uuid.UUID) -> dict:
+def snapshot(db: OrmSession) -> dict:
     records = {
-        row.question_id: compose_record(row)
-        for row in db.scalars(select(Record).where(Record.user_id == user_id)).all()
+        row.question_id: compose_record(row) for row in db.scalars(select(Record)).all()
     }
     days = {
-        row.date.isoformat(): compose_day(row)
-        for row in db.scalars(select(DayStat).where(DayStat.user_id == user_id)).all()
+        row.date.isoformat(): compose_day(row) for row in db.scalars(select(DayStat)).all()
     }
     return {"records": records, "days": days}
 
 
-def attempt_count(db: OrmSession, user_id: uuid.UUID) -> int:
-    return db.scalar(select(func.count()).select_from(Attempt).where(Attempt.user_id == user_id)) or 0
+def attempt_count(db: OrmSession) -> int:
+    return db.scalar(select(func.count()).select_from(Attempt)) or 0
 
 
-def wipe(db: OrmSession, user_id: uuid.UUID) -> None:
-    """清空该用户的全部学习数据（流水一并删除）。
+def wipe(db: OrmSession) -> None:
+    """清空全部学习数据（流水一并删除）。
 
-    这是唯一该删流水的场合：整个用户的数据都被清掉了，幂等键也就没有意义了。
+    这是唯一该删流水的场合：整份学习数据都被清掉了，幂等键也就没有意义了。
     """
     for model in (Attempt, Record, DayStat):
-        for row in db.scalars(select(model).where(model.user_id == user_id)).all():
+        for row in db.scalars(select(model)).all():
             db.delete(row)
     db.flush()

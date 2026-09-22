@@ -38,7 +38,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from .. import agent_loop, ai_gateway as gateway, tools
-from ..deps import AuthenticatedWriter, CurrentUser, DbSession
+from ..deps import DbSession
 from ..models import KnowledgePoint, Message, Question, QuestionPoint, Record
 
 router = APIRouter(prefix="/api/problem", tags=["problem"])
@@ -85,12 +85,12 @@ class _Toolbox:
             spec for spec in tools.specs() if spec["function"]["name"] in self._names
         ]
 
-    def call(self, db, user, name, args, ctx=None):  # noqa: ANN001
+    def call(self, db, name, args, ctx=None):  # noqa: ANN001
         # 名单外的直接回一条结果（不是抛）：模型看得见"这个不在范围内"，
         # 比它以为工具坏了要好
         if name not in self._names:
             return False, {"error": "这个工具不在大题批改的范围内：" + str(name)}
-        return tools.call(db, user, name, args, ctx)
+        return tools.call(db, name, args, ctx)
 
     def output_text(self, payload: dict) -> str:
         return tools.output_text(payload)
@@ -147,7 +147,6 @@ def _problem_out(question: Question, db) -> dict:  # noqa: ANN001
 
 @router.get("/next")
 def next_problem(
-    user: CurrentUser,
     db: DbSession,
     pointKey: str = Query("", description="限定知识点（可省略）"),
     maxDifficulty: int = Query(0, description="难度上限 1–5，0 表示不限"),
@@ -182,7 +181,7 @@ def next_problem(
 
     records = {
         record.question_id: record
-        for record in db.scalars(select(Record).where(Record.user_id == user.id)).all()
+        for record in db.scalars(select(Record)).all()
     }
     fresh, missed = [], []
     for question in rows:
@@ -209,7 +208,7 @@ def next_problem(
 GRADE_NOTE_MAX = 1600
 
 
-def _append_grade_note(db, user, conversation_id: str, question, record, feedback: str) -> None:  # noqa: ANN001
+def _append_grade_note(db, conversation_id: str, question, record, feedback: str) -> None:  # noqa: ANN001
     """把批改结果写一条消息进对话 —— 这是"串行"的那根线。
 
     子代理的结论原先只活在界面那个小窗口里，主 agent 对它一无所知：
@@ -250,7 +249,6 @@ def _append_grade_note(db, user, conversation_id: str, question, record, feedbac
     db.add(
         Message(
             conversation_id=cid,
-            user_id=user.id,
             parent_id=last.id if last else None,
             role="assistant",
             content=head + "\n\n" + body,
@@ -269,7 +267,7 @@ def _append_grade_note(db, user, conversation_id: str, question, record, feedbac
 
 @router.post("/solve")
 def solve(
-    payload: dict, user: AuthenticatedWriter, db: DbSession
+    payload: dict, db: DbSession
 ) -> StreamingResponse:
     """批一作答：起子代理，逐问批，并把结果写进记录。
 
@@ -294,8 +292,8 @@ def solve(
     if not answers:
         raise HTTPException(400, "至少答一问（每问要有一段文字）。")
 
-    conf = gateway.resolve_config(db, user.id)
-    gateway.enforce_quota(db, user.id)
+    conf = gateway.resolve_config(db)
+    gateway.enforce_quota(db)
 
     problem = _problem_out(question, db)
     lines = [
@@ -330,7 +328,6 @@ def solve(
             # 思维链不展示给用户、只会更慢更贵。要开就在这一处传 `thinking=True`。
             for event in agent_loop.run(
                 db,
-                user,
                 conf,
                 system=SUBAGENT_PROMPT,
                 history=history,
@@ -376,7 +373,6 @@ def solve(
         finally:
             gateway.record_usage(
                 db,
-                user,
                 ok=not failed,
                 latency_ms=int((time.perf_counter() - started) * 1000),
                 prompt_tokens=int(usage.get("prompt_tokens") or usage.get("promptTokens") or 0),
@@ -387,16 +383,13 @@ def solve(
             )
             # 批完之后把这条题的最新记录回给界面：它才是"这次算不算数"的答案
             record = db.scalar(
-                select(Record).where(
-                    Record.user_id == user.id, Record.question_id == question.id
-                )
+                select(Record).where(Record.question_id == question.id)
             )
             # 先写回对话再报 `done`：界面收到 done 可能就去重读这条对话了，
             # 那条记事先落库，它才看得见（见 `_append_grade_note`）。
             if not failed:
                 _append_grade_note(
                     db,
-                    user,
                     str(body.get("conversationId") or ""),
                     question,
                     record,

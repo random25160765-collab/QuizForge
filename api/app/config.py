@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     cors_origins: str = ""
 
     # ---------------------------------------------------------------- AI
-    # **每个用户用自己填的密钥**（存在各自的 user_settings.data.ai 里），
+    # **每个用户用自己填的密钥**（存在各自的 app_settings.data.ai 里），
     # 服务端不持有、也不提供共享密钥 —— 谁的额度谁负责。
     # 这里只保留三项与个人凭据无关的策略。
     ai_enabled: bool = True  # 实例级总开关，关掉后所有人都不能用
@@ -183,7 +183,7 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------- 内测通道
     # 内测期间让「没有自带密钥的人也能聊」：一个**实例级**的 OpenAI 兼容配置，
-    # 写给内测用。它长什么样与用户自己那份（`user_settings.data.ai`）完全一致，
+    # 写给内测用。它长什么样与用户自己那份（`app_settings.data.ai`）完全一致，
     # 密钥放在一个被 gitignore 的文件里：
     #
     #     config/ai.local.json  →  {"enabled":true,"baseUrl":"…","model":"…","apiKey":"…"}

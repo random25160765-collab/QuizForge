@@ -8,7 +8,7 @@
 
 ## 密钥从哪来
 
-来自**调用者自己的** `user_settings.data.ai`（就是设置面板里那三个输入框）。
+来自**调用者自己的** `app_settings.data.ai`（就是设置面板里那三个输入框）。
 服务端只保留三项与个人凭据无关的策略：
 
 * `ai_enabled`：实例级总开关，关掉后所有人都不能用（运维用）
@@ -41,20 +41,20 @@ from fastapi import APIRouter, HTTPException, status
 
 from .. import ai_gateway as gateway
 from ..config import get_settings
-from ..deps import AuthenticatedWriter, CurrentUser, DbSession
-from ..models import UserSettings
+from ..deps import DbSession
+from ..settings_store import row as settings_row
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 
 @router.post("/grade")
-def grade(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
-    """用**调用者自己的密钥**转发一次 chat completions，返回供应商的原始响应体。
+def grade(payload: dict, db: DbSession) -> dict:
+    """用**本机设置里那份密钥**转发一次 chat completions，返回供应商的原始响应体。
 
     返回体刻意不做二次包装：前端 `ai.js` 的解析逻辑因此完全不用改。
     """
-    conf = gateway.resolve_config(db, user.id)
-    gateway.enforce_quota(db, user.id)
+    conf = gateway.resolve_config(db)
+    gateway.enforce_quota(db)
 
     body = dict(payload or {})
     # 客户端传来的凭据一律忽略：用调用者设置里那份，服务端不提供共享密钥兜底
@@ -78,12 +78,12 @@ def grade(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
             )
     except httpx.TimeoutException:
         gateway.record_usage(
-            db, user, ok=False, latency_ms=gateway.elapsed_ms(started), detail="超时"
+            db, ok=False, latency_ms=gateway.elapsed_ms(started), detail="超时"
         )
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, "AI 服务响应超时") from None
     except httpx.HTTPError as exc:
         gateway.record_usage(
-            db, user, ok=False, latency_ms=gateway.elapsed_ms(started), detail=str(exc)[:200]
+            db, ok=False, latency_ms=gateway.elapsed_ms(started), detail=str(exc)[:200]
         )
         # 连不上时该做什么，取决于是"你自己的密钥"还是"内测通道的本地模型"
         raise HTTPException(
@@ -95,7 +95,7 @@ def grade(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
 
     if response.status_code >= 400:
         detail = response.text[:300]
-        gateway.record_usage(db, user, ok=False, latency_ms=latency_ms, detail=detail)
+        gateway.record_usage(db, ok=False, latency_ms=latency_ms, detail=detail)
         # 状态码原样透传：前端已经按 401/404/429 区分提示，
         # 用户看到「你的密钥被拒」比看到「服务端错误」有用得多
         raise HTTPException(
@@ -107,7 +107,6 @@ def grade(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
     usage = data.get("usage") or {}
     gateway.record_usage(
         db,
-        user,
         ok=True,
         latency_ms=latency_ms,
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
@@ -117,15 +116,15 @@ def grade(payload: dict, user: AuthenticatedWriter, db: DbSession) -> dict:
 
 
 @router.get("/ping")
-def ping(user: CurrentUser, db: DbSession) -> dict:
-    """连通性测试：用调用者自己的配置发一条极短的请求。
+def ping(db: DbSession) -> dict:
+    """连通性测试：用本机那份配置发一条极短的请求。
 
     返回字段与前端 `ai.ping()` 一致（ok / latencyMs / model / sample / message /
     url），设置面板因此不需要第二套展示逻辑。
     """
     settings = get_settings()
     try:
-        conf = gateway.resolve_config(db, user.id)
+        conf = gateway.resolve_config(db)
     except HTTPException as exc:
         return {
             "ok": False,
@@ -191,14 +190,14 @@ def ping(user: CurrentUser, db: DbSession) -> dict:
 
 
 @router.get("/usage")
-def usage(user: CurrentUser, db: DbSession) -> dict:
-    """当前用户今日的 AI 用量。
+def usage(db: DbSession) -> dict:
+    """今天这台机器的 AI 用量。
 
     设置面板据此显示「今天已经用了多少次」，也顺带告诉用户
     「现在的密钥是不是你自己填的」。
     """
     settings = get_settings()
-    row = db.get(UserSettings, user.id)
+    row = settings_row(db)
     conf = ((row.data if row else {}) or {}).get("ai") or {}
 
     has_key = bool(str(conf.get("apiKey") or "").strip())
@@ -217,7 +216,7 @@ def usage(user: CurrentUser, db: DbSession) -> dict:
 
     beta_model = str(beta.get("model") or "").strip()
     return {
-        "today": gateway.today_usage(db, user.id),
+        "today": gateway.today_usage(db),
         "quota": settings.ai_daily_quota,
         # enabled 现在的意思是「现在能不能用」，而不是「你自己那个开关开没开」——
         # 内测通道让没填密钥的人也能用，面板与对话页要能说清是哪种情况

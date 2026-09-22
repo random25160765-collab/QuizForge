@@ -16,16 +16,16 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select, text
 
 from .. import materials as material_text
-from ..deps import CurrentUser, DbSession
+from ..deps import DbSession
 from ..models import (
     KnowledgePoint,
     Material,
+    MyQuestion,
     PointEdge,
     PointSource,
     Question,
     QuestionPoint,
     Record,
-    UserQuestion,
 )
 
 # 题源是"我的题单"时，一次最多取这么多道进来打分（它是自己攒的题，规模有限）
@@ -38,7 +38,6 @@ LAYERS = ("识记", "理解", "应用", "迁移")
 
 @router.get("/knowledge/material")
 def material_lines(
-    user: CurrentUser,
     db: DbSession,
     slug: str = Query(..., description="材料 slug"),
     start: int = Query(1, ge=1, description="起始行（1 起）"),
@@ -70,7 +69,7 @@ def material_lines(
 
 
 @router.get("/knowledge/overview")
-def overview(user: CurrentUser, db: DbSession) -> dict:
+def overview(db: DbSession) -> dict:
     """知识空间总览：材料、知识点、有题/缺题 —— 缺题清单是「下一步出什么」的唯一依据。"""
     materials = db.execute(select(func.count()).select_from(Material)).scalar_one()
     points = db.execute(select(func.count()).select_from(KnowledgePoint)).scalar_one()
@@ -108,7 +107,6 @@ def overview(user: CurrentUser, db: DbSession) -> dict:
 
 @router.get("/knowledge/points")
 def search_points(
-    user: CurrentUser,
     db: DbSession,
     q: str = Query("", description="按 key 或名称模糊搜"),
     subject: str = Query(""),
@@ -144,7 +142,7 @@ def search_points(
 
 
 @router.get("/knowledge/points/{key}")
-def point_detail(key: str, user: CurrentUser, db: DbSession) -> dict:
+def point_detail(key: str, db: DbSession) -> dict:
     """一个知识点的全部：出处行区间、关系邻域、覆盖它的题。
 
     出处直接给出**行号**：题目讲错时，人（或 AI）能一步翻回原文核对。
@@ -196,7 +194,6 @@ def point_detail(key: str, user: CurrentUser, db: DbSession) -> dict:
 
 @router.get("/picks")
 def picks(
-    user: CurrentUser,
     db: DbSession,
     topics: str = Query("", description="逗号分隔的主题/知识点 key，空 = 不限"),
     layers: str = Query("", description="逗号分隔的认知层，空 = 不限"),
@@ -251,7 +248,7 @@ def picks(
 
     records = {
         r.question_id: r
-        for r in db.scalars(select(Record).where(Record.user_id == user.id)).all()
+        for r in db.scalars(select(Record)).all()
     }
 
     scored: list[tuple[int, str, dict]] = []
@@ -289,9 +286,8 @@ def picks(
     # 它本来就不挂知识点、也不参与覆盖率对账（那正是它与公共题分开的原因）。
     if scope in ("mine", "all"):
         for row in db.scalars(
-            select(UserQuestion)
-            .where(UserQuestion.user_id == user.id)
-            .order_by(UserQuestion.created_at.desc())
+            select(MyQuestion)
+            .order_by(MyQuestion.created_at.desc())
             .limit(MAX_SCOPE_QUESTIONS)
         ).all():
             payload = row.payload or {}

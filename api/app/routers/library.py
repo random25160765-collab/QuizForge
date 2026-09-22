@@ -8,7 +8,7 @@
 * **元数据一冻结就不被覆盖**。索引动作只给"还没有元数据"的条目补一份，
   人改过的（`origin: manual`）与模型填过的（`llm`）一律不动 —— 不然跑一次索引
   就把人手工补的作者冲掉了，而且没有任何提示。
-* **根目录清单落 `user_settings`**（单用户下的单行设置），文件本身不动。
+* **根目录清单落 `app_settings`**（单用户下的单行设置），文件本身不动。
 """
 
 from __future__ import annotations
@@ -26,8 +26,9 @@ from .. import desktop
 from .. import library as lib
 from .. import library_meta
 from .. import notelib
-from ..deps import CurrentUser, DbSession
-from ..models import UserSettings
+from ..deps import DbSession
+from ..models import AppSettings
+from ..settings_store import row as settings_row
 
 # 前缀跟着全仓约定走 `/api/...`（别的路由也都是 `/api` 或 `/api/进度` 这种）。
 # 写成 `/library` 的后果实测过：路由挂上了，但 `/api/library/roots` 一律 404。
@@ -110,34 +111,31 @@ def default_roots() -> list[Path]:
     return []
 
 
-def roots_for(user: UserSettings | None) -> list[Path]:
-    """这个人用哪些根：设置里有就用设置里的（可以是空列表 = 明确不要任何根）。"""
-    if user is not None and isinstance(user.data, dict) and ROOTS_KEY in user.data:
-        stored = user.data.get(ROOTS_KEY) or []
+def roots_for(stored_settings: AppSettings | None) -> list[Path]:
+    """用哪些根：设置里有就用设置里的（可以是空列表 = 明确不要任何根）。"""
+    if (
+        stored_settings is not None
+        and isinstance(stored_settings.data, dict)
+        and ROOTS_KEY in stored_settings.data
+    ):
+        stored = stored_settings.data.get(ROOTS_KEY) or []
         if isinstance(stored, list):
             return [Path(str(part)) for part in stored if str(part).strip()]
     return default_roots()
 
 
-def _settings_row(db: DbSession, user_id: Any) -> UserSettings | None:
-    return db.get(UserSettings, user_id)
-
-
-def _save_roots(db: DbSession, user_id: Any, paths: list[Path]) -> None:
-    row = _settings_row(db, user_id)
-    data = dict(row.data or {}) if row else {}
+def _save_roots(db: DbSession, paths: list[Path]) -> None:
+    row = settings_row(db, create=True)
+    data = dict(row.data or {})
     data[ROOTS_KEY] = [str(path) for path in paths]
-    if row:
-        row.data = data
-    else:
-        db.add(UserSettings(user_id=user_id, data=data))
+    row.data = data
     db.commit()
 
 
 @router.get("/roots")
-def roots(user: CurrentUser, db: DbSession) -> dict:
+def roots(db: DbSession) -> dict:
     """当前根 + 默认根 + 规模。前端拿它画左栏的树。"""
-    row = _settings_row(db, user.id)
+    row = settings_row(db)
     active = roots_for(row)
     items = [item for root in active for item in lib.scan(root)]
     media = [path for root in active for path in lib.scan_media(root)]
@@ -156,13 +154,13 @@ def roots(user: CurrentUser, db: DbSession) -> dict:
 
 
 @router.post("/roots")
-def edit_roots(body: dict, user: CurrentUser, db: DbSession) -> dict:
+def edit_roots(body: dict, db: DbSession) -> dict:
     """加一个根 / 去掉一个根。**只改清单，不动任何文件。**"""
     action = str(body.get("action") or "add")
     raw = str(body.get("path") or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="得给一个目录")
-    row = _settings_row(db, user.id)
+    row = settings_row(db)
     current = roots_for(row)
     target = Path(raw).expanduser()
     if action == "add":
@@ -177,7 +175,7 @@ def edit_roots(body: dict, user: CurrentUser, db: DbSession) -> dict:
         current = [path for path in current if path.resolve() != resolved]
     else:
         raise HTTPException(status_code=400, detail=f"不认识的动作：{action}")
-    _save_roots(db, user.id, current)
+    _save_roots(db, current)
     return {"roots": [str(path) for path in current], "added": action == "add"}
 
 
@@ -192,24 +190,24 @@ def _root_of(roots: list[Path], target: Path) -> Path:
 
 
 @router.post("/mkdir")
-def mkdir(body: dict, user: CurrentUser, db: DbSession) -> dict:
+def mkdir(body: dict, db: DbSession) -> dict:
     """新建文件夹。在**用户的真实目录**里真的建一个 —— 组织树就是磁盘上的目录树。"""
     dir_path = str(body.get("dir") or "").strip()
     if not dir_path:
         raise HTTPException(status_code=400, detail="得给一个目录")
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     root = _root_of(roots, Path(dir_path))
     return {"dir": _run(lib.mkdir, root, dir_path)}
 
 
 @router.post("/move")
-def move(body: dict, user: CurrentUser, db: DbSession) -> dict:
+def move(body: dict, db: DbSession) -> dict:
     """把条目挪进另一个目录（左栏树上拖拽就是这个）。**真的移动文件**。"""
     path = str(body.get("path") or "").strip()
     to_dir = str(body.get("to") or "").strip()
     if not path or not to_dir:
         raise HTTPException(status_code=400, detail="得给 path 与 to")
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     root = _root_of(roots, Path(path))
     # 目标也要在同一根内，否则就是把文件挪出资料库
     _root_of(roots, Path(to_dir))
@@ -222,7 +220,6 @@ MAX_UPLOAD_BYTES = 256 * 1024 * 1024
 
 @router.post("/upload")
 async def upload(
-    user: CurrentUser,
     db: DbSession,
     dir: str = Form(""),
     file: UploadFile = File(...),
@@ -238,7 +235,7 @@ async def upload(
     raw = str(dir or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="得给一个目标目录")
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     root = _root_of(roots, Path(raw))
     folder = _run(lib.within, root, Path(raw))
     if not folder.is_dir():
@@ -276,9 +273,9 @@ async def upload(
 
 
 @router.get("/items")
-def items(user: CurrentUser, db: DbSession, q: str = "", limit: int = 200) -> dict:
+def items(db: DbSession, q: str = "", limit: int = 200) -> dict:
     """条目列表。带 `q` 时走**与笔记同一套表达式**检索。"""
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     if q.strip():
         found = _run(lib.search, roots, _meta_dir(), _text_dir(), q, limit=max(1, min(limit, 500)))
         return {"items": found, "query": q, "count": len(found)}
@@ -311,9 +308,9 @@ def kinds() -> dict:
 
 
 @router.get("/classify/candidates")
-def classify_candidates(user: CurrentUser, db: DbSession, limit: int = 24) -> dict:
+def classify_candidates(db: DbSession, limit: int = 24) -> dict:
     """哪些条目该归类（人定过、模型定过的不在里面）。只读清单，不调模型。"""
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     module = _classifier()
     picked = module.pick_candidates(roots, _meta_dir(), _text_dir(), limit=max(1, min(limit, 100)))
     return {
@@ -325,9 +322,9 @@ def classify_candidates(user: CurrentUser, db: DbSession, limit: int = 24) -> di
 
 
 @router.post("/classify")
-async def classify(body: dict, user: CurrentUser, db: DbSession) -> dict:
+async def classify(body: dict, db: DbSession) -> dict:
     """让模型判类型与主题。**只调模型、不落盘** —— 落盘要人点「接受」。"""
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     citekeys = [str(item) for item in (body.get("citekeys") or []) if str(item).strip()]
     module = _classifier()
     try:
@@ -349,9 +346,9 @@ def classify_apply(body: dict) -> dict:
 
 
 @router.get("/item")
-def item(citekey: str, user: CurrentUser, db: DbSession, text: int = 0) -> dict:
+def item(citekey: str, db: DbSession, text: int = 0) -> dict:
     """一个条目的详情：元数据 + 附属资源（`files` 带角色）+ 正文质量 + **谁引用了它** + BibTeX。"""
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     found = [entry for entry in lib.entries(roots, _meta_dir(), _text_dir()) if entry.citekey == citekey]
     if not found:
         raise HTTPException(status_code=404, detail=f"没有这个条目：{citekey}")
@@ -387,14 +384,14 @@ def item(citekey: str, user: CurrentUser, db: DbSession, text: int = 0) -> dict:
     return detail
 
 
-def _entry_file(citekey: str, index: int, user, db):  # noqa: ANN001, ANN202
+def _entry_file(citekey: str, index: int, db):  # noqa: ANN001, ANN202
     """按引用键 + 序号取一个**条目里的文件**。
 
     序号 `-1` 是主文件，`>=0` 是第几个附属资源。**路径来自扫描结果，不来自请求参数** ——
     所以这里不存在"用户拼一个路径来读机器上任意文件"这回事（资料目录是只读的，
     但"只读"不等于"随便读"）。
     """
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     entry = next((one for one in lib.entries(roots, _meta_dir(), _text_dir()) if one.citekey == citekey), None)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"没有这个条目：{citekey}")
@@ -410,14 +407,14 @@ def _entry_file(citekey: str, index: int, user, db):  # noqa: ANN001, ANN202
 
 
 @router.get("/file")
-def file_raw(citekey: str, user: CurrentUser, db: DbSession, index: int = -1):
+def file_raw(citekey: str, db: DbSession, index: int = -1):
     """把条目里的一个文件原样给出去（PDF 与图片靠它显示）。
 
     `inline` 而不是 `attachment`：PDF 要在浏览器自带的阅读器里翻页，
     不该点一下就变成"下载"。字节流的 Range 由 `FileResponse` 处理 ——
     几百 MB 的规范书能直接跳到第 300 页，靠的就是它。
     """
-    _entry, path = _entry_file(citekey, index, user, db)
+    _entry, path = _entry_file(citekey, index, db)
     return FileResponse(
         path,
         media_type=attach.mime_of(path.name),
@@ -427,7 +424,7 @@ def file_raw(citekey: str, user: CurrentUser, db: DbSession, index: int = -1):
 
 
 @router.get("/view")
-def file_view(citekey: str, user: CurrentUser, db: DbSession, index: int = -1) -> dict:
+def file_view(citekey: str, db: DbSession, index: int = -1) -> dict:
     """这份文件该怎么看。
 
     返回 `kind` 与对应的内容：
@@ -438,7 +435,7 @@ def file_view(citekey: str, user: CurrentUser, db: DbSession, index: int = -1) -
     * `pptx` → 给 `slides`（每页的标题与要点）；
     * `legacy` / `binary` → 什么都不给，界面照实说看不了、给个下载。
     """
-    entry, path = _entry_file(citekey, index, user, db)
+    entry, path = _entry_file(citekey, index, db)
     kind = attach.view_kind(path.name)
     out: dict = {
         "kind": kind,
@@ -470,7 +467,7 @@ def file_view(citekey: str, user: CurrentUser, db: DbSession, index: int = -1) -
 
 
 @router.post("/meta")
-def edit_meta(body: dict, user: CurrentUser, db: DbSession) -> dict:
+def edit_meta(body: dict, db: DbSession) -> dict:
     """手工补/改元数据。**这就是"人是权威"的入口** —— 改完 `origin` 变成 `manual`。"""
     citekey = str(body.get("citekey") or "").strip()
     patch = body.get("meta")
@@ -493,7 +490,7 @@ def edit_meta(body: dict, user: CurrentUser, db: DbSession) -> dict:
 
 
 @router.post("/index")
-def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
+def index(body: dict, db: DbSession) -> dict:
     """抽一批正文并**冻结**元数据（只给还没有元数据的条目写）。
 
     分批是刻意的：全量抽取是这一层唯一的重 IO（实测 55 个 PDF、282MB），
@@ -511,12 +508,12 @@ def index(body: dict, user: CurrentUser, db: DbSession) -> dict:
     conf: dict[str, Any] | None
     hint = ""
     try:
-        conf = gateway.resolve_config(db, user.id)
+        conf = gateway.resolve_config(db)
     except HTTPException as exc:
         conf, hint = None, str(exc.detail)
     if conf is not None:
         limit = max(1, min(limit, LLM_BATCH))
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     known = lib.load_all_metadata(_meta_dir())
     done: list[dict[str, Any]] = []
     remaining = 0
@@ -588,7 +585,7 @@ def pick_folder() -> dict:
 
 
 @router.post("/meta/llm")
-def meta_llm(body: dict, user: CurrentUser, db: DbSession) -> dict:
+def meta_llm(body: dict, db: DbSession) -> dict:
     """用模型重判一批资料的元数据。
 
     为什么单独一个接口：`/index` 只管"还没有元数据的条目"，而这一次要修的是
@@ -605,7 +602,7 @@ def meta_llm(body: dict, user: CurrentUser, db: DbSession) -> dict:
     """
     conf: dict[str, Any] | None
     try:
-        conf = gateway.resolve_config(db, user.id)
+        conf = gateway.resolve_config(db)
     except HTTPException as exc:
         raise HTTPException(503, str(exc.detail)) from exc
 
@@ -613,7 +610,7 @@ def meta_llm(body: dict, user: CurrentUser, db: DbSession) -> dict:
     # 并发之后一批能给大些：默认 12 条，上限 40（前端循环调用，一批一批推进）
     limit = max(1, min(int(body.get("limit") or 12), 40))
     force = bool(body.get("force"))
-    roots = roots_for(_settings_row(db, user.id))
+    roots = roots_for(settings_row(db))
     meta_dir, text_dir = _meta_dir(), _text_dir()
     known = lib.load_all_metadata(meta_dir)
 

@@ -87,29 +87,18 @@ JSONType = JSON().with_variant(JSONB(), "postgresql")
 BigAutoId = BigInteger().with_variant(Integer, "sqlite")
 
 
-class User(Base):
-    """本机用户 —— 单用户本地形态下**只会有一行**。
-
-    账号面（注册 / 登录 / 会话 / CSRF）已整体删除（见 `app/deps.py`）。
-    `email` 与 `password_hash` 是历史遗留的列：留着它们，是为了将来真要做
-    "多设备同步"时不必再动一次数据模型 —— 那时它们会重新有用。
-    """
-
-    __tablename__ = "users"
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
-    display_name: Mapped[str] = mapped_column(String(64), default="", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
-    last_login_at: Mapped[datetime | None] = mapped_column(UtcDateTime)
-    disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-    def __repr__(self) -> str:  # pragma: no cover - 调试用
-        return f"<User {self.email}>"
-
-    # `sessions` 表与它的模型随账号面一起删掉了（服务端会话没有存在意义了：
-    # 本地没有"登录"这个动作可失效，也没有第二个人可以冒充）。
+#: `users` 表与 `User` 模型已在 2026-09-22 **整体删除** —— 连同 10 张表上的
+#: `user_id` 外键（见 `docs/STATUS.md`）。
+#:
+#: 它是多用户 SaaS 时代的产物。2026-09-18 那次"去账号"只删掉了**登录面**
+#: （注册 / 登录 / 会话 / CSRF），却把 `users` 表与 `user_id` 留着，理由是
+#: "那是将来多设备同步最自然的接口"。那条理由不成立：这是个 **local-first 单机**
+#: 应用（见 `docs/THESIS.md`），单机里"用户"这个概念本身就没有指代 ——
+#: 没有第二个人，也就没有"归属"要记。留着它的真实代价是：`password_hash`
+#: 这种毫无意义的列一直躺在库里，而每个新功能都要先想一遍"这个 user_id 怎么办"。
+#:
+#: 唯一的代价是：将来真要做多设备同步，得另设一个归属键。
+#: 到那时再加，比现在假装需要它更诚实。
 
 
 class BankVersion(Base):
@@ -210,8 +199,8 @@ class Question(Base):
     )
 
 
-class UserQuestion(Base):
-    """用户题单里的一道题 —— **自己出的**，与公共题库分开。
+class MyQuestion(Base):
+    """我的题单里的一道题 —— **自己出的**，与公共题库分开。
 
     ## 为什么另开一张表，不塞进 `questions`
 
@@ -228,12 +217,9 @@ class UserQuestion(Base):
     `conversation_id` 记它是哪条对话里出的（可空，练习页也能手写一道）。
     """
 
-    __tablename__ = "user_questions"
+    __tablename__ = "my_questions"
 
     id: Mapped[str] = mapped_column(String(96), primary_key=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
     payload: Mapped[dict] = mapped_column(JSONType, nullable=False)
     # 由哪条对话出的。刻意**不加外键**：对话删了不该连带影响题单，
     # 而这个字段只用来显示"来自哪次对话"。
@@ -248,7 +234,7 @@ class UserQuestion(Base):
         UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    __table_args__ = (Index("ix_user_questions_user_created", "user_id", "created_at"),)
+    __table_args__ = (Index("ix_my_questions_created", "created_at"),)
 
 
 class PointCandidate(Base):
@@ -283,15 +269,16 @@ class PointCandidate(Base):
 
 
 class Record(Base):
-    """用户对一道题的累计学习状态。
+    """一道题的累计学习状态。
 
-    ## 字段被刻意劈成两半，这是跨设备正确性的地基
+    ## 字段被刻意劈成两半
 
     **计数**（`attempts / correct / partial / wrong / first_at / last_at /
     last_status / last_score / last_response`）只由 `attempts` 流水增量维护，
-    **永远不接受客户端上传**。原因：客户端上传的是「我这台设备看到的累计值」，
-    多设备下按 last-write-wins 合并会让后到的那份**静默覆盖**另一台设备的作答
-    （计数不增、用户毫无察觉）。流水是增量、插入是精确一次的，相加天然正确。
+    **永远不接受客户端上传**。原因：客户端上传的是「它本地看到的累计值」——
+    前端有一份乐观缓存（localStorage），离线做了一阵之后那份是旧的，
+    按 last-write-wins 覆盖会让这段作答**静默丢掉**（计数不增、用户毫无察觉）。
+    流水是增量、插入是精确一次的，相加天然正确。
 
     **补丁**（`patch` 里的 sm2 / note / streak）与 **动作**
     （`mastered` / `flagged`）是用户的主观点击，没有可加和的语义，
@@ -303,9 +290,6 @@ class Record(Base):
 
     __tablename__ = "records"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
     question_id: Mapped[str] = mapped_column(String(96), primary_key=True)
 
     # ---- 计数：只由 attempts 增量维护 ----
@@ -332,7 +316,7 @@ class Record(Base):
         UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    __table_args__ = (Index("ix_records_user_updated", "user_id", "updated_at"),)
+    __table_args__ = (Index("ix_records_updated", "updated_at"),)
 
 
 class Attempt(Base):
@@ -341,16 +325,13 @@ class Attempt(Base):
     1. `id` 由客户端生成，主键约束让网络重试天然幂等（`ON CONFLICT DO NOTHING`）；
     2. 服务端只对**真正插入成功**的流水累加计数与每日统计，
        所以「请求发出但响应丢了、客户端重发」不会重复计数 ——
-       这是跨设备场景下最关键的一条保证；
+       弱网下这是最关键的一条保证；
     3. 逐次流水保留下来，日后聚合口径若改动，可以重算历史而无需用户重做题目。
     """
 
     __tablename__ = "attempts"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
     question_id: Mapped[str] = mapped_column(String(96), index=True, nullable=False)
     at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
     # 归属哪一天由**客户端的本地日期**决定，随流水一起上报。
@@ -364,10 +345,7 @@ class Attempt(Base):
     topic_key: Mapped[str] = mapped_column(String(64), default="", index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "id", name="uq_attempts_user_id_id"),
-        Index("ix_attempts_user_at", "user_id", "at"),
-    )
+    __table_args__ = (Index("ix_attempts_at", "at"),)
 
 
 class DayStat(Base):
@@ -378,26 +356,24 @@ class DayStat(Base):
 
     __tablename__ = "days"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
     date: Mapped[date_type] = mapped_column(Date, primary_key=True)
     answers: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     correct: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     topics: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
 
 
-class UserSettings(Base):
-    """界面设置 + 选题篮 + 置顶主题，整体存一个 JSON。
+class AppSettings(Base):
+    """本机设置 + 选题篮 + 置顶主题，整体存一个 JSON —— **全表只有一行**。
 
     这些字段的演进速度远快于学习数据，逐字段建列只会让每次加设置都要写迁移。
+
+    主键是那个恒为 1 的 `id`：单机下"设置"本来就是单例，而 SQLite 的表总得有个主键。
+    取用一律走 `app/settings_store.py`（调用方看不见主键）。
     """
 
-    __tablename__ = "user_settings"
+    __tablename__ = "app_settings"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1, autoincrement=False)
     data: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
     client_rev: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -785,15 +761,12 @@ class AiUsage(Base):
     """按天累计的 AI 用量，用于配额与成本观察。
 
     刻意用**每日聚合**而不是逐次日志：逐次日志会无界增长，而这里真正要回答的
-    问题只有「今天这个用户调了多少次、花了多少 token」。需要排查单次失败时，
+    问题只有「今天调了多少次、花了多少 token」。需要排查单次失败时，
     保留最近一次的错误摘要就够了（`last_error`）。
     """
 
     __tablename__ = "ai_usage"
 
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
-    )
     date: Mapped[date_type] = mapped_column(Date, primary_key=True)
     calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -820,16 +793,11 @@ class Conversation(Base):
     * **它要能被引用**。题目卡片、材料引用、掌握度变动都长在消息上，
       前端内存里的一个数组地址不了任何东西。
 
-    归属从出生就带上（`user_id`）：这是多租户那条缝的落点 ——
-    以后加团队 / 题库归属时，旧数据不需要回填。
     """
 
     __tablename__ = "conversations"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
     title: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     #: 置顶：用户自己钉在列表最上面的那些。
     #:
@@ -859,7 +827,7 @@ class Conversation(Base):
     #: 还得防环。分组不深（是人自己分的），路径的代价只是字符串长一点。
     folder: Mapped[str] = mapped_column(String(240), default="", nullable=False)
 
-    __table_args__ = (Index("ix_conversations_user_updated", "user_id", "updated_at"),)
+    __table_args__ = (Index("ix_conversations_updated", "updated_at"),)
 
 
 class ConversationFolder(Base):
@@ -875,13 +843,10 @@ class ConversationFolder(Base):
     __tablename__ = "conversation_folders"
 
     id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
     path: Mapped[str] = mapped_column(String(240), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
 
-    __table_args__ = (Index("ix_conv_folders_user_path", "user_id", "path", unique=True),)
+    __table_args__ = (Index("ix_conv_folders_path", "path", unique=True),)
 
 
 class Message(Base):
@@ -924,11 +889,6 @@ class Message(Base):
         index=True,
         nullable=False,
     )
-    # 冗余一份 user_id：每个查询强制带它（与 records / attempts 同一条规矩），
-    # 免得"查消息"这条最热的路径每次都要先 join 会话
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
     parent_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="CASCADE"), nullable=True
     )
@@ -953,10 +913,7 @@ class Message(Base):
         UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    __table_args__ = (
-        Index("ix_messages_conversation_created", "conversation_id", "created_at"),
-        Index("ix_messages_user_created", "user_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_messages_conversation_created", "conversation_id", "created_at"),)
 
 
 class Attachment(Base):
@@ -978,9 +935,6 @@ class Attachment(Base):
     __tablename__ = "attachments"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
     # 落在那条消息上。可空：先上传、再发送，中间那段时间它还没归属
     message_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("messages.id", ondelete="CASCADE"), index=True, nullable=True

@@ -79,7 +79,7 @@
 两者分工写在 `search_papers` 的说明里：**问"哪篇论文 / 谁做的 / 哪一年的"走它，
 问"现在怎么做 / 这个型号的参数"走 `web_search`。**
 
-密钥那份配置仍然认（`user_settings.data.search`，以及内测通道
+密钥那份配置仍然认（`app_settings.data.search`，以及内测通道
 `config/ai.local.json` 里的 `search` 块）：填了就用你填的，没填就用免密钥那条。
 
 ## 第一条纪律：**不许卡住**
@@ -123,7 +123,7 @@ from urllib.parse import ParseResult, urljoin, urlparse
 
 import httpx
 
-#: 设置里那一块（`user_settings.data.search` / 内测配置里的 `search`）。
+#: 设置里那一块（`app_settings.data.search` / 内测配置里的 `search`）。
 KEY = "search"
 
 #: 没配任何东西时走哪家 —— **免密钥**那条（见模块 docstring：
@@ -574,7 +574,7 @@ def _normalize(raw: dict, *, source: str) -> dict | None:
 def resolve(db) -> dict:  # noqa: ANN001
     """这次该用哪套搜索配置，顺序是：
 
-    1. **用户自己填的**（`user_settings.data.search`，填了密钥就用他的）；
+    1. **用户自己填的**（`app_settings.data.search`，填了密钥就用他的）；
     2. **内测通道那份**（`config/ai.local.json` 的 `search`，只在 beta 通道）；
     3. **免密钥那条**（必应）—— 所以"什么都没配"不等于"用不了"。
 

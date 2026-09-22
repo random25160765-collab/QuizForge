@@ -259,7 +259,7 @@ def to_html(path: Path) -> str:
     return sanitize_html(_run_pandoc(path, "html"))[:TEXT_LIMIT]
 
 
-def save(db, user, name: str, mime: str, data: bytes) -> dict:  # noqa: ANN001
+def save(db, name: str, mime: str, data: bytes) -> dict:  # noqa: ANN001
     """落盘 + 入库 + 抽正文。返回给前端的元数据（不含正文）。
 
     先判体积再写盘：`MAX_BYTES` 之外的东西根本不该碰到磁盘。
@@ -273,13 +273,12 @@ def save(db, user, name: str, mime: str, data: bytes) -> dict:  # noqa: ANN001
     kind = kind_of(safe_name, mime)
     digest = hashlib.sha256(data).hexdigest()
 
-    directory = uploads_dir() / str(user.id)
+    directory = uploads_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / (digest[:16] + Path(safe_name).suffix.lower()[:12])
     path.write_bytes(data)
 
     row = Attachment(
-        user_id=user.id,
         name=safe_name,
         mime=(mime or "")[:120],
         size=len(data),

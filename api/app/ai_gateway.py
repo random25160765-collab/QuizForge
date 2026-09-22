@@ -6,12 +6,13 @@
 
 ## 谁付钱
 
-每个用户用**自己**的密钥（`user_settings.data.ai`）。服务端只保留三项与个人凭据
-无关的策略：`ai_enabled`（实例总开关）/ `ai_daily_quota`（每人每日上限，0 不限）/
-`ai_timeout_ms`（超时上限）。谁的额度谁负责，站长不必替别人保管计费凭据。
+**这台机器的主人**用自己的密钥（`app_settings.data.ai`），或者走内测通道
+（`config/ai.local.json`，站长那份）。服务端只保留三项与凭据无关的策略：
+`ai_enabled`（总开关）/ `ai_daily_quota`（每日上限，0 不限）/ `ai_timeout_ms`（超时上限）。
 
-代价也写在这里：密钥会按用户隔离地存在库里，**数据库泄露会连带泄露用户的密钥**。
-这是「跨设备免重填」换来的；退路是浏览器只把密钥留在本地、每次随头上送。
+代价也写在这里：密钥存在库里（`app_settings.data.ai.apiKey`），
+**这份库被谁看到就等于密钥被谁看到** —— 所以 `make db-snapshot` 落盘前会把它抹空
+（`tools/db_snapshot.py`），`make check` 里还有一道密钥扫描兜底（`tools/secret_scan.py`）。
 
 ## 非流式的调用为什么不在这里
 
@@ -32,7 +33,8 @@ from pathlib import Path
 import httpx
 
 from .config import get_settings
-from .models import AiUsage, UserSettings
+from .models import AiUsage
+from .settings_store import row as settings_row
 
 # 内测通道那份配置的缓存：{path, mtime, data}
 # 按 mtime 判断，所以改完文件立刻生效，不用重启服务
@@ -239,8 +241,8 @@ def beta_config() -> dict | None:
     return data
 
 
-def resolve_config(db, user_id) -> dict:  # noqa: ANN001
-    """取出这次调用该用哪套配置：**用户自己的密钥 > 内测通道 > 明确报错**。
+def resolve_config(db) -> dict:  # noqa: ANN001
+    """取出这次调用该用哪套配置：**本机设置里的密钥 > 内测通道 > 明确报错**。
 
     返回值多一个 `source`（`user` / `local`）与 `label`：调用方要靠它决定
     "连不上时该叫人去启动本地模型，还是去检查自己的密钥" —— 这两种失败的
@@ -255,7 +257,7 @@ def resolve_config(db, user_id) -> dict:  # noqa: ANN001
     if not settings.ai_enabled:
         raise HTTPException(http_status.HTTP_503_SERVICE_UNAVAILABLE, "本站已关闭 AI 功能。")
 
-    row = db.get(UserSettings, user_id)
+    row = settings_row(db)
     conf = ((row.data if row else {}) or {}).get("ai") or {}
 
     api_key = str(conf.get("apiKey") or "").strip()
@@ -405,31 +407,27 @@ def embed_texts(conf: dict, texts: list[str], *, model: str = "") -> list[list[f
     return [list(item.get("embedding") or []) for item in items]
 
 
-def today_usage(db, user_id) -> int:  # noqa: ANN001
+def today_usage(db) -> int:  # noqa: ANN001
     from datetime import date as date_type
 
     from sqlalchemy import select
 
     return (
-        db.scalar(
-            select(AiUsage.calls).where(
-                AiUsage.user_id == user_id, AiUsage.date == date_type.today()
-            )
-        )
+        db.scalar(select(AiUsage.calls).where(AiUsage.date == date_type.today()))
         or 0
     )
 
 
-def enforce_quota(db, user_id) -> None:  # noqa: ANN001
-    """每人每日上限，0 表示不限。
+def enforce_quota(db) -> None:  # noqa: ANN001
+    """每日上限，0 表示不限。
 
-    它约束的是「同一个人刷太多」，而不是「替别人兜额度」——
-    后者在自带密钥的模式下不存在。
+    单机下它约束的是「这一天刷太多了」—— 挡住失控的重试循环，
+    而不是"替别人兜额度"（那件事在自带密钥的模式下本来就不存在）。
     """
     from fastapi import HTTPException, status as http_status
 
     quota = get_settings().ai_daily_quota
-    if quota and today_usage(db, user_id) >= quota:
+    if quota and today_usage(db) >= quota:
         raise HTTPException(
             http_status.HTTP_429_TOO_MANY_REQUESTS,
             f"今日 AI 调用已达上限（{quota} 次），明天再来或改用「自己判断」。",
@@ -438,7 +436,6 @@ def enforce_quota(db, user_id) -> None:  # noqa: ANN001
 
 def record_usage(  # noqa: ANN001
     db,
-    user,
     *,
     ok: bool,
     latency_ms: int,
@@ -450,7 +447,7 @@ def record_usage(  # noqa: ANN001
 
     失败也要计数 —— 「为什么额度突然用完了」这个问题，答案往往是一串失败重试。
     用数据库侧的自增（`calls = calls + 1`）而不是「读出来加一再写回」：
-    同一用户并发发请求时，后者会丢计数。
+    并发发请求时，后者会丢计数。
     """
     from datetime import date as date_type
 
@@ -460,7 +457,6 @@ def record_usage(  # noqa: ANN001
     db.execute(
         sqlite_insert(AiUsage)
         .values(
-            user_id=user.id,
             date=date_type.today(),
             calls=1,
             failures=0 if ok else 1,
@@ -470,7 +466,7 @@ def record_usage(  # noqa: ANN001
             last_error="" if ok else detail[:300],
         )
         .on_conflict_do_update(
-            index_elements=[AiUsage.user_id, AiUsage.date],
+            index_elements=[AiUsage.date],
             set_={
                 "calls": AiUsage.calls + 1,
                 "failures": AiUsage.failures + (0 if ok else 1),
