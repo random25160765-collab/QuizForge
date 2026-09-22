@@ -44,12 +44,13 @@ quizforge/questions/<topic>/<topic>-<四位编号>-<英文短横线描述>.md
 | `应用` | 按已知规程独立算出确定结果 | blank / problem | `应用` |
 | `迁移` | 换情境、换问法、跨知识点综合 | problem / short | `创新` |
 
-四种层次各自怎么构造题目、怎么判断有没有滑坡，见对应的层 skill：
+四种层次各自怎么构造题目、怎么判断有没有滑坡，见对应的层契约
+（在 `pipeline/prompts/layers/` 下，是出题机的内部提示词）：
 
-- `quizforge-l1-memorize`（识记）
-- `quizforge-l2-understand`（理解）
-- `quizforge-l3-apply`（应用）
-- `quizforge-l4-transfer`（迁移）
+- `l1-memorize.md`（识记）
+- `l2-understand.md`（理解）
+- `l3-apply.md`（应用）
+- `l4-transfer.md`（迁移）
 
 `difficulty` 与 `layer` 不冲突但不同维度：`layer` 是「考哪种认知操作」（可枚举、可校验），
 `difficulty` 只是同一层内部的难易参考。选题与复习计划以 `layer` / `wing` 为准。

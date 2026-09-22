@@ -1,6 +1,6 @@
 ---
 name: quizforge-author
-description: quizforge 的题目格式契约——题目文件位置、front-matter 字段、五种题型（单选/多选/填空/简答/大题）的正文小节契约、LaTeX 与代码块写法、代码填空与法式大题的写法，以及必须执行的校验与构建命令。出题请走四个层 skill（quizforge-l1-memorize / l2-understand / l3-apply / l4-transfer），本 skill 是它们共同引用的契约，不要用它代替层 skill。当用户要求「校验题库 / 检查题目格式 / 改题目格式 / 重建题库 / 查某个字段怎么填 / 确认某道题格式对不对」时使用。
+description: quizforge 的题目格式契约——题目文件位置、front-matter 字段、五种题型（单选/多选/填空/简答/大题）的正文小节契约、LaTeX 与代码块写法、代码填空与法式大题的写法，以及必须执行的校验与构建命令。出题规则见 pipeline/prompts/layers/ 下的四份层契约（l1-memorize / l2-understand / l3-apply / l4-transfer）—— 那是**出题机的内部提示词**，不是 CodeBuddy skill，所以不在这里；本 skill 只管格式。当用户要求「校验题库 / 检查题目格式 / 改题目格式 / 重建题库 / 查某个字段怎么填 / 确认某道题格式对不对」时使用。
 ---
 
 # quizforge 题目格式契约
@@ -10,19 +10,21 @@ description: quizforge 的题目格式契约——题目文件位置、front-mat
 保证任何一次产出的题目文件都**与 quizforge 框架的解析契约完全兼容**：
 `tools/check.py` 零错误、`tools/build.py` 能正常构建、前端能正确渲染与判分。
 
-## 与层 skill 的分工
+## 与层契约的分工
 
-出题**不要**用本 skill，用对应层次的那个：
+出题**不要**用本 skill，用对应层次的那份契约 —— 它们在 `pipeline/prompts/layers/`
+（那是**出题机的内部提示词**，被 `pipeline/worker.py` 读进出题员的提示词，
+所以不放在 `.codebuddy/skills/` 里）：
 
-| 要出什么 | 用哪个 skill |
+| 要出什么 | 哪份契约 |
 |---|---|
-| 识记层（术语、定义、数值、枚举的准确回忆） | `quizforge-l1-memorize` |
-| 理解层（预测、判断、解释机制） | `quizforge-l2-understand` |
-| 应用层（按规程算出确定结果） | `quizforge-l3-apply` |
-| 迁移层（换情境、换问法、跨点综合） | `quizforge-l4-transfer` |
+| 识记层（术语、定义、数值、枚举的准确回忆） | `pipeline/prompts/layers/l1-memorize.md` |
+| 理解层（预测、判断、解释机制） | `pipeline/prompts/layers/l2-understand.md` |
+| 应用层（按规程算出确定结果） | `pipeline/prompts/layers/l3-apply.md` |
+| 迁移层（换情境、换问法、跨点综合） | `pipeline/prompts/layers/l4-transfer.md` |
 
 本 skill 只负责**格式契约**：字段怎么填、正文小节怎么写、写完跑什么命令。
-层 skill 负责**这一层怎么出题、怎么判断有没有滑坡**，并指向 `references/format.md` 取细节。
+层契约负责**这一层怎么出题、怎么判断有没有滑坡**，并指向 `references/format.md` 取细节。
 
 **四层共用同一条流水线，不分批。** 任务按**知识点**打包，一次把该出的都出了；
 一个点出哪几层由它自己的 `layers` 决定（含识记/理解就出 `single`/`multi`/`blank`，

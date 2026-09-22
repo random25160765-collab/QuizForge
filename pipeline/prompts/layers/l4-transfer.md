@@ -1,7 +1,5 @@
----
-name: quizforge-l4-transfer
-description: 为 quizforge 出「迁移层」题目——换情境、换问法或跨知识点综合，目标是让只背下应用层解法的人无法直接套用，必须重新组合已知原理。产出 problem / short。当用户要求出迁移层题目，或要求「换个情境考同一个原理、反过来问、跨知识点综合、出反套路题、出开放题」时使用。
----
+<!-- 出题契约 · 迁移层。`pipeline/worker.py` 的 load_contract() 把它读进出题员的提示词 ——
+     改这里就是改出题行为（也会改变 prompt_version）。 -->
 
 # 出迁移层题目
 
@@ -27,7 +25,7 @@ description: 为 quizforge 出「迁移层」题目——换情境、换问法�
 
 | 问自己 | 是 | 否 |
 |---|---|---|
-| 把应用层的解法步骤背下来，能否直接套用？ | 那是应用题，回 `quizforge-l3-apply` | 继续 |
+| 把应用层的解法步骤背下来，能否直接套用？ | 那是应用题，回 `l3-apply` | 继续 |
 | 是否需要**重新组合已知原理**才能解？ | 继续 | 只是套公式 → 回应用层 |
 | 情境是否真的换了（不是只换数值）？ | 继续 | 只换数值 → 假迁移，重做 |
 | 是否超纲（需要材料之外的领域知识）？ | 降级或补材料 | 继续 |
@@ -113,7 +111,7 @@ python3 tools/build.py
 
 ## 参考
 
-（本仓库自包含这批 skill；下列路径均相对仓库根）
+（下列路径均相对仓库根；四份层契约都在 pipeline/prompts/layers/）
 
 - 完整格式契约（大题小问的精确写法）：`.codebuddy/skills/quizforge-author/references/format.md`
 - 从材料出题的抽取与核对流程：`.codebuddy/skills/quizforge-author/references/from-source.md`
