@@ -202,8 +202,16 @@ def _config_script(api_base: str, page: str) -> str:
 def _index_redirect() -> str:
     """首页：直接送进应用。
 
-    单用户本地形态下没有登录页、也没有"去登录还是去刷题"的岔路，
-    所以首页只需要一件事：把浏览器送到应用里。
+    单机形态下没有登录页、也没有"去登录还是去刷题"的岔路，
+    所以首页只需要一件事：把浏览器送到应用里 —— 送到**对话**页。
+
+    **为什么是对话而不是刷题**：这个项目的门面是"对话是前台，题与图是后台"
+    （见 README 与 `docs/THESIS.md`）—— 问、讲、做题、记笔记都发生在同一个
+    上下文里，其余页面是它的侧门。这里原先跳 `quiz.html`：那时题库是中心，
+    后来前台换成了对话，这条跳转没跟着改 —— 于是"打开首页看到刷题页"
+    与门面宣言矛盾（2026-09-22 实测发现，同一处矛盾在三处各说各话：
+    这里跳 `quiz.html`、`make api-dev` 提示 `notes.html`、README 说对话是主入口）。
+
     用 `meta refresh` 而不是 JS 跳转 —— 不依赖脚本能不能跑起来。
     """
     return (
@@ -211,11 +219,11 @@ def _index_redirect() -> str:
         '<html lang="zh-CN">\n'
         "<head>\n"
         '<meta charset="utf-8">\n'
-        '<meta http-equiv="refresh" content="0; url=./quiz.html">\n'
+        '<meta http-equiv="refresh" content="0; url=./chat.html">\n'
         "<title>QuizForge</title>\n"
         "</head>\n"
         "<body>\n"
-        '<p>正在进入 <a href="./quiz.html">QuizForge</a>…</p>\n'
+        '<p>正在进入 <a href="./chat.html">QuizForge</a>…</p>\n'
         "</body>\n"
         "</html>\n"
     )

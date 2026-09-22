@@ -167,9 +167,10 @@ db-restore:
 # 而 WSL2 的 localhost 转发在这台机器上不通（实测：从 Windows 取 127.0.0.1:8100 连不上）。
 # 0.0.0.0 在 WSL 里只是 vNIC（NAT），只有 Windows 宿主机够得到，不会挂到局域网上。
 api-dev: web
-	@echo "→ 开发环境：本机(WSL) http://127.0.0.1:$(API_PORT)/notes.html"
-	@ip=$$(hostname -I 2>/dev/null | tr " " "\n" | grep -E "^[0-9]" | head -1); \
-	 if [ -n "$$ip" ]; then echo "→ 开发环境：Windows 浏览器 http://$$ip:$(API_PORT)/notes.html"; fi
+	@echo "→ 打开 http://127.0.0.1:$(API_PORT)/chat.html  （对话是前台；其余页面走左侧活动栏）"
+	@ip=$$(hostname -I 2>/dev/null | tr " " "\n" | grep -E "^[0-9]" | grep -v "^169\.254\." | head -1); \
+	 if [ -n "$$ip" ]; then echo "  Windows / 局域网：http://$$ip:$(API_PORT)/chat.html"; fi
+	@echo "  前台阻塞（Ctrl+C 停）。要它在后台跑：nohup make api-dev >/tmp/quizforge.log 2>&1 &"
 	@cd api && .venv/bin/uvicorn app.main:app --reload --host 0.0.0.0 --port $(API_PORT)
 
 # 桌面那个包是不是**当前这份代码**打的：比对它随附的构建戳与现在 `api/web` 的戳。

@@ -10,14 +10,27 @@
 
 ## 跑起来
 
+三条命令，从干净克隆到能用（实测约半分钟，主要花在装依赖）：
+
 ```bash
 make api-venv     # 建后端环境（venv + 依赖）
 make db-restore   # 解压快照 → data/quizforge.db（题库 + 考纲 + 知识空间）
-make api-dev      # 构建前端并起服务 → http://127.0.0.1:8100
+make api-dev      # 构建前端并起服务（**前台阻塞**）
+```
+
+然后打开 **<http://127.0.0.1:8100/chat.html>** —— **对话是前台**：
+问、讲、做题、记笔记都发生在这一个上下文里，其余页面是它的侧门
+（顶层 `/` 也跳到这里）。
+
+`make api-dev` 是**前台阻塞**的（Ctrl+C 停）。要它自己跑在后台：
+
+```bash
+nohup make api-dev >/tmp/quizforge.log 2>&1 &
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/api/health   # 200 = 起来了
 ```
 
 **不需要 Docker，也不需要 Postgres。** 数据就是本机一个 SQLite 文件
-（`data/quizforge.db`）；首启会自动建好表（alembic 已退役）。
+（`data/quizforge.db`）；表由首启自动建好（alembic 已退役）。
 `.env` 可选（`make env-init` 从 `.env.example` 生成，里面是端口与用量上限）。
 
 **库里一开始是空的，题在快照里**：`db/quizforge.db.gz` **就是 SQLite 库本身**，
