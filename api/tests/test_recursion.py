@@ -14,18 +14,17 @@ from app import recursion, tools
 from app.models import Conversation, Message
 
 
-def _conv(db, user, title="复盘测试"):  # noqa: ANN001
-    conv = Conversation(user_id=user.id, title=title)
+def _conv(db, title="复盘测试"):  # noqa: ANN001
+    conv = Conversation(title=title)
     db.add(conv)
     db.flush()
     return conv
 
 
-def _say(db, conv, user, role, text, parent=None):  # noqa: ANN001
+def _say(db, conv, role, text, parent=None):  # noqa: ANN001
     """挂一条消息。`parent` 收的是**上一条消息对象**（不是 id）—— 树就是这么长出来的。"""
     msg = Message(
         conversation_id=conv.id,
-        user_id=user.id,
         role=role,
         status="ok",
         content=text,
@@ -36,17 +35,17 @@ def _say(db, conv, user, role, text, parent=None):  # noqa: ANN001
     return msg
 
 
-def test_two_kinds_of_forks_are_told_apart(db_session, local_user) -> None:  # noqa: ANN001
+def test_two_kinds_of_forks_are_told_apart(db_session) -> None:  # noqa: ANN001
     """**同一句话重发**和**从一段讲解里挑出多个概念**，必须分开。
 
     两者结构一模一样（同一父节点下的两个 user 兄弟），含义却相反：前者是
     "我上一句没说清 / 上一次它没答到"，后者才是递归学习法的下钻动作。
     """
-    conv = _conv(db_session, local_user)
-    lesson = _say(db_session, conv, local_user, "assistant", "讲了一段，里面提到 A、B 两个词")
-    first = _say(db_session, conv, local_user, "user", "用联网搜索帮我查一下 Tenstorrent", lesson)
-    again = _say(db_session, conv, local_user, "user", "用联网搜索帮我查一下 Tenstorrent", lesson)
-    other = _say(db_session, conv, local_user, "user", "WCET 全称是什么？", lesson)
+    conv = _conv(db_session)
+    lesson = _say(db_session, conv, "assistant", "讲了一段，里面提到 A、B 两个词")
+    first = _say(db_session, conv, "user", "用联网搜索帮我查一下 Tenstorrent", lesson)
+    again = _say(db_session, conv, "user", "用联网搜索帮我查一下 Tenstorrent", lesson)
+    other = _say(db_session, conv, "user", "WCET 全称是什么？", lesson)
     db_session.commit()
 
     forks = recursion.forks(recursion.tree(db_session, conv))
@@ -77,18 +76,18 @@ def test_same_question_is_conservative_on_short_ones() -> None:
     )
 
 
-def test_indent_only_deepens_at_real_forks(db_session, local_user) -> None:  # noqa: ANN001
+def test_indent_only_deepens_at_real_forks(db_session) -> None:  # noqa: ANN001
     """单传的一层**不加深缩进** —— 缩进只在真分叉处才有意义。
 
     实测代价：真实那条会话最深 45 层，每层缩两格就是 90 个空格，骨架因此从两千多字
     涨到九千多，而那些缩进**没有区分出任何东西**（那一层只有一个孩子）。
     真实深度照样要算对（`depth`），只是不再拿它当缩进用。
     """
-    conv = _conv(db_session, local_user)
+    conv = _conv(db_session)
     parent = None
     for index in range(12):  # 一条 12 层的直线链
         parent = _say(
-            db_session, conv, local_user,
+            db_session, conv,
             "user" if index % 2 == 0 else "assistant",
             "第 %d 层" % index, parent,
         )
@@ -99,16 +98,16 @@ def test_indent_only_deepens_at_real_forks(db_session, local_user) -> None:  # n
     assert max(r["indent"] for r in rows) == 0, "一路单传，不该有任何缩进"
 
 
-def test_each_branch_reports_how_deep_it_went(db_session, local_user) -> None:  # noqa: ANN001
+def test_each_branch_reports_how_deep_it_went(db_session) -> None:  # noqa: ANN001
     """每支要标出它往下钻了几层 —— 那是"这个概念有多难"最直接的数。"""
-    conv = _conv(db_session, local_user)
-    lesson = _say(db_session, conv, local_user, "assistant", "讲解：里面冒出了两个词")
-    _say(db_session, conv, local_user, "user", "浅的这个词是什么？", lesson)
-    deep = _say(db_session, conv, local_user, "user", "深的那个词是什么？", lesson)
+    conv = _conv(db_session)
+    lesson = _say(db_session, conv, "assistant", "讲解：里面冒出了两个词")
+    _say(db_session, conv, "user", "浅的这个词是什么？", lesson)
+    deep = _say(db_session, conv, "user", "深的那个词是什么？", lesson)
     # 给"深的"那一支挂三层
     node = deep
     for index in range(3):
-        node = _say(db_session, conv, local_user, "assistant" if index == 0 else "user",
+        node = _say(db_session, conv, "assistant" if index == 0 else "user",
                     "深入第 %d 层" % index, node)
     db_session.commit()
 
@@ -117,13 +116,13 @@ def test_each_branch_reports_how_deep_it_went(db_session, local_user) -> None:  
     assert text.count("这一支钻了 0 层") == 0, "叶子不该标 0"
 
 
-def test_outline_counts_drills_and_reasks_separately(db_session, local_user) -> None:  # noqa: ANN001
+def test_outline_counts_drills_and_reasks_separately(db_session) -> None:  # noqa: ANN001
     """小结里"下了几次钻"和"重发了几次"是两个数，不能混成一个"分叉数"。"""
-    conv = _conv(db_session, local_user)
-    lesson = _say(db_session, conv, local_user, "assistant", "讲解")
-    _say(db_session, conv, local_user, "user", "A 是什么？", lesson)
-    _say(db_session, conv, local_user, "user", "B 是什么？", lesson)
-    _say(db_session, conv, local_user, "user", "B 是什么？", lesson)  # 重发
+    conv = _conv(db_session)
+    lesson = _say(db_session, conv, "assistant", "讲解")
+    _say(db_session, conv, "user", "A 是什么？", lesson)
+    _say(db_session, conv, "user", "B 是什么？", lesson)
+    _say(db_session, conv, "user", "B 是什么？", lesson)  # 重发
     db_session.commit()
 
     stat = recursion.brief(db_session, conv)
@@ -131,66 +130,66 @@ def test_outline_counts_drills_and_reasks_separately(db_session, local_user) -> 
     assert stat["reasks"] == 1, "一次重发"
 
 
-def test_empty_conversation_is_not_an_error(db_session, local_user) -> None:  # noqa: ANN001
-    conv = _conv(db_session, local_user)
+def test_empty_conversation_is_not_an_error(db_session) -> None:  # noqa: ANN001
+    conv = _conv(db_session)
     db_session.commit()
     assert "还没有消息" in recursion.outline(db_session, conv)
 
 
-def test_tool_reads_the_conversation_it_was_told_about(db_session, local_user) -> None:  # noqa: ANN001
+def test_tool_reads_the_conversation_it_was_told_about(db_session) -> None:  # noqa: ANN001
     """工具靠 `ctx` 里的 `conversationId` 认会话（主对话每轮都会带上它）。"""
-    conv = _conv(db_session, local_user)
-    _say(db_session, conv, local_user, "user", "开始学缓存")
+    conv = _conv(db_session)
+    _say(db_session, conv, "user", "开始学缓存")
     db_session.commit()
 
     ok, payload = tools.call(
-        db_session, local_user, "read_learning_tree", {}, {"conversationId": str(conv.id)}
+        db_session, "read_learning_tree", {}, {"conversationId": str(conv.id)}
     )
     assert ok and not payload.get("error")
     assert "## 树的形状" in payload["tree"]
     assert "开始学缓存" in payload["tree"]
 
 
-def test_tool_says_so_when_there_is_no_conversation(db_session, local_user) -> None:  # noqa: ANN001
+def test_tool_says_so_when_there_is_no_conversation(db_session) -> None:  # noqa: ANN001
     """没带会话时**说清楚**，不要猜一条来读。"""
-    ok, payload = tools.call(db_session, local_user, "read_learning_tree", {}, {})
+    ok, payload = tools.call(db_session, "read_learning_tree", {}, {})
     assert ok and payload.get("error")
 
     ok, payload = tools.call(
-        db_session, local_user, "read_learning_tree",
+        db_session, "read_learning_tree",
         {}, {"conversationId": "00000000-0000-0000-0000-000000000000"},
     )
     assert ok and payload.get("error"), "不存在的会话同样是错误，不是空树"
 
 
-def test_tool_can_read_named_messages_in_full(db_session, local_user) -> None:  # noqa: ANN001
+def test_tool_can_read_named_messages_in_full(db_session) -> None:  # noqa: ANN001
     """骨架只给预览；要逐字看的按 id 点名取（两段式）。"""
-    conv = _conv(db_session, local_user)
+    conv = _conv(db_session)
     long_text = "这句话很长，" * 20
-    msg = _say(db_session, conv, local_user, "user", long_text)
+    msg = _say(db_session, conv, "user", long_text)
     db_session.commit()
 
     ok, payload = tools.call(
-        db_session, local_user, "read_learning_tree",
+        db_session, "read_learning_tree",
         {"ids": [msg.id]}, {"conversationId": str(conv.id)},
     )
     assert ok and long_text in payload["tree"], "点名要的是全文，不是预览"
 
 
-def test_the_tree_reaches_the_model_as_text_not_json(db_session, local_user) -> None:  # noqa: ANN001
+def test_the_tree_reaches_the_model_as_text_not_json(db_session) -> None:  # noqa: ANN001
     """树交到模型手上必须是**原样文本**：它的缩进就是它的意思。
 
     塞进 JSON 会把换行与缩进转义成 `\\n` 和字面空格，整棵树塌成一行 ——
     那正好把它唯一的价值（形状）毁掉。
     """
-    conv = _conv(db_session, local_user)
-    lesson = _say(db_session, conv, local_user, "assistant", "讲解")
-    _say(db_session, conv, local_user, "user", "A 是什么？", lesson)
-    _say(db_session, conv, local_user, "user", "B 是什么？", lesson)
+    conv = _conv(db_session)
+    lesson = _say(db_session, conv, "assistant", "讲解")
+    _say(db_session, conv, "user", "A 是什么？", lesson)
+    _say(db_session, conv, "user", "B 是什么？", lesson)
     db_session.commit()
 
     _, payload = tools.call(
-        db_session, local_user, "read_learning_tree", {}, {"conversationId": str(conv.id)}
+        db_session, "read_learning_tree", {}, {"conversationId": str(conv.id)}
     )
     text = tools.output_text(payload)
     assert "\n#" in text, "骨架的行还在"

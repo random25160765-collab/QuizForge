@@ -14,14 +14,13 @@ import uuid
 PASSWORD = "password-1234"
 
 
-def _register(client, email: str = "") -> str:  # noqa: ANN001
-    """本机用户就绪（单用户本地形态没有"注册"这回事），返回它的 id。
+def _register(client, *args, **kwargs) -> str:  # noqa: ANN001
+    """不再需要做什么 —— 账号系统已整体拆除（2026-09-22，见 `app/models.py` 顶部）。
 
-    `email` 参数留着是为了不动调用点 —— 那个参数已经没有意义了。
+    保留这个空函数只是为了不动几十个调用点：它在用例里当"开工准备"用，
+    而现在没有任何准备工作要做（数据隔离由 conftest 的 autouse fixture 负责）。
     """
-    from conftest import local_user_id
-
-    return local_user_id()
+    return ""
 
 
 def _headers(client) -> dict:  # noqa: ANN001

@@ -19,11 +19,13 @@ from app.models import Material
 PW = "password-1234"
 
 
-def _register(client) -> None:  # noqa: ANN001
-    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
-    from conftest import local_user_id
+def _register(client, *args, **kwargs) -> str:  # noqa: ANN001
+    """不再需要做什么 —— 账号系统已整体拆除（2026-09-22，见 `app/models.py` 顶部）。
 
-    local_user_id()
+    保留这个空函数只是为了不动几十个调用点：它在用例里当"开工准备"用，
+    而现在没有任何准备工作要做（数据隔离由 conftest 的 autouse fixture 负责）。
+    """
+    return ""
 
 
 def _material(db, path: Path, *, lines: int, depth: str = "出题") -> Material:  # noqa: ANN001
@@ -150,7 +152,7 @@ def test_search_material_tool_returns_sources(db_session, tmp_path) -> None:  # 
     body = ["前一行", "exp_approx_mode 控制指数近似", "后一行"]
     _material(db_session, _write(tmp_path / "t.md", body), lines=3)
 
-    ok, payload = tools.call(db_session, None, "search_material", {"query": "exp_approx_mode"})
+    ok, payload = tools.call(db_session, "search_material", {"query": "exp_approx_mode"})
     assert ok, payload
     hit = payload["hits"][0]
     assert hit["firstMatch"] == 2
@@ -169,14 +171,14 @@ def test_read_material_tool_reads_by_line(db_session, tmp_path) -> None:  # noqa
     material = _material(db_session, _write(tmp_path / "r.md", body), lines=20)
 
     ok, payload = tools.call(
-        db_session, None, "read_material", {"slug": material.slug, "startLine": 5, "endLine": 7}
+        db_session, "read_material", {"slug": material.slug, "startLine": 5, "endLine": 7}
     )
     assert ok, payload
     assert payload["startLine"] == 5 and payload["endLine"] == 7 and payload["lines"] == 3
     assert "6: 第 6 行" in payload["text"]
     assert payload["sources"][0]["startLine"] == 5
 
-    ok, payload = tools.call(db_session, None, "read_material", {"slug": "no-such-material"})
+    ok, payload = tools.call(db_session, "read_material", {"slug": "no-such-material"})
     assert ok and "error" in payload
 
 
@@ -230,13 +232,13 @@ def test_the_two_tools_look_at_different_shelves(db_session, tmp_path) -> None: 
     for_reference = _material(db_session, _write(tmp_path / "b.md", body), lines=1, depth="检索")
     db_session.commit()
 
-    ok, payload = tools.call(db_session, None, "search_material", {"query": "circular buffer"})
+    ok, payload = tools.call(db_session, "search_material", {"query": "circular buffer"})
     assert ok, payload
     found = {hit["material"] for hit in payload["hits"]}
     assert on_chain.slug in found, "出题档的材料没被 search_material 找到"
     assert for_reference.slug not in found, "search_material 读到了检索档 —— 两个书架串了"
 
-    ok, payload = tools.call(db_session, None, "search_library", {"query": "circular buffer"})
+    ok, payload = tools.call(db_session, "search_library", {"query": "circular buffer"})
     assert ok, payload
     found = {hit["material"] for hit in payload["hits"]}
     assert for_reference.slug in found, "检索档的资料没被 search_library 找到"
@@ -254,7 +256,7 @@ def test_an_empty_shelf_is_not_reported_as_a_missing_file(db_session, tmp_path) 
     _material(db_session, _write(tmp_path / "only-ref.md", body), lines=1, depth="检索")
     db_session.commit()
 
-    ok, payload = tools.call(db_session, None, "search_material", {"query": "unique_on_theothershelf"})
+    ok, payload = tools.call(db_session, "search_material", {"query": "unique_on_theothershelf"})
     assert ok, payload
     assert payload.get("hits") == []
     assert "error" not in payload, payload

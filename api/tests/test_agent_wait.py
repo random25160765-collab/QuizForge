@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from app import agent_loop, runs, tools  # noqa: E402
 
 
-def test_loop_waits_for_the_sandbox_output(db_session, local_user, monkeypatch):
+def test_loop_waits_for_the_sandbox_output(db_session, monkeypatch):
     run_id = "wait-test-1"
     delivered = {"at": None}
 
@@ -39,7 +39,7 @@ def test_loop_waits_for_the_sandbox_output(db_session, local_user, monkeypatch):
         yield ("delta", "跑完了，结论是 1。")
         yield ("finish", "stop")
 
-    def fake_call(db, user, name, args, ctx, **kwargs):
+    def fake_call(db, name, args, ctx=None, **kwargs):
         """只替掉 `run_python` 的结果：真让它返回"待运行"的那个形状。"""
         return True, {"demo": {"title": "t", "runId": run_id}, "await_run": True,
                       "note": "会等它跑完"}
@@ -64,7 +64,6 @@ def test_loop_waits_for_the_sandbox_output(db_session, local_user, monkeypatch):
     events = list(
         agent_loop.run(
             db_session,
-            local_user,
             {"model": "fake"},
             system="s",
             history=[{"role": "user", "content": "跑一下"}],

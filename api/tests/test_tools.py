@@ -33,7 +33,6 @@ from app.models import (
     Question,
     QuestionPoint,
     Record,
-    User,
 )
 
 PASSWORD = "password-1234"
@@ -42,18 +41,15 @@ PASSWORD = "password-1234"
 # ------------------------------------------------------------------ 脚手架
 
 
-def _register(client) -> None:  # noqa: ANN001
-    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
-    from conftest import local_user_id
+def _register(client, *args, **kwargs) -> str:  # noqa: ANN001
+    """不再需要做什么 —— 账号系统已整体拆除（2026-09-22，见 `app/models.py` 顶部）。
 
-    local_user_id()
+    保留这个空函数只是为了不动几十个调用点：它在用例里当"开工准备"用，
+    而现在没有任何准备工作要做（数据隔离由 conftest 的 autouse fixture 负责）。
+    """
+    return ""
 
 
-def _me_id(client) -> str:  # noqa: ANN001
-    """本机用户的 id。"""
-    from conftest import local_user_id
-
-    return local_user_id()
 
 
 def _seed_knowledge(db, question_id: str | None) -> tuple[int, str]:  # noqa: ANN001
@@ -130,7 +126,7 @@ def test_search_knowledge_finds_concept_and_point(client, db_session) -> None:  
     _register(client)
     _, key = _seed_knowledge(db_session, None)
 
-    ok, payload = tools.call(db_session, db_session.get(User, uuid.UUID(_me_id(client))), "search_knowledge", {"query": "circular"})
+    ok, payload = tools.call(db_session, "search_knowledge", {"query": "circular"})
     assert ok, payload
     assert [item["key"] for item in payload["concepts"]], "概念层要能搜到"
     assert key in [item["key"] for item in payload["points"]]
@@ -143,15 +139,14 @@ def test_point_detail_carries_line_ranges(client, db_session, imported_bank) -> 
     question_id = _first_question_id(db_session)
     assert question_id, "要有题才测得了挂接"
     _, key = _seed_knowledge(db_session, question_id)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, detail = tools.call(db_session, user, "get_point_detail", {"key": key})
+    ok, detail = tools.call(db_session, "get_point_detail", {"key": key})
     assert ok, detail
     assert detail["kind_of_node"] == "point"
     assert detail["sources"][0]["startLine"] == 10 and detail["sources"][0]["endLine"] == 22
     assert detail["questions"], "挂着的题要带出来"
 
-    ok, missing = tools.call(db_session, user, "get_point_detail", {"key": "根本没有这个key"})
+    ok, missing = tools.call(db_session, "get_point_detail", {"key": "根本没有这个key"})
     assert ok, "查不到也算成功返回，不算异常"
     assert "error" in missing and "similar" in missing, "给线索，而不是干巴巴一句没有"
 
@@ -160,14 +155,13 @@ def test_questions_hide_the_answer_by_default(client, db_session) -> None:  # no
     """推题时不能剧透；要讲解时模型自己会传 includeAnswer。"""
     _register(client)
     _, key = _seed_knowledge(db_session, _first_question_id(db_session))
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, plain = tools.call(db_session, user, "get_existing_questions", {"pointKey": key})
+    ok, plain = tools.call(db_session, "get_existing_questions", {"pointKey": key})
     assert ok and plain["items"]
     assert "answer" not in plain["items"][0]
 
     ok, shown = tools.call(
-        db_session, user, "get_existing_questions", {"pointKey": key, "includeAnswer": True}
+        db_session, "get_existing_questions", {"pointKey": key, "includeAnswer": True}
     )
     assert ok and "answer" in shown["items"][0]
 
@@ -178,13 +172,11 @@ def test_mastery_and_due_reviews_read_the_records(client, db_session, imported_b
     question_id = _first_question_id(db_session)
     assert question_id, "要有题才有记录"
     _, key = _seed_knowledge(db_session, question_id)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     now = int(datetime.now(timezone.utc).timestamp() * 1000)
 
     db_session.add(
         Record(
-            user_id=user.id,
-            question_id=question_id,
+                question_id=question_id,
             attempts=3,
             correct=2,
             wrong=1,
@@ -204,13 +196,13 @@ def test_mastery_and_due_reviews_read_the_records(client, db_session, imported_b
     )
     db_session.commit()
 
-    ok, mastery = tools.call(db_session, user, "get_mastery", {"pointKeys": [key]})
+    ok, mastery = tools.call(db_session, "get_mastery", {"pointKeys": [key]})
     assert ok, mastery
     item = mastery["items"][0]
     assert item["attempts"] == 3 and item["answered"] == 1, "只算挂在这条点上的题"
     assert item["band"] != "new" and 0 < item["score"] <= 100
 
-    ok, due = tools.call(db_session, user, "get_due_reviews", {})
+    ok, due = tools.call(db_session, "get_due_reviews", {})
     assert ok, due
     mine = next(item for item in due["items"] if item["questionId"] == question_id)
     assert mine["pointKeys"] == [key]
@@ -219,15 +211,14 @@ def test_mastery_and_due_reviews_read_the_records(client, db_session, imported_b
 def test_unknown_tool_returns_an_error_instead_of_raising(client, db_session) -> None:  # noqa: ANN001
     """工具内部出错不能中断这一轮 —— 交给模型一条结果，它可以换个问法。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, payload = tools.call(db_session, user, "nope", {})
+    ok, payload = tools.call(db_session, "nope", {})
     assert ok is False and "没有这个工具" in payload["error"]
 
-    ok, payload = tools.call(db_session, user, "search_knowledge", {})
+    ok, payload = tools.call(db_session, "search_knowledge", {})
     assert ok and payload["error"] == "query 不能为空"
 
-    ok, payload = tools.call(db_session, user, "get_point_detail", {"key": "  "})
+    ok, payload = tools.call(db_session, "get_point_detail", {"key": "  "})
     assert ok and "不能为空" in payload["error"]
 
 
@@ -241,9 +232,8 @@ def test_push_question_returns_a_card_without_any_answers(client, db_session, im
     question_id = _first_question_id(db_session)
     assert question_id, "要有题才推得出来"
     _, key = _seed_knowledge(db_session, question_id)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, payload = tools.call(db_session, user, "push_question", {"pointKey": key})
+    ok, payload = tools.call(db_session, "push_question", {"pointKey": key})
     assert ok, payload
     card = payload["card"]
     assert card and card["questionId"] == question_id
@@ -260,17 +250,15 @@ def test_push_question_returns_a_card_without_any_answers(client, db_session, im
 def test_push_question_skips_what_he_already_got_right(client, db_session, imported_bank) -> None:  # noqa: ANN001
     """推一道他已经答对的题没有意义。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     question_id = _first_question_id(db_session)
     _, key = _seed_knowledge(db_session, question_id)
     now = int(datetime.now(timezone.utc).timestamp() * 1000)
 
-    assert tools.call(db_session, user, "push_question", {"pointKey": key})[1]["card"], "先确认能推"
+    assert tools.call(db_session, "push_question", {"pointKey": key})[1]["card"], "先确认能推"
 
     db_session.add(
         Record(
-            user_id=user.id,
-            question_id=question_id,
+                question_id=question_id,
             attempts=2,
             correct=2,
             wrong=0,
@@ -287,22 +275,20 @@ def test_push_question_skips_what_he_already_got_right(client, db_session, impor
     )
     db_session.commit()
 
-    ok, payload = tools.call(db_session, user, "push_question", {"pointKey": key})
+    ok, payload = tools.call(db_session, "push_question", {"pointKey": key})
     assert ok and payload["card"] is None, "这个点上只有这一道题，答对了就不该再推"
 
 
 def test_pushed_ids_read_cards_out_of_the_conversation(client, db_session, imported_bank) -> None:  # noqa: ANN001
     """服务端看得见"这次对话已经推过哪几道" —— 模型看不见（卡片按设计不回放进上下文）。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
-    conv = Conversation(user_id=user.id, title="推题测试")
+    conv = Conversation(title="推题测试")
     db_session.add(conv)
     db_session.flush()
     db_session.add(
         Message(
             conversation_id=conv.id,
-            user_id=user.id,
-            role="assistant",
+                role="assistant",
             status="ok",
             parts=[{"type": "card", "kind": "question", "payload": {"questionId": "tt-arch-0001"}}],
         )
@@ -320,9 +306,8 @@ def test_tool_output_for_the_model_does_not_echo_the_card(client, db_session, im
     实测把第二轮请求拖到 91 秒、撞上超时。模型只需要知道"推了哪道题"。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, payload = tools.call(db_session, user, "push_question", {})
+    ok, payload = tools.call(db_session, "push_question", {})
     assert ok and payload["card"]
     text = tools.output_text(payload)
     assert payload["card"]["questionId"] in text, "题号要留着"
@@ -336,13 +321,12 @@ def test_proposals_never_write_anything(client, db_session, imported_bank) -> No
     这是这一层的全部承诺 —— AI 可以提建议，但按下去的那一下得是用户自己。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     question_id = _first_question_id(db_session)
     assert question_id
 
     want = {"flag_question": "flag", "mark_mastered": "mastered"}
     for name, kind in want.items():
-        ok, payload = tools.call(db_session, user, name, {"questionId": question_id})
+        ok, payload = tools.call(db_session, name, {"questionId": question_id})
         assert ok, payload
         assert payload["proposal"]["kind"] == kind
         assert payload["proposal"]["questionId"] == question_id
@@ -351,18 +335,17 @@ def test_proposals_never_write_anything(client, db_session, imported_bank) -> No
 
     # 谁都没写：这条断言是这一层的守门人
     db_session.expire_all()
-    assert db_session.scalars(select(Record).where(Record.user_id == user.id)).all() == []
+    assert db_session.scalars(select(Record)).all() == []
 
 
 def test_proposal_for_an_unknown_question_says_so(client, db_session, imported_bank) -> None:  # noqa: ANN001
     """题号不存在就说清楚，别造一张没有对象的凭条。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, payload = tools.call(db_session, user, "flag_question", {"questionId": "tt-none-9999"})
+    ok, payload = tools.call(db_session, "flag_question", {"questionId": "tt-none-9999"})
     assert ok and "error" in payload and "proposal" not in payload
 
-    ok, payload = tools.call(db_session, user, "mark_mastered", {})
+    ok, payload = tools.call(db_session, "mark_mastered", {})
     assert ok and "error" in payload
 
 
@@ -378,11 +361,9 @@ def test_run_python_hands_the_code_to_the_resident_shell(client, db_session) -> 
     一段脚本一个壳就是"每跑一次等一秒多"（用户："跑 python 脚本非常慢"）。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
     ok, payload = tools.call(
         db_session,
-        user,
         "run_python",
         {"title": "斐波那契", "code": "print([1, 1, 2, 3])", "packages": ["numpy"]},
     )
@@ -425,10 +406,9 @@ def test_run_python_page_reports_its_output_back(client, db_session) -> None:  #
     回传之后，前端能把输出摆在面板上，也能一键把它发回给模型。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
     ok, payload = tools.call(
-        db_session, user, "run_python", {"code": "print(1 + 1)", "packages": ["numpy"]}
+        db_session, "run_python", {"code": "print(1 + 1)", "packages": ["numpy"]}
     )
     assert ok, payload
     demo = payload["demo"]
@@ -451,11 +431,10 @@ def test_run_python_loads_the_fixed_subset_and_refuses_others(client, db_session
     名单外的明确剔掉并回话。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
     # 壳启动时把**整份名单**装好（用户："所有的 python 包都务必在运行壳里自动静默
     # 预加载"）——pandas / matplotlib 以前是"用到才装"，第一次 import 要等 3.5 秒。
-    ok, payload = tools.call(db_session, user, "run_python", {"code": "import scipy"})
+    ok, payload = tools.call(db_session, "run_python", {"code": "import scipy"})
     assert ok, payload
     shell = tools.shell_page()
     assert '"numpy"' in shell and '"scipy"' in shell, shell[:300]
@@ -477,7 +456,6 @@ def test_run_python_loads_the_fixed_subset_and_refuses_others(client, db_session
     # 点名名单外的（torch 这种要编译的）：剔掉，并说清没装（在**回给模型的那条 note**里）
     ok, payload = tools.call(
         db_session,
-        user,
         "run_python",
         {"code": "import torch", "packages": ["torch", "numpy", "scipy.signal"]},
     )
@@ -492,12 +470,11 @@ def test_run_python_loads_the_fixed_subset_and_refuses_others(client, db_session
 
 def test_run_python_refuses_empty_and_giant_code(client, db_session) -> None:  # noqa: ANN001
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, payload = tools.call(db_session, user, "run_python", {"code": "   "})
+    ok, payload = tools.call(db_session, "run_python", {"code": "   "})
     assert ok and "error" in payload and "demo" not in payload
 
-    ok, payload = tools.call(db_session, user, "run_python", {"code": "x = 1\n" * tools.CODE_MAX_CHARS})
+    ok, payload = tools.call(db_session, "run_python", {"code": "x = 1\n" * tools.CODE_MAX_CHARS})
     assert ok and "error" in payload and "demo" not in payload
 
 
@@ -507,15 +484,14 @@ def test_run_python_refuses_empty_and_giant_code(client, db_session) -> None:  #
 def test_render_demo_refuses_a_giant_html(client, db_session) -> None:  # noqa: ANN001
     """演示会落进零件、每次读会话都要发给前端 —— 它必须小，超了就直接拒。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
     ok, payload = tools.call(
-        db_session, user, "render_demo", {"html": "<div>" + "x" * tools.DEMO_MAX_CHARS + "</div>"}
+        db_session, "render_demo", {"html": "<div>" + "x" * tools.DEMO_MAX_CHARS + "</div>"}
     )
     assert ok and "error" in payload and "demo" not in payload
     assert "上限" in payload["error"]
 
-    ok, payload = tools.call(db_session, user, "render_demo", {"title": "T", "html": "<b>hi</b>"})
+    ok, payload = tools.call(db_session, "render_demo", {"title": "T", "html": "<b>hi</b>"})
     assert ok and payload["demo"]["title"] == "T"
     assert "<b>hi</b>" in payload["demo"]["html"], "模型写的东西要原样留着"
 
@@ -526,11 +502,9 @@ def test_a_question_can_be_written_on_the_spot(client, db_session) -> None:  # n
     这是"只能从题库里选题"那条限制的解药：真实教学里有一半是"就着刚才这段话编一道"。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
     ok, payload = tools.call(
         db_session,
-        user,
         "create_question",
         {
             "pointKey": "tt-arch",
@@ -560,21 +534,19 @@ def test_a_question_can_be_written_on_the_spot(client, db_session) -> None:  # n
 def test_a_draft_question_must_be_answerable(client, db_session) -> None:  # noqa: ANN001
     """写不成题的（没题干、答案不在选项里、大题没小问）当场退回，而不是挂一张空卡。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
 
-    ok, payload = tools.call(db_session, user, "create_question", {"question": {"stem": " "}})
+    ok, payload = tools.call(db_session, "create_question", {"question": {"stem": " "}})
     assert ok and "题干" in payload["error"]
 
     ok, payload = tools.call(
         db_session,
-        user,
         "create_question",
         {"question": {"stem": "题", "type": "single", "options": ["A", "B"], "answer": "D"}},
     )
     assert ok and "answer" in payload["error"]
 
     ok, payload = tools.call(
-        db_session, user, "create_question", {"question": {"stem": "题", "type": "problem"}}
+        db_session, "create_question", {"question": {"stem": "题", "type": "problem"}}
     )
     assert ok and "小问" in payload["error"]
 
@@ -586,12 +558,11 @@ def test_demo_page_carries_the_kit(client, db_session) -> None:  # noqa: ANN001
     每次重新发明一遍。套件注入之后就只剩正文要写了。
     """
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     if not tools._demo_kit_ready():
         pytest.skip("演示套件未同步（make vendor）")
 
     fragment = '<div id="app"></div>\n<script type="text/babel">QFKit.mount(<h1>hi</h1>);</script>'
-    ok, payload = tools.call(db_session, user, "render_demo", {"title": "帽子里放什么", "html": fragment})
+    ok, payload = tools.call(db_session, "render_demo", {"title": "帽子里放什么", "html": fragment})
     assert ok, payload
     page = payload["demo"]["html"]
 
@@ -613,7 +584,6 @@ def test_demo_page_carries_the_kit(client, db_session) -> None:  # noqa: ANN001
 def test_demo_page_keeps_a_full_document_intact(client, db_session) -> None:  # noqa: ANN001
     """模型给完整 HTML 时，套件插进 `<head>`，它自己写的东西一个都不能丢。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     if not tools._demo_kit_ready():
         pytest.skip("演示套件未同步（make vendor）")
 
@@ -622,7 +592,7 @@ def test_demo_page_keeps_a_full_document_intact(client, db_session) -> None:  # 
         "<title>我自己写的标题</title><style>body{color:red}</style></head>"
         '<body><canvas id="c"></canvas></body></html>'
     )
-    ok, payload = tools.call(db_session, user, "render_demo", {"title": "演示", "html": full})
+    ok, payload = tools.call(db_session, "render_demo", {"title": "演示", "html": full})
     assert ok, payload
     page = payload["demo"]["html"]
 
@@ -666,13 +636,12 @@ def _link(db, source: Concept, target: Concept, edge_type: str) -> None:  # noqa
 def test_explore_graph_reads_prerequisites_in_the_right_direction(client, db_session, imported_bank) -> None:  # noqa: ANN001
     """`A →requires→ B` 读作「A 是 B 的前置」。方向错了，"该先学什么"就会答成"学完之后学什么"。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     basis = _seed_concept(db_session, "队列基础")
     advanced = _seed_concept(db_session, "核间通信")
     _link(db_session, basis, advanced, "requires")
     db_session.commit()
 
-    ok, payload = tools.call(db_session, user, "explore_graph", {"key": advanced.key})
+    ok, payload = tools.call(db_session, "explore_graph", {"key": advanced.key})
     assert ok, payload
     assert payload["seed"]["key"] == advanced.key
     [neighbor] = payload["neighbors"]
@@ -680,17 +649,16 @@ def test_explore_graph_reads_prerequisites_in_the_right_direction(client, db_ses
     assert neighbor["relation"] == "前置" and neighbor["edge"] == "requires"
     assert neighbor["band"] == "new", "没答过的点也照样报（'这片是空的'本身就是要说的事）"
 
-    ok, payload = tools.call(db_session, user, "explore_graph", {"key": basis.key})
+    ok, payload = tools.call(db_session, "explore_graph", {"key": basis.key})
     assert ok and payload["neighbors"][0]["relation"] == "后继"
 
-    ok, payload = tools.call(db_session, user, "explore_graph", {"query": "核间通信"})
+    ok, payload = tools.call(db_session, "explore_graph", {"query": "核间通信"})
     assert ok and payload["seed"]["key"] == advanced.key, "不记得 key 时按名字也能进去"
 
 
 def test_explore_graph_walks_two_layers_and_orders_prerequisites_first(client, db_session, imported_bank) -> None:  # noqa: ANN001
     """两层能走通；排序把前置摆最前（那一条上挂着"该先学什么"的答案）。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     first = _seed_concept(db_session, "张量轴约定")
     second = _seed_concept(db_session, "切分策略")
     third = _seed_concept(db_session, "核间流水")
@@ -700,7 +668,7 @@ def test_explore_graph_walks_two_layers_and_orders_prerequisites_first(client, d
     _link(db_session, third, against, "contrast_with")
     db_session.commit()
 
-    ok, payload = tools.call(db_session, user, "explore_graph", {"key": third.key, "depth": 2})
+    ok, payload = tools.call(db_session, "explore_graph", {"key": third.key, "depth": 2})
     assert ok, payload
     by_key = {item["key"]: item for item in payload["neighbors"]}
     assert second.key in by_key and first.key in by_key, "两层都要到"
@@ -709,7 +677,7 @@ def test_explore_graph_walks_two_layers_and_orders_prerequisites_first(client, d
     assert against.key not in by_key, "contrast_with 不在默认视图里（它多半是机械派生的）"
 
     ok, payload = tools.call(
-        db_session, user, "explore_graph", {"key": third.key, "kinds": ["contrast_with"]}
+        db_session, "explore_graph", {"key": third.key, "kinds": ["contrast_with"]}
     )
     assert ok and [item["key"] for item in payload["neighbors"]] == [against.key], "要看得显式要"
 
@@ -717,15 +685,14 @@ def test_explore_graph_walks_two_layers_and_orders_prerequisites_first(client, d
 def test_explore_graph_says_when_there_is_nothing(client, db_session, imported_bank) -> None:  # noqa: ANN001
     """图谱还稀：没有边就直说，而不是假装邻域很全。"""
     _register(client)
-    user = db_session.get(User, uuid.UUID(_me_id(client)))
     lonely = _seed_concept(db_session, "孤点")
     db_session.commit()
 
-    ok, payload = tools.call(db_session, user, "explore_graph", {"key": lonely.key})
+    ok, payload = tools.call(db_session, "explore_graph", {"key": lonely.key})
     assert ok and payload["neighbors"] == []
     assert "前置链" in payload["note"], "要说清是「还没接进前置链」，而不是含糊地说「图谱很稀」"
 
-    ok, payload = tools.call(db_session, user, "explore_graph", {"key": "no-such-key"})
+    ok, payload = tools.call(db_session, "explore_graph", {"key": "no-such-key"})
     assert ok and "error" in payload
 
 

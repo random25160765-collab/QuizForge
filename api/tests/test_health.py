@@ -42,9 +42,7 @@ def _login(client, email: str = "") -> None:  # noqa: ANN001
     （`email` 参数留着是为了不动调用点；单用户本地形态既没有注册也没有登录，
       见 `app/deps.py`。）
     """
-    from conftest import local_user_id
-
-    local_user_id()
+    return ""
 
 
 def test_health_never_leaks_api_key(client) -> None:  # noqa: ANN001

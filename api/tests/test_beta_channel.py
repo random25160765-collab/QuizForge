@@ -26,11 +26,13 @@ PASSWORD = "password-1234"
 DEAD = "http://127.0.0.1:9/v1"  # 必然连不上
 
 
-def _register(client) -> None:  # noqa: ANN001
-    """本机用户就绪（单用户本地形态没有"注册"这回事）。见 `app/deps.py`。"""
-    from conftest import local_user_id
+def _register(client, *args, **kwargs) -> str:  # noqa: ANN001
+    """不再需要做什么 —— 账号系统已整体拆除（2026-09-22，见 `app/models.py` 顶部）。
 
-    local_user_id()
+    保留这个空函数只是为了不动几十个调用点：它在用例里当"开工准备"用，
+    而现在没有任何准备工作要做（数据隔离由 conftest 的 autouse fixture 负责）。
+    """
+    return ""
 
 
 def _headers(client) -> dict:  # noqa: ANN001

@@ -50,7 +50,7 @@ def _make(lib, body: str) -> Path:  # noqa: ANN001
 def _edit(**args) -> dict:
     args.setdefault("lib", "T")
     args.setdefault("path", "n.md")
-    return tools.edit_note(None, None, args)
+    return tools.edit_note(None, args)
 
 
 # ---------------------------------------------------------------- 改对了
@@ -146,12 +146,12 @@ def test_refuses_bad_input(lib, args, keyword: str) -> None:  # noqa: ANN001
 
 
 def test_refuses_without_path(lib) -> None:  # noqa: ANN001
-    result = tools.edit_note(None, None, {"lib": "T", "old": "a", "new": "b"})
+    result = tools.edit_note(None, {"lib": "T", "old": "a", "new": "b"})
     assert "error" in result and "path" in result["error"]
 
 
 def test_refuses_unknown_library(lib) -> None:  # noqa: ANN001
-    result = tools.edit_note(None, None, {"lib": "不存在的库", "path": "n.md", "old": "a", "new": "b"})
+    result = tools.edit_note(None, {"lib": "不存在的库", "path": "n.md", "old": "a", "new": "b"})
     assert "error" in result
 
 
@@ -185,8 +185,8 @@ def test_lib_can_be_omitted(lib) -> None:  # noqa: ANN001
     三个工具现在共用同一个解析函数，这里把"可省"钉成真的。
     """
     path = _make(lib, "可省库名也要能改。")
-    assert tools.edit_note(None, None, {"path": "n.md", "old": "可省库名也要能改。", "new": "改了。"})["ok"]
-    assert not tools.read_note(None, None, {"path": "n.md"}).get("error")
+    assert tools.edit_note(None, {"path": "n.md", "old": "可省库名也要能改。", "new": "改了。"})["ok"]
+    assert not tools.read_note(None, {"path": "n.md"}).get("error")
     assert "改了。" in path.read_text(encoding="utf-8")
 
 
