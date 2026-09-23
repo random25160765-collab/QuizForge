@@ -274,6 +274,35 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
     并不是一回事，已改成与实现一致、并把坑标出来。
     要根治得让"**资料根**"成为一个配置项（多根早就支持了，缺的是"根在哪"这件事
     进配置，而不是从路径里猜一段）。
+13. **CI 的 `make api-test` 长期红**（2026-09-23 实测，**不是哪次改动带坏的**）——
+    最近 5 次 run 全红，其中一次**只改了 `docs/STATUS.md`**。job 级看只有一个 job、一个
+    step 红：「题库校验 + 前端自测 → `make api-test`」（另一条「干净克隆 → 照 README
+    跑起来」是绿的）。根因：**几条用例把「本机有没有那份 144M Pyodide 缓存」当成了前提** ——
+    `heavy_deps.base_url()` 是 `"__ORIGIN__/assets/pyodide/" if is_ready() else None`
+    （`heavy_deps.py:241-248`）。本地 `data/cache/pyodide` 有 28 个文件，所以它恒为真；
+    干净检出上没有缓存，而 `vendor/` 里只有 `vendor/pyodide/` 目录、**没有入口
+    `vendor/pyodide.js`**（`_copy_from_vendor` 必然返回 False），于是 `base_url()` 返 `None`
+    → `run_python` 走「运行时还没到位」那条早返回 → 用例拿不到 `demo`，断言挂。
+    复现：`QF_DATA_DIR=$(mktemp -d) make api-test`（数据目录指到空目录 = 模拟干净机器）。
+    修法已经有了、躺在工作区**没提交**：`api/tests/conftest.py` 的 `_runtime_always_ready`
+    夹具把 `tools.pyodide_base` 钉成真地址（**只钉这一处**，`heavy_deps.is_ready()` 本身不动，
+    它自己的用例显式传目录进去）。热缓存下那几条全绿、干净前提下才现形 ——
+    所以「只红一部分」是**竞态**，不是稳定现象。
+14. **沙箱跑出来的图没跟着存进零件**（2026-09-23 实测，是 bug）——
+    `chat.py:1598` 回填那次运行时只写了 `ok` 与 `text`，**把 `images` 丢了**。而同一次
+    上报的另一条路 `deliver_run`（`chat.py:1541`）带着 `images`，`runs.py:92` 的注释也
+    明说这些 base64 **只往库里存**（零件上的 `run.images`）。blame 定位到引入者：
+    `a47c377`（2026-09-20）给 `runs.py` 和那条新的 `/runs/{run_id}` 都加了图，
+    **漏了更老的 `attach_run`**。用户可见后果：**刷新之后图没了**。
+    证据：干净前提下跑完整套是 `1 failed, 474 passed`，唯一红的就是
+    `test_chat.py::test_the_sandbox_output_comes_back_by_itself` → `KeyError: 'images'`；
+    **用正常本地缓存单跑同一条一样红**，所以不是环境问题。要拿到 job 日志得仓库 admin
+    权限（未认证是 403），下面这些结论全是在本机复现出来的。
+    ⚠️ 它现在**被第 13 条挡着**：没有那个夹具时 `run_python` 早返回、没有 `demo`，
+    该用例会走 `test_chat.py:1100-1107` 的 `pytest.skip` 防护 —— 所以**只修第 13 条，
+    CI 会换一个理由继续红**，两条一起才绿。
+    待拍板：`runs._clean_images`（限 3 张 / 单张 200 万字符）是私有的（不在 `runs.__all__`
+    里），存库这处要么把它提成公开的、要么复用 `deliver` 洗过的那份。
 
 **已了结（原先列在这儿，实测已不成立）：**
 
