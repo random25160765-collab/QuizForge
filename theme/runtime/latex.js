@@ -53,11 +53,28 @@
   }
 
   /**
-   * 这段 TeX 交给引擎吗？**只看有没有 `\begin{…}`** —— 不列白名单，
-   * 就不会再有"这个环境没支持"（吃过这个亏：手写的迷你渲染器 + 一串提示词约束）。
+   * 这段数学交给**引擎**（TikZJax）吗？—— 只认"内容里真在画笔"的那种。
+   *
+   * 从前这里只问一句"有没有 `\begin{…}`"，于是**矩阵也被当成图**：模型写
+   * `$$\begin{pmatrix}…\end{pmatrix}$$`，这一句就送去引擎编译 —— 用户看到的是
+   * 五张"矩阵图"各等两秒多（实测：一张图的固定开销 2.2 秒起），而 **KaTeX 排同样的矩阵
+   * 是瞬间的**。用户原话："你不能输出矩阵吗？…… （有的东西不要走 latex！！！）"
+   *
+   * 判据换成"有没有画图的东西"：
+   *   * 画图环境：`tikzpicture` / pgfplots 的各种 `axis` / `tikzcd` / `circuitikz` / `scope` …
+   *   * 画图命令：`\draw` `\node` `\path` `\fill…` `\addplot…` `\matrix` `\tikz…`
+   * 其余（`pmatrix`/`bmatrix`/`vmatrix`/`cases`/`aligned`/`array` …）一律走 KaTeX：
+   * 立刻出结果，也不占引擎。
+   *
+   * 两侧白名单是**反着列**的：KaTeX 认的东西有限、能逐个查（它也只在认不出时才退化成
+   * 源码），所以那一侧不必列；而画图这一侧**宁可多列** —— 漏掉一个环境名，图就会被送去
+   * KaTeX 变成一坨源码，那比慢更糟。
    */
+  var DRAW_ENV = /\\begin\s*\{\s*(tikzpicture|axis|semilogyaxis|loglogaxis|polaraxis|smithchart|ternaryaxis|groupplot|tikzcd|circuitikz|scope|pgfonlayer|quantikz|pspicture)\*?\s*[\[}]/;
+  var DRAW_CMD = /\\(draw|filldraw|fill|shade|shadedraw|clip|node|path|addplot3|addplot|tikz|tikzset|usetikzlibrary|matrix)\b/;
   function kind(tex) {
-    return /\\begin\s*\{/.test(String(tex == null ? '' : tex)) ? 'tex' : '';
+    var src = String(tex == null ? '' : tex);
+    return DRAW_ENV.test(src) || DRAW_CMD.test(src) ? 'tex' : '';
   }
 
   /* ------------------------------------------------------------ 取图 */

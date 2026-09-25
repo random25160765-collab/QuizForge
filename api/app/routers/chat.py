@@ -173,10 +173,16 @@ def sandbox_shell() -> dict:
 VOICE = (
     "**所有输出一律用中文**，直接讲清机制与因果，"
     "必要时用 Markdown 与 LaTeX。"
-    "**正文里画图时，把 LaTeX 包进 `$$` 即可**（`\\[ … \\]` 也行）。正文里的图是"
-    "交给**真的 TeX 引擎**（TikZJax）编译的：带 `\\begin{…}` 的公式都走它 —— TikZ、"
-    "circuitikz、tikz-cd 都在，按 TikZ 的正常写法写就行"
-    "（`\\draw`、`\\node`、`child`、`matrix`、样式指令都认）—— "
+    "**公式与图走两条完全不同的路 —— 这里最容易错**。"
+    "**公式**（含矩阵、方程组、分段函数、多行对齐：`pmatrix`/`bmatrix`/`vmatrix`/`matrix`/"
+    "`cases`/`aligned`/`array`，以及 `\\cdots`/`\\vdots`/`\\ddots`/`\\substack`/`\\overbrace`）"
+    "直接写在正文的 `$$…$$` 里，由 **KaTeX** 排 —— **立刻**出来，不排队也不编译。"
+    "**别为了排公式去画图**（实测：五张矩阵图各花两秒多，而同样五张矩阵交给 KaTeX 是瞬间的事）。"
+    "矩阵只有一条要点：**写在数学环境里**（列间 `&`、行间 `\\\\`）；`\\bordermatrix` 没有，"
+    "要给矩阵加行列标签就用 `array` 配 `\\overbrace`/`\\underbrace`。"
+    "**只有真正的图形/图表**（TikZ 示意图、pgfplots 坐标图、circuitikz、tikz-cd）"
+    "才走**真的 TeX 引擎**（TikZJax）—— 那是**每张 2 秒起**的编译："
+    "`\\draw`、`\\node`、`child`、`matrix`、样式指令都认；"
     "**pgfplots 在**（`\\begin{axis}`、`\\addplot`/`\\addplot3`、`legend`、`grid`、`ymode=log`、"
     "`view={…}{…}`、误差棒、极坐标那些都认）：坐标轴图、函数图、曲面图**直接写 pgfplots**；"
     "要能动的交互演示才用 `render_demo` —— 但**图不要放进去**：那里的公式由 **KaTeX** 排，"
@@ -196,7 +202,11 @@ VOICE = (
     "**有一条绝对不许写**：`shader=interp` —— 这台引擎的 pgf 驱动是 `pgfsys-ximera.def`，"
     "不支持它，整张图会直接编不出来（实测原文：surface shading (shader=interp) is NOT available "
     "for the selected driver）。曲面就写 `\\addplot3[surf] {…};`，别加 shader。"
-    "`samples` 也别开太大（一般 25–60；几百会让编译变成分钟级）。\n"
+    # 采样数照**实测**写（2026-09-26，应用里三曲线各测一遍）：100 采样约 3 秒、
+    # 200 采样跳到 6 秒、300 采样 7 秒 —— 100 与 200 之间有个断崖。从前这里写的是
+    # "几百会让编译变成分钟级"，那是夸大（不是分钟级，但也确实不该开那么大）。
+    "`samples` 别开大（实测：三曲线 100 采样约 3 秒，200 采样跳到 6 秒、300 采样 7 秒；"
+    "平时 25–100 足够 —— 曲线光滑度到这个量级就看不出差别了）。\n"
     # 从前这里写的是"**图里不许出现中文**"（那时引擎确实没有中文字形，遇到汉字会停在交互
     # 提示上等人按键）。现在引擎侧装了 CJK 与一份简体宋体，汉字排得出来 —— 实测
     # `\node {取指 译码 写回};` 正常出图，SVG 里就是那几个汉字。所以改成实话 + 两条边界。

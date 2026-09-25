@@ -573,6 +573,18 @@
 @font-face {
     font-family: gbsn00lp;
     src: url('fonts/gbsn00lp.woff2') format('woff2');
+    /* **`unicode-range` 是这份字体"按需下载"的那道闸。**
+       实测（2026-09-26）：没有它时，连一张**纯 ASCII** 的图都会把 1.33MB 取走 ——
+       工位文档的 resource 里躺着 `gbsn00lp.woff2 · decodedBodySize 1361KB`，
+       而上面那句注释写着"页面上没有中文图时不会被取走"，那是**空话** ✗。
+       声明了范围之后，只有真出现这些码点才会去取（下面还会再验一遍）。
+
+       范围是照**这份子集实际覆盖的码点**写的（fontTools 数过：7574 个），
+       但**故意不含 ASCII**：子集里确实有 U+0020-007E，可一旦把 ASCII 写进来，
+       闸就白设了（正文里的任何英文都满足它）。代价只有一条：若某个 CJK 文字块里
+       混了英文/希腊字母，那几个字会走字体栈里的回退（Noto Sans CJK）—— 视觉无碍。 */
+    unicode-range: U+2E80-303F, U+3041-33FF, U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF,
+        U+FE30-FE4F, U+FF00-FFEF;
 }
 text[font-family^="gbsnu"] {
     font-family: gbsn00lp, "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Zen Hei", sans-serif;
