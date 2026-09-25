@@ -120,10 +120,46 @@ def build_messages(system: str, history: list[dict], budget: int) -> tuple[list[
     截断的单位是**组**而不是条（见 `_units`）：从最新往回塞，塞不下就整组不塞。
     另外兜一道：万一历史本身的第一条就是孤立的 `tool`（理论上不该出现），
     也把它丢掉 —— 这种请求上游一定拒，不如我们自己先修好。
+
+    ## 开头那一个单元**钉住**
+
+    这份历史本来就是"**根 → 他正在问的那一条**"这条链（见 `routers/chat.py` 的
+    `_chain`），**不是**"整条对话里最近的 N 条"。这一条差别要紧：回溯到根那一段时，
+    模型看得见最早在干什么，因为"根"永远在链的第一位。实测他那条 45 层、46 条的链
+    全带上 5.3 万 tokens，1M 的预算下一条都不丢。
+
+    但**预算不够的时候**，"从最新往前塞"第一个丢的正是**根** —— 而文档把这一端
+    写死了：
+
+        **当前路径（根 → 我现在在哪）：全留**（这是"我在哪"，丢了就断线）
+                                                —— `docs/对话树.md` §七
+
+    所以先给开头的那个单元留位置，再按最新的往里塞。中途丢掉的那些**不告诉模型**
+    （理由见下面那段注释：它会把这类报备当自己的话复述给用户）。
     """
+    units = _units(history)
+    head = units[:1]
+    head_cost = (
+        sum(
+            estimate_tokens(str(message.get("content") or "")) + _MSG_OVERHEAD
+            for message in head[0]
+        )
+        if head
+        else 0
+    )
+    # 钉归钉，**不许把整份预算吃掉**：第一句就贴了一整篇文章（20 万字上限）时，
+    # 把它钉住等于这一轮只剩那篇文章 —— 那比丢掉开头更糟。所以只在"开头占得下
+    # 四分之一预算"时才钉；占不下的那些走老规矩（从最新往前塞）。
+    if head_cost > max(budget // 4, 1):
+        head = []
+        head_cost = 0
+
     kept_units: list[list[dict]] = []
-    used = estimate_tokens(system)
-    for unit in reversed(_units(history)):
+    used = estimate_tokens(system) + head_cost
+    # 没钉住开头时，开头那一单元**照旧参与**"从最新往前塞"（它是老规矩里的最后一位，
+    # 不许因为这段改动被无声地排除在外）。
+    rest = units[1:] if head else units
+    for unit in reversed(rest):
         cost = sum(
             estimate_tokens(str(message.get("content") or "")) + _MSG_OVERHEAD
             for message in unit
@@ -133,7 +169,9 @@ def build_messages(system: str, history: list[dict], budget: int) -> tuple[list[
         used += cost
         kept_units.append(unit)
 
-    kept = [message for unit in reversed(kept_units) for message in unit]
+    kept = [message for unit in head for message in unit] + [
+        message for unit in reversed(kept_units) for message in unit
+    ]
     while kept and kept[0].get("role") == "tool":
         kept.pop(0)
 

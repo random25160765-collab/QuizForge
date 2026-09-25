@@ -1392,7 +1392,10 @@ def test_truncation_never_splits_a_tool_call_from_its_result() -> None:
     截断的单位必须是**组**，不是条。
     """
     history = [
-        {"role": "user", "content": "第一问"},
+        {"role": "user", "content": "第一问"},   # 会被**钉住**（见下面那条用例）
+        # 中间这条是拿来被丢的：开头钉住之后，这一条才是"预算下第一个出局的"。
+        # 没有它，这个预算下三条全进得去，`dropped > 0` 就不成立、这条用例就空转了。
+        {"role": "user", "content": "中间那一问" + "水" * 400},
         {
             "role": "assistant",
             "content": "查" * 400,  # 故意比它的 tool 回复长：预算正好卡在两者之间
@@ -1414,6 +1417,31 @@ def test_truncation_never_splits_a_tool_call_from_its_result() -> None:
     messages, dropped = agent_loop.build_messages("系统", history, budget=100000)
     assert dropped == 0
     _assert_no_orphan_tool(messages)
+
+
+def test_the_opening_of_the_path_is_pinned_when_the_budget_is_tight() -> None:
+    """预算不够时，**开头那一段不许丢** —— 它是"我在哪"的第一半。
+
+    这条链是"根 → 他正在问的那一条"，所以回溯到根那一段时模型一定看得见最早在干什么；
+    但"从最新往前塞"的兜底会**第一个丢掉根** —— 而 `docs/对话树.md` §七 把这一端写死了：
+
+        **当前路径（根 → 我现在在哪）：全留**（这是"我在哪"，丢了就断线）
+
+    实测那条 45 层、46 条的链全带上 5.3 万 tokens，1M 预算下一条不丢；这条用例守的是
+    预算不够时（换小窗口模型、或自己把 `maxContextTokens` 调低）的兜底。
+    """
+    history = [{"role": "user", "content": "最早那一问：我准备学 WCET"}] + [
+        {"role": "user", "content": "中间第 %d 问" % i + "啰嗦" * 200} for i in range(1, 12)
+    ] + [{"role": "assistant", "content": "最后那条回答"}]
+
+    # 预算只够"开头 + 最近那一条"：中间那十几问都要出局
+    messages, dropped = agent_loop.build_messages("系统", history, budget=150)
+    kept = [one for one in messages if one.get("role") != "system"]
+
+    assert dropped > 0, "这个预算下必须真的截断了，否则这条用例什么都没测到"
+    assert kept[0]["content"].startswith("最早那一问"), "根那一段被丢掉了 —— 那就断线了"
+    assert kept[-1]["content"] == "最后那条回答", "最近的那一条也要在"
+    assert all("中间第" not in one["content"] for one in kept), "丢的是**中间**，不是两头"
 
 
 def test_a_broken_message_sequence_is_not_read_as_unsupported_tools() -> None:
@@ -1858,3 +1886,32 @@ def test_delete_message_refuses_unknown_and_foreign(client, db_session) -> None:
         select(Message).where(Message.conversation_id == uuid.UUID(other))
     ).all()
     assert len(still) == 6, "另一个会话必须一条不少"
+
+def test_the_trail_dashboard_rides_along_in_the_system_prompt(client, monkeypatch) -> None:  # noqa: ANN001
+    """「他的学习轨迹」进的是**每一轮的系统提示**，而且**不再是一个工具**。
+
+    它原来是工具（`read_learning_tree`，要模型自己想起来去调）；用户："我认为它不应该
+    被做成工具，对话轨迹是 llm 长期可见的用户信息仪表盘。" 所以这条断言落在两个地方：
+    上游收到的第一条 system 里有没有它、工具声明里还有没有它。
+    """
+    seen: list[list[dict]] = []
+    tool_names: list[list[str]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        seen.append(messages)
+        tool_names.append([one["function"]["name"] for one in (tools or [])])
+        yield ("delta", "好")
+        yield ("finish", "stop")
+
+    _ready(client)
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+    _send(client, cid, content="先聊一句，铺一条主线")
+    _send(client, cid, content="那缓存行是什么？")
+
+    system = seen[-1][0]["content"]
+    assert seen[-1][0]["role"] == "system"
+    assert "## 他的学习轨迹" in system, "仪表盘每一轮都在"
+    assert "缓存行" in system, "他自己刚说的那句要在上面（这是他的轨迹，不是泛泛的模板）"
+    assert "read_learning_tree" not in system
+    assert all("read_learning_tree" not in names for names in tool_names), "它不该再出现在工具声明里"

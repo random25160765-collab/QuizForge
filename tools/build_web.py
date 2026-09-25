@@ -73,6 +73,7 @@ RUNTIME_ORDER = [
     "docview.js",       # 一份文件怎么看（PDF / 图片 / Markdown / Word / 幻灯片）：资料页与窗格共用
     "data.js",
     "md.js",
+    "latex.js",         # 正文里的 LaTeX 图：交给离线 TikZJax（vendor/tikzjax）编成 SVG
     "highlight.js",
     "engine.js",
     "store.js",
@@ -369,6 +370,24 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
         for name in page_js:
             if name not in scripts_to_copy:
                 scripts_to_copy.append(name)
+
+    # TikZJax（正文里的 LaTeX 图）：整棵子树拷进 assets/tikzjax/。
+    # 它按**相对自己**的路径找 tex/ 与 css/，所以目录结构必须原样保留。
+    tikz_src = ROOT / "vendor" / "tikzjax"
+    if tikz_src.is_dir():
+        tikz_out = assets / "tikzjax"
+        # **先清空**：换了引擎之后，上一份的载荷会留在产物里（只覆盖同名文件，
+        # 结果是 27M 里躺着 20M 没用的旧文件 —— 实测踩过）
+        shutil.rmtree(tikz_out, ignore_errors=True)
+        copied = 0
+        for src in sorted(tikz_src.rglob("*")):
+            if src.is_file():
+                dest = tikz_out / src.relative_to(tikz_src)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                copied += 1
+        if copied:
+            print("  tikzjax：%d 个文件" % copied)
 
     for name in scripts_to_copy:
         src = RUNTIME_DIR / name

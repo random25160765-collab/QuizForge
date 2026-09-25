@@ -35,6 +35,10 @@ body[data-page='chat'] #app-root {
 
 body[data-page='chat'] .chat {
   display: grid;
+  /* 传送球是**绝对定位**的浮件（`inset: 0` 铺满这一格，球挂在里面），所以这一格
+   * 得是它的参照。加这一条不影响别的：左栏自己的绝对定位手柄挂在 `.chat__aside`
+   * 上（那一栏本来就是 `position: relative`），几个浮层是 `position: fixed`。 */
+  position: relative;
   /* 会话列表 + 对话：两列（见上面那条注释）。264px 与资源树的缩进节奏接近，
      再宽就喧宾夺主 —— 正文是主角。 */
   /* 宽度只认 `--chat-aside-w` 这一个变量（会右拖动时由 JS 写它）。
@@ -1681,6 +1685,11 @@ body.is-colresize {
 }
 
 /* 真正跑它的是右侧这个整屏高的面板 */
+/* 演示面板的开合动效（用户："沙箱的展开和收起要有动效，现在很突兀"）：
+ * 从前是整块**挂上 / 卸下**，一帧到位，像被拍了一下。
+ * 进场挂在类上（挂载即播，无需 JS）；退场由 chat.js 的 `demoOut` 加 `.is-out`
+ * 反向播完再卸 —— `display: none` 那条路是没法做退场动画的，所以留了这一手。
+ * 幅度刻意小（24px）：这是"把东西推上来"，不是"从屏幕外飞进来"。 */
 .chatdemo__backdrop {
   position: fixed;
   inset: 0;
@@ -1688,6 +1697,11 @@ body.is-colresize {
   display: flex;
   justify-content: flex-end;
   background: color-mix(in srgb, #000 46%, transparent);
+  animation: chatdemo-fade var(--dur) var(--ease) both;
+}
+
+.chatdemo__backdrop.is-out {
+  animation: chatdemo-fade var(--dur) var(--ease) reverse both;
 }
 
 .chatdemo__panel {
@@ -1697,6 +1711,42 @@ body.is-colresize {
   height: 100%;
   border-left: 1px solid var(--line);
   background: var(--bg2);
+  animation: chatdemo-slide 240ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.chatdemo__backdrop.is-out .chatdemo__panel {
+  animation: chatdemo-slide 240ms cubic-bezier(0.22, 0.61, 0.36, 1) reverse both;
+}
+
+@keyframes chatdemo-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes chatdemo-slide {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 系统开了"减少动效"就直接到位（app.css 里那条全局规则已经把时长压到 0，
+ * 这里显式再关掉，免得反向动画在 0.001ms 里闪一下）。 */
+@media (prefers-reduced-motion: reduce) {
+  .chatdemo__backdrop,
+  .chatdemo__panel,
+  .chatdemo__backdrop.is-out,
+  .chatdemo__backdrop.is-out .chatdemo__panel {
+    animation: none;
+  }
 }
 
 .chatdemo__head {
@@ -3461,6 +3511,46 @@ body.is-colresize {
   cursor: pointer;
 }
 
+/* 展开/收起的那两个三角。原生 `<summary>` 的三角由浏览器画、**没法过渡**，
+ * 所以藏掉它、自己画一个：`details[open]` 时转 90°。
+ * （开合本身的高度动画在 chat.js 的 `foldBox` 里 —— 那里有为什么这么做的说明。） */
+.pyrun__summary,
+.pyrun__outsum {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pyrun__summary::-webkit-details-marker,
+.pyrun__outsum::-webkit-details-marker {
+  display: none;
+}
+
+.pyrun__summary::before,
+.pyrun__outsum::before {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform var(--dur) var(--ease);
+}
+
+details[open] > .pyrun__summary::before,
+details[open] > .pyrun__outsum::before {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pyrun__summary::before,
+  .pyrun__outsum::before {
+    transition: none;
+  }
+}
+
 .pyrun__code,
 .pyrun__out {
   margin: 0;
@@ -3773,20 +3863,181 @@ body.is-colresize .panes__host > .chat {
   }
 }
 
-/* ---------------------------------------------------------------- 批注 */
+/* ---------------------------------------------------------------- 标记 */
 
-/* 高亮：批注钉住的那一段。底色用 --amber（与"这里有个分叉"同一色系），
- * 文字保持继承色 —— 高亮是给眼睛做标记，不该改变正文的可读性。 */
-.chatmark {
-  background: color-mix(in srgb, var(--amber) 24%, transparent);
+/* 三种标记**各长各的**：高亮是底色、删除线是灰 + 划线、批注是虚线下划线
+ *（批注的那句话在右边那一栏，见 .chatnote-card）。它们是三件事 ——
+ * 长得一样就会被当成一件事（用户："高亮和批注是分开的两个东西"）。
+ *
+ * ⚠️ 选择器**必须多带一层 `.chatmsg__parts`**：markdown.css 里那条给 `==高亮==`
+ * 语法用的 `.md mark`（1 类 + 1 元素）比单个 `.chatmark`（1 类）更具体 —— 压不过它，
+ * 三种标记会一起带上那层 26% 的琥珀底色 + `0.05em 0.28em` 的内距，
+ * "各长各的"就成了空话（实测撞过：删除线上也带着一块高亮底色）。
+ * 因此底色与内距每条都要**显式写一遍**，别指望继承基类那条。
+ */
+.chatmsg__parts .chatmark {
   color: inherit;
   border-radius: 3px;
   padding: 0 1px;
   cursor: pointer;
 }
 
-.chatmark:hover {
+/* 高亮：给眼睛做标记。底色用 --amber（与"这里有个分叉"同一色系），
+ * 文字保持继承色 —— 高亮不该改变正文的可读性。 */
+.chatmsg__parts .chatmark--hl {
+  background: color-mix(in srgb, var(--amber) 24%, transparent);
+}
+
+.chatmsg__parts .chatmark--hl:hover {
   background: color-mix(in srgb, var(--amber) 42%, transparent);
+}
+
+/* 删除线："这一段不算数" —— 文字压灰一档 + 一条划线，没有底色。 */
+.chatmsg__parts .chatmark--strike {
+  background: none;
+  color: var(--fg3);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.chatmsg__parts .chatmark--strike:hover {
+  color: var(--fg2);
+}
+
+/* 批注：正文这边只留一道虚线下划线（"这里挂了句话"），话本身在右边那栏 ——
+ * 若也铺一层底色，它和高亮就分不出来了。 */
+.chatmsg__parts .chatmark--note {
+  background: none;
+  border-bottom: 1px dashed color-mix(in srgb, var(--amber) 75%, transparent);
+  border-radius: 0;
+  padding: 0;
+}
+
+.chatmsg__parts .chatmark--note:hover {
+  border-bottom-style: solid;
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+}
+
+/* ---- 旁批：批注的那句话摆在它标的那一行旁边（像书的边注） ----
+ *
+ * 为什么要有：只在统一面板里看批注，读的时候得来回切；旁批让"读到哪句、
+ * 提醒就在哪句旁边"。卡片的位置由 JS 算（见 chat.js 的 placeMargin）——
+ * 它的 top 是"标的那一行在哪"的函数，不是文档流给的顺序。
+ */
+
+/* 行宽**只在有批注时**才收窄：没批注的消息照旧铺满整行。 */
+.chatmsg.has-margin {
+  grid-template-columns: 30px minmax(0, 1fr) var(--chat-margin-w, 208px);
+}
+
+.chatmsg__margin {
+  position: relative;
+  min-width: 0;
+}
+
+/* **方角**（用户："卡片做成方的"）：圆角矩形看着像气泡，方角才像边注。 */
+.chatnote-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  border: 1px solid var(--line);
+  border-left: 2px solid color-mix(in srgb, var(--amber) 80%, transparent);
+  background: var(--bg2);
+  color: var(--fg2);
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+.chatnote-card:hover {
+  border-color: var(--amber);
+  background: var(--bg3);
+}
+
+.chatnote-card.is-editing,
+.chatnote-card.is-draft {
+  border-color: var(--amber);
+}
+
+/* 草稿（还没落库的那条）：边框虚一格，与"已经是一条批注"分得开 */
+.chatnote-card.is-draft {
+  border-style: dashed;
+  border-left-style: solid;
+}
+
+/* 卡片自己的两态：看着是字（一个按钮）／正在改（输入框 + 保存/取消）。
+ * 内距挂在里面这两层上，卡片本身只负责边框与底色 —— 两态切换时框不跳。 */
+.chatnote-card__view {
+  display: block;
+  width: 100%;
+  padding: 6px 9px 7px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chatnote-card__text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chatnote-card__input {
+  display: block;
+  width: 100%;
+  padding: 6px 9px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+/* 两颗图标（保存 / 取消）靠右下：这一栏只有 208px 宽，排成一行文字会把卡片撑得很吵 */
+.chatnote-card__acts {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  padding: 0 6px 5px 9px;
+}
+
+.chatnote-card__act {
+  width: 26px;
+  height: 26px;
+}
+
+.chatnote-card__act.chaticon:hover {
+  border-color: var(--amber);
+  color: var(--fg);
+}
+
+/* 连线：垫在卡片底下，从标的文字那一行拉过来（走法见 chat.js 的 leadLine）。
+ * `overflow: visible` 是必需的 —— 这根线要从这一栏的**左边**（正文那侧）起笔。 */
+.chatnote-leads {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* 线用**点线**而不是实线：标的文字离这一栏远时，这根线要贴着那一行文字下缘
+ * 走一大段 —— 实线在那儿读起来像给那句话加了条下划线（点线才有"引线"的意思）。 */
+.chatnote-lead {
+  fill: none;
+  stroke: color-mix(in srgb, var(--amber) 70%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* 面板里那条"标的是哪句"（原文摘录）：一道竖线 + 灰一档，与批注正文分开 */
@@ -3815,4 +4066,1165 @@ body.is-colresize .panes__host > .chat {
   color: var(--fg3);
   font-size: 12.5px;
   line-height: 1.7;
+}
+
+
+/* ------------------------------------------------------- 传送球（回溯的门）
+ *
+ * 用户："把锚点的传送门从输入框上面的固定位，改成带动效的，可动的圆形传送球，
+ * 默认初始位置在右边框旁边"。
+ *
+ * 形态：`.chatportal` 铺满 `.chat`（不吃指针），里面一个 **0 尺寸的 dock** 由 JS
+ * 每帧写 `transform` 摆到球心，球与扇子都挂在 dock 上。为什么绕这一道：位置要按
+ * **正文区**算（收起左栏、拖宽度、窗口缩放都得重摆），而"球心里有什么"是 CSS 的事
+ * —— 两边各管一头，谁也不去猜对方。
+ */
+
+.chatportal {
+  position: absolute;
+  inset: 0;
+  /* 压在正文之上、几个浮层之下（对话树 z60 / 批注 z62） */
+  z-index: 30;
+  pointer-events: none;   /* 铺满一层，但只有球和扇子收指针 */
+}
+
+/* `[hidden]` 必须显式写：上面那条会盖掉 UA 的 `display: none`，
+ * 那样"零回溯点时整颗球不出现"就不成立了（与原来那条 rail 是同一个坑）。 */
+.chatportal[hidden] {
+  display: none;
+}
+
+.chatportal__dock {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  /* 位置由 JS 写进 transform。这条过渡只为**松手吸附**那一下服务（从手停的地方
+   * 滑到边上）；拖动期间用 `.is-drag` 关掉 —— 位置跟着指针一帧一帧写进去，
+   * 再叠一层缓动就变成"追着指针慢慢爬"（与拖左栏宽度同一个讲究）。 */
+  transition: transform 240ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.chatportal.is-drag .chatportal__dock {
+  transition: none;
+}
+
+/* 球：**白底**（用户："白底"）+ 一条细边 + 柔影，是浮在正文旁的一件白东西。
+ *
+ * 三代配色记在这一处，免得来回改：琥珀径向渐变的"糖球"（与软件不搭）→ 主按钮那套
+ * 主色渐变（对，但球太重）→ **白球**，颜色交给球里那点动效去说。半径 23
+ *（`PORTAL_SIZE / 2` 在 JS 里也是 23），margin 把它**居中**在 dock 上。 */
+.chatportal__ball {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: #fff;
+  color: color-mix(in srgb, var(--pri) 46%, #04211c);
+  font-weight: 600;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;   /* 触屏上拖球时不要把整页带着滚 */
+  /* 里面那两层不许溢出球外 —— 动效全在球里，这是这件事的保险 */
+  overflow: hidden;
+  box-shadow: 0 6px 18px -10px color-mix(in srgb, var(--pri) 58%, transparent),
+    0 2px 8px color-mix(in srgb, #000 16%, transparent);
+  transition: box-shadow var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.chatportal__ball:hover {
+  border-color: color-mix(in srgb, var(--pri) 58%, var(--line));
+  box-shadow: 0 9px 22px -10px color-mix(in srgb, var(--pri) 72%, transparent),
+    0 3px 10px color-mix(in srgb, #000 20%, transparent);
+}
+
+.chatportal.is-drag .chatportal__ball {
+  cursor: grabbing;
+  border-color: var(--pri);
+  box-shadow: 0 14px 30px -12px color-mix(in srgb, var(--pri) 82%, transparent),
+    0 6px 16px color-mix(in srgb, #000 24%, transparent);
+}
+
+.chatportal__ball:focus-visible {
+  outline: 2px solid var(--pri);
+  outline-offset: 3px;
+}
+
+/* 球里那点动效（一）：一圈**沿内缘转的弧**。只画出一段（顶边与右边亮、其余透明），
+ * 转起来就是"门在转"。原先那圈转的虚线环在球**外面**（`inset: -7px`），已经撤掉。 */
+.chatportal__sweep {
+  position: absolute;
+  inset: 3px;
+  border: 2px solid transparent;
+  border-top-color: color-mix(in srgb, var(--pri) 70%, transparent);
+  border-right-color: color-mix(in srgb, var(--pri) 28%, transparent);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: chatportal-sweep 2.9s linear infinite;
+}
+
+@keyframes chatportal-sweep {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.chatportal__ball:hover .chatportal__sweep,
+.chatportal.is-drag .chatportal__sweep {
+  border-top-color: var(--pri);
+  border-right-color: color-mix(in srgb, var(--pri) 46%, transparent);
+}
+
+/* 球里那点动效（二）：一层会呼吸的内光 —— 球心一点主色的暖意，2.6s 一次明暗。
+ * 基础值给 0.55：开了"减少动效"时不跑动画，那一下就停在 0.55，而不是全亮。 */
+.chatportal__glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 48%,
+    color-mix(in srgb, var(--pri) 30%, transparent) 0%,
+    transparent 68%
+  );
+  opacity: 0.55;
+  pointer-events: none;
+  animation: chatportal-glow 2.6s ease-in-out infinite;
+}
+
+@keyframes chatportal-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+.chatportal__core {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: transform var(--dur) var(--ease);
+}
+
+/* 抓住的时候球心鼓一点（球自己那份呼吸动画在 `.chatportal__ball` 上，
+ * 两条动画落在不同元素上才不会互相覆盖） */
+.chatportal.is-drag .chatportal__core {
+  transform: scale(1.1);
+}
+
+.chatportal__n {
+  position: relative;   /* 压在球里那两层动效之上 */
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* 扇子：点开之后从球边摊开的一列。贴着右侧就往左展开、贴着左侧就往右展开 ——
+ * 永远朝正文里侧，不朝边框外面（朝外会被窗口裁掉）。 */
+.chatportal__fan {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.chatportal[data-side='right'] .chatportal__fan {
+  right: 34px;
+  align-items: flex-end;
+}
+
+.chatportal[data-side='left'] .chatportal__fan {
+  left: 34px;
+  align-items: flex-start;
+}
+
+.chatportal.is-open .chatportal__fan {
+  pointer-events: auto;
+}
+
+/* 一枚：序号 + 那一句的开头。收起时不可见也不吃指针；展开时**逐枚出来**
+ *（延迟按序号写在 JS 的 style 上）—— 一次全亮像贴上去，逐枚才像从球里摊开。 */
+.chatportal__slot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 3px 10px 3px 3px;
+  border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg2) 94%, transparent);
+  box-shadow: 0 1px 5px color-mix(in srgb, #000 28%, transparent);
+  color: var(--fg2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms var(--ease), border-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+
+.chatportal.is-open .chatportal__slot {
+  opacity: 1;
+  pointer-events: auto;
+  /* 动画只写在"展开"这一态里：加 `.is-open` 那一刻它才开始跑（写在基础态里的话，
+   * 建元素时就已经跑完了，展开时只剩静态一下）。 */
+  animation: chatportal-slot-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.chatportal[data-side='left'].is-open .chatportal__slot {
+  animation-name: chatportal-slot-in-left;
+}
+
+@keyframes chatportal-slot-in {
+  from {
+    opacity: 0;
+    transform: translateX(9px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes chatportal-slot-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-9px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.chatportal__slot:hover {
+  border-color: var(--amber);
+  color: var(--fg);
+}
+
+.chatportal__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 19px;
+  height: 19px;
+  flex: none;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--amber) 22%, transparent);
+  color: color-mix(in srgb, var(--amber) 88%, var(--fg));
+  font-size: 10.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 在别的对话里的那一枚：虚线的号 —— 与树图钉上的"要看别处"同一个意思 */
+.chatportal__slot.is-away .chatportal__num {
+  background: none;
+  border: 1px dashed var(--line-strong);
+  color: var(--fg3);
+}
+
+.chatportal__tag {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 传送：出发那一枚先脉冲一下（"我从这儿出发"），随后落点闪一下
+ *（`.chatmsg.is-flash` 是既有那一下，搜索命中走的就是它）。 */
+.chatportal__slot.is-go {
+  animation: chatportal-go 420ms var(--ease) both;
+}
+
+@keyframes chatportal-go {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--amber) 40%, transparent);
+  }
+  45% {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 8px color-mix(in srgb, var(--amber) 18%, transparent);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* 满了（已经 5 个）：球抖一下。比一句 toast 更快让人知道"是哪儿满了"。
+ * 抖的是 `__core`：球那一层有自己的呼吸动画，同一个元素上两条 transform 动画
+ * 会互相顶掉（后写的那条赢）。 */
+.chatportal.is-shake .chatportal__core {
+  animation: chatportal-shake 340ms var(--ease) both;
+}
+
+@keyframes chatportal-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+/* 跨对话传送：整条线程轻轻沉一下。一秒钟里换了一整屏内容，人得有个着落 ——
+ * 同一条对话内不用这一下（那时闪落点就够了）。 */
+.chat__thread.is-arrive {
+  animation: chat-arrive 340ms var(--ease) both;
+}
+
+@keyframes chat-arrive {
+  from {
+    opacity: 0.3;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chatportal__sweep,
+  .chatportal__glow,
+  .chatportal.is-open .chatportal__slot,
+  .chatportal.is-shake .chatportal__core,
+  .ctnode.is-born .ctnode__ink,
+  .chat__thread.is-arrive {
+    animation: none;
+  }
+
+  /* 轨迹不"画"了，直接整条出现（过渡也不能留） */
+  .cttrail__glow,
+  .cttrail__line {
+    transition: none;
+  }
+}
+/* ---- 轨迹线（我走过的那条路） --------------------------------------------------
+ *
+ * 主色一根细线 + 一层柔光，画在连线之上、节点之下（顺序见 `drawTree`）。
+ * 进来的方式是**自画**：`stroke-dashoffset` 从"整条长度"放到 0，过渡写在这里。
+ * 段与段之间那条穿过节点的短线把整条接成**一个**子路径 —— `stroke-dasharray` 是
+ * 按子路径算的，分成好几段的话每一段会各自从自己那头冒出来，而不是一根线流到底。
+ */
+.cttrail {
+  pointer-events: none;
+}
+
+.cttrail__glow,
+.cttrail__line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke-dashoffset 1100ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* ⚠️ 线宽**不随地图缩放**（`vector-effect`）：这棵树为了装下 158 个节点会缩到 0.066 倍，
+ * 1.8 个用户单位到屏幕上只剩 0.12px —— 等于没有。普通连线可以这样（它是背景纹理），
+ * 轨迹不行，它是主角。代价：虚线也按屏幕长度算，见 `treeTrail` 里乘的那个比例。 */
+.cttrail__glow {
+  stroke: color-mix(in srgb, var(--pri) 22%, transparent);
+  stroke-width: 6;
+  vector-effect: non-scaling-stroke;
+}
+
+.cttrail__line {
+  stroke: var(--pri);
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+}
+
+/* 播放中还没轮到的图钉先不出现。用 `visibility` 而不是 `opacity`：图钉身上挂着
+ * `ctpins-in`（`both` 的收尾态是 opacity: 1），CSS 动画会盖过同属性的普通声明。 */
+.chattree__pins.is-playing .ctpin2:not(.is-shown) {
+  visibility: hidden;
+}
+
+/* ---- 播放（按时间长大） --------------------------------------------------------
+ *
+ * 播放中：还没轮到的那几枚先隐形 —— **用透明度、不用 display**：几何一点不动，
+ * 整棵树就不会一边长一边抖。轮到的那一枚，里层 `__ink` 缩一下再展开（"长大"那一下）。
+ */
+.chattree__layer.is-playing .ctnode:not(.is-shown),
+.chattree__layer.is-playing .ctedge:not(.is-shown),
+.chattree__pins.is-playing .ctpin2:not(.is-shown) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ⚠️ 出生动画只能落在**里层**：外层 `group` 的 transform 是定位用的（translate 属性），
+ * 同一个元素上再写一条 CSS transform 会把它整个顶掉 —— 节点会跳到原点去。 */
+.ctnode__ink {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ctnode.is-born .ctnode__ink {
+  animation: ctnode-grow 360ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes ctnode-grow {
+  from {
+    opacity: 0;
+    transform: scale(0.84);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- 地图上的图钉（对话树 = 地图）------------------------------------------------
+ *
+ * **屏幕坐标的一层 HTML**，不跟着 SVG 缩放（位置每帧在 `applyTreeView` 里换算）。
+ * 第一版是画在 SVG 里的小图形：一面 8px 的临时旗、一个 13px 的点 —— 而这张图为了
+ * 装下 158 个节点会缩到 0.3 倍，到屏幕上只剩两三个像素。用户的原话：
+ * "太小太不明确。想象你要在一张地图上标记某个地点。"
+ *
+ * 现在按地图的规矩分家：**地点属于地图**（跟着缩放平移走），**图钉属于屏幕**
+ *（恒定大小、恒定字号）。于是无论缩到多小，钉在哪、钉的是什么，都读得出来。
+ */
+
+.chattree__pins {
+  position: absolute;
+  inset: 0;
+  /* 整层不抢指针：拖动、滚轮、点节点照旧穿过去 —— 只有图钉自己要指针 */
+  pointer-events: none;
+  z-index: 2;
+}
+
+.ctpin2 {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  /* ⚠️ 这里**不能**写 transform：位置是 JS 每帧写进去的（`translate(屏幕点)` +
+   * `translate(-50%,-100%)` 把尖头落在锚点上），写了会互相覆盖。
+   * 落下的动效因此只动 opacity —— 位移交给外面的 translate。 */
+  animation: ctpins-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+@keyframes ctpins-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.ctpin2__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  /* 一圈底色描边 + 投影：深色地图上、压到节点上都分得出来 */
+  border: 2px solid var(--bg);
+  box-shadow: 0 1px 4px color-mix(in srgb, #000 45%, transparent);
+  transition: transform var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+.ctpin2--mark .ctpin2__badge {
+  background: var(--pri);
+  color: var(--bg);
+}
+
+.ctpin2--back .ctpin2__badge {
+  background: var(--amber);
+  color: var(--bg);
+}
+
+.ctpin2__n {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* 尖头：把徽章接到锚点上 —— 有它才像"插在地图上"，没它就是浮着的一个圆 */
+.ctpin2__leg {
+  width: 0;
+  height: 0;
+  margin-top: -2px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 7px solid var(--pri);
+  transition: border-top-color var(--dur) var(--ease);
+}
+
+.ctpin2--back .ctpin2__leg {
+  border-top-color: var(--amber);
+}
+
+.ctpin2:hover .ctpin2__badge,
+.ctpin2:focus-visible .ctpin2__badge {
+  transform: scale(1.12);
+  box-shadow: 0 3px 10px color-mix(in srgb, #000 55%, transparent);
+}
+
+/* 名字：**常驻**挂在徽章右边（用户要的"明确"就是这一条 —— 不用悬停就知道标了什么） */
+.ctpin2__label {
+  position: absolute;
+  left: calc(100% + 5px);
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 190px;
+  padding: 2px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg2) 94%, transparent);
+  box-shadow: 0 1px 4px color-mix(in srgb, #000 35%, transparent);
+  color: var(--fg2);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  transition: opacity 140ms var(--ease), transform 140ms var(--ease);
+}
+
+.ctpin2__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 类别那几个字：靠形状与颜色其实也认得出，但"明确"这件事别让人猜 */
+.ctpin2__kind {
+  flex: none;
+  font-size: 10px;
+  color: var(--fg3);
+}
+
+.ctpin2--mark .ctpin2__kind {
+  color: color-mix(in srgb, var(--pri) 78%, var(--fg3));
+}
+
+.ctpin2--back .ctpin2__kind {
+  color: color-mix(in srgb, var(--amber) 78%, var(--fg3));
+}
+
+/* 播放轮到它：把标签亮出来一会儿（`is-callout` 由 `flashPinCallout` 挂上又摘掉）。
+ * 这一条要写在 `is-tight` 那两条**之后**、并且选择器多带一层 —— 缩小状态下
+ * 标签本来是收着的，此刻要**压过**那条规则浮起来。 */
+.chattree__pins.is-tight .ctpin2.is-callout .ctpin2__label,
+.ctpin2.is-callout .ctpin2__label {
+  opacity: 1;
+  transform: none;
+  pointer-events: none;
+}
+
+/* 亮描述的时候，钉帽也抬一下 —— 十几枚钉子同屏，得让人知道"现在说的是这一枚" */
+.ctpin2.is-callout .ctpin2__badge {
+  transform: scale(1.16);
+  box-shadow: 0 3px 12px color-mix(in srgb, #000 55%, transparent);
+}
+
+/* 缩到 0.45 倍以下（见 `applyTreeView`）：先把名字收起来 —— 一屏几十个名字会互相压，
+ * 反而谁也读不出来；停在哪一枚上，它自己的名字照旧浮出来。 */
+.chattree__pins.is-tight .ctpin2__label {
+  opacity: 0;
+  transform: translateX(-3px);
+  pointer-events: none;
+}
+
+.chattree__pins.is-tight .ctpin2:hover .ctpin2__label,
+.chattree__pins.is-tight .ctpin2:focus-visible .ctpin2__label {
+  opacity: 1;
+  transform: none;
+}
+
+/* 再远一档（0.16 倍以下）：钉帽也收小 —— 都还认得出来，但不至于糊成一片 */
+.chattree__pins.is-small .ctpin2__badge {
+  width: 16px;
+  height: 16px;
+  border-width: 1.5px;
+}
+
+.chattree__pins.is-small .ctpin2__badge svg {
+  width: 9px;
+  height: 9px;
+}
+
+.chattree__pins.is-small .ctpin2__n {
+  font-size: 9px;
+}
+
+.chattree__pins.is-small .ctpin2__leg {
+  border-left-width: 3px;
+  border-right-width: 3px;
+  border-top-width: 5px;
+}
+
+/* 地图角落的图例："图钉是什么"得能自己看懂（地图上从来不靠猜） */
+.chattree__legend {
+  position: absolute;
+  left: 14px;
+  bottom: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg2) 90%, transparent);
+  font-size: 11px;
+  color: var(--fg3);
+  pointer-events: none;
+}
+
+.chattree__legendtitle {
+  color: var(--fg2);
+  font-weight: 600;
+}
+
+.chattree__legendpin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bg2);
+  color: var(--bg);
+}
+
+.chattree__legendpin.is-mark {
+  background: var(--pri);
+}
+
+.chattree__legendpin.is-back {
+  background: var(--amber);
+}
+
+.chattree__legendpin .ctpin2__n {
+  font-size: 9px;
+}
+
+.chattree__legendtext.is-dim {
+  color: color-mix(in srgb, var(--fg3) 78%, transparent);
+}
+
+/* 树上那几颗"图标 + 字"的键（书签 / 轨迹 / 播放）：同一套排布 */
+.chattree__marksbtn,
+.chattree__trailbtn,
+.chattree__playbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chattree__speedbtn {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 开着的状态**只写一处**（原来只有书签那颗有，轨迹与播放也要） */
+.chattree__btn.is-on {
+  color: var(--pri);
+  border-color: color-mix(in srgb, var(--pri) 55%, var(--line));
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+}
+/* ------------------------------------------------------------- 书签抽屉
+ *
+ * 与批注面板同一套形态（右侧浮层 + 背景遮罩），但动效是**三段**，每段各有用处：
+ *   * 进来：背景 150ms 淡入、抽屉 200ms 从右滑入（缓出，像被推进来）；列表项再逐条
+ *     浮现（每条错开，延迟在 JS 里按序号写进 style）。
+ *   * 出去：`is-closing` 反向播 160ms，**播完才拆 DOM**（见 `closeMarks`）。
+ *   * 传送：沿用 rail 那一套（点的脉冲 + 落点闪 + 跨对话线程轻沉）。
+ */
+
+/* 抽屉挂在**画布那一层**里（不是整屏）：遮罩只压地图，工具栏还留着 ——
+ * 否则开着抽屉时那颗「书签」自己也被压住，点不动。
+ * 它是 `position: absolute`，所以定位的基准是画布（`position: relative`）。 */
+.chatmarks {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+
+/* 关着的时候它是个空壳，而空壳（`inset: 0`）会把整张地图的点击都吃掉 */
+.chatmarks:empty {
+  display: none;
+}
+
+.chatmarks__backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in srgb, #000 45%, transparent);
+  pointer-events: auto;
+  animation: chatmarks-fade-in 150ms ease both;
+}
+
+.chatmarks__sheet {
+  display: flex;
+  flex-direction: column;
+  width: min(400px, 92vw);
+  height: 100%;
+  border-left: 1px solid var(--line);
+  background: var(--bg);
+  animation: chatmarks-slide-in 200ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.chatmarks__backdrop.is-closing {
+  animation: chatmarks-fade-out 160ms ease both;
+}
+
+.chatmarks__sheet.is-closing {
+  animation: chatmarks-slide-out 160ms cubic-bezier(0.45, 0, 0.9, 0.5) both;
+}
+
+@keyframes chatmarks-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes chatmarks-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes chatmarks-slide-in {
+  from { transform: translateX(26px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+@keyframes chatmarks-slide-out {
+  from { transform: none; opacity: 1; }
+  to { transform: translateX(22px); opacity: 0; }
+}
+
+/* 列表项：逐条浮现（延迟由 JS 按序号给），像翻出一叠卡片而不是一次贴上去 */
+@keyframes chatmarkitem-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: none; }
+}
+
+.chatmarks__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  color: var(--fg3);
+}
+
+.chatmarks__lead {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg3);
+  font-size: 11.5px;
+  text-align: right;
+}
+
+.chatmarks__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.chatmarks__empty {
+  padding: 18px 6px;
+  color: var(--fg3);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+.chatmarkitem {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  animation: chatmarkitem-in 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.chatmarkitem + .chatmarkitem {
+  margin-top: 4px;
+}
+
+.chatmarkitem:hover {
+  background: var(--bg2);
+  border-color: var(--line);
+}
+
+.chatmarkitem__ribbon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
+}
+
+.chatmarkitem__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.chatmarkitem__text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.chatmarkitem__meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--fg3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 两颗小动作：平时隐形，悬停或键盘聚焦时浮现 —— 列表要干净，但不能藏得找不着 */
+.chatmarkitem__acts {
+  display: flex;
+  gap: 2px;
+  flex: none;
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.chatmarkitem:hover .chatmarkitem__acts,
+.chatmarkitem:focus-within .chatmarkitem__acts {
+  opacity: 1;
+}
+
+.chatmarkitem__act {
+  width: 24px;
+  height: 24px;
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  .chatmarks__backdrop,
+  .chatmarks__sheet,
+  .chatmarkitem,
+  .ctpin2 {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------- 流程（skill）
+ *
+ * `docs/对话树.md` §十二：这一版做的是**流程**（`/` 命令）。两处样式：
+ *   * 输入框上方那份清单 —— 挑的时候才出现，不挑就不占位置；
+ *   * 消息行上那枚标记 —— 与「位置标记」同一排，但**性质相反**：位置标记是点出来的
+ *     记号，而它是**状态**（挂着就一直亮），点一下才是取下。
+ */
+
+.chatskill {
+  display: none;
+  max-height: 264px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+
+.chatskill.is-open {
+  display: block;
+}
+
+.chatskill__item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chatskill__item + .chatskill__item {
+  border-top: 1px solid var(--line);
+}
+
+.chatskill__item.is-on,
+.chatskill__item:hover {
+  background: var(--bg2);
+}
+
+.chatskill__kind {
+  flex: none;
+  min-width: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 4px);
+  color: var(--fg3);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.chatskill__name {
+  flex: none;
+  min-width: 92px;
+  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
+  font-size: 13px;
+}
+
+.chatskill__hint {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 入口那颗（挨着模式药丸）与"正生效"那一排 —— 用户："常驻药丸要做，这个是状态的指示和
+ * 取消药丸。skill 另外做一个药丸放在模式旁边。" */
+
+.chatskill__open {
+  /* 外观照 `.chat__deep`（同一行的药丸），只补一个被点过的回执 */
+  cursor: pointer;
+}
+
+.chatskill__states {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chatskill__states.is-on {
+  display: flex;
+}
+
+.chatskill__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--pri) 45%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.chatskill__x {
+  padding: 0 4px;
+  border-radius: 999px;
+  color: var(--fg3);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.chatskill__state:hover .chatskill__x {
+  color: var(--bad, #d14343);
+}
+
+/* 命令那一层：`/skill` 那一行 —— 与 skill 那几行区分开（它是命令，不是某一条 skill） */
+.chatskill__kind.is-cmd {
+  border-color: color-mix(in srgb, var(--pri) 40%, var(--line));
+  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
+}
+
+.chatskill__chip {
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.chatskill__chip.is-on {
+  border-color: color-mix(in srgb, var(--pri) 45%, var(--line));
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
+}
+
+/* --------------------------------------------------------------- 动效
+ *
+ * 与这一页别处同一套：**动一下，但别让人等**。三处：
+ *   * 状态药丸**逐枚浮现**（装第二、第三条时看得出"又多了一条"，而不是整排跳一下）；
+ *   * 入口那颗按下去有回执（它是个开关，没有回执就像没点着）；
+ *   * `/` 清单里的每一行轻轻浮出（清单是"正在挑"，不该硬邦邦地弹出来）。
+ * 全部在 `prefers-reduced-motion` 下静止。
+ */
+
+@keyframes chatskill-pop {
+  from { opacity: 0; transform: translateY(3px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+
+.chatskill__state {
+  animation: chatskill-pop 170ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+
+/* 最多错开四枚：装到第五、六条时不再往后拖（越拖越像卡住） */
+.chatskill__state:nth-child(2) { animation-delay: 30ms; }
+.chatskill__state:nth-child(3) { animation-delay: 60ms; }
+.chatskill__state:nth-child(4) { animation-delay: 90ms; }
+
+.chatskill__state:hover {
+  border-color: color-mix(in srgb, var(--bad, #d14343) 45%, var(--line));
+}
+
+.chatskill__x {
+  transition: color var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+
+.chatskill__state:hover .chatskill__x {
+  transform: scale(1.15);
+}
+
+.chatskill__open {
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+
+.chatskill__open:active {
+  transform: scale(0.97);
+}
+
+.chatskill__item {
+  animation: chatskill-pop 140ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.chatskill__item:nth-child(2) { animation-delay: 18ms; }
+.chatskill__item:nth-child(3) { animation-delay: 36ms; }
+.chatskill__item:nth-child(4) { animation-delay: 54ms; }
+.chatskill__item:nth-child(5) { animation-delay: 72ms; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chatskill__state,
+  .chatskill__item {
+    animation: none;
+  }
+}
+
+
+/* 思考强度的拖动条（见 chat.js 的 paintThinkPick）。
+ *
+ * 这里的两条都是被投诉过才改成这样的：
+ *
+ *   * **必须小**：从前写的是 `width: 100%`，而面板默认跟正文一样宽（≈880px）——
+ *     拖一次要横扫半个屏幕（用户："拖动条弄小一点！！！现在要拖半个屏幕"）。
+ *     现在条子 176px，装在右键菜单里（菜单自己会定位、点外面就关）。
+ *   * **配色得是自己的**：别用浏览器默认那套（灰槽 + 蓝球），也别指望
+ *     `accent-color` 在两个引擎里长得一样。轨道与滑块都自己画：左边"已调到多强"
+ *     用品牌色、右边用边框色，球带一圈面板底色的描边（像是从轨道里切出来的）。
+ *     已选那一段 Chromium 的 range 不会自己画，所以进度由 JS 写进 `--fill`
+ *     （见 paintThinkPick 里的 paintFill），这里用一条渐变画出来。 */
+.chatthink {
+  padding: 10px 12px 9px;
+}
+
+.chatthink__row {
+  margin-bottom: 6px;
+}
+
+.chatthink__now {
+  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
+  font-size: 13px;
+}
+
+.chatthink__bar {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 176px;
+  height: 16px;
+  margin: 0;
+  background: none;
+  cursor: ew-resize;
+}
+
+.chatthink__bar::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--pri) var(--fill, 50%), var(--line) var(--fill, 50%));
+}
+
+.chatthink__bar::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -3.5px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--pri);
+}
+
+.chatthink__bar::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.chatthink__bar::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--pri);
+}
+
+.chatthink__bar::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--bg);
+  border-radius: 50%;
+  background: var(--pri);
+}
+
+.chatthink__bar:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--pri) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+.chatthink__scale {
+  display: flex;
+  width: 176px;
+  justify-content: space-between;
+  margin-top: 4px;
+  color: var(--fg3);
+  font-size: 11px;
 }

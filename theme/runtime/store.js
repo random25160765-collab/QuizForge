@@ -158,9 +158,75 @@
   var NOTES_MAX = 500;
   var NOTE_MAX_CHARS = 4000;
 
+  /* ------------------------------------------------- 三种标记（别混为一谈）
+   *
+   * `settings.notes` 这一份列表装的是**三种不同的东西**（用户原话：
+   * "高亮和批注是分开的两个东西"）：
+   *
+   *   hl     高亮    —— 给眼睛做记号，正文底色变了就行
+   *   strike 删除线  —— "这一段不算数"，灰 + 划线
+   *   note   批注    —— 给这一段**写一句话**（话记在 `text` 里，正文旁边出旁批）
+   *
+   * 它们共用一条记录、一份同步、一套冲突规则（这是当初合在一起的理由）；
+   * 但**界面上一律按 `kind` 分开**：批注栏只收 note，点在高亮上右键给的是
+   * "取消高亮"，而不是"改这条批注"。
+   *
+   * 老数据没有 `kind` 这一栏（那时只有两种）：有字的是批注，没字的是高亮。
+   * 这一条只在这里判一次，别的地方都问 `QF.store.markKind`。
+   */
+  var MARK_KINDS = { hl: 1, strike: 1, note: 1 };
+
+  function kindOf(mark) {
+    var kind = mark && mark.kind;
+    if (kind && MARK_KINDS[kind]) return kind;
+    return String((mark && mark.text) || '').trim() ? 'note' : 'hl';
+  }
+
   function notesAll() {
     var list = settings().notes;
     return Array.isArray(list) ? list.slice() : [];
+  }
+
+  /* ------------------------------------------------------------ 位置标记
+   *
+   * 两类都在"这条消息这个位置"上，但用处不同（用户："回溯是一个小工具，趁手，
+   * 方便快速跳转。然后现在是书签，这个是永久性的标记"）：
+   *
+   *   back  回溯  —— 最多 5 个，从输入框上方那条快速跳转（趁手）
+   *   mark  书签  —— 数量不限，靠**地图（对话树）**上那枚丝带认（永久）
+   *
+   * 两者都带一句**描述**（可空）：锚点是给机器认的（cid + mid），描述是给人认的
+   *（"我当时为什么把这儿标下来"）。存法与批注同源（settings，本地优先 + 跨设备合并）。
+   *
+   * 老数据：上一版只有 `stations`（那一版就叫回溯）。读的时候并进来 —— 不迁移、
+   * 不重写，只是"旧的那份也当作 back 看"。
+   */
+  var BACK_MAX = 5;
+
+  function placesAll() {
+    var list = settings().places;
+    var out = Array.isArray(list) ? list.slice() : [];
+    var old = settings().stations;   // 上一版的名字
+    if (Array.isArray(old)) {
+      old.forEach(function (one) {
+        if (!one || one.mid == null) return;
+        var dup = out.some(function (each) {
+          return each.id === one.id || String(each.mid) === String(one.mid);
+        });
+        if (!dup) {
+          out.push({
+            id: String(one.id || ''),
+            kind: 'back',
+            cid: one.cid ? String(one.cid) : '',
+            mid: String(one.mid),
+            label: String(one.label || ''),
+            quote: String(one.quote || ''),
+            at: one.at || Date.now(),
+          });
+        }
+      });
+    }
+    return out;
   }
 
   /* ---------------------------------------------------------- 记录 */
@@ -1144,18 +1210,23 @@
     notes: function () {
       return notesAll();
     },
-    /** 加一条批注（或纯高亮）。
+    /** 这条标记是哪一种（`hl` / `strike` / `note`）—— 老数据也认，见 `kindOf`。 */
+    markKind: function (mark) {
+      return kindOf(mark);
+    },
+    /** 加一条标记：高亮 / 删除线 / 批注（`kind` 决定是哪种，缺省按有没有字推）。
      *
      * `mid` / `start` / `end` 是"钉在哪一段上"：消息 id，加那段在**渲染后正文**里的
      * 字符区间；`quote` 是当时选中的原文 —— 万一渲染变了样，靠它还能认出标的是哪句。
-     * `text` 给空串 = 只有高亮不写字（那也是批注的一种，有时你只是想标记一下）。
      */
     addMark: function (mark) {
       var one = mark || {};
       var list = notesAll();
       if (list.length >= NOTES_MAX) return null;
+      var kind = kindOf(one);
       var piece = {
         id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+        kind: kind,
         text: String(one.text || '').trim().slice(0, NOTE_MAX_CHARS),
         quote: String(one.quote || '').slice(0, 600),
         mid: one.mid == null ? '' : String(one.mid),
@@ -1168,7 +1239,7 @@
       saveSettings({ notes: list });
       return piece;
     },
-    /** 某条消息上钉着的批注（渲染高亮时按它找区间）。 */
+    /** 某条消息上钉着的标记（三种都返回：正文那侧要按 kind 各画各的）。 */
     marksOf: function (mid) {
       var key = mid == null ? '' : String(mid);
       return notesAll().filter(function (one) {
@@ -1183,7 +1254,11 @@
       list = list.map(function (note) {
         if (note.id !== id) return note;
         hit = true;
-        return { id: note.id, text: body, at: note.at, cid: note.cid || '', editedAt: Date.now() };
+        // **锚点一个都不能丢**：这里原先重建了对象、只留下 id/text/at/cid，
+        // mid/start/end/quote 全被抹掉 —— 于是"改一次批注"就把它钉在哪句话上
+        // 一起弄没了（`marksOf(mid)` 再也找不到它，正文那边的高亮与旁批同时消失）。
+        // 改的是那句话，不是它钉在哪。
+        return Object.assign({}, note, { kind: kindOf(note), text: body, editedAt: Date.now() });
       });
       if (hit) saveSettings({ notes: list });
       return hit;
@@ -1195,6 +1270,136 @@
       });
       if (next.length === list.length) return false;
       saveSettings({ notes: next });
+      return true;
+    },
+    /** 把一条标记按**原来的 id** 放回去 —— 只给"撤回"用（⌘Z）。
+     *
+     * 为什么不能直接 `addMark`：那会发一个新 id，而这条标记可能正被
+     * `marginEditing` / 面板里的编辑态按 id 指着 —— 撤回之后要回到原来那一条，
+     * 不是长得一样的新一条。
+     */
+    restoreMark: function (piece) {
+      if (!piece || !piece.id) return false;
+      var list = notesAll();
+      if (list.some(function (one) {
+        return one.id === piece.id;
+      })) {
+        return false;
+      }
+      if (list.length >= NOTES_MAX) return false;
+      list.unshift(Object.assign({}, piece, { kind: kindOf(piece), at: piece.at || Date.now() }));
+      saveSettings({ notes: list });
+      return true;
+    },
+    /* ---------------------------------------------------- 位置标记（两类）
+     * 语义与存储见文件里 `placesAll` 那一段的说明。 */
+    BACK_MAX: BACK_MAX,
+    places: function () {
+      return placesAll();
+    },
+    /** 这条消息上有哪些标记（回溯 + 书签，各按打的先后）。 */
+    placesOf: function (mid) {
+      var key = mid == null ? '' : String(mid);
+      return placesAll().filter(function (one) {
+        return String(one.mid) === key;
+      });
+    },
+    /** 打一个标记。回溯满了返回 null（调用方据此提示"先取消一个"）；书签不限量。 */
+    addPlace: function (place) {
+      var one = place || {};
+      var mid = one.mid == null ? '' : String(one.mid);
+      if (!mid) return null;
+      var kind = one.kind === 'mark' ? 'mark' : 'back';
+      var list = placesAll();
+      if (kind === 'back') {
+        var backs = list.filter(function (each) {
+          return each.kind === 'back';
+        });
+        // 满了、或这条上已经有一个回溯点（再点一次本来就是"取消"），都返回 null
+        if (backs.length >= BACK_MAX) return null;
+        if (
+          backs.some(function (each) {
+            return String(each.mid) === mid;
+          })
+        ) {
+          return null;
+        }
+      }
+      var id = (kind === 'back' ? 's' : 'b') + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+      list.push({
+        id: id,
+        kind: kind,
+        cid: one.cid ? String(one.cid) : '',
+        mid: mid,
+        // 描述是给人认的：跨对话的标记在树上只显示一枚图钉，认不出是哪儿
+        label: String(one.label || '').slice(0, 120),
+        quote: String(one.quote || '').slice(0, 80),
+        at: Date.now(),
+      });
+      saveSettings({ places: list, stations: [] });
+      return id;
+    },
+    /** 改描述（patch 里的 `label` 是界面唯一用到的一项）。 */
+    updatePlace: function (id, patch) {
+      var list = placesAll();
+      var hit = false;
+      list = list.map(function (one) {
+        if (one.id !== id) return one;
+        hit = true;
+        return Object.assign({}, one, patch || {}, { id: one.id, at: one.at, kind: one.kind });
+      });
+      if (hit) saveSettings({ places: list });
+      return hit;
+    },
+    removePlace: function (id) {
+      var list = placesAll();
+      var next = list.filter(function (one) {
+        return one.id !== id;
+      });
+      if (next.length === list.length) return false;
+      saveSettings({ places: next, stations: [] });
+      return true;
+    },
+    /* ------------------------------------------------------------ 流程（skill）
+     *
+     * `docs/对话树.md` §十二：skill 是一段提示词，挂在**节点**上、沿树继承、可回退。
+     * 存法与记号同源（settings）：一条 `{cid, mid, key, on}` 记录 —— 前端只管写，
+     * **服务端按当下的链自己算"现在挂着什么"**（见 `app/skills.py` 的 `resolve`）。
+     *
+     * 为什么不本地算好再报给服务端：链是会变的（切分支、编辑重发），本地那一份随时可能
+     * 过期；交给服务端按当下的链算，就不存在"两边不一致"这回事。
+     * `mid` 为空 = 整条对话（第一条消息还没有 mid 可挂，见 `chat.js` 里 `/` 那一段）。
+     */
+    skills: function () {
+      var list = settings().skills;
+      return Array.isArray(list) ? list.slice() : [];
+    },
+    /** 这一条消息上挂过哪些（一条记录一条）。 */
+    skillsOn: function (mid) {
+      var key = mid == null ? '' : String(mid);
+      var list = settings().skills;
+      return (Array.isArray(list) ? list : []).filter(function (one) {
+        return one && String(one.mid || '') === key;
+      });
+    },
+    /** 在某条消息上装一个流程（`on: false` = 取下）。同一条上同一种只留最新的一条。 */
+    attachSkill: function (info) {
+      var one = info || {};
+      var key = String(one.key || '').trim();
+      if (!key) return false;
+      var mid = one.mid == null ? '' : String(one.mid);
+      var list = settings().skills;
+      list = (Array.isArray(list) ? list : []).filter(function (each) {
+        return !(each && String(each.mid || '') === mid && String(each.key || '') === key);
+      });
+      list.push({
+        cid: one.cid ? String(one.cid) : '',
+        mid: mid,
+        key: key,
+        on: one.on !== false,
+        at: Date.now(),
+      });
+      saveSettings({ skills: list });
       return true;
     },
     // 选题篮落盘：攒题可以跨刷新、跨会话继续

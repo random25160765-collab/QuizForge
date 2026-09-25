@@ -33,13 +33,14 @@ import re
 import sys
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import heavy_deps, mastery, materials, semantic
+from . import heavy_deps, mastery, materials, recursion, semantic
 from .models import (
     Concept,
     ConceptEdge,
@@ -998,6 +999,8 @@ window.addEventListener('message', function (event) {
 (async () => {
   var t0 = performance.now();
   PY = await loadPyodide({ indexURL: '__INDEX__' });
+  // 解释器这一笔单独记：报账时要能说清"哪一段可以被省掉"（总时长仍由 t0 算）
+  var pyMs = Math.round(performance.now() - t0);
   PY.setStdout({ batched: function (s) { write(s + '\n'); } });
   PY.setStderr({ batched: function (s) { write(s + '\n'); } });
 
@@ -1058,6 +1061,28 @@ window.addEventListener('message', function (event) {
     packMs += performance.now() - t2;
   }
 
+  // **绘图后端必须在任何人 import matplotlib 之前定下来**（为什么非得 Agg：见 execute
+  // 里那段说明 —— 壳是 1×1 的隐藏 iframe，默认的 canvas 后端要把画布插进 DOM，收图会炸）。
+  //
+  // 修的是顺序 bug：这一步从前只写在 `execute` 的守卫里，而守卫的条件是"matplotlib 不在
+  // sys.modules 里"——下面那段环境自述恰好会 `__import__("matplotlib")`，于是守卫之后
+  // 恒假、`use("Agg")` 从未真正执行过（注释说的那件事一直是落空的）。
+  // 现在放在自述**之前**；顺手把 pyplot 的首个 import（那次 826ms 里的大头）也留在这里 ——
+  // 这正是用户说的"预装包合并在环境准备里"：第一次真的画图时，这些都不必再等。
+  var warmMs = 0;
+  var hasPlot = want.some(function (n) { return n === "matplotlib"; });
+  if (hasPlot) {
+    var t3 = performance.now();
+    try {
+      PY.runPython(
+        "import matplotlib\n" +
+        "matplotlib.use(\"Agg\")\n" +
+        "import matplotlib.pyplot"
+      );
+    } catch (err) { /* 没装上就算了：脚本自己 import 时会报出真正的错 */ }
+    warmMs = performance.now() - t3;
+  }
+
   // 把环境报给宿主（它会把这几行摆进第一次运行的输出里）——模型因此知道
   // 这个沙箱里有什么、版本多少，不必猜。
   var info = '';
@@ -1079,8 +1104,13 @@ window.addEventListener('message', function (event) {
   send({
     qfReady: true,
     info: info,
+    // `bootMs` = **环境准备总共花了多少**（含解释器、依赖、绘图预热），
+    // `pyMs` = 其中解释器那一笔，`packMs` = 依赖，`warmMs` = 绘图预热。
+    // 从前只报总时长，看着像"解释器很慢"；分开报是为了让"哪一段能被省掉"看得见。
     bootMs: Math.round(performance.now() - t0),
+    pyMs: pyMs,
     packMs: Math.round(packMs),
+    warmMs: Math.round(warmMs),
     // 两条警告（预载失败 / 额外包失败）攒到这里一起报 —— 只发一次"就绪"
     warning: (packWarning + (packWarning && extraWarning ? '；' : '') + extraWarning) || undefined,
   });
@@ -1259,6 +1289,8 @@ DEMO_MAX_CHARS = 80_000
 # 演示套件（React + JSX + d3 + 我们那层组件）由服务端统一注入，见 `_demo_page`。
 # 顺序有讲究：经典脚本按出现顺序执行 —— Tailwind 先（它的预置样式要被 kit CSS 盖住）、
 # React/ReactDOM 在 kit 之前、Babel 在模型的 `text/babel` 之前。
+#: 产物里 `assets/` 下的公共资源（KaTeX 就在这儿，见 build_web.py）
+DEMO_ASSET_DIR = "__ORIGIN__/assets/"
 DEMO_KIT_DIR = "__ORIGIN__/assets/demo-kit/"
 DEMO_KIT_FILES = (
     "tailwind.js",
@@ -1325,7 +1357,24 @@ def _demo_kit_ready() -> bool:
     return False
 
 
-def _demo_page(page: str, title: str) -> str:
+def _demo_theme(db: Any) -> str:  # noqa: ANN001
+    """用户当前的主题（设置里那个「浅色主题」开关）。演示要**跟着应用走**。
+
+    从前套件只有深色一份、这里也没有这个概念，于是切了浅色的用户：正文白底，
+    一开演示就糊一块黑的（用户："色号和元件都对了，但是总体组合起来的风格还是
+    不搭配啊！我们的软件是白底的，它的沙盒都是黑底的。"）。
+    色号抄对只是第一步 —— **主题**也得跟上来。
+    """
+    try:
+        from .settings_store import load as settings_load
+
+        conf = settings_load(db) or {}
+    except Exception:  # noqa: BLE001
+        return "dark"  # 读不到就按默认来（`app.css` 的 `:root` 就是深色那份）
+    return "light" if str(conf.get("theme") or "").strip().lower() == "light" else "dark"
+
+
+def _demo_page(page: str, title: str, theme: str = "dark") -> str:
     """把模型给的 HTML 变成**带套件**的一页。
 
     ## 为什么由服务端注入，而不是让模型自己引
@@ -1345,7 +1394,26 @@ def _demo_page(page: str, title: str) -> str:
     路径带 `__ORIGIN__`：沙箱里相对路径解析不了，绝对地址只能由宿主填
     （见 `pyodide_base` 的说明）。
     """
-    head = ['<link rel="stylesheet" href="' + DEMO_KIT_DIR + 'qf-kit.css">']
+    # 主题写在 `<html>` 上：套件 CSS 的两套 token 就靠它切（`html[data-theme='light']`）。
+    # **一律由这里决定** —— 模型不该、也没法知道用户此刻用的是哪一套；它自己写的
+    # `data-theme` 会被抹掉（不然它会按"深色好看"自作主张，那就白底上糊黑的）。
+    attr = ' data-theme="' + theme + '"'
+    page = re.sub(r'\s*data-theme="[^"]*"', "", page, count=1, flags=re.I)
+    if re.search(r"<html[^>]*>", page, re.I):
+        page = re.sub(
+            r"<html[^>]*>",
+            lambda match: match.group(0)[:-1] + attr + ">",
+            page,
+            count=1,
+            flags=re.I,
+        )
+    head = [
+        # 公式：与正文**同一份** KaTeX（模型偶尔要在演示里写数学）。
+        # 路径与 kit 一样带 `__ORIGIN__`：沙箱里相对路径解析不了。
+        '<link rel="stylesheet" href="' + DEMO_ASSET_DIR + 'katex.css">',
+        '<script src="' + DEMO_ASSET_DIR + 'katex.min.js"></script>',
+        '<link rel="stylesheet" href="' + DEMO_KIT_DIR + 'qf-kit.css">',
+    ]
     for name in DEMO_KIT_FILES:
         head.append('<script src="' + DEMO_KIT_DIR + name + '"></script>')
     block = "\n".join(head)
@@ -1363,7 +1431,7 @@ def _demo_page(page: str, title: str) -> str:
             flags=re.I,
         )
     return (
-        '<!doctype html>\n<html lang="zh">\n<head>\n<meta charset="utf-8">\n'
+        '<!doctype html>\n<html lang="zh"' + attr + '>\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         "<title>" + html.escape(title) + "</title>\n" + block + "\n</head>\n<body>\n"
         + page
@@ -1444,7 +1512,10 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
         }
 
     return {
-        "demo": {"title": title[:80], "html": _demo_page(page, title)},
+        "demo": {
+            "title": title[:80],
+            "html": _demo_page(page, title, _demo_theme(db)),
+        },
         "note": "演示已挂在这条消息上（他那边是个沙箱 iframe，套件已自动注入）。"
         "**不要**把同一份 HTML 再贴进正文 —— 正文里说清它在演示什么、看哪里就行。",
     }
@@ -2600,6 +2671,11 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
     # 排在最后：前面四组都是"他的东西"，这一组是**往外看**（需要单独配密钥，
     # 见 `app/websearch.py`）。放在末尾也让顶栏那排图标的既有位置不变。
     ("web", "联网", "上外网搜、把网页读成正文"),
+    # 「对话树」这一组（`docs/对话树.md` §三：**森林靠工具访问，不靠预先建边**）：
+    # 跨树连接不做"预先建链接"，而是"当场查"—— 与这个项目一贯的做法一致
+    #（关系靠解析、靠查，不靠标注）。它白拿两样现成的：挂载开关与权限档。
+    # **排在末尾**：前面几组的既有位置一个都不动（`web` 当初也是这么来的）。
+    ("trees", "对话树", "翻别的对话：找哪一段、看它的形状、取原文"),
 )
 
 GROUP_LABELS: dict[str, str] = {key: label for key, label, _ in GROUPS}
@@ -2647,45 +2723,147 @@ def run_subagent(db, args, ctx=None) -> dict:  # noqa: ANN001
         tools=sys.modules[__name__],
     )[1]
 
+#: 「对话轨迹」曾经是一个工具（`read_learning_tree`），现在**不再是**：
+#: 它是每轮自动挂进系统提示的仪表盘，见 `app/recursion.py` 的 `dashboard()`。
+#: 理由（用户）："我认为它不应该被做成工具，对话轨迹是 llm 长期可见的用户信息仪表盘。"
+#: 工具是**要模型想起来的**东西，而"这个人在怎么学"是它说每句话时都该带着的背景 ——
+#: 做成工具时，模型只会在被明确要求复盘时看一眼，平时对用户一无所知。
+#: 骨架渲染（`recursion.outline`）与按 id 读全文（`recursion.read_nodes`）都留着：
+#: 前者给仪表盘用，后者留给"要把某一支带进这轮上下文"那个旋钮（docs/对话树.md §七）。
 
-def read_learning_tree(db, args, ctx=None) -> dict:  # noqa: ANN001
-    """把**这次会话**的对话树，按「递归学习法」的形状读出来（实现见 `app/recursion.py`）。
 
-    用户的学习方式是**递归**的：一个概念不懂就求讲解，讲解里又冒出几个不懂的概念，
-    就**一个一个问出去**（每个是一支），弄明白了再回到主线。这个形状只存在于
-    `messages.parent_id` 里 —— 重放成一条扁平的消息列表就没了，所以得专门读。
+# ------------------------------------------------------------------ 对话树（森林那一层）
+#
+# `docs/对话树.md` §三：**森林靠工具访问，不靠预先建边**。跨树连接不做"预先建链接"，
+# 而是"当场查" —— 于是"我上次是不是钻过这个"这件事落在四个只读工具上：
+#
+#     list_conversations    别处有哪些对话（先看有什么）
+#     search_conversations  按内容找（"我到底在哪儿学过这个"）
+#     read_tree             看某棵树的形状（主线怎么走、在哪儿下钻、每支多深）
+#     read_tree_nodes       按 id 取某几条的原文（骨架只给预览）
+#
+# 与仪表盘（`recursion.dashboard`）的分工必须说清：仪表盘是**这一条**对话的轨迹，
+# 每轮自动带上、不用它去查；这一组是**别的**对话 —— 它得自己想到去翻，所以
+# `routers/chat.py` 的 `GROUP_PROMPTS["trees"]` 里写明了"什么时候该翻、怎么翻才对"。
 
-    树里三种记号**必须分清**（混了整份复盘就全错）：
-      * `◆` 他**挑出了多个概念、分别下钻** —— 递归学习法的动作本身，是主线
-      * `⟳` 同一个提问**又生成了一次** —— 重试（常见于上一次是空回复），不是新概念
-      * `↺` 他把**同一句话又发了一遍** —— 改写重发（"我上一句没说清"），不是新概念
 
-    还有一条**不许替他下结论**的：一支问完是"弄明白了"还是"先放着了"，树里
-    看不出来（两种都是叶子）。真要判断就结合内容说，或者干脆问他。
+def _tree_of(db, ctx, args):  # noqa: ANN001, ANN202
+    """`conversationId` → Conversation；缺省 = **当前这一条**。返回 `(会话, 为什么没有)`。
+
+    不给"猜一条"的余地：认不出来就把话说清楚 —— 模型据此能自己改正（换个 id、或者先
+    `list_conversations` 看一遍），这比抛异常、或者默默读一条别的对话好得多。
     """
-    from . import recursion  # 延迟导入：它要用 Message 那一套模型
-
-    conv_id = (ctx or {}).get("conversationId")
-    if not conv_id:
-        return {"error": "这次调用没有带上会话 —— 复盘得说清是哪一条对话。"}
+    raw = str((args or {}).get("conversationId") or "").strip()
+    if not raw:
+        raw = str((ctx or {}).get("conversationId") or "").strip()
+    if not raw:
+        return None, "没给 conversationId，这一轮也不知道当前是哪条对话。"
     try:
-        conv = db.get(Conversation, uuid.UUID(str(conv_id)))
+        cid = uuid.UUID(raw)
     except (TypeError, ValueError):
-        return {"error": "会话 id 不是合法形式。"}
+        return None, "conversationId 不是合法的 id：" + raw
+    conv = db.get(Conversation, cid)
     if conv is None:
-        return {"error": "没找到这条会话。"}
+        return None, "没有这条对话。先用 list_conversations 看有哪些，再用它给的 id。"
+    return conv, ""
 
-    ids = args.get("ids")
-    if ids:
-        return {"tree": recursion.read_nodes(db, conv, ids), "note": "这是你点名的那几条的全文。"}
 
-    stat = recursion.brief(db, conv)
+def list_conversations(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """他和我坐下过的每一段（最近动过的在前）。
+
+    为什么要给**条数**：那是"这一段值不值得读"最省的一个判断 —— 一条对话三两轮，
+    看形状就够了；几十条的那种，先看它长什么样再决定读哪一段。
+    """
+    limit = _clamp((args or {}).get("limit"), 1, 50, 20)
+    rows = db.execute(
+        select(Conversation, func.count(Message.id))
+        .outerjoin(Message, Message.conversation_id == Conversation.id)
+        .group_by(Conversation.id)
+        .order_by(Conversation.updated_at.desc())
+        .limit(limit)
+    ).all()
+    now = str((ctx or {}).get("conversationId") or "")
     return {
+        "items": [
+            {
+                "conversationId": str(conv.id),
+                "title": conv.title or "未命名",
+                "messages": count,
+                "updatedAt": recursion.stamp(conv.updated_at),
+                "current": str(conv.id) == now,
+            }
+            for conv, count in rows
+        ],
+        "note": "`current: true` 的那条就是你们现在正说着的。要看某一棵的形状用 read_tree，"
+                "要取某几条的原文用 read_tree_nodes。",
+    }
+
+
+def search_conversations(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """在**所有对话**的消息正文里搜一段字 —— 「我上次是不是讲过这个」。
+
+    复用 `/api/chat/search` 那一份实现（它就在 `routers/chat.py`，按内容找东西的规矩
+    只有那一处）。延迟导入是因为 `routers` 那一层要 import 本模块，顶层 import 会成环。
+    """
+    from .routers import chat as chat_router
+
+    query = str((args or {}).get("query") or "").strip()
+    limit = _clamp((args or {}).get("limit"), 1, 50, 12)
+    found = chat_router.search_messages(db=db, q=query, limit=limit)
+    now = str((ctx or {}).get("conversationId") or "")
+    return {
+        "query": found.get("query") or query,
+        "items": [
+            {
+                "conversationId": one.get("conversationId"),
+                "messageId": one.get("messageId"),
+                "title": one.get("title"),
+                "role": one.get("role"),
+                "snippet": one.get("snippet"),
+                "at": recursion.stamp(
+                    datetime.fromtimestamp(int(one.get("atMs") or 0) / 1000, tz=UTC)
+                ),
+                "current": str(one.get("conversationId")) == now,
+            }
+            for one in (found.get("items") or [])
+        ],
+        "note": found.get("note")
+        or "命中点只看得到一句上下文；要整段就用 read_tree_nodes 按 messageId 取原文。",
+    }
+
+
+def read_tree(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """读**一棵对话树**的形状：主线怎么走的、在哪儿下钻过、每一支各自多深。
+
+    骨架里每条都是预览（几十字）。要逐字看的，把它行首那个 `#id` 交给
+    `read_tree_nodes` —— 两段式（先看形状，再按 id 取）就这两步。
+    """
+    conv, why = _tree_of(db, ctx, args)
+    if conv is None:
+        return {"error": why}
+    return {
+        "conversationId": str(conv.id),
+        "title": conv.title or "未命名",
         "tree": recursion.outline(db, conv),
-        "note": "上面是这次会话的树：%d 条 · 最深 %d 层 · %d 处下钻 · %d 个新概念 · "
-        "%d 次改写重发。行首 `#数字` 是消息 id —— 要看某几条的全文，"
-        "再调一次并把 id 放进 `ids`。"
-        % (stat["messages"], stat["depth"], stat["forks"], stat["drills"], stat["reasks"]),
+        "note": "这是《" + (conv.title or "未命名") + "》这棵树的骨架。",
+    }
+
+
+def read_tree_nodes(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """按 id 取某几条消息的**原文**（骨架只给预览，这一步才读全文）。
+
+    一次别点太多：这些原文会跟着历史被每一轮重放（见 `app/agent_loop.py` 的预算），
+    通常取"分叉点的上一轮"那几条就够。
+    """
+    conv, why = _tree_of(db, ctx, args)
+    if conv is None:
+        return {"error": why}
+    ids = (args or {}).get("ids") or []
+    if isinstance(ids, (str, int)):
+        ids = [ids]
+    return {
+        "conversationId": str(conv.id),
+        "tree": recursion.read_nodes(db, conv, list(ids)),
     }
 
 
@@ -2898,28 +3076,6 @@ REGISTRY = {
             "properties": {"limit": {"type": "integer", "description": "最多几条，默认 10"}},
         },
     },
-    "read_learning_tree": {
-        "access": "read",
-        "group": "quiz",
-        "fn": read_learning_tree,
-        "description": "把**这次对话**的学习轨迹读出来：他是一条主线顺下来的，还是"
-        "在每个不懂的概念处**分叉下钻**（递归学习法）。返回缩进过的树 + 下钻清单。"
-        "用户问「我这次学了什么」「复盘一下」「我是不是跑偏了」「我这样学对不对」"
-        "时用它 —— **不要凭上下文里的印象答**：树记在 `parent_id` 里，"
-        "你看到的历史是拍平过的一条线，分叉在其中看不见。"
-        "行首 `#数字` 是消息 id，要细看某几条就把 id 放进 `ids` 再调一次。"
-        "树里 `◆` 是下钻、`⟳` 是重新生成、`↺` 是改写重发 —— 三者不同义，别混。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ids": {
-                    "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "要看全文的那几条消息 id（省略则返回整棵树的骨架）",
-                }
-            },
-        },
-    },
     "run_python": {
         "access": "exec",
         "group": "sandbox",
@@ -2967,10 +3123,48 @@ REGISTRY = {
         "htm、d3 v7、Tailwind，以及 `window.QFKit`：\n"
         "* `QFKit.mount(<App/>)` —— 一行挂载\n"
         "* `QFKit.Frame / Card / Row / Btn / Legend / KV / Note / Chip` —— 布局与信息块\n"
-        "* `QFKit.useTicker(speed, {paused})` —— 帧驱动步进（**不要**用 setInterval 改 DOM）\n"
+        "* `QFKit.useTicker(speed, {paused})` —— 帧驱动步进（**不要**用 setInterval 改 DOM）。**默认每秒 6 步（约 167ms 一步），照用就行** —— 别为了「显得流畅」把它调快：一步快过 100ms 就只剩糊影了（从前基准是每秒 60 步、骨架里写着 1，于是所有演示都闪得看不清，这是被抱怨过的）\n"
         "* `QFKit.scales({width,height,xDomain,yDomain})` + `QFKit.useAxis(ref,{scales})` —— "
         "坐标轴与数据**共用同一组比例尺**（手画坐标轴十次九次是歪的）\n"
         "* `QFKit.colors` —— 色板（`series` 给多条序列）\n"
+        "* `QFKit.Plot` —— **坐标图就用它**："
+        "`<QFKit.Plot width={640} height={300} xDomain={[0,50]} yDomain={[0,1]} xLabel=\"时钟\">"
+        "{({scales}) => <g>{/* 用 scales.x()/scales.y() 算坐标 */}</g>}</QFKit.Plot>`。"
+        "边距与坐标轴的位置它都算好了 —— 自己拿 `scales` 拼、又漏了那次 translate，"
+        "就会把 y 轴压在画布左边缘（刻度被切掉半个，实测发生过）。\n"
+        "* `QFKit.Math` / `QFKit.tex` —— **公式**（KaTeX 已备好，与正文同一份）："
+        "`<QFKit.Math tex=\"x^2+y^2\" />`（`inline` 传 true 随文字走）；"
+        "要在别处用就 `QFKit.tex('…')` 拿 HTML，塞进 `dangerouslySetInnerHTML`。\n"
+        "**动画节奏 —— 每拍多少毫秒由你判断**：一拍一拍的东西用 "
+        "`QFKit.useStepper(每拍毫秒)`（离散、整数步；连续插值才用 useTicker）。"
+        "先数清这个演示一共演几拍，再让整段落在 **3–10 秒**：20 个数冒泡 ≈ 200 拍，"
+        "那就一次跳好几拍、或把规模讲小，而不是把每拍压到 20ms —— 看不清就白画了。"
+        "拿不准给 400ms。另配一个播放/暂停或单步控件，能停就让它停。\n"
+        "**本站的视觉风格 —— 这是设计规范，别自己发明**。一句话："
+        "**克制的双主题（跟用户设置走）+ 面板与细边框 + 留白 + 品牌色只做点缀**。"
+        "演示要像「这个应用里的一张卡片」，不是「一个网站」。\n"
+        "* **主题**：页面已经按用户当前主题配好（白底或深底）。**不要自己设 `background` / `color`**，"
+        "用 `QFKit` 的组件与 `QFKit.colors` —— 它是**活的**，白底主题下取到的就是白底那套。"
+        "白底上要把青色当**文字/线条**用时用 `colors.pri3`（更深的同色）：`colors.pri` 是亮青，"
+        "衬白底对比度不够，只适合做填充块。要更多条序列就靠**亮度**拉开，不要新造色号。\n"
+        "* **颜色是硬规矩：每一个色都得来自 `QFKit.colors` 或 `currentColor`，不许写 `#` 开头的裸色号**。"
+        "实测有一份演示写了 65 个裸色号、`QFKit.colors` 一次没用 —— 那些色是照深底挑的，"
+        "用户切到白底主题后就成了白字白底（原话：「底是白的，但是 llm 画出来的东西里面，字也变白了」）。"
+        "色块上的字用 `colors.bg`（与那块底色相反）或 `currentColor`，**不要写 `#fff`**。"
+        "套件渲染完会**自动**把读不清的文字换成当前主题的字色 —— 那是兜底，不是许可。\n"
+        "* **层次靠背景，不靠阴影**：三档背景（`bg` / `panel` / `panel2`）已经够分出层级；"
+        "`QFKit` 的卡片自带那一档**唯一允许**的阴影，**别再叠 `box-shadow`** —— "
+        "满屏浮起来的面板是最典型的「AI 味」。\n"
+        "* **边框要看得见**：分隔与轮廓用 `colors.line` / `colors.line2`，别拿阴影代替边框。\n"
+        "* **圆角只有三档**：8 / 12 / 18（小控件 / 卡片 / 大面板），同一层里必须一致。\n"
+        "* **间距只用 4 的倍数**：8 / 12 / 16 / 24，同级元素之间用同一个值。"
+        "不要 7、13、22 这种数 —— 对不齐就是这么来的。\n"
+        "* **字号只有三档**：标题 18、正文 14、注释 12，别为了「层次感」再加第四档。\n"
+        "* **动效**用套件里那一条（180ms 的同一条缓动），别自己写 `transition: all .3s` 那种。\n"
+        "* **留白是一部分**：一屏只讲一件事，宁可少画点。\n"
+        "* **对齐**：正文左对齐、数字右对齐；居中只用在标题那一层。\n"
+        "* **不要**：渐变背景、霓虹发光、玻璃拟态（毛玻璃）、emoji 当图标、"
+        "硬编码 `#fff` / `#000`、卡片里再套卡片。\n"
         "**照这个骨架写，别从空白页开始**：\n"
         "<div id=\"app\"></div>\n"
         "<script type=\"text/babel\">\n"
@@ -3318,6 +3512,98 @@ REGISTRY = {
                 },
             },
             "required": ["url"],
+        },
+    },
+    # ---- 对话树：翻**别的**对话（这一组见 `docs/对话树.md` §三）----
+    "list_conversations": {
+        "access": "read",
+        "group": "trees",
+        "fn": list_conversations,
+        "description": (
+            "有哪些对话（他和你坐下过的每一段，最近动过的在前）。\n"
+            "**它是一张索引**：标题、条数、最后动过的日子，以及哪一条是你们现在正说着的。\n"
+            "什么时候用：他说「上次」「之前」「我以前问过」而你不确定是哪一段时；"
+            "或者你要去别的对话里找东西、先得知道有哪几棵能翻。\n"
+            "拿到 id 之后：看形状用 `read_tree`，取原文用 `read_tree_nodes`。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "最多看几条（默认 20，上限 50）",
+                },
+            },
+        },
+    },
+    "search_conversations": {
+        "access": "read",
+        "group": "trees",
+        "fn": search_conversations,
+        "description": (
+            "在**所有对话**的消息正文里搜一段字 —— 「我到底在哪儿学过这个」。\n"
+            "命中会给那一条的 snippet（命中点前后各一句），够判断是不是你要找的那句；"
+            "接着拿 conversationId + messageId 走 `read_tree_nodes` 取整段。\n"
+            "**至少两个字**：一个字（「的」「是」）会命中几乎全部消息，那不是搜索。\n"
+            "先搜再答 —— 「我记得没讲过」这种话在搜过之前不该说。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "要搜的一段字（两个字以上）"},
+                "limit": {
+                    "type": "integer",
+                    "description": "最多看几条命中（默认 12，上限 50）",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "read_tree": {
+        "access": "read",
+        "group": "trees",
+        "fn": read_tree,
+        "description": (
+            "读**一棵对话树**的形状：主线怎么走的、在哪儿下钻过、每一支各自有多深。\n"
+            "这是他学习方式的现场记录（递归学习法：从讲解里挑出不懂的词、一个个问出去）——"
+            "**「我上次是怎么学的 / 那个东西我钻过没有」这类问题，看它比看聊天记录准**。\n"
+            "不给 conversationId 就是你现在正说着的这一条。\n"
+            "骨架里每条只有预览；要逐字看的，把它行首的 `#id` 交给 `read_tree_nodes`。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "conversationId": {
+                    "type": "string",
+                    "description": "哪一条对话（缺省 = 当前这条；用 list_conversations 给的 id）",
+                },
+            },
+        },
+    },
+    "read_tree_nodes": {
+        "access": "read",
+        "group": "trees",
+        "fn": read_tree_nodes,
+        "description": (
+            "按 id 取某几条消息的**原文** —— `read_tree` 骨架里那些 `#id` 就交给它。\n"
+            "为什么要两段式：一次把整棵树展开是骨架的十几倍，而这些原文还会随历史每轮重放。"
+            "所以先看形状，再只把需要逐字看的那几条（分叉点的上一轮、他反复问的那几个词）取出来。\n"
+            "一次别点太多，通常几条就够。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "conversationId": {
+                    "type": "string",
+                    "description": "哪一条对话（缺省 = 当前这条）",
+                },
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "要读全文的消息 id（骨架里行首的 #号那个数字）",
+                },
+            },
+            "required": ["ids"],
         },
     },
     # ---- 元能力：不属于任何一块（见 META_TOOLS），挂了任何工具时都在 ----

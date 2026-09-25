@@ -60,7 +60,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from .. import agent_loop, share, tools
+from .. import agent_loop, share, skills as skill_lib, tools
 from .. import ai_gateway as gateway
 from .. import attachments as attach
 from .. import parts as msgparts
@@ -82,8 +82,13 @@ def mounts_state(db: DbSession) -> dict:
     `declared` 是从 `tools.specs()` 真算出来的，不是另抄一份 ——
     "图标亮着"与"模型看得到几个工具"必须能对得上，而这是唯一能证明它俩一致的办法
     （改完在界面上量一下 `declared` 的条数，就知道开关有没有真的接上）。
+
+    `skills` 是 `/` 那份清单（`app/skills.py`）—— 它跟着这一份一起发，是为了让输入框那个
+    选择器**不用自己抄一份名字**：加了新 skill，界面自动就有（抄成两份必然漂，这条吃过）。
     """
-    return mounts.describe(db)
+    out = mounts.describe(db)
+    out["skills"] = skill_lib.catalog()
+    return out
 
 
 @router.post("/mounts")
@@ -134,10 +139,21 @@ def sandbox_shell() -> dict:
     为什么由服务端给：壳里要填 Pyodide 的 indexURL 和预载包名单 —— 那是 `tools.py`
     才知道的事实（本机缓存路径、支持哪几个包），前端不该再抄一份。
 
-    前端**第一次真要跑 Python 时**才去建它：页面一打开就下 60MB 运行时，
-    对不跑 Python 的人不公平。建好之后它常驻 —— 那笔启动成本只付一次。
+    口径改过一次（2026-09-25）：从前是"前端**第一次真要跑 Python 时**才去建它"，
+    理由是"页面一打开就下 60MB 运行时，对不跑 Python 的人不公平"。用户的原话是
+    "启动以后 pyodide 啊，latex 这些都自动启动准备好，尽量让用户进入对话的时候无感知"
+    —— 于是前端改成**空闲时就建**（见 chat.js 的 shellWarm）：解释器初始化那几秒
+    发生在用户还在读上一条消息的时候，而不是他按下"运行"之后。前端那边仍然会
+    跳过计费 / 2G 网络，所以"不公平"那一条并没有丢。
+
+    `ready` = 运行时是否已经在**本机**（`heavy_deps` 那 76M 缓存好了没有）。
+    前端拿到 `False` 时**不许**建壳：壳里 `loadPyodide({indexURL: ''})` 会起不来，
+    而壳一旦建过就不会再建，真正要跑 Python 时就一直是"运行中…"。首启那个把
+    运行时取回来的后台线程还在跑的时候会命中这种情况 —— 那时候留原来的懒启动路。
     """
-    return {"html": tool_registry.shell_page()}
+    from .. import heavy_deps  # noqa: PLC0415
+
+    return {"html": tool_registry.shell_page(), "ready": heavy_deps.is_ready()}
 
 # 提示词按"这一版挂了哪几组工具"拼：基座 + 每组一份片段 + 未挂组的"别提"清单。
 #
@@ -148,7 +164,17 @@ def sandbox_shell() -> dict:
 #   1) **没挂的能力不进提示词**（连"工具"这个词都不出现）；2) 极简模式不交代应用领域。
 VOICE = (
     "**所有输出一律用中文**，直接讲清机制与因果，"
-    "必要时用 Markdown 与 LaTeX，不要空泛鼓励，也不要复述问题。"
+    "必要时用 Markdown 与 LaTeX。"
+    "**正文里画图时，把 LaTeX 包进 `$$` 即可**（`\\[ … \\]` 也行）。正文里的图是"
+    "交给**真的 TeX 引擎**（TikZJax）编译的：带 `\\begin{…}` 的公式都走它 —— TikZ、"
+    "circuitikz、tikz-cd、pgfplots、tikz-feynhand 都在，按 TikZ 的正常写法写就行"
+    "（`\\draw`、`\\node`、样式指令都认）。只有两点：**必须包在 `$$` 里**（裸写、"
+    "或塞进代码围栏，都只会显示成源码）；宏包只有常见那一批，冷门的会编不出来，"
+    "那种场合改用文字说明或沙箱演示"
+    "两条经验：**图的大小就是你画的坐标有多大**（TikZ 1cm ≈ 38px）—— 想让它显眼就把坐标"
+    "画大（`\\draw (0,0) -- (4,2);` 而不是 `-- (1,0.5);`），别去调宽度样式（会被裁掉）；"
+    "tikz-cd 只用常见写法（`\\arrow[r, \"f\"]`、`\\arrow[d, \"g\"]`、`swap`、`bend left`），"
+    "`phantom`、`very near start` 这类装饰性选项引擎不一定支持 —— 编不出来就简化它）"
     "（如果你确实想先交代一句，那句也必须是中文；任何情况下都不要输出英文句子。）\n"
     # 这一条**不分模式** —— 极简那份另有自己的版本（见 MINIMAL_PROMPT），而挂了
     # 工具的那几份原来一条都没写。后果实测过两次：模型张嘴就是"你最近在看 NOC、
@@ -222,8 +248,9 @@ GROUP_PROMPTS = {
         "讲解里又冒出几个不懂的概念，就**一个一个问出去** —— 每个是一支；"
         "弄明白了再回到主线。所以他会频繁在某一轮之后**分叉**，那不是跑偏，是方法本身。\n"
         "他问「我这次学了什么 / 复盘一下 / 我是不是跑偏了 / 这样学对不对」时，"
-        "**先用 `read_learning_tree` 把这次对话的树读出来再答** —— 分叉的形状只存在于 "
-        "`parent_id` 里，你手上的历史是拍平的一条线，凭印象说一定说错。\n"
+        "**先看系统提示里那份「他的学习轨迹」再答** —— 那是每轮自动带上的仪表盘："
+        "他探过哪些概念、停在哪几支、主线怎么走到这儿的都在上面。"
+        "分叉的形状只存在于 `parent_id` 里，你手上的历史是拍平的一条线，凭印象说一定说错。\n"
         "题库与进度：查题用 `get_existing_questions`（默认**不带答案**），"
         "看掌握度用 `get_mastery`，看该复习什么用 `get_due_reviews`。\n"
         "要考他就调 `push_question` 推一张卡，或 `create_question` 现编一道 —— "
@@ -267,12 +294,28 @@ GROUP_PROMPTS = {
         "`read_web_page`。引用时**把网址或 DOI 写上**，让他能点开核对；读不到就说读不到，"
         "不要拿摘要凑，也不要因为没搜到就改口编。"
     ),
+    "trees": (
+        "**别的对话**在这一组。注意与你头顶那份「他的学习轨迹」的分工：那份是**这一条**"
+        "对话的轨迹，每轮自动带上、不用你查；这一组管的是**别的**对话 —— "
+        "`docs/对话树.md` §三 把这一层叫森林，规矩是**靠工具访问，不靠预先建边**："
+        "跨树的连接不预先建好，而是「当场查」。\n"
+        "**什么时候必须去翻**：他说「上次」「之前」「我以前问过」「我是不是学过这个」时，"
+        "**先查再答**。你手上只有当前这条主线，而「我记得没讲过」这种话在搜过之前不该说 —— "
+        "那是你的印象，不是记录。\n"
+        "翻的顺序是三步，别跳：先 `list_conversations` 看有哪几段（标题、条数、最近动过的"
+        "日子），再按内容 `search_conversations`（命中会给一句上下文），"
+        "然后 `read_tree` 看那一棵的**形状**（主线怎么走、在哪儿下钻、每支多深），"
+        "最后 `read_tree_nodes` 把需要逐字看的那几条取出来 —— 骨架里只有预览。\n"
+        "**引用要带出处**：哪一段对话、第几条消息。别把两段揉成一句「你之前说过」——"
+        "那等于把出处丢掉了，他回头看会对不上。\n"
+        "**只读**：翻到的任何东西都不许在其中写一个字（这一组四个工具全是只读档）。"
+    ),
 }
 
 # 组名 → 中文，未挂时用来告诉模型"别提这些"。
 GROUP_LABELS = {
     "notes": "笔记", "library": "资料", "graph": "知识图谱", "quiz": "题库与进度",
-    "sandbox": "沙箱", "web": "联网",
+    "sandbox": "沙箱", "web": "联网", "trees": "对话树",
 }
 
 
@@ -291,11 +334,15 @@ GROUP_TOOLS = {
     "notes": ("list_notes", "read_note", "search_notes", "write_note", "edit_note"),
     "library": ("attach_material", "search_material", "search_library", "read_material"),
     "graph": ("search_knowledge", "get_point_detail", "explore_graph"),
-    "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews", "read_learning_tree",
+    # `read_learning_tree` **不再是工具**：轨迹是每轮自动带上的仪表盘
+    #（见 `recursion.dashboard` 与 `build_prompt(..., dashboard=...)`）。
+    "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews",
              "grade_problem", "flag_question", "mark_mastered", "push_question",
              "create_question"),
     "sandbox": ("run_python", "render_demo"),
     "web": ("web_search", "search_papers", "read_web_page"),
+    # 森林那一层（`docs/对话树.md` §三）：翻**别的**对话。四个全是只读档。
+    "trees": ("list_conversations", "search_conversations", "read_tree", "read_tree_nodes"),
 }
 
 
@@ -355,11 +402,21 @@ def mode_notice(previous, mounted, declared=None) -> str:
     )
 
 
-def build_prompt(mounted, previous=None, declared=None) -> str:
+def build_prompt(
+    mounted, previous=None, declared=None, dashboard: str = "", skill_block: str = ""
+) -> str:
     """按这一版挂载的组拼提示词。空集 = 极简模式（见 MINIMAL_PROMPT）。
 
     `previous` 是**上一条用户消息当时挂载的组**；与现在不同时，末尾追加一条
     "模式变了"的实时提示（见 `mode_notice`）。
+
+    `dashboard` 是 `recursion.dashboard` 算出来的「他的学习轨迹」，**两种模式都带上**：
+    它不是工具（用户："对话轨迹是 llm 长期可见的用户信息仪表盘"），不受挂载影响 ——
+    极简模式只是"没有工具"，不是"不认识这位用户"。
+
+    `skill_block` 是他用 `/` 召唤的那个流程（`app/skills.py`），同样两种模式都带 ——
+    它与挂载无关：那是"他要求我这一段怎么陪他"，不是"我能查什么"。放在靠后的位置：
+    它是**这一轮的行为约束**，与 `mode_notice` 一样属于"现在最要紧的"。
     """
     keys = [k for k in GROUP_PROMPTS if k in set(mounted or ())]
     if not keys:
@@ -371,6 +428,10 @@ def build_prompt(mounted, previous=None, declared=None) -> str:
             note = mode_notice(previous, mounted, declared or [])
             if note:
                 out += "\n" + note
+        if dashboard:
+            out += "\n\n" + dashboard
+        if skill_block:
+            out += "\n\n" + skill_block + "\n\n" + SKILL_TAIL
         return out
     off = [GROUP_LABELS[k] for k in GROUP_PROMPTS if k not in set(mounted or ())]
     parts = [
@@ -383,10 +444,56 @@ def build_prompt(mounted, previous=None, declared=None) -> str:
             "**这一版没有挂**：" + "、".join(off) + "。这些你看不到，"
             "不要提议去查它们，也不要假装能看到。"
         )
+    if dashboard:
+        parts.append(dashboard)       # 「他是谁、走到哪儿了」：每轮都带（见 recursion.dashboard）
+    if skill_block:
+        parts.append(skill_block + "\n\n" + SKILL_TAIL)
     notice = mode_notice(previous, mounted, declared)
     if notice:
         parts.append(notice)          # 放最后：这是"现在"最要紧的一条
     return "\n".join(parts)
+
+
+#: 带着流程时，末尾那句提醒。放在**最靠后**（紧挨 `mode_notice`）是因为它压过一切：
+#: 一条"要不要换种讲法"的风格建议，不该把"讲的人是他"这件事盖掉。
+SKILL_TAIL = (
+    "**上面这个流程压过别的风格要求**：它管的是这一轮**谁在做主**。"
+    "与他平时的偏好（口吻、详细程度）冲突时，以流程为准。"
+)
+
+#: 思考强度那一档，写进系统提示的那一句。
+#:
+#: 为什么除了给上游传参数，还要**说出来**：上游认的只有"开/关"（见
+#: `ai_gateway.THINK_LEVELS`），中间几档没有可靠的字段可传。而用户抱怨的
+#: overthinking（"一个简单的问题思考特别久"）恰恰发生在**开着思考**的时候 ——
+#: 所以"省着点"这一档必须靠说清"这一轮该想多深"来落地。
+#:
+#: 写法上有个讲究：**说"别 overthinking"没用**，得给它一个可执行的判据
+#: （先给答案 / 遇到分叉才多想一步 / 想不下去就停下来问）。`normal` 那档不加 ——
+#: 不加就是原来的行为，别在提示词里塞一句等于没说的话。
+_THINKING_LINES: dict[str, str] = {
+    "off": (
+        "**这一轮不要思考，直接答。** 他按了「不想」—— 有把握就直接给结论，"
+        "拿不准就说不准，不要展开推理，也不要列「我先想想」这种过场。"
+    ),
+    "low": (
+        "**这一轮想少一点。** 这是个简单问题：先给答案，能一句话说清就一句话。"
+        "只有真遇到分叉（两种说法都讲得通）才多想一步；想不下去就停下来问他，"
+        "别自己绕圈。"
+    ),
+    "high": (
+        "**这一轮多想几步。** 他按了「使劲」：把前提、边界、反例都过一遍，"
+        "把没把握的地方**说清是哪里没把握**，别拿一堆肯定句凑长度。"
+    ),
+}
+
+
+def thinking_line(effort: object) -> str:
+    """思考强度 → 系统提示末尾那一句（`normal` 与不认识的值都不加）。"""
+    from .. import ai_gateway
+
+    line = _THINKING_LINES.get(ai_gateway.thinking_level(effort), "")
+    return "\n\n" + line if line else ""
 
 
 # 消息最长留 **20 万字**：够贴一整篇论文 / 技术文章，又还挡得住"把整本书灌进来"。
@@ -1372,9 +1479,10 @@ def post_message(
     reply_to = body.get("replyTo")
     # 「深度思考」（输入框里那颗药丸）：**缺省 = 开** —— 默认模型是
     # `deepseek-flash`，思考是它的常态；前端关掉才传 false，那时由
-    # `gateway.thinking_params` 给上游显式 `thinking: disabled`。
+    # 思考强度：前端传等级（"off"/"low"/"normal"/"high"），老客户端传布尔也认
+    # （`gateway.thinking_level` 把两者收敛成同一档）。往下**原样**交给 `thinking_params`。
     _deep = body.get("thinking")
-    thinking = True if _deep is None else bool(_deep)
+    thinking = True if _deep is None else _deep
 
     conf = gateway.resolve_config(db)
     gateway.enforce_quota(db)
@@ -1632,21 +1740,19 @@ def stop_message(cid: uuid.UUID, mid: int, db: DbSession) -> dict:
     return {"ok": True, "status": m.status}
 
 
-def _subtree_size(db, cid: uuid.UUID, mid: int) -> int:
-    """这条消息连同它下面一共几条（**删之前**先数一下）。
-
-    为什么要数：用户是在对话树上点了一个节点，而他**看不见那下面挂了多少** ——
-    一声不吭删掉十几条，那不是"操作成功"，那是悄悄删了他的东西。数出来之后，
-    界面能把它写进确认框、也写进返回值里，这一步才是有交代的。
+def _subtree_ids(db, cid: uuid.UUID, mid: int) -> list[int]:
+    """以 `mid` 为根的整棵子树的 id（**含根**），按层序。
 
     用显式队列而不是递归：这棵树是用户随手点出来的，没有深度上限；
     顺带带一道 `seen` 与上限，碰到病态数据（万一绕着环）也不至于把请求拖死。
+
+    删（`delete_message`）与分家（`split_message`）都要这一份名单 —— 写两遍遍历迟早
+    有一处忘了防环，所以数子树的 `_subtree_size` 也走这里（`len(ids)`）。
     """
-    total = 0
+    ids = [mid]
     frontier = [mid]
     seen = {mid}
-    while frontier and total < 10000:
-        total += len(frontier)
+    while frontier and len(ids) < 10000:
         rows = db.scalars(
             select(Message.id).where(
                 Message.conversation_id == cid, Message.parent_id.in_(frontier)
@@ -1654,7 +1760,105 @@ def _subtree_size(db, cid: uuid.UUID, mid: int) -> int:
         ).all()
         frontier = [one for one in rows if one not in seen]
         seen.update(frontier)
-    return total
+        ids.extend(frontier)
+    return ids
+
+
+def _remap_parts(node, idmap: dict):  # noqa: ANN001
+    """把零件里所有 `attachmentId` 换成新 id（零件是嵌套的，递归走一遍）。
+
+    传空 `idmap` 就是一次**深拷贝** —— 复制出来的消息不能与原消息共用同一份
+    parts 对象（JSON 列是原地可变的，共用等于两条消息拴在同一个列表上）。
+    """
+    if isinstance(node, dict):
+        out = {}
+        for key, value in node.items():
+            if key == "attachmentId":
+                out[key] = idmap.get(str(value), value)
+            else:
+                out[key] = _remap_parts(value, idmap)
+        return out
+    if isinstance(node, list):
+        return [_remap_parts(one, idmap) for one in node]
+    return node
+
+
+def _copy_attachments(db, src_id: int, dst: Message) -> None:  # noqa: ANN001
+    """把一条消息的附件也复制一份（新 id、同一个文件），并改写零件里的 `attachmentId`。
+
+    为什么要连附件一起复制：零件里存的是 `attachmentId`（见 `app/parts.py` 的
+    `file_part`），前端拿它去 `GET /chat/attachments/{id}` 取图。只复制消息的话，
+    副本的图仍然指**原树那条**消息名下的附件行 —— 原树哪天被删，附件行跟着 CASCADE
+    走，副本里的图就全断了。
+    文件本身不必复制：这套服务从来不删附件文件（库里删行、盘上留着），
+    两份行指同一个 `path` 是安全的。
+    """
+    rows = db.scalars(select(Attachment).where(Attachment.message_id == src_id)).all()
+    if not rows:
+        return
+    idmap = {}
+    for src in rows:
+        copy = Attachment(
+            message_id=dst.id,
+            name=src.name,
+            mime=src.mime,
+            size=src.size,
+            sha256=src.sha256,
+            path=src.path,
+            kind=src.kind,
+            text=src.text,
+            created_at=src.created_at,
+        )
+        db.add(copy)
+        db.flush()          # 先拿到新 id，下面要写进零件
+        idmap[str(src.id)] = str(copy.id)
+    # JSON 列**整体重新赋值**才会被认作已改（原地改 key 是留不住的）
+    dst.parts = _remap_parts(dst.parts, idmap)
+
+
+def _copy_subtree(db, ids: list[int], child: Conversation) -> None:  # noqa: ANN001
+    """把 `ids` 这一支**复制**进 `child`：新 id，父子关系、零件、附件、时间都跟着走。
+
+    `ids` 来自 `_subtree_ids`，是**层序**（父一定排在子前面）—— 照它走一遍就能把
+    `parent_id` 重映射对，不需要递归，也不会出现"子先于父"。
+    """
+    by_id = {one.id: one for one in db.scalars(select(Message).where(Message.id.in_(ids))).all()}
+    remap = {}
+    for old_id in ids:
+        src = by_id.get(old_id)
+        if src is None:
+            continue
+        copy = Message(
+            conversation_id=child.id,
+            # 子树根的 parent 不在名单里 → None（它在新会话里就是根）
+            parent_id=remap.get(src.parent_id),
+            role=src.role,
+            content=src.content,
+            status=src.status,
+            error=src.error,
+            finish_reason=src.finish_reason,
+            model=src.model,
+            prompt_tokens=src.prompt_tokens,
+            completion_tokens=src.completion_tokens,
+            latency_ms=src.latency_ms,
+            # 空 idmap = 深拷贝（见 `_remap_parts`）
+            parts=_remap_parts(src.parts, {}),
+            mounts=src.mounts,
+            created_at=src.created_at,   # 时间跟着走：这一支就是那时候长出来的
+        )
+        db.add(copy)
+        db.flush()                       # 先拿到新 id，子要用
+        remap[src.id] = copy.id
+        _copy_attachments(db, src.id, copy)
+
+def _subtree_size(db, cid: uuid.UUID, mid: int) -> int:
+    """这条消息连同它下面一共几条（**删之前**先数一下）。
+
+    为什么要数：用户是在对话树上点了一个节点，而他**看不见那下面挂了多少** ——
+    一声不吭删掉十几条，那不是"操作成功"，那是悄悄删了他的东西。数出来之后，
+    界面能把它写进确认框、也写进返回值里，这一步才是有交代的。
+    """
+    return len(_subtree_ids(db, cid, mid))
 
 
 @router.delete("/conversations/{cid}/messages/{mid}")
@@ -1682,6 +1886,67 @@ def delete_message(cid: uuid.UUID, mid: int, db: DbSession) -> dict:
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
     return {"ok": True, "deleted": deleted}
+
+
+@router.post("/conversations/{cid}/messages/{mid}/split")
+def split_message(cid: uuid.UUID, mid: int, payload: dict, db: DbSession) -> dict:
+    """把以 `mid` 为根的**一整棵子树**搬到（或复制到）一条新会话里。
+
+    两个去处，用户各要一半（"另成一棵树，有两种选项，一种是不保留，一种是保留原树的
+    子树"）：
+
+      * `keep=False`（默认）= **剪下去**：子树改籍到新会话，原树从此没有这一支；
+      * `keep=True` = **留一份**：子树完整复制到新会话，原树**一点不动**。
+
+    「剪」是改籍，消息 id 不动（附件、题目卡、引用都还挂在原处）；「留」只能真复制，
+    副本是新的消息 id（一条消息不可能同时属于两棵树）—— 连附件行一起复制、零件里的
+    `attachmentId` 一并改写，副本才能自己活下去，细节见 `_copy_attachments`。
+
+    新会话的归属：**沿用原来的分组**（分出来的这一支属于同一个话题），但**不跟着归档**
+    —— 它是一条新的、正要接着用的对话，落进归档堆里会找不着。
+    """
+    body = payload or {}
+    keep = bool(body.get("keep"))
+    conv = _own_conversation(db, cid)
+    m = db.get(Message, mid)
+    if m is None or m.conversation_id != conv.id:
+        raise HTTPException(404, "没有这条消息")
+
+    ids = _subtree_ids(db, conv.id, mid)
+    text = " ".join(str(m.content or "").split())
+    child = Conversation(
+        title=(text[:30] + "…") if len(text) > 30 else (text or "分出来的那一支"),
+        folder=conv.folder,
+    )
+    db.add(child)
+    db.flush()  # 先拿到 child.id（下面每一条都要写）
+
+    if keep:
+        _copy_subtree(db, ids, child)
+    else:
+        # 一条一条改，不用 bulk update：这一层是 ORM 对象，房子里的规矩是让它自己同步
+        for row in db.scalars(select(Message).where(Message.id.in_(ids))).all():
+            row.conversation_id = child.id
+        m.parent_id = None  # 它在新会话里是根：断掉与原树那一条边
+
+    now = datetime.now(timezone.utc)
+    conv.updated_at = now
+    child.updated_at = now
+    db.commit()
+    return {
+        "ok": True,
+        "kept": keep,
+        "moved": len(ids),
+        "conversation": {"id": str(child.id), "title": child.title},
+    }
+
+
+# ------------------------------------------------------------------ 流式一轮
+#
+# 下面五个是「发一条消息、边收边落库」的核心，从 HEAD 原样取回：
+# 早前给 `split_message` 打补丁时按"从它的 def 替换到文件尾"取区间，把它们一起
+# 删掉了（它们没有 `@router.` 装饰，于是"往下找下一个路由"这个定位法找不着锚点）。
+# 症状是发送那条路一进来就 `NameError: _stream`。
 
 
 def _push_text(parts: list[dict], chunk: str) -> None:
@@ -1760,7 +2025,7 @@ def _stream(  # noqa: ANN001
     user_msg: Message,
     assistant: Message,
     history: list[dict],
-    thinking: bool = True,
+    thinking: object = True,
 ):
     started = time.perf_counter()
     parts: list[dict] = []
@@ -1824,12 +2089,33 @@ def _stream(  # noqa: ANN001
         except Exception:  # noqa: BLE001  提示词附加项，失败就按"没变"处理
             prev_mounts = None
 
+        # 「他的学习轨迹」：**每轮都算一遍**（它随对话长，不随设置变）。
+        # 兜底包着：仪表盘是背景信息，绝不该因为它让整轮对话失败。
+        try:
+            from .. import recursion
+
+            trail = recursion.dashboard(db, conv, user_msg)
+        except Exception:  # noqa: BLE001
+            trail = ""
+
+        # 他召唤的流程（skill）：沿这条链从根往下取最近的那条记录（见 `app/skills.py`）。
+        # 同样兜底 —— 一段加成性质的行为约束，不该让整轮生成失败。
+        try:
+            from .. import skills as skill_lib
+
+            flow = skill_lib.block(skill_lib.resolve(db, conv, user_msg))
+        except Exception:  # noqa: BLE001
+            flow = ""
+
         for event in agent_loop.run(
             db,
             conf,
             # 提示词随**这一版挂载的组**变（极简模式是一份完全不同的提示词：
             # 它不该知道用户有笔记/资料/题库，见 build_prompt 的说明）
-            system=build_prompt(turn_mounts, prev_mounts, turn_declared),
+            # 仪表盘与流程都不受挂载影响 —— 它们不是工具，见 build_prompt 的说明。
+            # 思考强度接在最末尾：它管的是"这一轮想多深"，与模式、口吻都无关。
+            system=build_prompt(turn_mounts, prev_mounts, turn_declared, trail, flow)
+            + thinking_line(thinking),
             history=history,
             tools=tools,
             # 只声明**已挂载**的那几组；未挂载的即使被叫到名字也不执行（纵深防御）

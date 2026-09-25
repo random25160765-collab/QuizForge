@@ -73,10 +73,23 @@
 
   /* --------------------------------------------------------- 数学公式抽取 */
 
+
   function extractMath(src, store) {
     function push(tex, display) {
       var token = '\u0000M' + store.length + '\u0000';
-      store.push({ type: 'math', tex: tex, display: display });
+      // 这两类环境**不是公式、是图**：交换图（AMScd 的 CD / tikzcd）与电路
+      // （circuitikz）。KaTeX 不认它们 —— 它会拿 `throwOnError:false` 把源码原样
+      // 吐在正文里（一片红字）。所以在这里就分出去，交给 QF.diagram 画成 SVG。
+      // 见 runtime/diagram.js 开头那段"为什么自己画"的说明。
+      // 带 `\begin{...}` 的 display 公式是**图**（TikZ / circuitikz / tikzcd /
+      // pgfplots…）：KaTeX 认不了这些环境，会把源码原样吐在正文里（一片红字），
+      // 所以分出去交给真 TeX 引擎（见 runtime/latex.js）。判据刻意只看"有没有
+      // \begin"—— 不维护白名单，就不会再有"这个环境我没支持"这种事。
+      store.push({
+        type: QF.latex && QF.latex.kind(tex) ? 'diagram' : 'math',
+        tex: tex,
+        display: display,
+      });
       return token;
     }
 
@@ -216,6 +229,11 @@
       }
       if (kind === 'I') {
         return '<code class="icode">' + esc(item.code) + '</code>';
+      }
+      if (item.type === 'diagram' && QF.latex) {
+        // 引擎是异步的（WASM 要编），先给占位；`render()` 末尾那次
+        // `QF.latex.fill(el)` 会把它们换成真图。
+        return QF.latex.slot(item.tex);
       }
       return renderMath(item.tex, item.display, options);
     });
@@ -519,7 +537,10 @@
     if (!source.trim()) return h('div.md');
 
     // 带自定义宏时不缓存，避免宏变化后拿到旧结果
-    var cacheable = !options || !options.macros;
+    // 含图的正文**不进缓存**：缓存存的是 innerHTML，而图是异步填进去的 ——
+    // 缓存下来就等于把"正在编译…"那个占位存死了。（注意：这句在本文件里有**两处**
+    // —— 这里只改 `render()` 里那处，别把 `renderInto` 的也改了。）
+    var cacheable = (!options || !options.macros) && !/\\begin\s*\{/.test(source);
 
     if (cacheable) {
       var hit = cachedHtml(source);
@@ -537,6 +558,11 @@
 
     var nodes = parseBlocks(text, store, options);
     var el = renderNodes(nodes, store, options);
+    // 图是异步编的（真 TeX 引擎要 WASM 初始化）：这里把占位交出去填。
+    // 注意这行**只是调用**，别写成注释里的 `QF.latex.fill(el)` —— 上次就因为
+    // 一句解释里出现了同样的字样，判断"改过没"的守卫把这一步跳过了（实测踩过：
+    // 页面里占位一直停在"正在编译"，工位 iframe 压根没建）。
+    if (QF.latex && QF.latex.fill) QF.latex.fill(el);
 
     if (cacheable && el.children.length) putCache(source, el.innerHTML);
     return el;

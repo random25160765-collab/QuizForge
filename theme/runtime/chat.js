@@ -38,7 +38,12 @@
   var stickBottom = true;
   var noticeEl = null;
   var jumpBtn = null;
+  //: **传送球**（回溯的门）：贴在正文区边上的一颗圆球，拖动可挪、点开是一列带序号的
+  //: 回溯点，点一枚就传过去。一个回溯点都没有时它整个不出现（见 `renderStations`）。
+  var stationsEl = null;
   var notesEl = null;
+  //: 书签抽屉：装"永久标记"那一类（见 `renderMarks`）
+  var marksEl = null;
   var problemEl = null;
   var problemBtn = null; // 工具栏那个「大题」按钮：开合要反映在它身上
   var inputEl = null;
@@ -136,6 +141,17 @@
     bounds: null,
     //: 这一版树**摆过位置没有**（也就是"适配窗口"算过没有）。见 `resetTreeView`。
     fitted: false,
+    //: 缩放的**下限**。不写死：适配窗口算出来的可能远小于 0.2（158 个节点的长对话实测
+    //: 0.066），写死就会出现"适应窗口能到的视图，自己滚轮滚不下去"（用户报的）。
+    //: 每次适配时按算出来的 scale 更新，见 `drawTree`。上限不随它变。
+    minK: 0.2,
+    //: 轨迹：把当前分支单独描一条线（见 `treeTrail`）
+    trail: false,
+    //: 播放：按时间顺序把整棵树放一遍。`at` = 已经点到第几枚（按 id 排的序号）；
+    //: `limit` = 已经长出来的最大 id（轨迹按它决定画到哪儿）
+    play: { on: false, at: 0, timer: 0, speed: 1, limit: 0 },
+    //: 画这一棵树时算好的模型（轨迹要按节点坐标穿线，见 `trailD`）
+    trailModel: null,
   };
 
   /** 让**下一次**画树重新适配窗口。
@@ -616,6 +632,10 @@
       )
     );
 
+    // 书签抽屉的入口**不在这条工具栏上**，在对话树里（用户："把书签抽屉做到对话树里面，
+    // 不要放在 chat 页面里"）。理由也顺：书签是**地图上的地点**，抽屉就是那张图的地点
+    // 清单 —— 和地图待在一起才找得到，摆在 chat 顶栏上它跟"清理 / 分享"成了一类东西。
+
     // 分享：把这一条会话装配成**一个自带数据的网页**（对话正文 + 那棵对话树），
     // 发给别人双击就能看。装配在服务端做（实测 158 条 37ms），所以**不做**"正在打包"
     // 那一套 —— 成功与失败都由 toast 说清楚（见 onShare）。
@@ -637,7 +657,20 @@
   function renderTree() {
     if (!treeEl) return;
     ui.clear(treeEl);
-    if (!state.treeOpen) return;
+    if (!state.treeOpen) {
+      // 地图收起来了，抽屉跟着收（它是这张图上的一栏）。
+      // 这一处是**唯一的收口**：点节点、点图钉、工具栏的 ✕、Esc 走的都是
+      // `state.treeOpen = false`，谁都不必记得顺手去关抽屉。
+      if (marksTimer) {
+        clearTimeout(marksTimer);
+        marksTimer = 0;
+      }
+      marksOpen = false;
+      marksClosing = false;
+      renderMarks();
+      stopPlay();   // 地图收起来了，播放也停（计时器不能留着空转）
+      return;
+    }
 
     var close = function () {
       state.treeOpen = false;
@@ -645,9 +678,14 @@
       renderTree();
     };
 
-    var screen = h('div.chattree__screen', null, treeBar(close), h('div.chattree__canvas'));
-    treeEl.appendChild(screen);
-    drawTree(screen.querySelector('.chattree__canvas'));
+    var canvas = h('div.chattree__canvas');
+    treeEl.appendChild(h('div.chattree__screen', null, treeBar(close), canvas));
+    paintPlayUI();   // 工具栏刚挂上去，把"播放/速度"两颗键的字刷对
+    drawTree(canvas);
+    // 抽屉装在**画布这一层**里，不是整屏：遮罩只压地图，工具栏还留着 ——
+    // 否则开着抽屉时那颗「书签」自己也被压住，点不动了。
+    canvas.appendChild(marksEl);
+    renderMarks();
   }
 
   function treeBar(close) {
@@ -664,12 +702,14 @@
       },
       TREE.dir === 'h' ? '时间：横向' : '时间：纵向'
     );
-    return h(
+    var bar = h(
       'div.chattree__bar',
       null,
       h('span.chattree__title', { text: '对话树' }),
       h('span.chattree__sub', {
-        text: state.messages.length + ' 个节点 · 亮的是当前分支 · 点节点切过去',
+        text:
+          state.messages.length + ' 个节点 · 亮的是当前分支 · 点节点切过去' +
+          ' · 图钉 = 标过的地点',
       }),
       dirButton,
       h(
@@ -683,8 +723,47 @@
         },
         '适应窗口'
       ),
+      // 轨迹：把当前分支单独描一条线（"我走过的路"）。点一下开、再点一下关。
+      h(
+        'button.chattree__btn.chattree__trailbtn' + (TREE.trail ? '.is-on' : ''),
+        {
+          type: 'button',
+          title: TREE.trail
+            ? '收起轨迹线'
+            : '描一条轨迹：所有节点按创建时间串起来（我真正的探索旅程）',
+          'aria-pressed': TREE.trail ? 'true' : 'false',
+          onClick: function () {
+            TREE.trail = !TREE.trail;
+            renderTree();
+          },
+        },
+        iconNode('route', 14),
+        h('span', { text: '轨迹' })
+      ),
+      // 播放：按时间顺序把整棵树放一遍（多久一枚由旁边那颗速度键定）
+      h('button.chattree__btn.chattree__playbtn', { type: 'button', onClick: togglePlay }, '▶ 播放'),
+      h('button.chattree__btn.chattree__speedbtn', { type: 'button', onClick: cyclePlaySpeed }, '1×'),
+      // 书签抽屉的入口：**这张地图的地点清单**（用户："书签抽屉是要做的"）。
+      // 它长在地图的工具栏上，不长在 chat 页 —— 那里是地图外面。
+      (function () {
+        var marks = bookmarksOf(QF.store.places());
+        return h(
+          'button.chattree__btn.chattree__marksbtn' + (marksOpen ? '.is-on' : ''),
+          {
+            type: 'button',
+            title: marks.length
+              ? '书签抽屉 · ' + marks.length + ' 个永久标记（含别的对话里的）'
+              : '书签抽屉（还没标过地方）',
+            'aria-expanded': marksOpen ? 'true' : 'false',
+            onClick: toggleMarks,
+          },
+          iconNode('bookmark', 14),
+          h('span', { text: marks.length ? '书签 · ' + marks.length : '书签' })
+        );
+      })(),
       iconButton('close', '关闭（Esc）', close)
     );
+    return bar;
   }
 
   function drawTree(host) {
@@ -716,9 +795,16 @@
         sv('path', {
           class: 'ctedge' + (edge.onPath ? ' is-onpath' : ''),
           d: treePath(edge),
+          // 这条边属于哪个子节点：播放时"轮到谁就亮谁"（见 `markNodeShown`）
+          'data-edge': String(edge.to),
         })
       );
     });
+
+    // **轨迹**：把"我走过的那条路"单独描一遍。画在连线之上、节点之下 —— 于是它压着
+    // 那几条灰线显眼，而穿过节点的部分又被节点自己盖住（看不见横穿方框的线）。
+    var trail = treeTrail(model);
+    if (trail) layer.appendChild(trail);
 
     // id → 消息：输出的模式要从**它的输入**上取（"输入锚定模式"那条规则）
     var byId = {};
@@ -744,11 +830,17 @@
           // 被收起的一支：边框换成虚线（"这儿本来还有东西，是收起来了"）
           (state.treeFolded[keyOf(message.id)] ? ' is-folded' : ''),
         transform: 'translate(' + node.x + ',' + (node.y - node.h / 2) + ')',
+        // 播放时按 id 找它（见 `markNodeShown`）
+        'data-node': String(message.id),
       });
-      group.appendChild(
+      // **里面再套一层**：出生动画（"长大"）要缩放，而 CSS 的 transform 会顶掉上面那个
+      // 定位用的 transform 属性 —— 一碰它，节点就跳到原点去了。缩放只能落在里层。
+      var ink = sv('g', { class: 'ctnode__ink' });
+      group.appendChild(ink);
+      ink.appendChild(
         sv('rect', { class: 'ctnode__box', x: 0, y: 0, width: TREE.w, height: node.h, rx: 12, ry: 12 })
       );
-      group.appendChild(
+      ink.appendChild(
         sv('text', { class: 'ctnode__who', x: 12, y: 18 }, [
           document.createTextNode(message.role === 'user' ? '我' : 'AI'),
         ])
@@ -757,7 +849,7 @@
       var hidden = state.treeFolded[keyOf(message.id)] ? descendantsOf(message.id).length : 0;
       var badge = hidden ? '＋' + hidden : node.forks > 1 ? '⑂' + node.forks : '';
       if (badge) {
-        group.appendChild(
+        ink.appendChild(
           sv(
             'text',
             {
@@ -811,9 +903,9 @@
         chatMenuY = box.bottom + 4;
         openNodeMenu(message);
       });
-      group.appendChild(more);
+      ink.appendChild(more);
       node.lines.forEach(function (line, index) {
-        group.appendChild(
+        ink.appendChild(
           sv('text', { class: 'ctnode__line', x: 12, y: 36 + index * 15 }, [
             document.createTextNode(line),
           ])
@@ -821,12 +913,33 @@
       });
       // 模式那一行画在正文下面、框内最后一格：一眼看得出"从这一轮起换了模式"
       if (node.mode) {
-        group.appendChild(
+        ink.appendChild(
           sv('text', { class: 'ctnode__mode', x: 12, y: 36 + node.lines.length * 15 }, [
             document.createTextNode(node.mode),
           ])
         );
       }
+
+      // **右键 = 在这个地点上做标记**（用户："支持一下在对话树的节点上直接右键添加书签
+      // 和回溯点的机制"）。所以这一条监听**每个节点都挂**，而不是"有钉子才挂"：
+      // 地图上右键一处地点，该给的是"在这儿打个标记"，加与改都在同一张菜单里
+      //（`openPlaceMenu` 按类别成组：没有的给"加"，有的给"写描述 / 取消"）。
+      //
+      // 位置标记本身**不画在这棵树里**：图钉是屏幕坐标的一层 HTML，见 `treePinsLayer`
+      //（用户："太小太不明确。想象你要在一张地图上标记某个地点"—— 画在 SVG 里就得跟着
+      // 地图一起缩，缩到 0.3 倍就只剩两三个像素）。左键仍是"跳到这条"。
+      group.addEventListener('contextmenu', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        chatMenuX = event.clientX;
+        chatMenuY = event.clientY;
+        // **按当下重查一遍**：`message` 是建这一层时抓的快照，钉过之后它就过期了
+        //（消息行尾那两枚图标踩过同一个坑，见 `placeButtons`）
+        openPlaceMenu(QF.store.placesOf(message.id), refreshPlaces, [
+          { kind: 'mark', m: message },
+          { kind: 'back', m: message },
+        ]);
+      });
 
       // 点节点 = 切到那条分支（与原实现一致）
       group.addEventListener('click', function (event) {
@@ -839,10 +952,16 @@
 
     svg.appendChild(layer);
     host.appendChild(svg);
+    // **地图上的图钉**：挂在画布上的**一层 HTML**，不跟着 SVG 缩放。
+    // 地点是地图坐标（`node.x/node.y`），图钉是屏幕坐标，两者在 `applyTreeView` 里换算。
+    // 这么分的理由就是用户那句话（"太小太不明确。想象你要在一张地图上标记某个地点"）：
+    // 图钉得**始终认得出来**，而地图可以缩到 0.3 倍去装下 158 个节点。
+    host.appendChild(treePinsLayer(model));
+    host.appendChild(treeLegend());
     host.appendChild(
       // 提示语要把**双指**写进去：触屏上没有滚轮，只写"滚轮缩放"等于告诉手机
       // 用户"这棵树不能放大"（原来就是这么写的，而他确实找不到怎么放大）。
-      h('div.chattree__hint', { text: '双指或滚轮缩放 · 拖动平移' })
+      h('div.chattree__hint', { text: '双指或滚轮缩放 · 拖动平移 · 点图钉去那个地点' })
     );
 
     // 适应窗口：算完 bbox 再定缩放与偏移
@@ -864,8 +983,15 @@
       TREE.view.x = (width - (maxX - minX) * scale) / 2 - minX * scale;
       TREE.view.y = (height - (maxY - minY) * scale) / 2 - minY * scale;
       TREE.fitted = true;
+      // 缩放下限跟着这一次适配走，再留一点余量（0.75）：能比"刚好装下"再拉远一档，
+      // 好让整张图在中间、四周留白。小树时 scale 可能 >0.27，那就还是 0.2 打底。
+      TREE.minK = Math.min(0.2, scale * 0.75);
     }
     applyTreeView(svg);
+    // 重画之后把播放状态与轨迹重新贴上去
+    //（播放的计时器活在 DOM 之外，见 `TREE.play`；轨迹的显隐规则见 `applyTrail`）
+    applyPlayState();
+    applyTrail();
 
     // ---- 手势：一根指头拖动 = 平移，两根指头 = 缩放 ----------------------
     //
@@ -876,8 +1002,14 @@
     var pointers = new Map(); // pointerId -> {x,y}：双指要算**两根**各自的位置
     var pinch = null;         // 双指手势的基准（见 `startPinch`）
 
+    /** 缩放的上下限。**下限是动态的**（`TREE.minK`，适配窗口时算出来）。
+     *
+     * 上限仍然是写死的 2.4：放大到那儿节点字已经很大（12px × 2.4），再大只是空转。
+     * 下限不行 —— 它必须能覆盖"适配窗口"到的那个倍数，否则那一个视图就只能靠按钮去，
+     * 手势到不了（用户："点击适应窗口可以跳转到更高的视图，但是自己用滚轮滚不到这么高"）。
+     */
     function clampK(k) {
-      return Math.max(0.2, Math.min(2.4, k));
+      return Math.max(TREE.minK || 0.2, Math.min(2.4, k));
     }
 
     /** 以 (px,py)（svg 局部坐标）为中心缩放 `factor` 倍。
@@ -942,12 +1074,27 @@
       applyTreeView(svg);
     }
 
+    /** 一次滚轮走多远：**按 delta 的大小**算，不按它的符号。
+     *
+     * 原先是"一格固定 1.12"。鼠标滚轮一格 1.12 还算合适，但触控板一次滚动会连发十几个
+     * 小 delta（3~10），每个都被当成"一格"，于是轻轻一滑就飞出老远；反过来，要从全局
+     * 视图拉到最紧（0.066 那种）得滚二十几格。按比例走两边都顺（地图类应用都是这个手感）。
+     *
+     * `deltaMode` 要归一：Firefox 给的是"行"（deltaMode 1，deltaY 约 ±3），
+     * 归一成像素才不会在它上面变得几乎不动。
+     */
+    function wheelFactor(deltaY, deltaMode) {
+      var px = deltaMode === 1 ? deltaY * 16 : deltaMode === 2 ? deltaY * 100 : deltaY;
+      return Math.max(0.5, Math.min(2, Math.exp(px * -0.0015)));
+    }
+
     svg.addEventListener('wheel', function (event) {
       event.preventDefault();
       var box = svg.getBoundingClientRect();
-      // 触控板捏合走的也是这一条（它发的是带 ctrlKey 的 wheel）
+      // 触控板**捏合**走的也是这一条（它发的是带 ctrlKey 的 wheel，delta 小、频率高）：
+      // 比例式对它同样合适，所以不另开分支。
       zoomAt(event.clientX - box.left, event.clientY - box.top,
-             event.deltaY < 0 ? 1.12 : 1 / 1.12);
+             wheelFactor(event.deltaY, event.deltaMode));
     });
 
     svg.addEventListener('pointerdown', function (event) {
@@ -999,11 +1146,41 @@
 
   function applyTreeView(svg) {
     var layer = svg.querySelector('.chattree__layer');
-    if (!layer) return;
-    layer.setAttribute(
-      'transform',
-      'translate(' + TREE.view.x + ',' + TREE.view.y + ') scale(' + TREE.view.k + ')'
-    );
+    if (layer) {
+      layer.setAttribute(
+        'transform',
+        'translate(' + TREE.view.x + ',' + TREE.view.y + ') scale(' + TREE.view.k + ')'
+      );
+    }
+    // 图钉：**用户坐标 → 屏幕坐标**，在这一处换算（滚轮、拖动、适应窗口最后都落到这里）。
+    // 图钉自己不缩放，所以不能放进 SVG —— 它是地图上的 POI：地点跟着地图动，
+    // 图钉始终是那个大小、那个字号。
+    var pins = svg.parentNode ? svg.parentNode.querySelector('.chattree__pins') : null;
+    if (!pins) return;
+    var k = TREE.view.k;
+    var ox = TREE.view.x;
+    var oy = TREE.view.y;
+    // 缩到看不清字的时候（0.45 倍以下）只留图钉、收起名字：一屏几十个名字会互相压，
+    // 反而谁也读不出来。鼠标停在某一枚上，它自己的名字照旧浮出来（CSS 里那两条规则）。
+    pins.classList.toggle('is-tight', k < 0.45);
+    // 再远一档：连钉帽也收小一点。一屏几十枚 22px 的圆会糊成一片
+    //（这条长对话适配窗口后 k 只有 0.066，实测就是那么糊）。
+    pins.classList.toggle('is-small', k < 0.16);
+    var items = pins.querySelectorAll('.ctpin2');
+    for (var i = 0; i < items.length; i++) {
+      var el = items[i];
+      var ax = Number(el.dataset.ax);
+      var ay = Number(el.dataset.ay);
+      if (!isFinite(ax) || !isFinite(ay)) continue;
+      // 后一个 translate 是**相对自身**的：把尖头（元素底边中点）落在锚点上。
+      // 再后一个把同一地点上的第 2、3 枚抬起来（`PIN_STEP`）—— 这一句必须在**屏幕
+      // 坐标**里做：锚点会跟着地图缩放，缩到 0.066 倍时 26px 只剩 1.7px，两枚钉子
+      // 又叠回去了（第一版就是这么栽的）。
+      var slot = Number(el.dataset.slot) || 0;
+      el.style.transform =
+        'translate(' + (ax * k + ox) + 'px,' + (ay * k + oy) + 'px) translate(-50%, -100%)' +
+        (slot ? ' translate(0,' + -slot * PIN_STEP + 'px)' : '');
+    }
   }
 
   /* ------------------------------------------------------------ 分支 */
@@ -1109,28 +1286,82 @@
       api
         .del('/chat/conversations/' + state.current + '/messages/' + message.id)
         .then(function () {
-          var gone = {};
-          gone[String(message.id)] = true;
-          doomed.forEach(function (one) {
-            gone[String(one.id)] = true;
-          });
-          state.messages = state.messages.filter(function (one) {
-            return !gone[String(one.id)];
-          });
-          // 刚删掉的 id 可能还留在"收起"与"选过哪一支"里。留着不会当场报错，
-          // 但那是**听不懂的残留** —— 下一次撞上同一个 id（虽然几乎不可能）
-          // 就会指向一条已经不存在的消息。顺手清干净。
-          Object.keys(state.treeFolded).forEach(function (key) {
-            if (gone[key]) delete state.treeFolded[key];
-          });
-          Object.keys(state.picks).forEach(function (key) {
-            if (gone[String(state.picks[key])]) delete state.picks[key];
-          });
-          if (state.treeOpen) renderTree();
-          paintThread();
+          forgetBranch(message, doomed);
         })
         .catch(function (err) {
           ui.toast('删除失败：' + ((err && err.message) || '未知原因'), 'bad');
+        });
+    });
+  }
+
+  /** 把这一支从**本地**的树上抹掉（删除与"分出去"共用这一段）。
+   *
+   * 两处要做的是同一件事：`state.messages` 里去掉，并把 `treeFolded` / `picks` 里
+   * 那些指向已不存在 id 的残留清掉 —— 留着不会当场报错，但那是**听不懂的残留**，
+   * 下一次撞上同一个 id 就会指向一条已经不在这棵树上的消息。
+   */
+  function forgetBranch(message, doomed) {
+    var gone = {};
+    gone[String(message.id)] = true;
+    doomed.forEach(function (one) {
+      gone[String(one.id)] = true;
+    });
+    state.messages = state.messages.filter(function (one) {
+      return !gone[String(one.id)];
+    });
+    Object.keys(state.treeFolded).forEach(function (key) {
+      if (gone[key]) delete state.treeFolded[key];
+    });
+    Object.keys(state.picks).forEach(function (key) {
+      if (gone[String(state.picks[key])]) delete state.picks[key];
+    });
+    if (state.treeOpen) renderTree();
+    paintThread();
+  }
+
+  /** 把这一支**搬进一条新对话**（剪枝的另一个去处：不是删掉，是分家）。
+   *
+   * 用户："剪枝功能（删除子树），多一个选项：彻底删除/另成一棵对话树"。
+   * 两种意图到这一步才分得开：**删**是"我不想要了"，**分**是"它不该长在这一棵上"。
+   * 服务端只改籍（消息 id 不动，见 `split_message`），这边跟着把这一支从树上抹掉，
+   * 再把左栏刷一遍 —— 新对话就在那儿等着。
+   */
+  function splitBranch(message, keep) {
+    var doomed = descendantsOf(message.id);
+    var total = doomed.length + 1;
+    ui.confirm(
+      keep
+        ? '把这 ' + total + ' 条复制到一条新对话里：原树一点不动，两边从此各走各的。' +
+          '消息本身一条不丢（附件也跟着复制一份）。'
+        : '把这 ' + total + ' 条分到一条新对话里：它会从当前这棵树上消失（其余部分不动），' +
+          '消息本身一条不丢。',
+      {
+        title: (keep ? '复制成新对话树（' : '另成一棵对话树（') + total + ' 条）？',
+        okLabel: keep ? '复制出去' : '分出去',
+      }
+    ).then(function (yes) {
+      if (!yes) return;
+      api
+        .post('/chat/conversations/' + state.current + '/messages/' + message.id + '/split', {
+          keep: !!keep,
+        })
+        .then(function (res) {
+          // **剪下去**：本地这一支要跟着消失（与删除共用 `forgetBranch`）。
+          // **留一份**：原树一点不动 —— 本地这条分支不改，只是左栏多出一条，
+          // 所以这里**不碰** `state.messages`（碰了就成了"本地看起来也被剪了"）。
+          if (!keep) forgetBranch(message, doomed);
+          loadList();   // 左栏多出一条（新对话）；剪的时候当前这条的条数也变了
+          var title = (res && res.conversation && res.conversation.title) || '新对话';
+          ui.toast(
+            keep
+              ? '已复制成新对话树「' + title + '」—— 原树没动，新树在左边会话栏里'
+              : '已另成一棵对话树「' + title + '」—— 在左边会话栏里',
+            'info',
+            3600
+          );
+        })
+        .catch(function (err) {
+          ui.toast((keep ? '复制' : '分出去') + '失败：' + ((err && err.message) || '未知原因'), 'bad');
         });
     });
   }
@@ -1150,11 +1381,33 @@
         },
       });
     }
+    // 有子树时才谈"分家"：单独一条消息另成一棵对话树没有意义。
+    // 两个去处都摆出来（用户："另成一棵树，有两种选项，一种是不保留，一种是保留
+    // 原树的子树"）—— 差别只在**原树留不留这一支**，菜单上就得说清是哪一种。
+    if (hidden) {
+      items.push({
+        icon: 'branch',
+        label: '另成一棵对话树',
+        hint: hidden + 1 + ' 条 · 从这棵树里剪下去',
+        run: function () {
+          splitBranch(message, false);
+        },
+      });
+      items.push({
+        icon: 'copy',
+        label: '复制成新对话树',
+        hint: hidden + 1 + ' 条 · 原树保留这一支',
+        run: function () {
+          splitBranch(message, true);
+        },
+      });
+    }
     items.push({
       icon: 'trash',
       danger: true,
-      label: hidden ? '删掉这一支' : '删掉这一条',
-      hint: hidden + 1 + ' 条',
+      // 两个去处摆在一起之后，"删掉"要说清是**哪一种**删：连根拔掉、不能恢复
+      label: hidden ? '彻底删掉这一支' : '彻底删掉这一条',
+      hint: hidden + 1 + ' 条 · 不能恢复',
       run: function () {
         deleteBranch(message);
       },
@@ -1164,52 +1417,6 @@
 
   var LOCAL_ID = 0;
 
-  /**
-   * 图标按钮。
-   *
-   * 之前"附件"和"编辑并重发"是两个裸文字按钮，在一屏以内容为主的界面里
-   * 又吵又难看。换成同一种细线条图标按钮（16px 描边、低对比、hover 才提亮），
-   * 与界面里其它控件一致 —— 提示文字走 `title`，不占版面。
-   */
-  var ICONS = {
-    clip: '<path d="M8.5 12.8 14.7 6.6a3.1 3.1 0 0 1 4.4 4.4l-7.6 7.6a5 5 0 0 1-7.1-7.1l7.4-7.4"/>',
-    pencil:
-      '<path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.4 6.6 17.4 10.6"/>',
-    pin: '<path d="M9.5 4h5l-1 5.5 3.5 3.5H7l3.5-3.5L9.5 4z"/><path d="M12 13v7"/>',
-    expand: '<path d="M4 9V4h5M20 15v5h-5M4 4l6 6M20 20l-6-6"/>',
-    copy:
-      '<rect x="9" y="9" width="11.5" height="11.5" rx="2.4"/>' +
-      '<path d="M15 6.2A2.7 2.7 0 0 0 12.3 3.5H6.5A3 3 0 0 0 3.5 6.5v5.8A2.7 2.7 0 0 0 6.2 15"/>',
-    retry: '<path d="M20.2 12a8.2 8.2 0 1 1-2.6-6"/><path d="M20.4 3.4v5.4h-5.4"/>',
-    down: '<path d="M12 5.5v13"/><path d="m6 12.5 6 6 6-6"/>',
-    note:
-      '<path d="M5 4.5h14v15H5z"/><path d="M8.5 9h7M8.5 12.5h7M8.5 16h4"/>',
-    trash:
-      '<path d="M4.5 7h15"/><path d="M9.5 7V4.5h5V7"/><path d="M6.5 7l1 12.5h9L17.5 7"/>',
-    problem:
-      '<path d="M4.5 5.5h9"/><path d="M4.5 10h6.5"/><path d="M4.5 14.5h5"/>' +
-      '<path d="M13 20l6.2-6.2a1.9 1.9 0 0 0-2.7-2.7L10.3 17.3V20z"/>',
-    close: '<path d="M6 6l12 12M18 6 6 18"/>',
-    // 描边纸飞机：与旁边几个图标同一路风格（实心那块在 17px 上太笨重）
-    send:
-      '<path d="M21.2 3.3 2.9 10.4a.7.7 0 0 0 .05 1.3l6.6 2.4 2.4 6.6a.7.7 0 0 0 1.3.05z"/>' +
-      '<path d="M21.2 3.3 9.6 14.1"/>',
-    stop: '<rect x="7" y="7" width="10" height="10" rx="2.4" fill="currentColor" stroke="none"/>',
-    tree:
-      '<path d="M6 4v16"/><path d="M6 11.5h4.5a3 3 0 0 0 3-3V6"/>' +
-      '<path d="M6 12.5h4.5a3 3 0 0 1 3 3V18"/>' +
-      '<circle cx="17.5" cy="5" r="2.2"/><circle cx="17.5" cy="19" r="2.2"/>',
-    // 「深度思考」的图标：两条交叉的轨道 + 中心 —— 官方那颗药丸上的同款意象，
-    // 描边、与旁边几个图标同一路风格。
-    atom:
-      '<circle cx="12" cy="12" r="2.1"/>' +
-      '<ellipse cx="12" cy="12" rx="9" ry="4" transform="rotate(45 12 12)"/>' +
-      '<ellipse cx="12" cy="12" rx="9" ry="4" transform="rotate(-45 12 12)"/>',
-    // 排序（归档区标题上那颗）：长短三条线 + 下箭头
-    sort:
-      '<path d="M4 7h11"/><path d="M4 12h7"/><path d="M4 17h4"/>' +
-      '<path d="M17 7.5v9"/><path d="m14.5 14 2.5 2.5 2.5-2.5"/>',
-  };
 
   /**
    * 复制到剪贴板。
@@ -1291,24 +1498,6 @@
     return box;
   }
 
-  /**
-   * 网格背景跟着缩放与平移走。
-   *
-   * 网格是画布上的 CSS 背景，而缩放/平移只改了 SVG 的 transform ——
-   * 于是"地面"在图上滑走（用户的说法是"滚轮缩放，背景没跟着缩放"）。
-   * 背景尺寸按 k 放、位置按 view 平移，两者才是一套。
-   */
-  /** 内联 SVG 节点（图标表里的一个名字）。 */
-  /** 本页要用的那两颗箭头只在 ui.js 的图标表里，chat.js 自己这份没有 ——
-   *  查不到就吐出空 `<svg>`（折叠按钮因此"没有图标"，用户截到过）。这里补齐，
-   *  路径与 ui.js 那份一致（那边的 ±0.5 是给箭头做的光学修正）。 */
-  var ICON_FALLBACK = {
-    chevronL: '<path d="M14.5 6 8.5 12l6 6"/>',
-    chevronR: '<path d="M9.5 6l6 6-6 6"/>',
-    bulb:
-      '<path d="M9.2 18h5.6"/><path d="M10.2 21h3.6"/>' +
-      '<path d="M12 3a6 6 0 0 0-3.4 10.9c.6.5 1 1.2 1.2 2.1h4.4c.2-.9.6-1.6 1.2-2.1A6 6 0 0 0 12 3z"/>',
-  };
 
   function iconNode(name, size) {
     // 踩过：折叠按钮的图标是空的（用户截到的是 `<svg viewBox=...></svg>`，里面
@@ -1317,10 +1506,13 @@
     // ui.js 那份保持一致（那边的注释说这 ±0.5 是给箭头做的光学修正）。
     var box = h('span.chat__icon');
     var px = size || 16;
+    // ⚠️ 路径从 **ui.js 那张唯一的表**取（`ui.iconPath`）。原先这里查的是 chat.js
+    // 自己那份 `ICONS` + 一份 `ICON_FALLBACK`，而 ui.js 里有另一张 —— 三处各一半，
+    // 于是 `chevronL/R`、`bookmark/flag`、`share` 先后都因为"查错了表"变成空 svg。
     box.innerHTML =
       '<svg viewBox="0 0 24 24" width="' + px + '" height="' + px + '" fill="none" ' +
       'stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
-      (ICONS[name] || ICON_FALLBACK[name] || '') +
+      ui.iconPath(name) +
       '</svg>';
     return box;
   }
@@ -1351,19 +1543,30 @@
       html:
         '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ' +
         'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
-        (ICONS[name] || ICONS.close) +
+        // 查 ui.js 那张唯一的表（删表时**漏了这一处**，运行时就 `ICONS is not defined`，
+        // 被 boot 统一的提示说成"连不上服务" —— 所以合并之后要把"还有没有别处引用"搜干净）
+        (ui.iconPath(name) || ui.iconPath('close')) +
         '</svg>',
     });
   }
 
-  /* ------------------------------------------------------------ 批注 */
+  /* ------------------------------------------------------------ 标记 */
 
   /**
-   * 批注：钉在**它的回答**某一段上的一句话（也可以只有一段高亮、不写字）。
+   * 三种标记，钉在**它的回答**的某一段上。
    *
-   * 入口只有一个：在回答里**选中一段 → 右键** →「高亮这一段」/「批注这一段」。
-   * 点在已有高亮上右键，菜单换成「改这条批注」/「取消这条批注」—— 不这样，
-   * 一条批注就再也改不动了。
+   *   * **高亮** —— 给眼睛做记号（正文底色变了就行）
+   *   * **删除线** —— "这一段不算数"（灰 + 划线）
+   *   * **批注** —— 给这一段**写一句话**：话既进批注栏（总览、搜索、编辑），
+   *     也作为**旁批**出现在正文右边那一栏，读到哪一句就看见哪一句
+   *
+   * 三者是**三件事**，别混（用户："高亮和批注是分开的两个东西"）：批注栏只收批注，
+   * 点在高亮上右键给的是「取消高亮」，不是「改这条批注」。共用的是存储与同步那一条
+   * 记录（`settings.notes`，按 `kind` 分开，见 `QF.store.markKind`）。
+   *
+   * 入口两个：在回答里**选中一段** → 右键 →「高亮这一段」/「删除线」/「批注这一段」，
+   * 或者不碰鼠标，直接按 ⌘/Ctrl+⇧H / ⇧X / ⇧A。**批注从一开始就在正文右边就地写**
+   *（草稿卡片直接长在该在的位置上），不经过总览面板 —— 那份面板只管翻全篇。
    *
    * 钉的是**渲染后正文里的字符区间**：正文由 `QF.md.render` 出来，同一份正文
    * 每次渲染的结果一致，所以区间是稳的（给 Markdown 源码算偏移得先理解语法）。
@@ -1375,12 +1578,29 @@
   var notesOpen = false;
   var notesDraft = '';
   var notesEditing = '';
-  //: 右键选了「批注这一段」但还没落字的那一段：{cid, mid, quote, start, end}
+  //: 面板里那条批注改之前"正文那块"多高（同上：不许比它矮）
+  var notesEditMin = 0;
+  //: 刚选了「批注这一段」、还没落字的那一段：{cid, mid, quote, start, end, anchor*}
+  //: 它对应旁批栏里**那张正在填字的卡片**（创建也走就地，见 annotatePick）。
   var pendingMark = null;
+  //: 那张草稿卡片里已经敲进去的字。存在这里而不是只留在 textarea 里：中途被重画
+  //: （来了新消息、切了分支）时，敲了一半的话不该消失。
+  var marginDraftText = '';
+  //: 正在**就地改**的那条批注（旁批那一栏里那张卡片变成了输入框）。
+  //: 与面板里的 `notesEditing` 各管一边：面板是"翻全篇"的地方，改一条不必先开它。
+  var marginEditing = '';
+  //: 就地改的那条现在敲成什么样了（同上：重画之后字还在）。`null` = 还没开过这条。
+  var marginEditText = null;
+  //: 就地改之前那张卡多高（见 `fitNoteArea`）：编辑器**不许比它矮**。
+  var marginEditMin = 0;
+  //: 已经为哪一条抢过焦点（`draft` / `note:<id>`）：重画会重建卡片，
+  //: 不能每次都把焦点从用户手上拽回去。
+  var marginFocus = '';
   //: 面板里那个搜索框（批注多了就要找）
   var markQuery = '';
 
   function openNotes() {
+    if (marksOpen) closeMarks();   // 两张右侧浮层叠在一起只会互相挡
     notesOpen = true;
     notesEditing = '';
     renderNotes();
@@ -1390,7 +1610,8 @@
     notesOpen = false;
     notesDraft = '';
     notesEditing = '';
-    pendingMark = null;   // 关掉面板 = 放弃这次批注（那段话还选着也没用）
+    // 关面板**不动**正在填的那条草稿：它在正文右边那一栏里，不属于这个面板
+    //（草稿是 2026-09-25 从面板搬到那里的，这条注释跟着一起改）
     renderNotes();
   }
 
@@ -1421,12 +1642,13 @@
       notesEditing = '';
       notesDraft = '';
       renderNotes();
-      paintThread();
+      repaintKeepingScroll();   // 改一条批注是原地变形，不该把视口拽到底
       return;
     }
     if (!pendingMark) return;
     if (
-      !QF.store.addMark({
+      !addMarkTracked({
+        kind: 'note',
         cid: pendingMark.cid,
         mid: pendingMark.mid,
         quote: pendingMark.quote,
@@ -1438,10 +1660,11 @@
       ui.toast('批注满了（500 条）—— 先删几条再加', 'warn', 3200);
       return;
     }
-    pendingMark = null;
+    // 走了面板这一条路也要把草稿状态收干净（旁批栏那张草稿卡片随之消失）
+    cancelDraftState();
     notesDraft = '';
     renderNotes();
-    paintThread();
+    repaintKeepingScroll();   // 同上：钉一条标记是原地变形，不该把视口拽到底
     ui.toast('已批注', 'info', 1200);
   }
 
@@ -1464,12 +1687,20 @@
     if (!mid || String(mid).indexOf('local-') === 0) return null;
     var span = textOffsetsIn(host, range);
     if (!span || span.end <= span.start) return null;
+    // 顺带把这一段**在屏幕上的位置**记下来（相对零件区）：批注要摆到正文右边那一栏，
+    // 而"还没落库的那条"没有 mark 可量，只能靠按下那一刻记下的位置（见 marginItems）。
+    // 用相对零件区的差而不是视口坐标：滚动与重排都不会改变它。
+    var hostRect = host.getBoundingClientRect();
+    var rangeRect = range.getBoundingClientRect();
     return {
       cid: state.current || '',
       mid: String(mid),
       quote: String(sel.toString() || '').slice(0, 600),
       start: span.start,
       end: span.end,
+      anchorY: rangeRect.top - hostRect.top,
+      anchorH: rangeRect.height,
+      anchorX: rangeRect.right - hostRect.left,
     };
   }
 
@@ -1496,13 +1727,18 @@
     return { start: at, end: at + picked.length };
   }
 
-  /** 把批注画成高亮。每次重画正文都要重来（重画会换掉 DOM，包好的 mark 自然也没了）。 */
+  /** 把三种标记画到正文上，并把批注摆成**旁批**。
+   *
+   * 每次重画正文都要重来（重画会换掉 DOM，包好的 mark 自然也没了）。 */
   function paintMarks(bodyEl, m) {
     if (!bodyEl || !m || m.id == null || !QF.store.marksOf) return;
+    var row = bodyEl.closest ? bodyEl.closest('.chatmsg') : null;
     var marks = QF.store.marksOf(m.id);
-    if (!marks.length) return;
     var host = bodyEl.querySelector('.chatmsg__parts');
-    if (!host) return;
+    if (!marks.length || !host) {
+      paintMargin(row, host, []);   // 标记被删光时把旁批那一栏收掉
+      return;
+    }
     // **从后往前包**：先包前面那段会把后面节点的偏移顶掉。
     marks
       .slice()
@@ -1512,122 +1748,2104 @@
       .forEach(function (mark) {
         wrapOnce(host, mark);
       });
+    paintMargin(row, host, marks);
   }
 
-  /** 把 [mark.start, mark.end) 包进 <mark class="chatmark">；对不上就静静跳过。 */
+  /** 把 [mark.start, mark.end) 画成 `<mark class="chatmark chatmark--<kind>">`；对不上就静静跳过。
+   *
+   * **按文本节点逐段包**，而不是拿一个 range 一把包下去。为什么：
+   * 选区跨了多个块（横跨两段、跨过一个小标题）时 `range.surroundContents` 会抛，
+   * 而"抽出来再包"（`extractContents` + `insertNode`）会把**整块 `<p>` 搬进 `<mark>` 里** ——
+   * 那是个块级盒子：底色糊成一大片、几张标记嵌套起来还会在行首竖出条条
+   *（实测撞过：一条跨段的高亮渲染成 688×156、里面装着两个块的 `<mark>`）。
+   * 逐段包则每一行各有各的一片，行内的偏移也不会互相顶掉。
+   */
   function wrapOnce(host, mark) {
     var walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, null);
     var pos = 0;
-    var from = null;
-    var to = null;
+    var pieces = [];
     var node = walker.nextNode();
     while (node) {
       var len = node.nodeValue ? node.nodeValue.length : 0;
-      if (!from && pos + len > mark.start) from = { node: node, at: mark.start - pos };
-      if (!to && pos + len >= mark.end) to = { node: node, at: mark.end - pos };
+      var from = Math.max(mark.start, pos);
+      var to = Math.min(mark.end, pos + len);
+      if (to > from) pieces.push({ node: node, from: from - pos, to: to - pos });
       pos += len;
       node = walker.nextNode();
     }
-    if (!from || !to) return;
-    try {
-      var range = document.createRange();
-      range.setStart(from.node, from.at);
-      range.setEnd(to.node, to.at);
-      var box = document.createElement('mark');
-      box.className = 'chatmark';
-      box.dataset.mark = mark.id;
-      if (mark.text) box.title = mark.text;
+    // **从后往前包**：包了前面那一段会把后面节点的偏移顶掉（同一条消息上有多条标记时
+    // 尤其明显）。这一条在"一把包"的写法里也成立，逐段包之后仍然要守。
+    for (var i = pieces.length - 1; i >= 0; i -= 1) {
+      var piece = pieces[i];
       try {
+        var range = document.createRange();
+        range.setStart(piece.node, piece.from);
+        range.setEnd(piece.node, piece.to);
+        var box = document.createElement('mark');
+        // 三种标记**各长各的**（底色 / 灰+划线 / 虚线下划线，见 CSS）：
+        // 类名里带 kind，样式就不用去猜它是不是批注
+        box.className = 'chatmark chatmark--' + QF.store.markKind(mark);
+        box.dataset.mark = mark.id;
+        if (mark.text) box.title = mark.text;
         range.surroundContents(box);
       } catch (err) {
-        // 选区跨了两个块（比如横跨两段）：surroundContents 会抛，换成"抽出来再包"
-        var frag = range.extractContents();
-        box.appendChild(frag);
-        range.insertNode(box);
+        /* 某一段包不上就只是那一段没画上 —— 别把整条消息搞坏 */
       }
-    } catch (err2) {
-      /* 区间对不上就只是不高亮 —— 别把整条消息搞坏 */
     }
   }
 
-  /** 右键：选中一段 → 高亮 / 批注；点在已有高亮上 → 改 / 取消。 */
+  /* ------------------------------------------------------------------ 旁批
+   *
+   * 批注的那句话要出现在**它标的那一行旁边**，而不是只在统一面板里看得到 ——
+   * 读到哪一句、提醒就在眼前（用户："要能做到一边看输出一边看批注，就像笔记一样"）。
+   *
+   * 版式：给这一行加第三个格子（`.chatmsg__margin`，行上加 `.has-margin` 才出现），
+   * 卡片用**绝对定位**按"它标的那一行在哪"算 `top`，所以不参与文档流、也不推挤正文；
+   * 两条挤在一起时依次往下让。行宽只在**这条回答有批注**时才收窄，没批注的照旧铺满。
+   *
+   * 位置是版式的函数，不是一次性算完的：正文重排（窗口缩放、收起会话栏、字号变）之后
+   * 要重算，所以有一条 `relayoutMargins`（由线程上的 ResizeObserver 触发）。
+   */
+  function notesOn(marks) {
+    return (marks || []).filter(function (one) {
+      return QF.store.markKind(one) === 'note' && String(one.text || '').trim();
+    });
+  }
+
+  /** 就地编辑时，让输入框**至少和它原来显示的那块一样高**。
+   *
+   * 用户："对于长的批注，点击编辑的时候，编辑框会缩得很小。不要让它动，要保持在原形上编辑"。
+   * 长的批注原来显示成好几行，一点"编辑"却换成 `rows="3"` 的小框 —— 卡片当场缩水，
+   * 底下整栏跟着跳。
+   *
+   * 做法：进编辑**之前**先把原来那块的高度量下来（`minPx`），写成 `min-height`，
+   * 而且**创建时就带上**（不是等挂进 DOM 再改）—— 这样一帧都不会闪出小框；
+   * 然后再按内容自动长高：字多了更高，**不会比原来矮**。
+   * 返回"按内容重算一次"的函数，挂进 DOM 之后再调（挂之前量不到折行）。
+   *
+   * `minPx` 为 0 = 新写的草稿（没有"原来的形状"要保）：直接不插手，保持 `rows=3` ——
+   * 否则一个空框会被"按内容"缩成一行。
+   */
+  function fitNoteArea(area, minPx) {
+    var floor = Math.max(0, Math.round(minPx || 0));
+    if (!area || !floor) return null;
+    area.style.minHeight = floor + 'px';
+    var grow = function () {
+      var cs = window.getComputedStyle(area);
+      // `box-sizing: border-box` 是全局那条：`scrollHeight` 不含边框，要补上，
+      // 否则有边框的那个（`.chatnotes__input`）会差 2px 就出滚动条。
+      var frame = parseFloat(cs.borderTopWidth || 0) + parseFloat(cs.borderBottomWidth || 0);
+      area.style.height = 'auto';
+      area.style.height = Math.max(floor, area.scrollHeight + frame) + 'px';
+    };
+    area.addEventListener('input', grow);
+    return grow;
+  }
+
+  /** 卡片里那个输入框 + 两颗图标（保存＝勾，取消＝叉）。
+   *
+   * **Enter 就是保存**（用户："批注框编辑的时候 enter 就是保存"）：换行改走 Shift+Enter，
+   * 与对话输入框同一套手感（组字中的回车仍然是"选词"，见 `isComposing`）。Esc 是取消。
+   */
+  function appendComposer(card, opts) {
+    var area = h('textarea.chatnote-card__input', {
+      rows: '3',
+      // 高度下限在**创建时**就写进去（见 `fitNoteArea`）：等挂进 DOM 再改会闪一下小框
+      style: opts.minHeight ? { minHeight: Math.round(opts.minHeight) + 'px' } : null,
+      value: opts.value,
+      placeholder: '写一句…',
+      onInput: function (event) {
+        opts.onInput(event.target.value);
+      },
+      onKeydown: function (event) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          opts.onCancel();
+          return;
+        }
+        if (event.key !== 'Enter' || event.isComposing || event.shiftKey) return;
+        event.preventDefault();
+        opts.onSave(area.value);
+      },
+    });
+    card.appendChild(area);
+    card.appendChild(
+      h(
+        'div.chatnote-card__acts',
+        null,
+        iconButton('check', '保存（Enter）', function () {
+          opts.onSave(area.value);
+        }, '.chatnote-card__act'),
+        iconButton('close', '取消（Esc）', opts.onCancel, '.chatnote-card__act')
+      )
+    );
+    var grow = fitNoteArea(area, opts.minHeight);
+    // 刚开这一条时抢一次焦点、光标落在末尾 —— 写一句话不该还要先点一下输入框。
+    // `marginFocus` 记住"这一次已经抢过了"：重画会重建卡片，不能每次都把焦点拽回来。
+    setTimeout(function () {
+      if (grow) grow();   // 挂进 DOM 了，这时量折行才准
+      if (marginFocus === opts.key) return;
+      marginFocus = opts.key;
+      area.focus();
+      area.setSelectionRange(area.value.length, area.value.length);
+    }, 30);
+    return area;
+  }
+
+  /** 一张旁批卡片。**填字与改字都在这里就地做**（不再跳总览面板）。
+   *
+   * 两态共用一张卡：`marginEditing`（改已有的那条）与 `pendingMark`（刚创建、还没落库，
+   * 见 `draftCard`）。用户的两句话是这一块的全部理由："对批注进行修改的时候，不要跳出来
+   * 那个总览页面，直接在右边的批注栏上就地修改"、"创建也做成就地填字"。
+   * 总览面板仍然是"翻全篇"的地方（搜索、跳读、批量看）。
+   */
+  function marginCard(note) {
+    var editing = marginEditing === note.id;
+    var card = h('div.chatnote-card' + (editing ? '.is-editing' : ''), {
+      dataset: { note: note.id },
+    });
+    if (!editing) {
+      card.appendChild(
+        h(
+          'button.chatnote-card__view',
+          {
+            type: 'button',
+            title: '点这里就地改',
+            onClick: function () {
+              // 把**这一张卡现在多高**量给它（见 `marginEditMin`）
+              startMarginEdit(note.id, card);
+            },
+          },
+          h('span.chatnote-card__text', { text: note.text })
+        )
+      );
+      return card;
+    }
+    appendComposer(card, {
+      key: 'note:' + note.id,
+      minHeight: marginEditMin,   // 长的批注：输入框不能比原来那块矮
+      value: marginEditText === null ? note.text : marginEditText,
+      onInput: function (v) {
+        marginEditText = v;
+      },
+      onSave: function (v) {
+        saveMarginEdit(note.id, v);
+      },
+      onCancel: cancelMarginEdit,
+    });
+    return card;
+  }
+
+  /** 正在填字的那张**草稿**卡片：批注还没有落库，所以它没有 mark 可量。
+   *
+   * 名字里带 `margin` 不是啰嗦：这个文件里已经有一个 `draftCard`（模型现编的**临时题卡**，
+   * 见 `partNode` 那一带）。函数声明提升之后，写在后面的那个会把前面的整个盖掉 ——
+   * 实测症状是"按下 ⌘⇧A 什么也不出来，控制台里一句 `undefined` 的报错"。
+   */
+  function marginDraftCard() {
+    var card = h('div.chatnote-card.is-draft', { dataset: { draft: '1' } });
+    appendComposer(card, {
+      key: 'draft',
+      value: marginDraftText,
+      onInput: function (v) {
+        marginDraftText = v;
+      },
+      onSave: saveDraft,
+      onCancel: cancelDraft,
+    });
+    return card;
+  }
+
+  function startMarginEdit(id, card) {
+    // **先量下"原来那张卡"多高**：长的批注显示成好几行，一点编辑就换成三行的小框，
+    // 卡片当场缩水、底下整栏跟着跳（用户："编辑框会缩得很小。不要让它动"）。
+    var view = card ? card.querySelector('.chatnote-card__view') : null;
+    marginEditMin = view ? Math.round(view.getBoundingClientRect().height) : 0;
+    marginEditing = id;
+    marginEditText = null;   // 从这一条自己的字开始（见 marginCard）
+    marginFocus = '';
+    notesEditing = '';       // 与面板那一份互斥：同时开两处编辑框只会让人不知道在改哪条
+    cancelDraftState();      // 改一条的同时不再留着草稿
+    repaintKeepingScroll();
+  }
+
+  function cancelMarginEdit() {
+    marginEditing = '';
+    marginEditText = null;
+    marginFocus = '';
+    repaintKeepingScroll();
+  }
+
+  /** 就地改完落库。**空文本不算改**：要删就去菜单里删（见右键菜单的「取消这条批注」）。 */
+  function saveMarginEdit(id, text) {
+    var body = String(text || '').trim();
+    if (!body) {
+      ui.toast('批注不能是空的 —— 不想要它就在右键菜单里删掉', 'warn', 3000);
+      return;
+    }
+    if (!QF.store.updateNote(id, body)) return;
+    marginEditing = '';
+    marginEditText = null;
+    marginFocus = '';
+    repaintKeepingScroll();
+    ui.toast('已更新批注', 'info', 1200);
+  }
+
+  /** 草稿落库 —— 创建一条批注走的就是这条路（不再经过面板）。 */
+  function saveDraft(text) {
+    var body = String(text || '').trim();
+    if (!pendingMark) return;
+    if (!body) {
+      ui.toast('写一句再保存（不想写就按 Esc）', 'warn', 2600);
+      return;
+    }
+    if (
+      !addMarkTracked({
+        kind: 'note',
+        cid: pendingMark.cid,
+        mid: pendingMark.mid,
+        quote: pendingMark.quote,
+        start: pendingMark.start,
+        end: pendingMark.end,
+        text: body,
+      })
+    ) {
+      ui.toast('标记满了（500 条）—— 先删几条再加', 'warn', 3200);
+      return;
+    }
+    cancelDraftState();
+    repaintKeepingScroll();
+    ui.toast('已批注', 'info', 1200);
+  }
+
+  function cancelDraft() {
+    cancelDraftState();
+    repaintKeepingScroll();
+  }
+
+  function cancelDraftState() {
+    pendingMark = null;
+    marginDraftText = '';
+    if (marginFocus === 'draft') marginFocus = '';
+  }
+
+  /** 这一行是不是正挂着那条草稿。 */
+  function draftOn(row) {
+    if (!pendingMark || !row) return null;
+    return String(pendingMark.mid) === String(row.dataset.id) ? pendingMark : null;
+  }
+
+  /** 这一行上要摆的东西：已有的批注（按 mark 量位置）+ 正在填字的那条（按记下的位置）。
+   *
+   * 排序按**锚点当前的 y**，不按 start 偏移：一条被挤到下面之后，下一帧仍按锚点重排，
+   * 顺序不会因为"谁先创建"而乱。
+   */
+  function marginItems(host, box, notes, draft) {
+    var boxRect = box.getBoundingClientRect();
+    var items = notes.map(function (note) {
+      var mark = host ? host.querySelector('.chatmark[data-mark="' + note.id + '"]') : null;
+      var rect = mark ? mark.getBoundingClientRect() : null;
+      return { key: note.id, note: note, rect: rect, top: rect ? rect.top - boxRect.top : 0 };
+    });
+    if (draft && host) {
+      var partsRect = host.getBoundingClientRect();
+      var hgt = draft.anchorH || 18;
+      var top = partsRect.top + draft.anchorY - boxRect.top;
+      // 还没落库的那条没有 mark 可量：拿按下那一刻记下的矩形（相对零件区）在这里还原
+      items.push({
+        key: '__draft',
+        draft: draft,
+        top: top,
+        rect: {
+          top: boxRect.top + top,
+          bottom: boxRect.top + top + hgt,
+          height: hgt,
+          right: partsRect.left + draft.anchorX,
+        },
+      });
+    }
+    items.sort(function (a, b) {
+      return a.top - b.top;
+    });
+    return items;
+  }
+
+  /** 卡片按各自那一行摆好，并从**标的文字**拉一根线到卡片。 */
+  function placeMargin(host, box, notes, draft) {
+    var boxRect = box.getBoundingClientRect();
+    var svg = ensureLeadSvg(box);
+    ui.clear(svg);
+    var floor = 0;
+    marginItems(host, box, notes, draft).forEach(function (item) {
+      var card = item.draft
+        ? box.querySelector('.chatnote-card.is-draft') || marginDraftCard()
+        : box.querySelector('[data-note="' + item.key + '"]') || marginCard(item.note);
+      if (!card.parentNode) box.appendChild(card);
+      // `top` 相对旁批这一栏的顶边算（这一栏与正文同顶，所以两个坐标系差一个常量）
+      var top = Math.round(Math.max(item.top, floor));
+      card.style.top = top + 'px';
+      // 线接在卡片**上沿往下一点**，不用正中间：改到一半的卡片会变高，
+      // 用中点会让这根线在编辑时上下乱跑。
+      if (item.rect) leadLine(svg, boxRect, item.rect, top + 13);
+      floor = top + card.offsetHeight + 6;   // 挨着就往下让，别叠在一起
+    });
+  }
+
+  // （`SVG_NS` 在文件开头已经声明过一次，这里直接用，不再重复声明）
+  function ensureLeadSvg(box) {
+    var svg = box.querySelector('.chatnote-leads');
+    if (svg) return svg;
+    svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'chatnote-leads');
+    svg.setAttribute('aria-hidden', 'true');
+    box.insertBefore(svg, box.firstChild);   // 连线垫在卡片底下
+    return svg;
+  }
+
+  /** 一根连线：从标的文字拉到卡片左边。
+   *
+   * 走法：先沿**这一行的下缘那条空白**往右（`anchor.bottom` 之下已经没有字形，
+   * 只剩行距），进了这一栏再拐下去接卡片 —— 直接横穿过去会从字上压过一道线。
+   * 例外是"标的文字已经贴到右边界"（尾巴不足一格宽）：那种情况没有字会挡路，
+   * 就从行的中间直接拉过去，看起来才像"指着那句话"。
+   */
+  function leadLine(svg, boxRect, anchorRect, cardY) {
+    var tail = boxRect.left - anchorRect.right;
+    var midY = anchorRect.top + anchorRect.height / 2 - boxRect.top;
+    var y = Math.round(tail <= 26 ? midY : anchorRect.bottom - boxRect.top + 1);
+    var startX = Math.round(anchorRect.right - boxRect.left + 3);
+    var elbowX = -8;   // 拐点落在正文与这一栏之间那条列间距里
+    var line = document.createElementNS(SVG_NS, 'polyline');
+    line.setAttribute('class', 'chatnote-lead');
+    line.setAttribute(
+      'points',
+      [startX + ',' + y, elbowX + ',' + y, elbowX + ',' + Math.round(cardY), '0,' + Math.round(cardY)].join(' ')
+    );
+    svg.appendChild(line);
+  }
+
+  function paintMargin(row, host, marks) {
+    if (!row) return;
+    var box = row.querySelector('.chatmsg__margin');
+    var notes = notesOn(marks);
+    var draft = draftOn(row);
+    if (!notes.length && !draft) {
+      row.classList.remove('has-margin');
+      if (box) box.remove();
+      return;
+    }
+    if (!box) {
+      box = h('div.chatmsg__margin');
+      row.appendChild(box);
+    }
+    row.classList.add('has-margin');
+    ui.clear(box);
+    placeMargin(host, box, notes, draft);
+  }
+
+  // 版式一变就重算一次卡片位置。ResizeObserver 盯线程本身：窗口缩放、收起会话栏、
+  // 面板开合都会让它换尺寸，而**卡片的 top 就是这些的结果**。
+  var marginFrame = 0;
+
+  function relayoutMargins() {
+    marginFrame = 0;
+    if (!threadEl) return;
+    Array.prototype.forEach.call(threadEl.querySelectorAll('.chatmsg.has-margin'), function (row) {
+      var host = row.querySelector('.chatmsg__parts');
+      var box = row.querySelector('.chatmsg__margin');
+      if (!host || !box) return;
+      var notes = notesOn(QF.store.marksOf(row.dataset.id));
+      var draft = draftOn(row);
+      if (!notes.length && !draft) {
+        row.classList.remove('has-margin');
+        box.remove();
+        return;
+      }
+      placeMargin(host, box, notes, draft);
+    });
+  }
+
+  function scheduleMarginRelayout() {
+    if (marginFrame) return;
+    marginFrame = requestAnimationFrame(relayoutMargins);
+  }
+
+  /** 右键：选中一段 → 高亮 / 删除线 / 批注；点在已有标记上 → 按**那一段上有的**给动作。
+   *
+   * 两条修出来的规矩（用户："我没法既加删除线又加高亮又加批注"）：
+   *   * **选区优先于"点在哪"**：选中一段再右键时，光标底下**正好就是**那枚旧 `<mark>`，
+   *     第一版于是只给「取消高亮」——"既高亮又删除线又批注"从这条路根本走不到；
+   *   * **点了旧标记也给"加"**：缺的那几种摆出来，目标就是它自己那一段 ——
+   *     否则"先高亮、再回来加删除线"要先取消、再重新划一遍，划线不该比改主意更费力。
+   */
   function onMarkContextMenu(event) {
-    var hit = event.target && event.target.closest ? event.target.closest('.chatmark') : null;
-    var pick = hit ? null : selectionMark();
-    if (!hit && !pick) return;   // 既没选中也没点在批注上：让浏览器自己的菜单出来
+    var pick = selectionMark();
+    var hit = pick || !event.target || !event.target.closest ? null : event.target.closest('.chatmark');
+    if (!hit && !pick) return;   // 既没选中也没点在标记上：让浏览器自己的菜单出来
     event.preventDefault();
     chatMenuX = event.clientX;
     chatMenuY = event.clientY;
+
     var items = [];
-    if (hit) {
-      var id = hit.dataset.mark;
-      var one = (QF.store.notes() || []).filter(function (each) {
-        return each.id === id;
-      })[0];
+    // 这一段（选区的那一段，或点中的那枚标记自己那一段）上盖着的标记
+    var target = hit ? markPick(markOf(hit), hit) : pick;
+    var covered = coveringMarks(target.mid, target.start, target.end);
+    var has = {};
+    covered.forEach(function (row) {
+      has[row.kind] = true;
+    });
+
+    // **只有批注才有"改"**：高亮与删除线没有话可改（用户："高亮和批注是分开的两个
+    // 东西"）。落在高亮上却给「改这条批注」，等于把一件东西说成了另一件。
+    // 菜单里**不写批注的内容**（用户："右键菜单里面，不要出现批注的具体内容了"）——
+    // 类别已经在标题里说了，再挂一句原文只会把菜单撑长、还得为它截断。
+    var note = covered.filter(function (row) {
+      return row.kind === 'note';
+    })[0];
+    if (note) {
       items.push({
         icon: 'pencil',
         label: '改这条批注',
-        hint: one && one.text ? one.text.slice(0, 10) : '只有高亮',
         run: function () {
-          notesEditing = id;
-          pendingMark = null;
-          notesDraft = one ? one.text : '';
-          openNotes();
+          startMarginEdit(note.id);   // 就地改，不跳到总览面板
         },
       });
+    }
+    // 这一段上有的每一种，各给一条取消
+    covered.forEach(function (row) {
       items.push({
         icon: 'trash',
         danger: true,
-        label: '取消这条批注',
+        label: row.kind === 'strike' ? '取消删除线' : row.kind === 'note' ? '取消这条批注' : '取消高亮',
         run: function () {
-          if (QF.store.removeNote(id)) {
-            paintThread();
-            if (notesOpen) renderNotes();
-          }
+          dropMark(row.id);
         },
       });
-    } else {
+    });
+    // 缺的那几种摆出来（目标 = 这一段）
+    if (!has.hl) {
       items.push({
         icon: 'marker',
         label: '高亮这一段',
-        hint: '不写字',
+        hint: '⌘⇧H',
         run: function () {
-          if (
-            !QF.store.addMark({
-              cid: pick.cid,
-              mid: pick.mid,
-              quote: pick.quote,
-              start: pick.start,
-              end: pick.end,
-            })
-          ) {
-            ui.toast('批注满了（500 条）—— 先删几条再加', 'warn', 3200);
-            return;
-          }
-          paintThread();
+          applyMark('hl', target);
         },
       });
+    }
+    if (!has.strike) {
+      items.push({
+        icon: 'strike',
+        label: '加删除线',
+        hint: '⌘⇧X',
+        run: function () {
+          applyMark('strike', target);
+        },
+      });
+    }
+    if (!has.note) {
       items.push({
         icon: 'note',
         label: '批注这一段',
-        hint: '写一句',
+        hint: '⌘⇧A',
         run: function () {
-          pendingMark = pick;
-          notesEditing = '';
-          notesDraft = '';
-          openNotes();
+          annotatePick(target);
         },
       });
     }
     showChatMenu(items);
   }
 
+  /** 一枚标记元素对应的那条记录。 */
+  function markOf(el) {
+    var id = el && el.dataset ? el.dataset.mark : '';
+    return (QF.store.notes() || []).filter(function (each) {
+      return each.id === id;
+    })[0];
+  }
+
+  /** 某一段上**盖满了**的标记（按 kind 去重，每种一条）。
+   *
+   * 右键菜单靠它回答两件事："这段上还缺哪种"、以及"每种各给一条取消"。
+   * 只认"整段都盖住"的：部分重叠的那些，说"取消高亮"取消掉的是哪一截讲不清。
+   * 去重是因为同段上可能叠着两枚同类（先高亮一次、又从菜单里加了一次）——
+   * 菜单里冒出两行一模一样的"取消高亮"只会让人猜哪个是哪个。
+   */
+  function coveringMarks(mid, start, end) {
+    var seen = {};
+    var list = [];
+    (QF.store.marksOf(mid) || []).forEach(function (one) {
+      if (one.start > start || one.end < end) return;
+      var kind = QF.store.markKind(one);
+      if (seen[kind]) return;
+      seen[kind] = true;
+      list.push({ kind: kind, id: one.id });
+    });
+    return list;
+  }
+
+  /** 撤掉一条标记，并把跟着它一起变的东西收拾干净（就地编辑态、正文、旁批栏、面板）。 */
+  function dropMark(id) {
+    if (!removeMarkTracked(id)) return false;
+    // 正在就地改的那条被删了：别留着一个指向空条目的输入框
+    if (marginEditing === id) marginEditing = '';
+    repaintKeepingScroll();   // 撤销标记同样是原地变形，不该动视口
+    if (notesOpen) renderNotes();
+    return true;
+  }
+
+  /** 把一枚**已有的标记**当成"要操作的一段"，给 `applyMark` / `annotatePick` 当目标。
+   *
+   * 右键点在一枚旧标记上时用它：目标就是它自己那一段。锚点按**这一枚元素**在屏幕上的
+   * 位置算 —— 批注的草稿卡片要摆到正文右边那一栏，`pendingMark` 里少了这个会飘。
+   */
+  function markPick(mark, el) {
+    var host = el && el.closest ? el.closest('.chatmsg__parts') : null;
+    var pick = {
+      cid: state.current || '',
+      mid: mark && mark.mid != null ? String(mark.mid) : '',
+      quote: String((mark && mark.quote) || '').slice(0, 600),
+      start: Math.max(0, parseInt(mark && mark.start, 10) || 0),
+      end: Math.max(0, parseInt(mark && mark.end, 10) || 0),
+    };
+    if (host && el) {
+      var hostRect = host.getBoundingClientRect();
+      var rect = el.getBoundingClientRect();
+      pick.anchorY = rect.top - hostRect.top;
+      pick.anchorH = rect.height;
+      pick.anchorX = rect.right - hostRect.left;
+    }
+    return pick;
+  }
+
+  /** 钉一条标记。右键菜单与快捷键**共用这一条路**（两处各写一份，迟早只改一处）。 */
+  function applyMark(kind, pick) {
+    if (
+      !addMarkTracked({
+        kind: kind,
+        cid: pick.cid,
+        mid: pick.mid,
+        quote: pick.quote,
+        start: pick.start,
+        end: pick.end,
+      })
+    ) {
+      ui.toast('标记满了（500 条）—— 先删几条再加', 'warn', 3200);
+      return;
+    }
+    // **原地变形**，不是"发完一条消息"：`paintThread()` 默认把视口拽到最底
+    //（用户："在 chatUI 上处高亮，画面会自动滚动到最下面"）。
+    repaintKeepingScroll();
+  }
+
+  /** 批注这一段：**在正文右边的旁批栏里就地填字**（用户："创建也做成就地填字"）。
+   *
+   * 原先它开的是总览面板 —— 写一句话却要弹一整个面板，重心从"那句话"跑到了"面板"。
+   * 现在只把这一段挂起来（`pendingMark`），卡片由 `paintMargin` 长在它该在的位置上，
+   * 连线和它在正文里的锚点一起画出来（见 `draftCard` / `marginItems`）。
+   */
+  function annotatePick(pick) {
+    cancelDraftState();   // 上一张草稿没写完就换了目标：以这一次为准
+    pendingMark = pick;
+    notesEditing = '';
+    notesDraft = '';
+    repaintKeepingScroll();
+  }
+
+  // 快捷键：选中它回答里的一段 → ⌘/Ctrl+⇧H 高亮、⇧X 删除线、⇧A 批注。
+  //
+  // 为什么要有：这条路原先只有右键一个入口，而"选好一段话、再把光标挪上去右键"是
+  // 两只手交替的动作；手在键盘上的人只想要一个组合键。
+  //
+  // 键位的选法（工作台页同时挂着笔记编辑器 notes.js，两边的组合键会共用一页）：
+  //   * `⌘⇧H`（高亮）、`⌘⇧X`（删除线）两边**同义**，留着 —— notes.js 那份只在焦点
+  //     位于编辑器里时生效（`formatShortcut` 绑在编辑器上），两边不会同时命中；
+  //   * 批注**不用** `⌘⇧M`：它在 notes.js 里是"公式块"，同一个键在同页指两件事，
+  //     养出来的是错的肌肉记忆。用 `⇧A`（annotate）。
+  //
+  // 让路规则与 `⌘B` 一致，但判据落在**选区**上而不是焦点上：焦点还留在输入框里、
+  // 用鼠标在回答里划一段，是最常见的一种选法，按焦点让路会把这种情形挡在外面。
+  // 选区不在它的回答里（选的是自己的话、或选在别的面板里）就什么都不做 —— 抢下
+  // 这个组合键却不发生任何事，比不响应更让人困惑。
+  document.addEventListener('keydown', function (ev) {
+    if (!(ev.metaKey || ev.ctrlKey) || !ev.shiftKey || ev.altKey) return;
+    var key = String(ev.key || '').toLowerCase();
+    if (key !== 'h' && key !== 'x' && key !== 'a') return;
+    var pick = selectionMark();
+    if (!pick) return;
+    ev.preventDefault();
+    if (key === 'a') annotatePick(pick);
+    else applyMark(key === 'x' ? 'strike' : 'hl', pick);
+  });
+
+  /* ---------------------------------------------------------------- 撤回（⌘Z）
+   *
+   * 记的是**标记的增删**（高亮 / 删除线 / 批注）—— "手滑点错了"的兜底，不是历史记录
+   *（上限 30 条）。改字不进这里：那种撤回是逐字的、在输入框里该由浏览器管
+   *（见下面那条 keydown 的让路规则），两件事混在一起只会让人猜不到会发生什么。
+   */
+  var MARK_UNDO_MAX = 30;
+  var markUndo = [];
+
+  function trackMark(entry) {
+    markUndo.push(entry);
+    if (markUndo.length > MARK_UNDO_MAX) markUndo.shift();
+  }
+
+  function markKindWord(piece) {
+    var kind = QF.store.markKind(piece);
+    return kind === 'strike' ? '删除线' : kind === 'note' ? '批注' : '高亮';
+  }
+
+  /** 加一条标记并记进撤回栈 —— 三个入口（右键 / 快捷键 / 面板）共用它。 */
+  function addMarkTracked(payload) {
+    var piece = QF.store.addMark(payload);
+    if (piece) trackMark({ op: 'add', id: piece.id });
+    return piece;
+  }
+
+  /** 删一条标记并记进撤回栈（连整条一起记下来，好按原 id 放回去）。 */
+  function removeMarkTracked(id) {
+    var piece = (QF.store.notes() || []).filter(function (one) {
+      return one.id === id;
+    })[0];
+    if (!piece) return false;
+    var snapshot = Object.assign({}, piece);
+    if (!QF.store.removeNote(id)) return false;
+    trackMark({ op: 'remove', piece: snapshot });
+    return true;
+  }
+
+  /** 撤回上一步：刚加的删掉、刚删的放回来（按**原来的 id**，见 `store.restoreMark`）。 */
+  function undoMark() {
+    var entry = markUndo.pop();
+    if (!entry) {
+      ui.toast('没有可撤回的标记了', 'info', 1600);
+      return;
+    }
+    if (entry.op === 'add') {
+      var live = (QF.store.notes() || []).filter(function (one) {
+        return one.id === entry.id;
+      })[0];
+      if (!live || !QF.store.removeNote(entry.id)) {
+        ui.toast('这条标记已经不在了', 'info', 1600);
+        return;
+      }
+      if (marginEditing === entry.id) marginEditing = '';
+      repaintKeepingScroll();
+      ui.toast('已撤回' + markKindWord(live), 'info', 1400);
+      return;
+    }
+    if (!QF.store.restoreMark(entry.piece)) {
+      ui.toast('放不回去了（标记已经满了）', 'warn', 2400);
+      return;
+    }
+    repaintKeepingScroll();
+    ui.toast('已恢复' + markKindWord(entry.piece), 'info', 1400);
+  }
+
+  // ⌘/Ctrl+Z = 撤回上一步标记操作（用户："^Z 要能撤回刚刚的高亮/删除线"）。
+  //
+  // 让路规则与 ⌘B 一致：焦点在可编辑区域里时不抢 —— 在输入框里按 ⌘Z 该由浏览器
+  // 撤回你刚打的字。栈空时也不抢：别把浏览器自己的默认行为挡掉却什么都不做。
+  document.addEventListener('keydown', function (ev) {
+    if (!(ev.metaKey || ev.ctrlKey) || ev.altKey || ev.shiftKey) return;
+    if (String(ev.key || '').toLowerCase() !== 'z') return;
+    var el = document.activeElement;
+    if (el && (el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')) return;
+    if (!markUndo.length) return;
+    ev.preventDefault();
+    undoMark();
+  });
+
+  /* -------------------------------------------------------- 位置标记（两类）
+   *
+   * 都是"这条消息这个位置"，但用处不同（用户："回溯是一个小工具，趁手，方便快速跳转。
+   * 然后现在是书签，这个是永久性的标记"）：
+   *
+   *   back  回溯  —— 最多 5 个，从正文区边上那颗传送球里快速跳转（趁手）
+   *   mark  书签  —— 数量不限，靠**地图（对话树）**上那枚丝带认（永久）
+   *
+   * 两者都带一句**描述**（可空）：描述是给人认的（"我当时为什么把这儿标下来"），
+   * 锚点是给机器认的（cid + mid）。两类都画在**对话树上** —— 那是地图（用户原话）。
+   *
+   * 五处刻意：
+   *   * 消息行尾两枚图标：旗（回溯）、丝带（书签）。左键打 / 取消，右键出菜单
+   *    （写描述 / 取消标记）—— 打一下不用打断，想写描述再写。
+   *   * 一个回溯点都没有时**那条 rail 整条不出现**；书签不上 rail，它在地图上。
+   *   * 回溯满 5 个：rail 抖一下（比一句 toast 更快让人知道"满在哪儿"）。
+   *   * 传送要有过程：点下去那颗点脉冲、落点闪一下（`revealMessage` 自带）；
+   *     跨对话时整条线程再轻沉一下 —— 一秒钟里换了一整屏内容，人得有个着落。
+   *   * 描述为空时一律显示**那一句的开头**（`quote`）—— 没写描述的也得认得出来。
+   */
+  var placesKey = '';
+
+  function placeKindName(place) {
+    return place && place.kind === 'mark' ? '书签' : '回溯';
+  }
+
+  /** 给人认的一行字：描述优先，没描述就退到那一句的开头。 */
+  function placeLabel(place) {
+    var label = String((place && place.label) || '').trim();
+    if (label) return label;
+    var quote = String((place && place.quote) || '').replace(/\s+/g, ' ').trim();
+    return quote ? quote.slice(0, 18) + (quote.length > 18 ? '…' : '') : placeKindName(place);
+  }
+
+  /** 这条消息上的回溯点（传送球与编号只认它；书签在地图上）。 */
+  function backsOf(places) {
+    return (places || []).filter(function (one) {
+      return one.kind !== 'mark';
+    });
+  }
+
+  /* ------------------------------------------------------------ 轨迹线（我的探索旅程）
+   *
+   * 用户："加一个轨迹按钮，点击之后，一根细线按照时间顺序把我经过的节点平滑地串起来"。
+   * "我经过的节点" 是**所有节点**，按**创建时间**（id）排 —— 不是当前分支（见 `trailD`
+   * 里那段说明：那是"最终留下的路"，不是"走过的路"）。所以这条线会在图上到处窜、
+   * 来回摞在一起 —— 那正是"地图上一堆连接线"。
+   *
+   * 每个节点取**中心点**：路线要"串起节点"，穿进框里的那一段交给节点自己盖住
+   *（轨迹画在节点之下），露出来的是框与框之间的一段段线。整条是一个子路径
+   *（一个 `M` + 若干 `C`）—— `stroke-dasharray` 按子路径算，自画那一套才成立。
+   */
+  /** 一个节点在图上的**中心点**（两种方向都是这个式子：`y` 是竖着的那条轴）。
+   *
+   * 取中心而不是边：路线要"串起节点"，穿进框里的那一段交给节点自己盖住
+   *（轨迹画在节点之下），露出来的是框与框之间的一段段连线 —— 正是"地图上一堆连接线"。
+   */
+  function trailPoint(node) {
+    return [node.x + TREE.w / 2, node.y];
+  }
+
+  /** 当前分支那条路线的 `d`：**按时间顺序**穿过每个经过的节点中心，平滑曲线。
+   *
+   * 用 Catmull-Rom 插值（转成三次贝塞尔）：它**穿过**每个控制点 —— 这条正是要的。
+   * 折线太多拐角、普通贝塞尔又不过点，只有它既过点又光滑。
+   *
+   * `limit` = 只画到哪个 id 为止（播放用；`null` = 全部）。整条仍是一个子路径
+   *（一个 `M` + 若干 `C`），虚线自画那套才成立。
+   */
+  function trailD(limit) {
+    var model = TREE.trailModel;
+    if (!model) return '';
+    var at = {};
+    model.nodes.forEach(function (one) {
+      at[String(one.message.id)] = one;
+    });
+    var pts = [];
+    // **所有节点**，按创建时间（id）—— 不是"当前分支"。
+    //
+    // 这一处改过一次，把话留清楚：第一版沿 `activePath()`（当前上下文那条线）走，
+    // 用户当场否了 —— "它只指示了我目前所处的这一条线路，但实际上我在树的前后反复跳转…
+    // 你要按照节点创建的时间顺序来，这个才是我真正的探索旅程"。
+    // 对：树上每个节点都是那一刻真的长出来的（包括后来放弃的分支、来回跳的那些），
+    // 所以 **id 顺序 = 旅程本身**；当前分支只是最终留下的那条路，不是走过的路。
+    playOrder().forEach(function (m) {
+      if (limit !== null && limit !== undefined && m.id > limit) return;
+      var node = at[String(m.id)];
+      if (node) pts.push(trailPoint(node));
+    });
+    if (pts.length < 2) return '';
+    var round = function (v) {
+      return Math.round(v * 10) / 10;
+    };
+    var d = 'M' + round(pts[0][0]) + ' ' + round(pts[0][1]);
+    for (var i = 0; i + 1 < pts.length; i++) {
+      var p0 = pts[i > 0 ? i - 1 : 0];
+      var p1 = pts[i];
+      var p2 = pts[i + 1];
+      var p3 = pts[i + 2 < pts.length ? i + 2 : pts.length - 1];
+      var c = trailControls(p0, p1, p2, p3);
+      d += 'C' + round(c[0][0]) + ' ' + round(c[0][1]) + ',' +
+                 round(c[1][0]) + ' ' + round(c[1][1]) + ',' +
+                 round(p2[0]) + ' ' + round(p2[1]);
+    }
+    return d;
+  }
+
+  /** 一段的两个控制点：**向心** Catmull-Rom（α = 0.5）。
+   *
+   * 第一版用的是普通 Catmull-Rom（控制点取 `(p2 - p0) / 6`）—— 它在急转弯处会**过冲**：
+   * 控制点伸得比节点还远，曲线冲过去再折回来，屏幕上就是一根尖刺
+   *（用户截到的正是那个：一条线猛戳下去又戳回来）。
+   *
+   * 向心版把"节点间距的 α 次方"当作参数间隔（knot），控制点只由**相邻两段**决定，
+   * 数学上保证曲面光滑且不自交（Yuksel 等，Parameterization and Applications of
+   * Catmull-Rom Curves）—— 转得再急也是一个圆润的弯，不会吐尖。
+   */
+  function trailControls(p0, p1, p2, p3) {
+    var dist = function (a, b) {
+      var dx = b[0] - a[0];
+      var dy = b[1] - a[1];
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+    // 间距为 0（首尾把邻居复制了一份）时给一个极小值，别让它除出 Infinity
+    var knot = function (v) {
+      return Math.max(Math.pow(Math.max(v, 1e-6), 0.5), 1e-4);
+    };
+    var t0 = 0;
+    var t1 = t0 + knot(dist(p0, p1));
+    var t2 = t1 + knot(dist(p1, p2));
+    var t3 = t2 + knot(dist(p2, p3));
+    var d10 = t1 - t0;
+    var d21 = t2 - t1;
+    var d32 = t3 - t2;
+    var d20 = t2 - t0;
+    var d31 = t3 - t1;
+    var mix = function (a, ka, b, kb, c, kc) {
+      return [
+        a[0] * ka - b[0] * kb + c[0] * kc,
+        a[1] * ka - b[1] * kb + c[1] * kc,
+      ];
+    };
+    var sub = function (a, b) {
+      return [a[0] - b[0], a[1] - b[1]];
+    };
+    // m1 = d21 * [ (p1-p0)/d10 - (p2-p0)/d20 + (p2-p1)/d21 ]
+    var m1 = mix(sub(p1, p0), 1 / d10, sub(p2, p0), 1 / d20, sub(p2, p1), 1 / d21);
+    // m2 = d21 * [ (p2-p1)/d21 - (p3-p1)/d31 + (p3-p2)/d32 ]
+    var m2 = mix(sub(p2, p1), 1 / d21, sub(p3, p1), 1 / d31, sub(p3, p2), 1 / d32);
+    return [
+      [p1[0] + (m1[0] * d21) / 3, p1[1] + (m1[1] * d21) / 3],
+      [p2[0] - (m2[0] * d21) / 3, p2[1] - (m2[1] * d21) / 3],
+    ];
+  }
+
+  /** 轨迹那一层；没开就返回 null（调用方不挂）。 */
+  function treeTrail(model) {
+    if (!TREE.trail || !model) return null;
+    TREE.trailModel = model;
+    var d = trailD(TREE.play.on ? TREE.play.limit : null);
+    var group = sv('g', { class: 'cttrail' });
+    var glow = sv('path', { class: 'cttrail__glow', d: d });
+    var line = sv('path', { class: 'cttrail__line', d: d });
+    group.appendChild(glow);
+    group.appendChild(line);
+    // 没在播放才"自画"：先把虚线缺口顶到整条长度（等于全遮），下一帧再放开。
+    // 播放中不这么干 —— 那时**长大本身就是动画**，轨迹跟着一枚一枚接上去（见 `paintTrail`）。
+    if (d && !TREE.play.on) {
+      try {
+        var len = line.getTotalLength();
+        // 线宽是**屏幕**像素（CSS 里那条 `vector-effect`），虚线长度因此也要按屏幕算：
+        // 不给这个比例，缩小后整条会被"提前画完"、放大后只画出一半。
+        var dash = len * (TREE.view.k || 1);
+        [glow, line].forEach(function (el) {
+          el.style.strokeDasharray = dash + ' ' + dash;
+          el.style.strokeDashoffset = String(dash);
+        });
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            if (!line.parentNode) return;
+            [glow, line].forEach(function (el) {
+              el.style.strokeDashoffset = '0';
+            });
+            // 画完把虚线撤掉：之后无论怎么缩放它都是一条实线
+            setTimeout(function () {
+              [glow, line].forEach(function (el) {
+                el.style.strokeDasharray = 'none';
+              });
+            }, 1200);
+          });
+        });
+      } catch (err) {
+        /* 量不到就整条直接显示 */
+      }
+    }
+    return group;
+  }
+
+  /** 把已有的轨迹重画到 `limit`（播放每点一枚就调一次）。 */
+  function paintTrail(limit) {
+    if (!treeEl || !TREE.trail) return;
+    var d = trailD(limit);
+    ['.cttrail__line', '.cttrail__glow'].forEach(function (sel) {
+      var el = treeEl.querySelector(sel);
+      if (el) el.setAttribute('d', d || '');
+    });
+  }
+
+  /** 轨迹开着时：把"自画"那套虚线让开（播放中长大的过程本身就是动画）。
+   *
+   * 早先这里还有一条"只显示轨迹"：轨迹开着就把节点/连线/图钉全隐掉。**已撤**
+   *（用户："点击轨迹的时候，下面的节点不要消失"）—— 路线要跟树一起看才有意义：
+   * 哪一段是沿着主线走的、哪一段是回头跳的，只有节点在旁边才读得出来。
+   */
+  function applyTrail() {
+    if (!treeEl) return;
+    if (!TREE.trail) return;
+    var line = treeEl.querySelector('.cttrail__line');
+    if (!line) return;
+    // 播放中不用"自画"那套虚线（长大的过程就是动画）
+    if (TREE.play.on) {
+      ['.cttrail__line', '.cttrail__glow'].forEach(function (sel) {
+        var el = treeEl.querySelector(sel);
+        if (!el) return;
+        el.style.strokeDasharray = 'none';
+        el.style.strokeDashoffset = '0';
+      });
+    }
+  }
+
+  /* ------------------------------------------------------------ 播放（按时间长大）
+   *
+   * 用户："加一个播放按钮，点击之后，整棵树按照时间顺序徐徐长大。播放速度要能调整"。
+   *
+   * 三处讲究：
+   *   * **几何不动**：节点的位置一直是算好的，长大只是"显形"而已。整棵树不会一边长
+   *     一边抖（真去动布局的话，每一帧都要重排，看着就是晃）。
+   *   * **出生动画落在里层**（`.ctnode__ink`）：外层 `group` 的 transform 是定位用的，
+   *     CSS 的 transform 会把它顶掉 —— 一碰，节点就跳到原点去。
+   *   * **状态活在 DOM 之外**（`TREE.play`）：重画（收起一支、换方向、写描述…）时只把
+   *     "该显示哪些"重贴一遍，计时器照旧跑 —— 不然画一次就断一次。
+   */
+  var PLAY_STEP = 260;                    // 1× 时每枚之间停多久（毫秒）
+  var PLAY_SPEEDS = [0.5, 1, 2, 4];       // 速度四档
+
+  function playOrder() {
+    return state.messages.slice().sort(function (a, b) {
+      return a.id - b.id;                 // id 就是时间（一条一条往上加的）
+    });
+  }
+
+  /** 点亮一枚节点（连带它的连线与图钉）。`born` = 要不要放"长大"那一下。 */
+  function markNodeShown(mid, born) {
+    if (!treeEl) return;
+    var key = String(mid);
+    var group = treeEl.querySelector('.ctnode[data-node="' + key + '"]');
+    if (group) {
+      group.classList.add('is-shown');
+      if (born) group.classList.add('is-born');
+    }
+    var edge = treeEl.querySelector('.ctedge[data-edge="' + key + '"]');
+    if (edge) edge.classList.add('is-shown');
+    var pin = treeEl.querySelector('.ctpin2[data-mid="' + key + '"]');
+    if (pin) {
+      pin.classList.add('is-shown');
+      // 书签/锚点**跟着它那一枚节点一起出场**（播放前它们是藏着的，见 `applyPlayState`），
+      // 出场那一下把描述亮出来（用户："轮到它的时候，显示一下文字描述"）。
+      if (born) flashPinCallout(pin);
+    }
+  }
+
+  /** 轮到这一枚图钉时，把它的标签（类别 + 描述）显出来一会儿。
+   *
+   * 为什么需要：地图缩到 0.45 倍以下时标签本来是**收着**的（一屏几十个会互相压），
+   * 而播放时人正盯着看 —— 轮到谁，谁就把名字报一下，然后再收回去。
+   * 停留时长跟着播放速度走：4× 时每枚只隔 65ms，还停 2 秒就会糊成一片。
+   */
+  function flashPinCallout(pin) {
+    if (!pin) return;
+    pin.classList.add('is-callout');
+    var ms = Math.max(900, 2000 / (TREE.play.speed || 1));
+    setTimeout(function () {
+      pin.classList.remove('is-callout');
+    }, ms);
+  }
+
+  /** 把"已经点亮"的标记**全部清掉**（重新播放前必做）。
+   *
+   * 不清会怎样：上一遍跑完（或停播）后，`is-shown` 留在每个节点、连线、图钉上；
+   * 再点播放时它们照样是亮的 —— 用户看到的就是"还没展开，书签和锚点也在"。
+   * 这一条是第二遍播放才露出来的，第一遍干净，所以一开始没被发现。
+   */
+  function clearShown() {
+    if (!treeEl) return;
+    Array.prototype.forEach.call(
+      treeEl.querySelectorAll('.is-shown, .is-born, .is-callout'),
+      function (el) {
+        el.classList.remove('is-shown');
+        el.classList.remove('is-born');
+        el.classList.remove('is-callout');
+      }
+    );
+  }
+
+  /** 重画之后重贴播放状态；没在播就只把 `is-playing` 撤掉（于是全部显形）。 */
+  function applyPlayState() {
+    if (!treeEl) return;
+    var layer = treeEl.querySelector('.chattree__layer');
+    var pins = treeEl.querySelector('.chattree__pins');
+    if (layer) layer.classList.toggle('is-playing', TREE.play.on);
+    if (pins) pins.classList.toggle('is-playing', TREE.play.on);
+    if (!TREE.play.on) return;
+    var order = playOrder();
+    for (var i = 0; i < TREE.play.at && i < order.length; i++) {
+      markNodeShown(order[i].id, false);
+    }
+  }
+
+  /** 播放/速度两颗键的字与亮灭（建完调一次；播放中就地改，不重画整条工具栏）。 */
+  function paintPlayUI() {
+    if (!treeEl) return;
+    var play = treeEl.querySelector('.chattree__playbtn');
+    if (play) {
+      play.classList.toggle('is-on', TREE.play.on);
+      play.setAttribute('aria-pressed', TREE.play.on ? 'true' : 'false');
+      play.title = TREE.play.on ? '停下（整棵树立刻全部显示）' : '按时间顺序把整棵树放一遍';
+      ui.clear(play);
+      play.appendChild(iconNode(TREE.play.on ? 'stop' : 'play', 12));
+      play.appendChild(h('span', { text: TREE.play.on ? '停止' : '播放' }));
+    }
+    var speed = treeEl.querySelector('.chattree__speedbtn');
+    if (speed) {
+      speed.textContent = TREE.play.speed + '×';
+      speed.title = '播放速度 ' + TREE.play.speed + '×（点一下换一档：0.5 / 1 / 2 / 4）';
+    }
+  }
+
+  function playTick() {
+    if (!TREE.play.on) return;
+    var order = playOrder();
+    if (TREE.play.at >= order.length) {
+      // 长完了：撤掉"播放中"，所有节点因此全部显形（不必一枚一枚去补），按钮回到"播放"
+      TREE.play.on = false;
+      TREE.play.at = 0;
+      TREE.play.limit = 0;
+      TREE.play.timer = 0;
+      applyPlayState();
+      applyTrail();
+      paintTrail(null);
+      paintPlayUI();
+      return;
+    }
+    var one = order[TREE.play.at];
+    TREE.play.at += 1;
+    TREE.play.limit = one.id;
+    markNodeShown(one.id, true);
+    // 轨迹与树**同时**长：这条路只画到刚长出来的那一枚为止
+    if (TREE.trail) paintTrail(TREE.play.limit);
+    TREE.play.timer = setTimeout(playTick, PLAY_STEP / TREE.play.speed);
+  }
+
+  function startPlay() {
+    if (!treeEl || !state.treeOpen) return;
+    stopPlay();
+    TREE.play.on = true;
+    TREE.play.at = 0;
+    TREE.play.limit = 0;
+    clearShown();       // 从零开始（第二遍播放时，上一遍的亮灯必须清掉）
+    applyPlayState();   // `is-playing` 一挂上，还没轮到的那几枚就都隐形了
+    applyTrail();       // 不再"只显示轨迹"（树要长出来），轨迹也从零开始接
+    paintTrail(0);
+    paintPlayUI();
+    playTick();
+  }
+
+  /** 停：**整棵树立刻全部显示**（不是冻在半路）。留一棵长到一半的树，人只会发懵。 */
+  function stopPlay() {
+    if (TREE.play.timer) {
+      clearTimeout(TREE.play.timer);
+      TREE.play.timer = 0;
+    }
+    TREE.play.on = false;
+    TREE.play.at = 0;
+    TREE.play.limit = 0;
+    // 整棵树立刻全部显示（`is-playing` 一撤，没点亮的也就都显形了）。
+    // `is-shown` 这一类标记顺手清掉：下一次播放要从零开始，不能带着上一遍的亮灯。
+    clearShown();
+    applyPlayState();
+    applyTrail();          // 不在播了 → 回到"只显示轨迹"（若开着）
+    paintTrail(null);      // 整条补全
+    paintPlayUI();
+  }
+
+  function togglePlay() {
+    if (TREE.play.on) stopPlay();
+    else startPlay();
+  }
+
+  function cyclePlaySpeed() {
+    var at = PLAY_SPEEDS.indexOf(TREE.play.speed);
+    TREE.play.speed = PLAY_SPEEDS[(at + 1) % PLAY_SPEEDS.length];
+    paintPlayUI();
+    // 正在播：立刻按新速度排下一拍（不然得等这一拍走完才生效，手感是"改慢了没反应"）
+    if (TREE.play.on && TREE.play.timer) {
+      clearTimeout(TREE.play.timer);
+      TREE.play.timer = setTimeout(playTick, PLAY_STEP / TREE.play.speed);
+    }
+  }
+
+  /* ------------------------------------------------------------ 传送球（回溯的门）
+   *
+   * 只装回溯点：它是"趁手、快跳"的那个小工具，最多 5 个、带编号；书签是永久性的，
+   * 它在地图上（见 treePins），不进这颗球 —— 一颗球装不下"永久"这件事。
+   *
+   * **形态换过一次**（用户："把锚点的传送门从输入框上面的固定位，改成带动效的，
+   * 可动的圆形传送球，默认初始位置在右边框旁边"）。原先是一条横贯输入框上方的细条：
+   * 写作时那一整条横带是**要被占掉的**，而回溯点是"随时可用、但多数时候不用"的东西 ——
+   * 它该挂在旁边，随时能抓，而不是压在输入区上面。
+   *
+   * 动效**全在球里面**（用户："把那个旋转的虚线环拿掉，动效做在球的内部，白底"）：
+   * 一圈沿着内缘转的弧 + 一层轻轻呼吸的内光。球本身不动、外面一件装饰都没有 ——
+   * 一颗白球浮在正文旁，转的是它自己肚子里的那点光。
+   *
+   * 其余两处（都不在球外）：
+   *   * **拖动**：抓住它走（球心鼓一点、影子加深）。**框内随便停**，只有靠近框边
+   *     才吸附（用户："不要强制贴边，让它可以在框内随意拖动，靠近框的时候自动吸附"）。
+   *     所以第一版"松手一律贴最近那一侧"改掉了：拖的时候是**磁铁**（进阈值后球渐渐
+   *     被牵向那条边，越近越用力，但不跳），松手才**咔哒**贴上去（那一下有过渡，滑过去）。
+   *   * **传送**：点一枚 → 那枚脉冲、落点闪一下（复用 `gotoPlace`）。
+   *
+   * 位置按**正文区**（`.chat__main`）算，不按窗口：工作台把对话挂进窗格时，
+   * 右边框是窗格的右边框。记忆在本机（`qf.chat.portal`），存的是**正文区里的比例**
+   *（`{x, y}`），换个窗口大小它还在原地；默认是右边框旁、高度 42% 处。
+   */
+  var PORTAL_KEY = 'qf.chat.portal';
+  var PORTAL_SIZE = 46;          // 球的直径（与 CSS 里的 width/height 一致）
+  var PORTAL_GAP = 12;           // 默认离边框多远
+  var PORTAL_EDGE = 6;           // 贴边时留的缝（吸到边上就是这个数）
+  var PORTAL_SNAP = 56;          // 离框边多近算"靠近"（磁铁的阈值，只在这儿生效）
+  //: 球停在哪儿：`x` / `y` 是**正文区里的比例**（0~1），所以换个窗口大小它还在原处。
+  //: `x: null` = 还没拖过 → 用默认（右边框旁边）。
+  var portalPos = { x: null, y: 0.42 };
+  var portalOpen = false;
+  var portalDrag = null;
+  var portalSuppressClick = false;
+
+  function loadPortal() {
+    try {
+      var saved = JSON.parse(window.localStorage.getItem(PORTAL_KEY) || 'null');
+      if (!saved) return;
+      var y = isFinite(saved.y) ? Math.min(0.94, Math.max(0.06, Number(saved.y))) : 0.42;
+      if (isFinite(saved.x)) {
+        portalPos = { x: Math.min(1, Math.max(0, Number(saved.x))), y: y };
+      } else if (saved.side === 'left' || saved.side === 'right') {
+        // 老记录（那时只有"贴哪一侧"）：贴左 → 0、贴右 → 1，越界的部分由夹取收拾
+        portalPos = { x: saved.side === 'left' ? 0 : 1, y: y };
+      }
+    } catch (err) {
+      /* 读不到就用默认（右边框旁边） */
+    }
+  }
+
+  function savePortal() {
+    try {
+      window.localStorage.setItem(PORTAL_KEY, JSON.stringify(portalPos));
+    } catch (err) {
+      /* 存不了就算了：这一次挪的位置还在界面上 */
+    }
+  }
+
+  /** 球能待的那块地方：**正文区**（左栏不算），坐标相对 `.chat` 的左上角。
+   *
+   * 不这么做的话，"贴左边"会贴到会话列表上（`.chat` 的左边是左栏）。 */
+  function portalBox() {
+    var host = stationsEl && stationsEl.parentNode;
+    var main = chatEl ? chatEl.querySelector('.chat__main') : null;
+    var hb = host ? host.getBoundingClientRect() : null;
+    if (!hb || !hb.width) return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    var mb = main ? main.getBoundingClientRect() : null;
+    if (!mb || !mb.width) return { left: 0, top: 0, width: hb.width, height: hb.height };
+    return { left: mb.left - hb.left, top: mb.top - hb.top, width: mb.width, height: mb.height };
+  }
+
+  function portalDock() {
+    return stationsEl ? stationsEl.querySelector('.chatportal__dock') : null;
+  }
+
+  /** 把球摆到 `portalPos` 说的地方（窗口大小、左栏宽度一变就要重叫一次）。 */
+  /** 球心的合法范围（正文区坐标）：贴边时留 `PORTAL_EDGE` 的缝。 */
+  function portalLimits(box) {
+    var half = PORTAL_SIZE / 2;
+    return {
+      minX: half + PORTAL_EDGE,
+      maxX: Math.max(half + PORTAL_EDGE, box.width - half - PORTAL_EDGE),
+      minY: half + PORTAL_EDGE,
+      maxY: Math.max(half + PORTAL_EDGE, box.height - half - PORTAL_EDGE),
+    };
+  }
+
+  function portalClamp(v, lo, hi) {
+    return Math.min(Math.max(v, lo), hi);
+  }
+
+  /** 把球心摆到正文区坐标 (cx, cy) 上；顺带定扇子朝哪边开（哪半边就往里侧开）。 */
+  function portalPaint(cx, cy) {
+    var dock = portalDock();
+    if (!dock) return;
+    var box = portalBox();
+    dock.style.transform =
+      'translate3d(' + Math.round(box.left + cx) + 'px,' + Math.round(box.top + cy) + 'px,0)';
+    stationsEl.dataset.side = cx > box.width / 2 ? 'right' : 'left';
+  }
+
+  function applyPortalPos() {
+    if (!portalDock()) return;
+    var box = portalBox();
+    var lim = portalLimits(box);
+    // 写进去的是**球心**（CSS 里球是挂在 dock 中心的），所以两侧都算到中心。
+    // `x: null` = 从没拖过 → 默认"右边框旁边"（离边 12px，比贴边的 6px 松一点）
+    var cx = portalPos.x === null || portalPos.x === undefined
+      ? lim.maxX - (PORTAL_GAP - PORTAL_EDGE)
+      : portalPos.x * box.width;
+    var cy = portalPos.y * box.height;
+    portalPaint(portalClamp(cx, lim.minX, lim.maxX), portalClamp(cy, lim.minY, lim.maxY));
+  }
+
+  function openPortal() {
+    if (!stationsEl || stationsEl.hidden) return;
+    portalOpen = true;
+    stationsEl.classList.add('is-open');
+    var ball = stationsEl.querySelector('.chatportal__ball');
+    if (ball) ball.setAttribute('aria-expanded', 'true');
+    document.addEventListener('mousedown', portalAway, true);
+    document.addEventListener('keydown', portalKeydown, true);
+  }
+
+  function closePortal() {
+    portalOpen = false;
+    if (stationsEl) stationsEl.classList.remove('is-open');
+    var ball = stationsEl && stationsEl.querySelector('.chatportal__ball');
+    if (ball) ball.setAttribute('aria-expanded', 'false');
+    document.removeEventListener('mousedown', portalAway, true);
+    document.removeEventListener('keydown', portalKeydown, true);
+  }
+
+  function portalAway(event) {
+    if (stationsEl && !stationsEl.contains(event.target)) closePortal();
+  }
+
+  function portalKeydown(event) {
+    if (event.key === 'Escape') closePortal();
+  }
+
+  /** 点球：**只有一枚回溯点时直接传送**（为了一枚去开一个扇子是多余的）。 */
+  function onPortalClick(event) {
+    if (portalSuppressClick) {
+      // 刚才是拖动：浏览器在 pointerup 后照样会派发 click，挡掉这一次
+      portalSuppressClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (portalOpen) {
+      closePortal();
+      return;
+    }
+    var backs = backsOf(QF.store.places());
+    if (backs.length === 1) {
+      gotoPlace(backs[0], stationsEl.querySelector('.chatportal__core'));
+      return;
+    }
+    openPortal();
+  }
+
+  /* 拖动：跟手走，松手吸附到最近那一侧。手感三处：拖动期间**关掉过渡**（宽度/位置
+   * 跟着指针一帧一帧写进去，再叠一层缓动就变成追着指针慢慢爬）、拖动时球放大一点
+   * （`.is-drag`）、松手那一下让它自己滑到边上（过渡打开，见 CSS）。 */
+  function startPortalDrag(event) {
+    if (!stationsEl || stationsEl.hidden || event.button) return;
+    closePortal();
+    portalDrag = { id: event.pointerId, x0: event.clientX, y0: event.clientY, moved: false };
+    try {
+      stationsEl.querySelector('.chatportal__ball').setPointerCapture(event.pointerId);
+    } catch (err) {
+      /* 抓不住也照样能拖（后面的 move 仍然会来） */
+    }
+    stationsEl.classList.add('is-drag');
+  }
+
+  function movePortalDrag(event) {
+    if (!portalDrag || event.pointerId !== portalDrag.id) return;
+    var dx = event.clientX - portalDrag.x0;
+    var dy = event.clientY - portalDrag.y0;
+    // 4px 以内算"手抖"，仍按点击处理（不然轻轻一碰就变成拖动）
+    if (!portalDrag.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+    portalDrag.moved = true;
+    if (!portalDock()) return;
+    var box = portalBox();
+    var lim = portalLimits(box);
+    // 一律换到**正文区坐标**里算（宿主里再叠上 `box.left/top` 那一段）
+    var hostRect = stationsEl.getBoundingClientRect();
+    var cx = event.clientX - hostRect.left - box.left;
+    var cy = event.clientY - hostRect.top - box.top;
+    // **磁铁**：进入阈值后按"离得越近拉得越狠"把球牵向那条边 —— 连续、不跳。
+    // 平方一下：阈值边界上几乎没力（不突兀），贴到边上才是全力。
+    // 拖动过程里只是被牵着，**吸死**发生在松手那一下（见 `endPortalDrag`）。
+    var pull = function (v, lo, hi) {
+      var near = v - lo < PORTAL_SNAP ? lo : hi - v < PORTAL_SNAP ? hi : null;
+      if (near === null) return v;
+      var t = 1 - Math.abs(v - near) / PORTAL_SNAP;
+      return v + (near - v) * t * t;
+    };
+    portalPaint(
+      portalClamp(pull(cx, lim.minX, lim.maxX), lim.minX, lim.maxX),
+      portalClamp(pull(cy, lim.minY, lim.maxY), lim.minY, lim.maxY)
+    );
+  }
+
+  function endPortalDrag(event) {
+    if (!portalDrag || (event && event.pointerId !== portalDrag.id)) return;
+    var moved = portalDrag.moved;
+    portalDrag = null;
+    if (stationsEl) stationsEl.classList.remove('is-drag');
+    if (!moved) {
+      // 没挪动 → 交给 click 去当"点了一下"（键盘回车走的也是那一条）
+      return;
+    }
+    var dock = portalDock();
+    var box = portalBox();
+    if (!dock) return;
+    var rect = dock.getBoundingClientRect();
+    var hostRect = stationsEl.getBoundingClientRect();
+    var lim = portalLimits(box);
+    var cx = rect.left + rect.width / 2 - hostRect.left - box.left;
+    var cy = rect.top + rect.height / 2 - hostRect.top - box.top;
+    // **松手才吸死**：阈值内贴到那条边上，阈值外**就地停下**（框内随便停）。
+    // 这一下会走 dock 的过渡（拖动期间是关掉的），所以是"滑过去"而不是"跳过去"。
+    var stick = function (v, lo, hi) {
+      if (v - lo <= PORTAL_SNAP) return lo;
+      if (hi - v <= PORTAL_SNAP) return hi;
+      return portalClamp(v, lo, hi);
+    };
+    cx = stick(cx, lim.minX, lim.maxX);
+    cy = stick(cy, lim.minY, lim.maxY);
+    portalPos = { x: cx / Math.max(1, box.width), y: cy / Math.max(1, box.height) };
+    savePortal();
+    portalSuppressClick = true;
+    applyPortalPos();
+  }
+
+  function renderStations() {
+    if (!stationsEl) return;
+    var backs = backsOf(QF.store.places());
+    var key =
+      String(state.current || '') +
+      '|' +
+      backs
+        .map(function (one) {
+          return one.id + ':' + one.mid + ':' + one.label;
+        })
+        .join(',');
+    if (key === placesKey) return;   // 流式每帧都会走到这儿，内容没变就别重画
+    placesKey = key;
+    closePortal();                   // 重画 = 收起扇子（里面那几枚都换人了）
+    ui.clear(stationsEl);
+    if (!backs.length) {
+      stationsEl.hidden = true;
+      return;
+    }
+    stationsEl.hidden = false;
+
+    var fan = h('div.chatportal__fan');
+    backs.forEach(function (place, index) {
+      fan.appendChild(portalSlot(place, index));
+    });
+    var ball = h(
+      'button.chatportal__ball',
+      {
+        type: 'button',
+        title:
+          backs.length === 1
+            ? '回溯 1：' + placeLabel(backs[0]) + '（点一下传送 · 拖动可挪位置）'
+            : '回溯点 ' + backs.length + ' 个（点开选一枚传送 · 拖动可挪位置）',
+        'aria-label': '回溯传送球',
+        'aria-expanded': 'false',
+        onPointerdown: startPortalDrag,
+        onPointermove: movePortalDrag,
+        onPointerup: endPortalDrag,
+        onPointercancel: endPortalDrag,
+        onClick: onPortalClick,
+      },
+      // 球里那两层：一层会呼吸的内光 + 一圈沿内缘转的弧（顺序即层次）
+      h('span.chatportal__glow'),
+      h('span.chatportal__sweep'),
+      h('span.chatportal__core', null, h('span.chatportal__n', { text: String(backs.length) }))
+    );
+    stationsEl.appendChild(h('div.chatportal__dock', null, fan, ball));
+    applyPortalPos();
+  }
+
+  /** 扇子里的一枚：序号 + 那一句的开头（与树图钉上的编号是同一套）。 */
+  function portalSlot(place, index) {
+    var here = String(place.cid || '') === String(state.current || '');
+    var slot = h(
+      'button.chatportal__slot' + (here ? '.is-here' : '.is-away'),
+      {
+        type: 'button',
+        dataset: { station: place.id },
+        // 逐枚出来（错开一点），像从球里摊开
+        style: { animationDelay: Math.min(index, 6) * 34 + 'ms' },
+        title:
+          '回溯 ' + (index + 1) +
+          (here ? '（传送过去）' : '（在别的对话里，点一下传送）') +
+          '：' + placeLabel(place) +
+          ' · 右键写描述',
+        'aria-label': '传送：回溯 ' + (index + 1) + ' ' + placeLabel(place),
+        onClick: function () {
+          closePortal();
+          gotoPlace(place, slot);
+        },
+        onContextmenu: function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          // **必须把坐标写进去**：菜单是按 `chatMenuX/Y` 摆的，不写就落在左上角
+          //（这一处漏过一次 —— 扇子里右键，菜单从屏幕角上冒出来）
+          chatMenuX = event.clientX;
+          chatMenuY = event.clientY;
+          openPlaceMenu([place], renderStations);
+        },
+      },
+      h('span.chatportal__num', { text: String(index + 1) }),
+      h('span.chatportal__tag', { text: placeLabel(place) })
+    );
+    return slot;
+  }
+
+  /** 满了：让球抖一下（比一句 toast 更快让人知道"是哪儿满了"）。 */
+  function shakeStations() {
+    if (!stationsEl || stationsEl.hidden) return;
+    stationsEl.classList.remove('is-shake');
+    void stationsEl.offsetHeight;
+    stationsEl.classList.add('is-shake');
+    setTimeout(function () {
+      if (stationsEl) stationsEl.classList.remove('is-shake');
+    }, 380);
+  }
+
+  /** 消息行尾那两枚图标的状态（打过标记的要亮着）。 */
+  function paintPlaceIcons() {
+    if (!threadEl) return;
+    Array.prototype.forEach.call(threadEl.querySelectorAll('.chatmsg'), function (row) {
+      var places = QF.store.placesOf(row.dataset.id);
+      Array.prototype.forEach.call(row.querySelectorAll('.chaticon[data-place]'), function (btn) {
+        var kind = btn.getAttribute('data-place');
+        var on = places.some(function (one) {
+          return placeKind(one) === kind;
+        });
+        btn.classList.toggle('is-on', on);
+        btn.title = (on
+          ? kind === 'mark'
+            ? '取消书签'
+            : '取消回溯点'
+          : kind === 'mark'
+            ? '加书签（永久，可写描述）'
+            : '打个回溯点（最多 5 个，在右边那颗传送球里传送）') + ' · 右键写描述';
+      });
+    });
+  }
+
+  function placeKind(place) {
+    return place && place.kind === 'mark' ? 'mark' : 'back';
+  }
+
+  /** `parentId` 下面**当下正显示着**的那条回答所在的行（没有就 null）。 */
+  function shownReplyRow(parentId) {
+    var prow = threadEl ? threadEl.querySelector('[data-id="' + parentId + '"]') : null;
+    if (!prow) return null;
+    var next = prow.nextElementSibling;
+    while (next && (!next.classList || !next.classList.contains('chatmsg'))) {
+      next = next.nextElementSibling;
+    }
+    return next || null;
+  }
+
+  /** 这一条下面**已经有一条回答了**吗（用来决定用户那条的标记图标出不出）。
+   *
+   * 判据是「孩子里有**非用户**那一条」，不是「有孩子」：接着往下问的那一条也是孩子，
+   * 而它出现的时候上面那条还没有回答。
+   */
+  function answered(m) {
+    return (state.messages || []).some(function (one) {
+      return one && String(one.parentId) === String(m.id) && one.role !== 'user';
+    });
+  }
+
+  /** 消息行尾那两枚图标：旗（回溯）/ 丝带（书签）。 */
+  function placeButtons(m) {
+    var places = QF.store.placesOf(m.id);
+    var mine = {};
+    places.forEach(function (one) {
+      mine[placeKind(one)] = one;
+    });
+    return ['back', 'mark'].map(function (kind) {
+      var one = mine[kind];
+      var btn = iconButton(
+        kind === 'mark' ? 'bookmark' : 'flag',
+        kind === 'mark' ? '加书签（永久，可写描述）' : '打个回溯点（最多 5 个）',
+        function () {
+          togglePlace(kind, m);
+        },
+        '.chatplacebtn'
+      );
+      btn.dataset.place = kind;
+      if (one) btn.classList.add('is-on');
+      // 右键 = 菜单（还没标记的给"加一个"，已标记的给"写描述 / 取消"）。
+      // 打一下不打断（左键就够），想写描述再走菜单 —— 描述是可选的，别拦在打的路上。
+      btn.addEventListener('contextmenu', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        // **按当下重查一遍**：`one` 是建这一行时抓的快照，打过之后它就过期了
+        //（症状：加完书签再右键，菜单里还是"加书签"）
+        var live = QF.store.placesOf(m.id).filter(function (each) {
+          return placeKind(each) === kind;
+        })[0];
+        var box = btn.getBoundingClientRect();
+        chatMenuX = box.left;
+        chatMenuY = box.bottom + 4;
+        openPlaceMenu(live ? [live] : [], refreshPlaces,
+          live ? null : { kind: kind, m: m }
+        );
+      });
+      return btn;
+    });
+  }
+
+  /** 打 / 取消一个位置标记。 */
+  function togglePlace(kind, m) {
+    var places = QF.store.placesOf(m.id);
+    var one = places.filter(function (each) {
+      return placeKind(each) === kind;
+    })[0];
+    if (one) {
+      QF.store.removePlace(one.id);
+      ui.toast('已取消' + placeKindName(one), 'info', 1200);
+    } else if (
+      !QF.store.addPlace({
+        kind: kind,
+        cid: state.current || '',
+        mid: m.id,
+        quote: String(m.content || '').slice(0, 60),
+      })
+    ) {
+      if (kind === 'mark') {
+        ui.toast('书签没加上，再试一次', 'warn', 2400);
+      } else {
+        ui.toast('回溯最多 5 个 —— 先取消一个再打（书签不限量）', 'warn', 3200);
+        shakeStations();
+      }
+      return;
+    } else {
+      ui.toast(
+        kind === 'mark' ? '已加书签（右键可写描述）' : '已打回溯点（最多 5 个，在右边那颗传送球里传送）',
+        'info',
+        1800
+      );
+    }
+    refreshPlaces();
+  }
+
+  /** 标记的右键菜单：**按类别成组**（加 / 写描述 / 取消），一次把两类都摆出来。
+   *
+   * `pending` = 这条还没标记时**可以补上的那些**：一个 `{kind, m}`，或一串（两者都给）。
+   * 消息行尾那两枚图标各传一个（它管的就是那一种）；对话树节点右键传两个 ——
+   * 用户："支持一下在对话树的节点上直接右键添加书签和回溯点的机制"：站在地图上，
+   * 两种都该给，而不是先回对话、找到那一行、再点其中一枚丝带。
+   *
+   * 类别顺序**写死**（书签在前、回溯在后），不按打的时间：同一个地点上的两枚钉子，
+   * 每次打开菜单都该是同一个样子。
+   */
+  function openPlaceMenu(places, after, pending) {
+    var wants = [];
+    if (pending) wants = pending.length ? pending.slice() : [pending];
+    var live = places || [];
+    var items = [];
+    ['mark', 'back'].forEach(function (kind) {
+      var isMark = kind === 'mark';
+      var mine = live.filter(function (one) {
+        return placeKind(one) === kind;
+      });
+      if (mine.length) {
+        mine.forEach(function (place, index) {
+          // **不带内容**（用户："右键菜单里面，不要出现批注的具体内容了"）：
+          // 同类有好几条时用序号分开（"书签 2/3"），描述与原文留在地图与抽屉上。
+          var name = placeKindName(place) + (mine.length > 1 ? ' ' + (index + 1) + '/' + mine.length : '');
+          items.push({
+            icon: 'pencil',
+            label: '写描述',
+            hint: name,
+            run: function () {
+              editPlaceLabel(place, after);
+            },
+          });
+          items.push({
+            icon: 'trash',
+            danger: true,
+            label: '取消' + placeKindName(place),
+            hint: name,
+            run: function () {
+              QF.store.removePlace(place.id);
+              if (after) after();
+              refreshPlaces();
+              ui.toast('已取消' + placeKindName(place), 'info', 1200);
+            },
+          });
+        });
+        return;
+      }
+      var want = wants.filter(function (one) {
+        return one.kind === kind;
+      })[0];
+      if (!want) return;
+      items.push({
+        icon: isMark ? 'bookmark' : 'flag',
+        label: isMark ? '加书签' : '打个回溯点',
+        hint: isMark ? '永久，可写描述' : '最多 5 个，在右边那颗传送球里',
+        run: function () {
+          togglePlace(kind, want.m);
+          if (after) after();
+        },
+      });
+    });
+    showChatMenu(items);
+  }
+
+  /** 写 / 改一句描述（用现成的那只输入弹层，原生 prompt 会冻住整页）。 */
+  function editPlaceLabel(place, after) {
+    askName('这条' + placeKindName(place) + '的描述', place.label || '', '保存').then(function (label) {
+      if (!label) return;   // 取消、或没写字：不动
+      QF.store.updatePlace(place.id, { label: label });
+      if (after) after();
+      refreshPlaces();
+      if (state.treeOpen) renderTree();
+      ui.toast('描述已保存', 'info', 1200);
+    });
+  }
+
+  /** 传送过去。 */
+  function gotoPlace(place, dot) {
+    if (dot) {
+      dot.classList.add('is-go');
+      setTimeout(function () {
+        dot.classList.remove('is-go');
+      }, 420);
+    }
+    var cid = String(place.cid || '');
+    var away = !!cid && cid !== String(state.current || '');
+    var land = function () {
+      revealMessage(place.mid);
+      if (away) arriveThread();
+    };
+    if (!away) {
+      land();
+      return;
+    }
+    openConversation(cid)
+      .then(land)
+      .catch(function () {
+        ui.toast('这个标记指向的对话找不到了', 'warn', 2800);
+      });
+  }
+
+  /* ------------------------------------------------------------ 地图上的图钉
+   *
+   * 对话树就是地图（用户："这两类标记都要在对话树上体现——对话树是地图"）。
+   * 第一版是画在 SVG 里的小图形：一面临时旗（8px）、一个带编号的点（13px）—— 画在
+   * 节点右下角。缩到 0.3 倍（158 个节点就是那个倍数）时只剩两三个像素，
+   * 用户的原话是"太小太不明确。想象你要在一张地图上标记某个地点"。
+   *
+   * 现在按地图的做法来：**图钉是屏幕坐标的一层 HTML**，地点是地图坐标。
+   *   * 尖头**指着那个地点**（节点左上角，右上角被分叉角标与「⋯」占着）；
+   *   * 旁边挂**名字**（写了描述就是描述，没写就是那一句的开头）—— 名字始终可读；
+   *   * 两类各长各的：书签 = 丝带徽（主色），回溯 = 带编号的徽（琥珀）;
+   *   * 缩得太小时名字先收（`.is-tight`），悬停那一枚再浮出来 —— 地图缩到一屏
+   *     装满节点时，几十个名字会互相压，不如都收起来。
+   *
+   * 点一枚 = 去那个地点（与点节点同一条路）；右键 = 写描述 / 取消。
+   */
+
+  /** 回溯点的**全局编号**（与传送球扇子里那几枚的号是同一个）。 */
+  function backIndexOf(place) {
+    var all = backsOf(QF.store.places()).map(function (one) {
+      return one.id;
+    });
+    var at = all.indexOf(place.id);
+    return at >= 0 ? at + 1 : 1;
+  }
+
+  function bookmarksOf(places) {
+    return (places || []).filter(function (one) {
+      return placeKind(one) === 'mark';
+    });
+  }
+
+  /** 同一个地点上的钉子**竖着码**：一枚一格（`PIN_STEP`），顺序固定。
+   *
+   * 两版都栽在同一件事上，值得记下来：
+   *   * 第一版只按 slot 错开 5px/6px —— 徽章自己就有 22px，看上去就是"完全重合"
+   *    （用户报的："一个点同时有书签和回溯点，它们在对话树上完全重合了"）；
+   *   * 第二版改成一枚一格 26px，但那个 26 是**用户坐标**，被地图缩放一乘
+   *    （0.066 倍 → 1.7px）又叠回去了。
+   * 所以它是一段**屏幕像素**：锚点归地图，错开归屏幕（见 `applyTreeView`）。
+   */
+  var PIN_STEP = 26;
+
+  function placeSlot(place) {
+    return placeKind(place) === 'mark' ? 0 : 1;
+  }
+
+  function treePinsLayer(model) {
+    var layer = h('div.chattree__pins');
+    model.nodes.forEach(function (node) {
+      QF.store
+        .placesOf(node.message.id)
+        .slice()
+        // 书签在**下**（贴着地点）、回溯在上：不按打的时间排，免得同一对钉子下次换个位置
+        .sort(function (a, b) {
+          return placeSlot(a) - placeSlot(b);
+        })
+        .forEach(function (place, slot) {
+          layer.appendChild(treePin(place, node, slot));
+        });
+    });
+    return layer;
+  }
+
+  /** 一枚图钉：锚在节点左上角、尖头指过去，脑袋旁边挂名字。 */
+  function treePin(place, node, slot) {
+    var isMark = placeKind(place) === 'mark';
+    var pin = h('button.ctpin2.ctpin2--' + (isMark ? 'mark' : 'back'), {
+      type: 'button',
+      // 锚点：节点左上角；同一节点上多枚时错开一点（图钉挨在一起会分不清哪个是哪个）
+      // 锚点是**地点本身**（同一个地点上几枚钉子锚点相同）；错开留给屏幕坐标去做
+      //（见 `applyTreeView` 里那一句 translate）—— 锚点跟着地图缩放，错开不能跟。
+      dataset: {
+        ax: String(node.x + 6),
+        ay: String(node.y - node.h / 2),
+        slot: String(slot),
+        place: place.id,
+        mid: String(node.message.id),   // 播放时跟着节点一起显形
+      },
+      title: treePinTitle([place]) + '\n点一下去这个地方',
+      'aria-label': placeKindName(place) + '：' + placeLabel(place),
+      // 逐枚落下，像往地图上插钉子（延迟按这一格上的次序）
+      style: { animationDelay: Math.min(slot, 8) * 55 + 'ms' },
+      onClick: function (event) {
+        event.stopPropagation();
+        // 与点节点同一条路：收起地图 → 回到对话 → 那条消息闪一下（`revealMessage` 自带）。
+        // 地图在这儿是个浮层，所以"去那个地点"必然要连地图一起收掉。
+        marksOpen = false;
+        state.treeOpen = false;
+        renderBar();
+        renderTree();
+        revealMessage(place.mid);
+      },
+      onContextmenu: function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        chatMenuX = event.clientX;
+        chatMenuY = event.clientY;
+        openPlaceMenu([place], refreshPlaces);
+      },
+    });
+    pin.appendChild(
+      h(
+        'span.ctpin2__badge',
+        null,
+        isMark
+          ? iconNode('bookmark', 12)
+          : h('span.ctpin2__n', { text: String(backIndexOf(place)) })
+      )
+    );
+    // 尖头：一枚朝下的小三角，把徽章接到锚点上（有它才像"插在地图上"）
+    pin.appendChild(h('span.ctpin2__leg'));
+    // 名字：**写上类别**再写描述。类别靠形状与颜色也认得出，但用户要的是"明确"，
+    // 那就别让他猜（`书签 · 这里是关键分叉`）。
+    pin.appendChild(
+      h(
+        'span.ctpin2__label',
+        null,
+        h('span.ctpin2__kind', { text: placeKindName(place) }),
+        h('span.ctpin2__text', { text: placeLabel(place) })
+      )
+    );
+    return pin;
+  }
+
+  /** 地图角落那一小块图例 —— "图钉是什么"这件事得能自己看懂。 */
+  function treeLegend() {
+    var marks = bookmarksOf(QF.store.places()).length;
+    var backs = backsOf(QF.store.places()).length;
+    return h(
+      'div.chattree__legend',
+      null,
+      h('span.chattree__legendtitle', { text: '图钉' }),
+      h('i.chattree__legendpin.is-mark', null, iconNode('bookmark', 9)),
+      h('span.chattree__legendtext', { text: '书签 · 永久（' + marks + '）' }),
+      h('i.chattree__legendpin.is-back', null, h('span.ctpin2__n', { text: '1' })),
+      h('span.chattree__legendtext', { text: '回溯 · 快速跳转（' + backs + '/5）' }),
+      h('span.chattree__legendtext.is-dim', { text: '右键图钉可写描述' })
+    );
+  }
+
+  function treePinTitle(places) {
+    return places
+      .map(function (one) {
+        return placeKindName(one) + '：' + placeLabel(one);
+      })
+      .join('\n');
+  }
+
+  /** 到了：整条线程轻轻沉一下（只在跨对话传送时用 —— 同一条对话里闪落点就够了）。 */
+  function arriveThread() {
+    if (!threadEl) return;
+    threadEl.classList.remove('is-arrive');
+    void threadEl.offsetHeight;   // 重排一次，连着传送两次动画也会重放
+    threadEl.classList.add('is-arrive');
+    setTimeout(function () {
+      threadEl.classList.remove('is-arrive');
+    }, 420);
+  }
+
+
+  /* ------------------------------------------------------------ 书签抽屉
+   *
+   * 装"永久标记"那一类的抽屉：按打的先后**倒序**列出全部书签（跨对话），点一条就传送过去。
+   * 回溯不上这儿 —— 它是"趁手、快跳"的那 5 个，住在正文区边上那颗传送球里（用户把两者
+   * 分得很清楚："回溯是一个小工具…然后现在是书签，这个是永久性的标记"）。
+   *
+   * 动效三段，每段都有它要解决的问题：
+   *   * **进来**：背景 150ms 淡入、抽屉 200ms 从右滑入（缓出曲线，像被推进来而不是弹进来）；
+   *     列表项再逐条浮现（每条错 26ms）—— 一次全亮像"啪"地贴上去，逐条才像翻出一叠卡片。
+   *   * **出去**：先加 `is-closing` 播 160ms 反向动画，**播完再拆 DOM**。直接 remove
+   *     就是"啪"地消失（用户要的"注意平滑动效"说的就是这种地方）。
+   *   * **传送**：沿用 `gotoPlace` —— 点的那条脉冲、落点闪一下、跨对话时整条线程轻沉。
+   *     `prefers-reduced-motion` 一开，三段全都静止。
+   */
+  var marksOpen = false;
+  var marksClosing = false;
+  var marksTimer = 0;
+
+  /** 这条书签在哪儿（给跨对话的认路用）。 */
+  function placeWhere(place) {
+    var cid = String(place.cid || '');
+    if (!cid || cid === String(state.current || '')) return '当前对话';
+    var conv = (state.list || []).filter(function (one) {
+      return String(one.id) === cid;
+    })[0];
+    return (conv && conv.title) || '另一条对话';
+  }
+
+  function placeTime(place) {
+    var d = new Date(place.at || Date.now());
+    var pad = function (n) {
+      return (n < 10 ? '0' : '') + n;
+    };
+    return (
+      d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+      ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+    );
+  }
+
+  /** 标记这一摊的界面全都刷一遍（消息行尾的图标 / rail / 地图上的图钉与图例 / 抽屉）。 */
+  function refreshPlaces() {
+    renderStations();
+    paintPlaceIcons();
+    // 树开着就重画整棵树：图钉、图例里的计数、工具栏上那颗「书签 · N」都在那儿
+    // （抽屉跟着 `renderTree` 一起重画，它挂在画布那一层）。
+    if (state.treeOpen) renderTree();
+  }
+
+  function toggleMarks() {
+    if (marksOpen) closeMarks();
+    else openMarks();
+  }
+
+  /** 工具栏那颗「书签」的亮灭。
+   *
+   * 单独管这一颗而不是整块重画工具栏：`renderTree` 会把画布连同**已播到一半的
+   * 开合动画**一起重建 —— 关抽屉那 160ms 的滑出就没了（那是这一处唯一的讲究）。 */
+  function paintMarksBtn() {
+    var btn = treeEl ? treeEl.querySelector('.chattree__marksbtn') : null;
+    if (!btn) return;
+    btn.classList.toggle('is-on', marksOpen);
+    btn.setAttribute('aria-expanded', marksOpen ? 'true' : 'false');
+  }
+
+  function openMarks() {
+    if (!state.treeOpen) return;   // 抽屉只在树上：它是那张地图的地点清单
+    if (marksTimer) {
+      clearTimeout(marksTimer);
+      marksTimer = 0;
+    }
+    marksOpen = true;
+    marksClosing = false;
+    renderMarks();
+    paintMarksBtn();
+  }
+
+  function closeMarks() {
+    if (!marksOpen || marksClosing) return;
+    var back = marksEl ? marksEl.querySelector('.chatmarks__backdrop') : null;
+    var sheet = marksEl ? marksEl.querySelector('.chatmarks__sheet') : null;
+    if (!back) {
+      marksOpen = false;
+      marksClosing = false;
+      renderMarks();
+      renderBar();
+      return;
+    }
+    marksClosing = true;
+    paintMarksBtn();   // 立刻不亮：按下去就有回应，别等那 160ms 播完
+    back.classList.add('is-closing');
+    if (sheet) sheet.classList.add('is-closing');
+    // **先播完再拆**：动画 160ms，留一点余量
+    marksTimer = setTimeout(function () {
+      marksTimer = 0;
+      marksOpen = false;
+      marksClosing = false;
+      renderMarks();
+    }, 180);
+  }
+
+  /** Esc：先关抽屉，**不让路给底下那层**（不然一下把整张地图也关了）。
+   *
+   * 注册用的是捕获阶段（`true`），启动时那条"逐层关"的 Esc 挂在冒泡阶段 ——
+   * 捕获先到，这里 stop 一下，底下的树就收不到这一下。 */
+  function marksKeydown(ev) {
+    if (ev.key !== 'Escape') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeMarks();
+  }
+
+  function renderMarks() {
+    if (!marksEl) return;
+    ui.clear(marksEl);
+    document.removeEventListener('keydown', marksKeydown, true);
+    if (!marksOpen) return;
+    document.addEventListener('keydown', marksKeydown, true);
+
+    var places = QF.store
+      .places()
+      .filter(function (one) {
+        return placeKind(one) === 'mark';
+      })
+      .reverse();   // 新的在前：刚标下来的最想马上就看见
+
+    var list = h('div.chatmarks__list');
+    if (!places.length) {
+      list.appendChild(
+        h('div.chatmarks__empty', {
+          text:
+            '这张图上还没有图钉。回到对话里，在消息尾部点那枚丝带（或右键 →「加书签」）——' +
+            '标过的地方就会变成地图上的一枚图钉，同时列在这里。书签是永久的，数量不限。',
+        })
+      );
+    }
+    places.forEach(function (place, index) {
+      list.appendChild(markItem(place, index));
+    });
+
+    marksEl.appendChild(
+      h(
+        'div.chatmarks__backdrop',
+        {
+          onClick: function (event) {
+            if (event.target === event.currentTarget) closeMarks();
+          },
+        },
+        h(
+          'div.chatmarks__sheet',
+          null,
+          h(
+            'div.chatmarks__head',
+            null,
+            iconNode('bookmark', 15),
+            h('span.chatnotes__title', { text: '书签' }),
+            h('span.chatnotes__count', { text: places.length ? places.length + ' 个' : '' }),
+            h('span.chatmarks__lead', { text: '永久标记 · 点一条传送' }),
+            iconButton('close', '关闭（Esc）', closeMarks)
+          ),
+          list
+        )
+      )
+    );
+  }
+
+  /** 抽屉里的一条：丝带 + 描述（没描述就退到那一句的开头）+ 在哪儿 + 两颗小动作。 */
+  function markItem(place, index) {
+    var item = h('div.chatmarkitem', {
+      dataset: { place: place.id },
+      title: '传送到这一条',
+      // 逐条浮现：错开一点，像翻出一叠卡片（`both` + delay = 没轮到它时先隐形）
+      style: { animationDelay: Math.min(index, 12) * 26 + 'ms' },
+      onClick: function (event) {
+        if (event.target && event.target.closest && event.target.closest('.chatmarkitem__acts')) return;
+        // 抽屉挂在树上：传送 = 收起地图（不然回来了树还盖在上面），再跳那个地点
+        marksOpen = false;
+        state.treeOpen = false;
+        renderBar();
+        renderTree();
+        gotoPlace(place, null);
+      },
+      onContextmenu: function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        chatMenuX = event.clientX;
+        chatMenuY = event.clientY;
+        openPlaceMenu([place], refreshPlaces);
+      },
+    });
+    item.appendChild(h('span.chatmarkitem__ribbon', null, iconNode('bookmark', 13)));
+    item.appendChild(
+      h(
+        'div.chatmarkitem__body',
+        null,
+        h('div.chatmarkitem__text', { text: placeLabel(place) }),
+        h('div.chatmarkitem__meta', { text: placeWhere(place) + ' · ' + placeTime(place) })
+      )
+    );
+    item.appendChild(
+      h(
+        'div.chatmarkitem__acts',
+        null,
+        iconButton(
+          'pencil',
+          '写描述',
+          function (event) {
+            event.stopPropagation();
+            editPlaceLabel(place, refreshPlaces);
+          },
+          '.chatmarkitem__act'
+        ),
+        iconButton(
+          'close',
+          '取消这个书签',
+          function (event) {
+            event.stopPropagation();
+            QF.store.removePlace(place.id);
+            refreshPlaces();
+            ui.toast('已取消书签', 'info', 1200);
+          },
+          '.chatmarkitem__act'
+        )
+      )
+    );
+    return item;
+  }
+
+  /** 一条批注头上的时间与"在哪儿"（显示态与编辑态都要有）。 */
+  function noteMetaNode(note) {
+    return h(
+      'div.chatnotes__meta',
+      null,
+      h('span.chatnotes__time', { text: noteTime(note) }),
+      note.cid && note.cid === state.current
+        ? h('span.chatnotes__tag', { text: '本次对话' })
+        : note.cid
+          ? h('span.chatnotes__tag', { text: '另一段对话' })
+          : null
+    );
+  }
+
   function noteNode(note) {
     var box = h('div.chatnotes__item');
 
     if (notesEditing === note.id) {
+      // **在原形上编辑**（用户："对于长的批注，点击编辑的时候，编辑框会缩得很小。
+      // 不要让它动，要保持在原形上编辑"）：时间与引文照旧留着 —— 只看得到输入框的话，
+      // 改到一半会忘了自己改的是哪一段；顺带这一条的形状也基本不变。
+      box.appendChild(noteMetaNode(note));
+      if (note.quote) {
+        box.appendChild(h('div.chatnotes__quote', { text: note.quote }));
+      }
       var draft = h('textarea.chatnotes__input', {
         rows: '3',
+        // 原来"正文那块"多高，输入框就不许比它矮（同上）
+        style: notesEditMin ? { minHeight: notesEditMin + 'px' } : null,
         value: note.text,
         onInput: function (event) {
           notesDraft = event.target.value;
@@ -1638,10 +3856,11 @@
             notesEditing = '';
             notesDraft = '';
             renderNotes();
-          } else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-            event.preventDefault();
-            saveNote();
+            return;
           }
+          if (event.key !== 'Enter' || event.isComposing || event.shiftKey) return;
+          event.preventDefault();
+          saveNote();
         },
       });
       notesDraft = note.text;
@@ -1668,18 +3887,7 @@
       return box;
     }
 
-    box.appendChild(
-      h(
-        'div.chatnotes__meta',
-        null,
-        h('span.chatnotes__time', { text: noteTime(note) }),
-        note.cid && note.cid === state.current
-          ? h('span.chatnotes__tag', { text: '本次对话' })
-          : note.cid
-            ? h('span.chatnotes__tag', { text: '另一段对话' })
-            : null
-      )
-    );
+    box.appendChild(noteMetaNode(note));
     if (note.quote) {
       box.appendChild(h('div.chatnotes__quote', { text: note.quote }));
     }
@@ -1720,6 +3928,9 @@
           {
             type: 'button',
             onClick: function () {
+              // 量下"正文那块"现在多高，交给输入框当高度下限（见 `fitNoteArea`）
+              var text = box.querySelector('.chatnotes__text');
+              notesEditMin = text ? Math.round(text.getBoundingClientRect().height) : 0;
               notesEditing = note.id;
               notesDraft = note.text;
               renderNotes();
@@ -1732,7 +3943,7 @@
           {
             type: 'button',
             onClick: function () {
-              if (QF.store.removeNote(note.id)) {
+              if (removeMarkTracked(note.id)) {
                 renderNotes();
                 ui.toast('已删除', 'info', 1200);
               }
@@ -1750,7 +3961,11 @@
     ui.clear(notesEl);
     if (!notesOpen) return;
 
-    var notes = QF.store.notes();
+    // 批注栏**只装批注**：高亮与删除线是"给正文做记号"，不进这份清单
+    //（用户："高亮和批注是分开的两个东西"）。它们要撤，就在正文上右键撤。
+    var notes = (QF.store.notes() || []).filter(function (one) {
+      return QF.store.markKind(one) === 'note';
+    });
     var saveBtn = h(
       'button.btn.btn--primary.chatnotes__save',
       {
@@ -1762,7 +3977,7 @@
     );
     var draft = h('textarea.chatnotes__input', {
       rows: '3',
-      placeholder: '随手记点什么…（Ctrl / ⌘ + Enter 保存）',
+      placeholder: '写一句…（Enter 保存，Shift+Enter 换行）',
       value: notesDraft,
       onInput: function (event) {
         notesDraft = event.target.value;
@@ -1772,10 +3987,12 @@
         if (event.key === 'Escape') {
           event.preventDefault();
           closeNotes();
-        } else if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-          event.preventDefault();
-          saveNote();
+          return;
         }
+        // 批注框一律"Enter 就是保存"（换行走 Shift+Enter）——与旁批栏里那张同一套
+        if (event.key !== 'Enter' || event.isComposing || event.shiftKey) return;
+        event.preventDefault();
+        saveNote();
       },
     });
 
@@ -1831,7 +4048,10 @@
             pendingMark || notesEditing
               ? [draft, saveBtn]
               : h('div.chatnotes__howto', {
-                  text: '选中它的回答里的一段，右键 →「高亮这一段」或「批注这一段」。',
+                  text:
+                    '选中它的回答里的一段，右键 →「批注这一段」（或按 ⌘/Ctrl+⇧A）—— ' +
+                    '话就写在正文右边那一栏里，不经过这个面板；这里只做总览与搜索。' +
+                    '高亮与删除线是给正文做记号，也不进这份清单。',
                 })
           ),
           shown.length
@@ -1839,12 +4059,18 @@
             : h('div.chatnotes__empty', {
                 text: notes.length
                   ? '没有匹配的批注。'
-                  : '还没有批注。在它的回答里选中一段话，右键 →「高亮这一段」或「批注这一段」。',
+                  : '还没有批注。在它的回答里选中一段话，右键 →「批注这一段」（或按 ⌘/Ctrl+⇧A）' +
+                    '—— 话在正文右边**就地**写，读到哪句就在哪句旁边。',
               })
         )
       )
     );
     if (pendingMark || notesEditing) draft.focus();
+    // 面板里那条正在改的：挂进 DOM 之后按"原来的高度 + 内容"撑开（见 `fitNoteArea`）
+    if (notesEditing) {
+      var grow = fitNoteArea(notesEl.querySelector('.chatnotes__item .chatnotes__input'), notesEditMin);
+      if (grow) grow();
+    }
   }
 
   /* ------------------------------------------------------------ 大题（子窗口） */
@@ -2175,6 +4401,8 @@
     loadDeep();
     // 归档区的排序方式也要在第一帧之前读到（左栏首屏就按它排）
     loadSort();
+    // 传送球上次被拖到哪儿（默认：右边框旁边）
+    loadPortal();
 
     // 左栏只建一次：搜索框如果跟着列表一起重画，打字打到一半就会丢焦点
     asideEl = h('aside.chat__aside');
@@ -2196,10 +4424,24 @@
         },
       })
     );
+    // 传送球：先建出来、默认藏起来（有回溯点时 `renderStations` 会放开）。
+    // **是个常驻浮件**，一会儿挂到 `.chat` 上（不是建在输入区里）：它要贴着正文区的
+    // 边浮着，位置按正文区尺寸算（见 `applyPortalPos`）。
+    stationsEl = h('div.chatportal', {
+      hidden: true,
+      role: 'group',
+      'aria-label': '回溯传送球',
+    });
     threadEl = h('div.chat__thread', { role: 'log', 'aria-live': 'polite' });
     // 滚上去就露出「回到最新」（见 refreshJump）
-    // 在回答里选中一段 → 右键 → 高亮 / 批注（见 onMarkContextMenu）
+    // 在回答里选中一段 → 右键 → 三种标记（见 onMarkContextMenu）
     threadEl.addEventListener('contextmenu', onMarkContextMenu);
+    // 旁批卡片的 top 是"它标的那一行在哪"的函数，而那是**版式的结果**：线程一换
+    // 尺寸（窗口缩放、收起会话栏、面板开合）就得重算一次（见 relayoutMargins）。
+    // 盯线程自己而不是 window：工作台把这一套挂进窗格时，窗口尺寸根本不变。
+    if (window.ResizeObserver) {
+      new ResizeObserver(scheduleMarginRelayout).observe(threadEl);
+    }
     threadEl.addEventListener('scroll', function () {
       // 用户**自己**滚动时才更新跟随状态。程序化的 `scrollTop = scrollHeight`
       // 也会走到这里，但那时本来就贴着底，判定为真、状态不变。
@@ -2208,10 +4450,16 @@
     });
     inputEl = h('textarea.chat__input', {
       rows: '1',
-      placeholder: '问点什么，或者贴一段材料…',
-      onInput: growInput,
+      // `/` 那件事写进 placeholder：不写的话没人知道有这个东西（一句就够，别做教程）
+      placeholder: '问点什么，或者贴一段材料…（打 / 召唤一个流程）',
+      onInput: function (event) {
+        growInput(event);
+        paintSkillPick();
+      },
       onKeydown: onKeydown,
     });
+    // 输入框上方那份 `/` 清单（空的时候不占位置，见 CSS 的 `.chatskill:not(.is-open)`）
+    skillPickEl = h('div.chatskill', { role: 'listbox', 'aria-label': '流程' });
     // 图标按钮：正文只放一个箭头，"发送/停止"两态换图标（见 `paintSend`）。
     // 文案进 title 与 aria-label —— 看得出、也读得出。
     sendBtn = h(
@@ -2231,6 +4479,9 @@
     treeEl = h('div.chattree', { role: 'dialog', 'aria-label': '对话树' });
     demoEl = h('div.chatdemo', { role: 'dialog', 'aria-label': '演示' });
     notesEl = h('div.chatnotes', { role: 'dialog', 'aria-label': '批注' });
+    // 书签抽屉：**挂在对话树里**（每次 `renderTree` 塞进画布那一层）。所以这里只建一个
+    // 常驻容器 —— 它在两棵树之间搬来搬去，但节点本身不重建，抽屉的滚动位置因此活得下来。
+    marksEl = h('div.chatmarks', { role: 'dialog', 'aria-label': '书签' });
     problemEl = h('div.chatproblem', { role: 'dialog', 'aria-label': '大题' });
     try {
       var savedAside = window.localStorage.getItem('qf.chat.aside');
@@ -2264,6 +4515,8 @@
               // **传统两行**（用户："按钮多了，改成传统的两行。按钮放下面，输入放上面"）：
               // 第一行只有输入框，占满整宽；第二行才是图标、药丸与发送键。
               // 先前是一行到底，按钮一多，输入框就被挤成一小段。
+              // `/` 那份清单挂在输入框**上方**（它是"正在挑"，不是第三条药丸）。
+              skillPickEl,
               inputEl,
               // 输入框这一侧不再挂信号灯了：用户要的是**消息框**右上角那盏
               //（"我说的是发出来的消息框的右上角——因为每次发送的模式都不一样"）。
@@ -2296,10 +4549,12 @@
                   'button.chat__deep' + (state.deepThink ? '.is-on' : ''),
                   {
                     type: 'button',
-                    title: deepTitle(),
-                    'aria-label': '深度思考：' + (state.deepThink ? '开' : '关'),
+                    title: deepTitle() + '（右键调思考强度）',
+                    'aria-label': '深度思考：' + (state.deepThink ? '开' : '关') + '（右键调强度）',
                     'aria-pressed': state.deepThink ? 'true' : 'false',
                     onClick: toggleDeep,
+                    // 强度在这颗药丸的右键菜单里 —— 与它管的是同一件事
+                    onContextMenu: openThinkMenu,
                   },
                   iconNode('atom', 14),
                   h('span.chat__deeptext', { text: '深度思考' })
@@ -2317,6 +4572,8 @@
             hintEl
           )
         ),
+        // 传送球挂在 `.chat` 上（与那几个浮层同级）：它是浮件，不进输入区。
+        stationsEl,
         treeEl,
         demoEl,
         notesEl,
@@ -2326,6 +4583,17 @@
     // `.chat` 是刚建出来的（对话树 / 批注 / 大题那几个浮层是它的**兄弟**，
     // 不能塞进它里面），所以挂完再取引用、落上"会话栏开没开"—— 第一帧就对，不会闪。
     chatEl = rootEl.querySelector('.chat');
+    // 传送球的位置是**按正文区算**的：正文区一改尺寸（收起左栏、拖宽度、窗口缩放）
+    // 就得重摆一次。盯正文区自己而不是窗口 —— 收起左栏时窗口尺寸根本没变。
+    var portalMain = chatEl.querySelector('.chat__main');
+    if (portalMain && window.ResizeObserver) {
+      new ResizeObserver(function () {
+        applyPortalPos();
+      }).observe(portalMain);
+    }
+    window.addEventListener('resize', function () {
+      applyPortalPos();
+    });
     if (chatEl) chatEl.setAttribute('data-aside', asideOpen ? 'open' : 'closed');
   }
 
@@ -2978,9 +5246,13 @@
       chatMenuX = ev.clientX;
       chatMenuY = ev.clientY;
     }
-    var items = [{ label: '移到最外层', run: function () { batchMove(''); } }];
+    // 每一行都得有图标：菜单里"有的行有、有的行空着"最扎眼（用户报过这一处）
+    var items = [
+      { icon: 'folderUp', label: '移到最外层', run: function () { batchMove(''); } },
+    ];
     (state.folders || []).forEach(function (path) {
       items.push({
+        icon: 'folder',
         label: '移到「' + path + '」',
         run: function () {
           batchMove(path);
@@ -3065,28 +5337,37 @@
   var chatMenuX = 0;
   var chatMenuY = 0;
 
+  /** 点在菜单外面 → 走开。用 `mousedown` 而不是 `click`/`contextmenu`。
+   *
+   * 这一步的时机是整块菜单的要害：**关旧菜单必须早于开新菜单**。`contextmenu` 同时
+   * 是"关"与"开" —— 右键时 threadEl 的监听先把新菜单画出来，事件再冒泡到 document，
+   * 挂在 document 上的那条"关菜单"就把**刚画出来的这张**撤掉了，菜单只闪一瞬。
+   * 原先是 `{once:true}` + `setTimeout` 那么写的，症状正是"标注/高亮一次之后，
+   * 再选任何文字都没有选择栏了"——而且它每开一次菜单都会重新武装，等于永久失效。
+   * `mousedown` 比 `contextmenu` 先到，于是关旧的、随后再开新的，两件事互不打扰。
+   *
+   * 与 `sidetree.js` / `mounts.js` 那几个小菜单同一套写法。
+   */
+  function closeChatMenuAway(ev) {
+    var menu = document.getElementById('chat-menu');
+    if (menu && !menu.contains(ev.target)) closeChatMenu();
+  }
+
+  function closeChatMenuKey(ev) {
+    if (ev.key !== 'Escape') return;
+    // **菜单是"最上面那一层"**：Esc 只该关它，不该顺手把底下的对话树也关掉
+    //（启动时那条"逐层关"的 Esc 挂在冒泡阶段，这里拦一下它就收不到了；与批注抽屉同一处讲究）
+    ev.stopPropagation();
+    closeChatMenu();
+  }
+
   function closeChatMenu() {
     var found = document.getElementById('chat-menu');
     if (found) found.remove();
+    document.removeEventListener('mousedown', closeChatMenuAway, true);
+    document.removeEventListener('keydown', closeChatMenuKey, true);
   }
 
-  /** 菜单里那几个图标（细描边，与顶栏一套）。 */
-  var MENU_ICONS = {
-    rename: '<path d="M4.5 19.5h4L19 9a2.1 2.1 0 0 0-3-3L5.5 16.5z"/><path d="M14.8 7.2l2 2"/>',
-    pin: '<path d="M9 4.5h6l-.8 5.2 3.3 3.3H6.5l3.3-3.3z"/><path d="M12 13v6.5"/>',
-    unpin: '<path d="M9 4.5h6l-.8 5.2 3.3 3.3H6.5l3.3-3.3z"/><path d="M12 13v6.5"/><path d="M4.5 4.5l15 15"/>',
-    // 对话树里"收起/展开一支"：折下去 / 折上来。与归档那两只盒子分得开。
-    // 批注那两项：荧光笔（高亮）与一页纸（批注）
-    marker: '<path d="M5 18.5h5l9-9-2.5-2.5-9 9z"/><path d="M14.5 6.5L17 4l3 3-2.5 2.5"/>',
-    note: '<path d="M6 4.5h12v15H6z"/><path d="M9 9h6"/><path d="M9 13h4"/>',
-    pencil: '<path d="M4.5 19.5h4L19 9a2.1 2.1 0 0 0-3-3L5.5 16.5z"/>',
-    fold: '<path d="M6 9.5l6 6 6-6"/>',
-    unfold: '<path d="M6 14.5l6-6 6 6"/>',
-    trash: '<path d="M5 7h14"/><path d="M9.5 7V5h5v2"/><path d="M7 7l1 12h8l1-12"/>',
-    // 归档 = 一个带盖的盒子（与"删除"那只垃圾桶要一眼分得开）
-    archive: '<path d="M4.5 8.5h15V19h-15z"/><path d="M3.5 5h17v3.5h-17z"/><path d="M10 12.5h4"/>',
-    unarchive: '<path d="M4.5 8.5h15V19h-15z"/><path d="M3.5 5h17v3.5h-17z"/><path d="M12 16.5v-4"/><path d="M10 14.5l2-2 2 2"/>',
-  };
 
   /** 一个小弹出菜单（会话行 / 分组行右键用）。
    *
@@ -3096,15 +5377,23 @@
     closeChatMenu();
     var menu = h('div.chattree__menu', { id: 'chat-menu', role: 'menu' });
     items.forEach(function (item) {
+      // `item.node`：这一项不是一行按钮，而是**任意节点**（思考强度那根拖动条
+      // 就是这么塞进来的 —— 它不是"点一下"的东西）。
+      if (item.node) {
+        menu.appendChild(item.node);
+        return;
+      }
       var row = h('button.chattree__menuitem' + (item.danger ? '.is-danger' : ''), {
         type: 'button',
         role: 'menuitem',
         html:
           '<span class="chattree__menuico">' +
-          (item.icon && MENU_ICONS[item.icon]
+          // 同样查 ui.js 那张唯一的表（原先它单独查 `MENU_ICONS`，
+          // `bookmark`/`flag` 不在那张表里，于是那两行是空的）
+          (item.icon && ui.iconPath(item.icon)
             ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
               'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
-              MENU_ICONS[item.icon] +
+              ui.iconPath(item.icon) +
               '</svg>'
             : '') +
           '</span><span class="chattree__menutext"></span>' +
@@ -3122,9 +5411,11 @@
     var box = menu.getBoundingClientRect();
     menu.style.left = Math.min(chatMenuX, window.innerWidth - box.width - 8) + 'px';
     menu.style.top = Math.min(chatMenuY, window.innerHeight - box.height - 8) + 'px';
+    // 推到下一拍再装：开菜单这一下自己也会派发 mousedown，同拍装会把这次点击
+    // 当成"点在外面"（与 sidetree.js / mounts.js 同一个讲究）。
     setTimeout(function () {
-      document.addEventListener('click', closeChatMenu, { once: true });
-      document.addEventListener('contextmenu', closeChatMenu, { once: true });
+      document.addEventListener('mousedown', closeChatMenuAway, true);
+      document.addEventListener('keydown', closeChatMenuKey, true);
     }, 0);
   }
 
@@ -3417,6 +5708,9 @@
 
   function paintThread() {
     renderBar();
+    // 药丸要在 `renderBar()` **之后**补：那一行是 `renderBar` 重建的，
+    // 插早了会被它连锅端掉（这颗药丸是动态插进那一行的，见 `paintSkillPills`）。
+    paintSkillPills();
     renderTree();
     if (!state.messages.length) {
       renderEmptyThread();
@@ -3426,6 +5720,13 @@
     activePath().forEach(function (m) {
       threadEl.appendChild(messageRow(m));
     });
+    // 旁批的位置与连线要**等这些行都进了 DOM** 才算得准：`messageRow` 里那次 paintMarks
+    // 跑在这一行挂上去之前，量到的 rect 全是 0（实测：连线退化成 `3,0 …`）。
+    // 推到下一帧算一次，位置与线一次到位 —— 不靠 ResizeObserver 顺手兜底。
+    scheduleMarginRelayout();
+    // 回溯条跟着一次重画走：切对话、打标记之后"哪些在这里"要跟着变
+    //（内容没变时它自己会跳过，见 placesKey）
+    renderStations();
     if (keepScroll) refreshJump();
     else scrollToEnd(true);
   }
@@ -3528,7 +5829,20 @@
           }),
           iconButton('pencil', '编辑并重发', function () {
             editMessage(m);
-          })
+          }),
+          // 我自己的提问同样可以打标记（"这个位置我要回来"与谁说的无关）：
+          // 旗 = 回溯（趁手），丝带 = 书签（永久）。
+          /**
+           * 但**回答还没到的那一条先不给**（用户："用户发消息，agent 未回复的时候，
+           * 书签和锚点的图标竟然存在"）：位置标记是"我要回到这儿"，而这儿还没有可回看的
+           * 内容；更要紧的是发送那一刻界面上就跳出一排图标，看着像已经答完了。
+           * 回答一到，`start` 那一步会把这两枚补上（见 `send` 里"回答到了"那段）。
+           */
+          answered(m) ? placeButtons(m) : null,
+          // 用 `/` 装上的 skill 记在**这条消息**上（点一下可取下）—— 与记号同一类：
+          // "从这儿往下都该这样"，只是它管的是"怎么陪他"，不是"标记哪儿"。
+          // 一串（可能同时挂着流程 + 口吻 + 纪律），`h` 会把数组摊平。
+          skillChips(m)
         );
       }
     } else {
@@ -3536,8 +5850,6 @@
       body.appendChild(
         partsNode(m.parts && m.parts.length ? m.parts : [{ type: 'text', text: m.content || '' }])
       );
-      // 正文刚渲染完，把钉在这一条上的批注画成高亮（重画会换 DOM，所以每次都来一遍）
-      paintMarks(body, m);
     }
     // **消息框右上角那盏信号灯**：这一条输入用的是哪个模式。
     // 用户："我说的是发出来的消息框的右上角 —— 因为每次发送的模式都不一样。"
@@ -3565,6 +5877,11 @@
       actions
     );
     decorateAssistant(row, body, m);
+    // 标记要**等这一行挂好之后**才画：旁批是往行的第三个格子里放的，
+    // 而 `body.closest('.chatmsg')` 在 body 还没进 DOM 时是 null —— 这一步原先排在
+    // 建 row 之前（紧跟着 partsNode），于是旁批那一栏永远建不出来。
+    // 重画会换掉 DOM，所以每次重画正文都得来一遍。
+    if (!isUser) paintMarks(body, m);
     return row;
   }
 
@@ -3892,8 +6209,10 @@
     el: null,      // 那个 iframe（建好之前是 null）
     ready: false,  // 它报过 qfReady 没有
     info: '',      // 环境自述（"Python 3.12 · numpy 1.26.4 · scipy …"）
-    bootMs: 0,
-    packMs: 0,
+    bootMs: 0,     // 环境准备总共花了多少
+    pyMs: 0,       // 其中解释器
+    packMs: 0,     // 其中依赖
+    warmMs: 0,     // 其中绘图预热（Agg + pyplot 首个 import）
     // 注：这里原先还有一个 `said` 标志（"环境自述只在第一次运行的输出开头报一次"）——
     // 那种把壳的内部账塞进脚本输出的做法已经删掉了（见 qfReady / qfRun 两处注释），
     // 标志也就没用了。
@@ -3907,6 +6226,10 @@
       .get('/chat/sandbox')
       .then(function (data) {
         if (!data || !data.html) return;
+        // 运行时还没落到本机（首启那 76M 还在后台取）→ **不要建壳**：建了它
+        // `indexURL` 是空的，壳永远起不来；而 `shell.el` 一旦占住就不会再建，
+        // 真正要跑 Python 时就会一直"运行中…"。这种情况留给懒启动那条原路。
+        if (data.ready === false) return;
         var el = h('iframe.pyrun__shell', {
           sandbox: 'allow-scripts',
           referrerpolicy: 'no-referrer',
@@ -3921,6 +6244,52 @@
       .catch(function () {
         // 取不到壳：那块零件会一直显示"运行中…" —— 不静默假装跑过。
       });
+  }
+
+  /**
+   * 空闲就先把壳建起来 —— 用户原话："启动以后 pyodide 啊，latex 这些都自动启动准备
+   * 好，尽量让用户进入对话的时候无感知。"
+   *
+   * 这里改的是**时机**，不是机制：壳还是那一个（`shellBoot` 里"建一次常驻"的设计不变），
+   * 只是把 `loadPyodide` 那几秒挪到用户读上一条消息的时候，而不是他按下"运行"之后。
+   *
+   * 三条克制：
+   * * 计费 / 2G 网络不预下（那 60M 不该在人没要的时候花他的流量）；
+   * * 空闲才做，最多等 5 秒（它比 LaTeX 那份重，让得久一点）；
+   * * **运行时没就绪就不建**（`shellBoot` 里看 `data.ready`）—— 建了也起不来。
+   */
+  function shellWarm() {
+    if (shell.el) return;
+    var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) return;
+    shellBoot();
+  }
+
+  /**
+   * 壳报"就绪"时打**一行**日志。为什么要有：面板上不显示壳的内部账（那是壳的事，
+   * 不是脚本的输出 —— 见 `qfReady` 那段的注释），但"这次到底省了多少"得有个地方
+   * 能看见。一行 `[qf]` 前缀的 info，刷新页面时在控制台能读到。
+   */
+  function shellLog() {
+    var s = shell;
+    var secs = function (ms) {
+      return ms ? (ms / 1000).toFixed(1) + 's' : '—';
+    };
+    try {
+      window.console.info(
+        '[qf] Python 环境已备好：' +
+          secs(s.bootMs) +
+          '（解释器 ' +
+          secs(s.pyMs) +
+          ' · 依赖 ' +
+          secs(s.packMs) +
+          ' · 绘图预热 ' +
+          secs(s.warmMs) +
+          '）—— 用户第一次运行不必再等'
+      );
+    } catch (err) {
+      /* 打不出来不影响任何事 */
+    }
   }
 
   function shellFlush() {
@@ -4160,10 +6529,13 @@
       shell.ready = true;
       shell.info = String(data.info || '');
       shell.bootMs = Number(data.bootMs || 0);
+      shell.pyMs = Number(data.pyMs || 0);
       shell.packMs = Number(data.packMs || 0);
+      shell.warmMs = Number(data.warmMs || 0);
       // 依赖没装上要**说一声**：悄悄降级的代价是"看起来装了、其实 import 失败"
       //（壳里的注释就是这么写的，但这一条以前一直没人显示）。
       if (data.warning) ui.toast(String(data.warning), 'warn');
+      shellLog(); // 一行日志：这次环境准备花了多久（省掉的正是这一段）
       shellFlush();
       return;
     }
@@ -4256,6 +6628,86 @@
     demoRunEl.appendChild(h('pre.chatdemo__runtxt', { text: run.text || '（没有输出）' }));
   }
 
+  /* ---- 沙箱面板的展开 / 收起动效 ----------------------------------- */
+
+  /**
+   * 展开、收起都要有动效（用户："沙箱的展开和收起要有动效，现在很突兀"）。
+   *
+   * 原生 `<details>` 是一下子开合的，没有中间态；`::details-content` 那条路
+   * 浏览器还太新（仓库里没有先例，不想为一个面板押上兼容性）。所以拦下 summary
+   * 的点击，把高度自己演一遍：从"只剩摘要那一条"长到全高（收起时反过来），
+   * 演完再把 `open` 定下来、把行内样式清掉 —— **必须清掉**：留着的高度会把这块
+   * 钉死，里面的代码块换行、窗口变宽时它就错位了。
+   *
+   * 系统开了"减少动效"的直接放行，交给浏览器立刻到位。
+   */
+  var FOLD_MS = 180;
+
+  function foldBox(box, want) {
+    if (box.dataset.folding === '1') return; // 上一次还没演完，别叠着来
+    var kids = [];
+    for (var i = 0; i < box.children.length; i++) {
+      if (box.children[i].tagName !== 'SUMMARY') kids.push(box.children[i]);
+    }
+    if (!kids.length) {
+      box.open = want;
+      return;
+    }
+    var sum = box.querySelector('summary');
+    var headH = sum ? sum.getBoundingClientRect().height : 0;
+    box.dataset.folding = '1';
+    box.style.overflow = 'hidden';
+    box.style.transition = 'height ' + FOLD_MS + 'ms var(--ease)';
+    if (want) {
+      box.open = true; // 先开：不开的话量不到里面有多高
+      var full = box.scrollHeight;
+      box.style.height = headH + 'px';
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          box.style.height = full + 'px';
+        });
+      });
+    } else {
+      box.style.height = box.getBoundingClientRect().height + 'px';
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+          box.style.height = headH + 'px';
+        });
+      });
+    }
+    var settled = false;
+    var done = function () {
+      if (settled) return;
+      settled = true;
+      box.style.transition = '';
+      box.style.height = '';
+      box.style.overflow = '';
+      delete box.dataset.folding;
+      if (!want) box.open = false;
+    };
+    box.addEventListener('transitionend', done);
+    // 兜底：前后高度恰好一样时不会触发 transitionend，那就没人来收尾了
+    window.setTimeout(done, FOLD_MS + 80);
+  }
+
+  document.addEventListener(
+    'click',
+    function (ev) {
+      var sum = ev.target && ev.target.closest ? ev.target.closest('summary') : null;
+      if (!sum) return;
+      var box = sum.parentElement;
+      if (!box || box.tagName !== 'DETAILS') return;
+      // 只管沙箱那两块（脚本块 / 结果块）：别处的 details 不归这里管
+      if (!box.classList.contains('pyrun__codewrap') && !box.classList.contains('pyrun__outwrap')) {
+        return;
+      }
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      ev.preventDefault(); // 拦下默认的"啪"一下，换成上面的演法
+      foldBox(box, !box.open);
+    },
+    true
+  );
+
   function openDemo(part) {
     // runId 要带过来：沙箱跑完会把输出 postMessage 回来，靠它认领到这次运行
     state.demo = {
@@ -4280,9 +6732,21 @@
     ui.clear(demoEl);
     if (!state.demo) return;
 
+    // 关掉也要有动效（与打开对称）。这里必须先播完再卸 —— 直接 `state.demo = null`
+    // 是整块消失，一帧到位，"突兀"就是这么来的（见 chat.css 那段 .chatdemo 的说明）。
+    // 减少动效的人不等这一下：那时候"等 180ms 什么都看不见"比不演更难受。
     var close = function () {
-      state.demo = null;
-      renderDemoPanel();
+      var back = demoEl.querySelector('.chatdemo__backdrop');
+      if (!back || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        state.demo = null;
+        renderDemoPanel();
+        return;
+      }
+      back.classList.add('is-out');
+      window.setTimeout(function () {
+        state.demo = null;
+        renderDemoPanel();
+      }, 200);
     };
 
     // 输出那一块单独拎出来：沙箱回传时只重画它，**不重建 iframe**
@@ -5282,6 +7746,14 @@
 
   function toggleDeep() {
     state.deepThink = !state.deepThink;
+    // 药丸只有开/关，强度有四档：**关就是关**（否则"药丸关了还在想"最气人），
+    // 再打开时回到记着的那一档（缺省 normal）。走 applyThink 是为了把落档**也存下来** ——
+    // 只改内存的话，下次开页面会从 localStorage 读回旧档，于是"药丸是灭的、强度还是
+    // 使劲"（实测复现过）。
+    applyThink(
+      state.deepThink ? (state.think && state.think !== 'off' ? state.think : 'normal') : 'off',
+      { quiet: true }
+    );
     try {
       window.localStorage.setItem('qf.chat.deep', state.deepThink ? '1' : '0');
     } catch (err) {
@@ -5494,6 +7966,30 @@
         })
       );
     }
+
+    // 位置标记：旗（回溯，趁手）/ 丝带（书签，永久）。放在这一行图标的最右端 ——
+    // 与复制/重答是同一类"对这条消息做的事"，也都在对话树那张地图上有对应物。
+    //
+    // **但它要等这一条落库**。两道门都要过：
+    //
+    //   * `local-N`：用户那条的乐观节点，还没有 id。位置标记存的是 `mid`，此时点下去
+    //     会把 `local-3` 这种临时名记进标记里，等落库换了真 id，那枚标记就永远指不回
+    //     任何消息（用户："用户发消息，agent 未回复的时候，书签和锚点的图标竟然存在"）。
+    //   * `streaming`：**正在长的那一条**。它的 `start` 事件带的就是真 id，只挡 `local-`
+    //     挡不住它 —— 实测（伪造的慢流）症状是：回答行一出现就挂着这两枚，等第一个字
+    //     到了再消失，也就是"消息一发出去就先闪一下，等到 llm 开始思考才消失"。
+    //
+    // 落库那一步会重画这一行（`replaceMessage` → `decorateAssistant`），图标自然就出来了。
+    if (m.id && String(m.id).indexOf('local-') !== 0 && m.status !== 'streaming') {
+      placeButtons(m).forEach(function (btn) {
+        foot.appendChild(btn);
+      });
+    }
+    // skill 标记：挂在**哪条消息**上就在哪一行显示（点一下取下）—— 它可能挂在用户那条，
+    // 也可能挂在这一条（用 `/` 之后紧接着发的那一句在哪条上，就记在哪条上）。
+    skillChips(m).forEach(function (chip) {
+      foot.appendChild(chip);
+    });
 
     if (foot.childNodes.length) body.appendChild(foot);
   }
@@ -6051,6 +8547,24 @@
         scrollToEnd(true);
       }
 
+      // 他刚用 `/` 挑的那个流程：**在发请求之前**记下来，所以**这一轮就带上**。
+      // 记在**这条链的末端**（也就是新消息将要挂的那个父节点）—— 服务端是
+      // "沿链取最近的那条记录"，从新消息往下都算挂着，这一轮自然也在内
+      //（见 `app/skills.py` 的 `resolve`）。链末端为空（这条对话还是空的）= 记
+      // `mid` 为空的那条，含义就是"整条对话"。
+      if (pendingSkill) {
+        QF.store.attachSkill({
+          cid: state.current || '',
+          mid: attachTo == null ? '' : String(attachTo),
+          key: pendingSkill,
+        });
+        pendingSkill = '';
+        paintSkillPick();
+        // 那枚标记长在**那条消息**上，而它此刻已经在屏幕上了 —— 不重画就看不到，
+        // 于是"装上了没有"要靠刷新页面才知道（第一版就是这样）。
+        repaintKeepingScroll();
+      }
+
       state.busy = true;
       state.controller = new AbortController();
       updateComposer();
@@ -6071,7 +8585,19 @@
           ? { continue: true } // 不新增用户消息，只接一轮（见后端 post_message 的说明）
           : { content: text, parentId: attachTo, attachments: attachedIds };
       // 每一条都带上此刻的「深度思考」开关：重新生成、接一轮同样该遵守它
-      body.thinking = state.deepThink;
+      // 思考强度：带上**等级**（`off`/`low`/`normal`/`high`，见 `gateway.thinking_params`）。
+      // 药丸那颗（开/关）与它对齐：`off` 就是关，其余都是开。
+      state.think =
+        state.think ||
+        (function () {
+          try {
+            return window.localStorage.getItem('qf.chat.think') || '';
+          } catch (err) {
+            return '';
+          }
+        })() ||
+        (state.deepThink ? 'normal' : 'off');
+      body.thinking = state.think;
       return api
         .stream(
           '/chat/conversations/' + state.current + '/messages',
@@ -6099,17 +8625,54 @@
             start: function (m) {
               settled = false;
               state.messages.push(m);
+              // **回答到了**：用户那一条的标记图标该出来了（它们是"有回答才给"的，
+              // 见 messageRow 里那段）。只补这两颗，不重画整行 —— 重画会把刚长出来的
+              // 回答旁边的滚动位置也一起动掉。
+              if (m && m.parentId != null) {
+                var asked = state.messages.filter(function (one) {
+                  return String(one.id) === String(m.parentId);
+                })[0];
+                var prow = threadEl.querySelector('[data-id="' + m.parentId + '"]');
+                var pacts = prow ? prow.querySelector('.chatmsg__useractions') : null;
+                if (asked && pacts && !pacts.querySelector('.chatplacebtn')) {
+                  placeButtons(asked).forEach(function (btn) {
+                    pacts.appendChild(btn);
+                  });
+                }
+              }
               // **新回答一出现，就把它记成"这一层选的那一条"**。
               //
               // 重新回答时尤其关键：`regenerate` 先把这一层的选择清掉了，不在这里
               // 补回来，收尾的 `paintThread()` 会按"第一个孩子"重画 —— 界面上就是
               // "新回答闪一下，又变回旧回答"（用户："要在新的内容出现之后旧的才消失"）。
-              //
-              // 注意**只记选择、不重画**：旧的留在原处，新的在它下面长；直到流结束
-              // 才由 `paintThread()` 收成一条线 —— 那正是"新的出现之后旧的才消失"。
               if (m && m.parentId) state.picks[keyOf(m.parentId)] = m.id;
               var row = messageRow(m);
-              threadEl.appendChild(row);
+              /**
+               * **旧回答让位**（用户："重新生成 agent 回复的时候，旧的回复要等到新的
+               * 回复生成完毕才会消失"）。
+               *
+               * 这里原来是"旧的留在原处、新的 append 到下面，等流结束才收成一条线" ——
+               * 那是照上一轮的话（"要在新的内容出现之后旧的才消失"）做的，但它做过头了：
+               * 一次重新生成要等十几秒，这十几秒里屏幕上**并排两条回答**（新的还在长），
+               * 哪条算数看不出来。
+               *
+               * 现在：新的那条**一出现就在原地顶掉旧的**（旧的仍在 `‹ ›` 里，随时切回来），
+               * 顺带把旧回答往下挂的那一段（它的后代行）一起收走 —— 它们属于旧分支。
+               */
+              var was = m && m.parentId != null ? shownReplyRow(m.parentId) : null;
+              if (was) {
+                var host = was.parentNode;
+                host.replaceChild(row, was);
+                var next = row.nextElementSibling;
+                while (next) {
+                  var after = next.nextElementSibling;
+                  if (!next.classList || !next.classList.contains('chatmsg')) break;
+                  next.remove();
+                  next = after;
+                }
+              } else {
+                threadEl.appendChild(row);
+              }
               state.live = makeLive(row, row.querySelector('.chatmsg__body'), m);
               scrollToEnd(true);
             },
@@ -6379,7 +8942,450 @@
     send({ content: inputEl.value });
   }
 
+  /* ------------------------------------------------------------ 流程（skill）
+   *
+   * `docs/对话树.md` §十二 的三种形态里，**流程**做成 `/` 命令 —— 它是动作：有开始、
+   * 有走完，而且**讲的人是用户**。口吻 / 纪律是状态（装 / 取、挂在节点上、沿树继承），
+   * 要的是另一套机制，留给下一步。
+   *
+   * 界面只干一件事：把他挑的那条写进记录（`QF.store.attachSkill`，存法与记号同源）。
+   * "现在挂着什么"由**服务端**按当下的链算（`app/skills.py` 的 `resolve`）——
+   * 链会随切分支/编辑重发而变，本地算一份必然过期。
+   */
+  var pendingSkill = '';   // 这次发出去时要挂上的那条（从挑中到发送之间）
+  var skillPickEl = null;  // 输入框上方那份清单
+  var skillPickAt = 0;     // 清单里高亮到第几条（键盘上下走）
+
+  //: 形态的中文（`app/skills.py` 的 kind → 界面上那两个字）。只用来**标出来给他看**：
+  //: "我装的到底是流程还是口吻"这件事，界面不说清，他就得靠猜。
+  var SKILL_KIND_WORD = { flow: '流程', tone: '口吻', discipline: '纪律' };
+
+  //: 形态各自的小图标（药丸上跟在形态那两个字前面）。图标本身在 `theme/runtime/ui.js`
+  //: 的图标表里，与「深度思考」那颗原子同一路描边、同一个尺寸档。
+  var SKILL_KIND_ICON = { flow: 'steps', tone: 'voice', discipline: 'ban' };
+
+  function skillCatalog() {
+    var st = (QF.mounts && QF.mounts.state) || {};
+    return Array.isArray(st.skills) ? st.skills : [];
+  }
+
+  /** 冒号这一层：`/` 是**命令**，不只有 skill（用户："`/` 是命令，不只有 skill"）。
+   *
+   * 现在只登记了一条命令 `skill` —— 别的命令**先不设计**（用户："命令先不要设计"），
+   * 所以这张表就一条：它下面挂着他那个文件夹里的十来条 skill。 */
+  // 只有 skill 一条了：思考强度**不再放命令里**（用户："那个 thinking 强度的调整，
+  // 还是算了不要放在 command 里吧。做成右键「深度思考」那个药丸跳出来的菜单"）。
+  // 它本来就与那颗药丸是同一件事的两面 —— 药丸管"带不带思考"，菜单管"带多强"。
+  var COMMANDS = [{ key: 'skill', label: 'skill', hint: '装一个 skill：流程 / 口吻 / 纪律' }];
+
+  //: 四档的说明。**口径要和后端那几句提示词对得上**（见 `chat.py` 的 `_THINKING_LINES`）——
+  //: 这里写"遇到分叉才多想一步"，后端就得是同一句话；两边不一致，他选的东西就不是他以为的。
+  var THINK_LEVELS = [
+    { key: 'off', label: '不想', hint: '直接给答案，也不展开推理（简单问题用它）' },
+    { key: 'low', label: '省着点', hint: '先给答案，遇到分叉才多想一步' },
+    { key: 'normal', label: '常规', hint: '默认：该怎么想怎么想' },
+    { key: 'high', label: '使劲', hint: '前提、边界、反例都过一遍' },
+  ];
+
+  function _skillMatch(one, word) {
+    if (!word) return true;
+    return (
+      String(one.key || '').toLowerCase().indexOf(word) === 0 ||
+      String(one.label || '').indexOf(word) === 0 ||
+      String(one.hint || '').toLowerCase().indexOf(word) >= 0
+    );
+  }
+
+  /** 输入框里已经写了哪条命令（空 = 还在第一层，或者写的是一个 skill 名）。 */
+  function pickCommand() {
+    var text = String((inputEl && inputEl.value) || '');
+    var hit = /^\/\s*([a-z][a-z0-9-]*)\b/i.exec(text);
+    if (!hit) return '';
+    var key = hit[1].toLowerCase();
+    return COMMANDS.some(function (one) {
+      return one.key === key;
+    })
+      ? key
+      : '';
+  }
+
+  /** 清单里要显示什么。命令与 skill 混在同一层里，各带各的标签 ——
+   *  两条路都留着：`/skill` 是正式入口，直接打 `/费` 也认（那个名字够具体，
+   *  没必要逼他先选一次命令）。 */
+  function pickItems() {
+    if (!inputEl) return [];
+    var text = String(inputEl.value || '');
+    if (text.charAt(0) !== '/') return [];
+    var typed = text.slice(1);
+    var word = typed.trim().toLowerCase();
+    // 第二层：每条命令有自己的子项（现在只有 `skill` → 那一堆）
+    var cmd = pickCommand();
+    if (cmd === 'skill') {
+      var rest = word.replace(/^\/?\s*skill\b/, '').trim();
+      return skillCatalog()
+        .filter(function (one) {
+          return _skillMatch(one, rest);
+        })
+        .map(function (one) {
+          return { type: 'skill', one: one };
+        });
+    }
+    var out = COMMANDS.filter(function (one) {
+      // 认 key 也认中文名（他打 `/思`，想要的显然是「思考」那条命令）
+      return !word || one.key.indexOf(word) === 0 || one.label.indexOf(word) >= 0;
+    }).map(function (one) {
+      return { type: 'command', one: one };
+    });
+    if (word) {
+      // 直接打 skill 名：与命令并排显示（他打 `/费`，想要的显然是费曼）
+      skillCatalog()
+        .filter(function (one) {
+          return _skillMatch(one, word);
+        })
+        .forEach(function (one) {
+          out.push({ type: 'skill', one: one });
+        });
+    }
+    return out;
+  }
+
+  function paintSkillPick() {
+    if (!skillPickEl) return;
+    var list = pickItems();
+    ui.clear(skillPickEl);
+    if (!list.length) {
+      skillPickEl.classList.remove('is-open');
+      return;
+    }
+    if (skillPickAt >= list.length) skillPickAt = 0;
+    list.forEach(function (item, index) {
+      var one = item.one;
+      var isCmd = item.type === 'command';
+      skillPickEl.appendChild(
+        h(
+          'button.chatskill__item' + (index === skillPickAt ? '.is-on' : ''),
+          {
+            type: 'button',
+            onClick: function () {
+              chooseItem(item);
+            },
+          },
+          h('span.chatskill__kind' + (isCmd ? '.is-cmd' : ''), {
+            text: isCmd ? '命令' : SKILL_KIND_WORD[one.kind] || '',
+          }),
+          // 名字**不带斜杠**（用户："command 的选项，不要带 / 了"）：
+          // 斜杠是"我在输入框里打什么"，不是这条东西的名字。
+          h('span.chatskill__name', { text: one.label }),
+          h('span.chatskill__hint', { text: one.hint })
+        )
+      );
+    });
+    skillPickEl.classList.add('is-open');
+  }
+
+  /**
+   * 思考强度的拖动条 —— 右键那颗「深度思考」药丸弹出来（见 openThinkMenu）。
+   *
+   * 为什么是拖动条：这四档是**一路上坡**的一条线（不想 → 省着点 → 常规 → 使劲），
+   * 摆成列表就像四个互不相干的开关。为什么搬到这里：它跟那颗药丸本来就是同一件事
+   * 的两面 —— 药丸管"这一轮带不带思考"，这里管"带多强"。
+   */
+  function thinkSliderNode() {
+    var index = 0;
+    var current = state.think || (state.deepThink ? 'normal' : 'off');
+    THINK_LEVELS.forEach(function (one, i) {
+      if (one.key === current) index = i;
+    });
+    var now = h('span.chatthink__now', { text: THINK_LEVELS[index].label });
+    var bar = h('input.chatthink__bar', {
+      type: 'range',
+      min: '0',
+      max: String(THINK_LEVELS.length - 1),
+      step: '1',
+      value: String(index),
+      'aria-label': '思考强度',
+      onInput: function (ev) {
+        // 拖动时**实时**生效（还没松手，药丸就跟着走了）……
+        var one = THINK_LEVELS[Number(ev.target.value)] || THINK_LEVELS[0];
+        applyThink(one.key, { quiet: true });
+        now.textContent = one.label;
+        now.parentNode.setAttribute('title', one.hint);
+        paintFill(ev.target.value);
+      },
+      onChange: function (ev) {
+        // ……松手才算"定下来"：提示一句，菜单收起来
+        var one = THINK_LEVELS[Number(ev.target.value)] || THINK_LEVELS[0];
+        applyThink(one.key);
+        closeChatMenu();
+      },
+      onKeyDown: function (ev) {
+        if (ev.key === 'Escape') {
+          ev.stopPropagation();
+          closeChatMenu();
+        }
+      },
+    });
+    // 已选那一段得自己画（Chromium 的 range 不会），进度写进 CSS 变量交给渐变
+    var paintFill = function (value) {
+      bar.style.setProperty('--fill', (Number(value) / (THINK_LEVELS.length - 1)) * 100 + '%');
+    };
+    paintFill(index);
+    window.setTimeout(function () {
+      if (bar.focus) bar.focus();
+    }, 0);
+    return h(
+      'div.chatthink',
+      {},
+      h('div.chatthink__row', { title: THINK_LEVELS[index].hint }, now),
+      bar,
+      h(
+        'div.chatthink__scale',
+        {},
+        THINK_LEVELS.map(function (one) {
+          return h('span.chatthink__tick', { text: one.label });
+        })
+      )
+    );
+  }
+
+  /** 右键「深度思考」那颗药丸：弹出强度菜单（一根拖动条）。 */
+  function openThinkMenu(ev) {
+    if (ev) {
+      ev.preventDefault();
+      chatMenuX = ev.clientX;
+      chatMenuY = ev.clientY;
+    }
+    showChatMenu([{ node: thinkSliderNode() }]);
+  }
+
+  /**
+   * 落档：记在本地（与那颗「深度思考」药丸同一个存法），顺手把药丸对齐 ——
+   * 药丸只有开/关，`off` 之外都是"开"；不对齐就会出现"选了不想、药丸还亮着"，
+   * 那是同一个状态的两种显示，不一致比不做还坏。
+   */
+  function applyThink(key, options) {
+    var one = null;
+    THINK_LEVELS.forEach(function (each) {
+      if (each.key === key) one = each;
+    });
+    if (!one) return;
+    state.think = one.key;
+    state.deepThink = one.key !== 'off';
+    try {
+      window.localStorage.setItem('qf.chat.think', one.key);
+    } catch (err) {
+      /* 存不下只影响下次开页面，不该拦住这一次 */
+    }
+    var deepPill = document.querySelector('.chat__deep:not(.chatskill__open)');
+    if (deepPill) {
+      deepPill.classList.toggle('is-on', !!state.deepThink);
+      deepPill.setAttribute('aria-pressed', state.deepThink ? 'true' : 'false');
+    }
+    updateComposer();
+    if (!options || !options.quiet) {
+      ui.toast('思考强度：' + one.label + ' —— ' + one.hint, 'info', 2600);
+    }
+  }
+
+  function chooseItem(item) {
+    if (item.type === 'command') {
+      // 进第二层：把 `skill` 写进输入框（`/skill` 这三个字本身就是他的输入）
+      inputEl.value = '/' + item.one.key + ' ';
+      growInput();
+      skillPickAt = 0;
+      paintSkillPick();
+      return;
+    }
+    chooseSkill(item.one);
+  }
+
+  /** 挑中一条：记在 `pendingSkill` 上，把输入框里那截 `/xxx` 撤掉（等他接着提问）。 */
+  function chooseSkill(one) {
+    pendingSkill = one.key;
+    inputEl.value = '';
+    growInput();
+    skillPickAt = 0;
+    paintSkillPick();
+    inputEl.focus();
+    ui.toast('/' + one.label + ' 已装上 —— ' + one.hint, 'info', 2600);
+  }
+
+  /** 这条链上现在正生效的（与 `app/skills.py` 的 `resolve` 同一套语义：沿链取最近、
+   *  每个 key 各算各的）。**只用来画那一排药丸** —— 真正生效由服务端按当下的链算。 */
+  function activeSkills() {
+    var cid = String(state.current || '');
+    var records = QF.store.skills() || [];
+    var mids = [''].concat((activePath() || []).map(function (m) {
+      return String(m.id);
+    }));
+    var decided = {};
+    mids.forEach(function (mid) {
+      records.forEach(function (one) {
+        if (String(one.cid || '') !== cid) return;
+        if (String(one.mid || '') !== mid) return;
+        decided[one.key] = one.on !== false;
+      });
+    });
+    return Object.keys(decided)
+      .filter(function (k) {
+        return decided[k];
+      })
+      .map(function (k) {
+        return (
+          skillCatalog().filter(function (one) {
+            return one.key === k;
+          })[0] || { key: k, label: k, kind: '', hint: '' }
+        );
+      });
+  }
+
+  /** 输入区里与 skill 有关的两件东西（用户："常驻药丸要做，这个是状态的指示和取消药丸。
+   *  skill 另外做一个药丸放在模式旁边。"）：
+   *
+   *   * **`skill` 药丸**：紧挨着模式药丸，点一下把 `/skill` 填进输入框（= 打开清单）；
+   *   * **状态药丸**：这条链上正生效的每一条一枚，各带 × —— 既是"现在挂着什么"的指示，
+   *     也是**取下**的地方（不必再滚回那条消息去点它）。
+   *
+   * 都动态插进补药丸那一行（`.chat__tools`）：那一行是别处建的，这里只往里插；
+   * 找不到就什么都不做 —— 布局变了顶多少两颗药丸，不该把输入区弄崩。
+   */
+  function paintSkillPills() {
+    var tools = document.querySelector('.chat__tools');
+    if (!tools) return;
+
+    var btn = tools.querySelector('.chatskill__open');
+    if (!btn) {
+      btn = h(
+        'button.chat__deep.chatskill__open',
+        {
+          type: 'button',
+          title: '装一个 skill（也可以直接在输入框里打 /）',
+          onClick: function () {
+            inputEl.value = '/skill ';
+            growInput();
+            skillPickAt = 0;
+            paintSkillPick();
+            inputEl.focus();
+          },
+        },
+        // 与「深度思考」那一颗**同一套**：图标 + 文字，同一个尺寸档、同一路描边
+        // （用户："那个 skill 药丸，同样的，图标+文字，对齐。"）
+        iconNode('skill', 14),
+        h('span.chat__deeptext', { text: 'skill' })
+      );
+      var modes = tools.querySelector('.chat__modes');
+      if (modes && modes.parentNode) modes.parentNode.insertBefore(btn, modes.nextSibling);
+      else tools.appendChild(btn);
+    }
+
+    var bar = tools.querySelector('.chatskill__states');
+    if (!bar) {
+      bar = h('div.chatskill__states');
+      tools.appendChild(bar);
+    }
+    ui.clear(bar);
+    var live = activeSkills();
+    live.forEach(function (one) {
+      bar.appendChild(
+        h(
+          'button.chatskill__state',
+          {
+            type: 'button',
+            title: '正在生效：「/' + one.label + '」—— 点 × 取下',
+            onClick: function () {
+              var path = activePath() || [];
+              var leaf = path.length ? path[path.length - 1] : null;
+              QF.store.attachSkill({
+                cid: state.current || '',
+                mid: leaf ? String(leaf.id) : '',
+                key: one.key,
+                on: false,
+              });
+              paintSkillPills();
+              repaintKeepingScroll();
+              ui.toast('已取下 /' + one.label, 'info', 1600);
+            },
+          },
+          // 状态药丸也是图标 + 文字：图标说明**哪一类**（流程/口吻/纪律），
+          // 文字说明是哪一条 —— 一排药丸里靠这个一眼分得开。
+          iconNode(SKILL_KIND_ICON[one.kind] || 'skill', 12),
+          h('span.chatskill__statetext', {
+            text: (SKILL_KIND_WORD[one.kind] || '') + ' ' + one.label,
+          }),
+          h('span.chatskill__x', { text: '×' })
+        )
+      );
+    });
+    bar.classList.toggle('is-on', live.length > 0);
+  }
+
+  /** 这条消息上挂着的标记（点一下 = 取下 / 再装回去）。没有就返回 []。
+   *
+   * **返回的是一串**：三种形态可以并存（用户："流程/口吻/纪律实际上是可以兼容的"），
+   * 同一条消息上完全可能同时挂着"费曼"和"大白话"。 */
+  function skillChips(m) {
+    return (QF.store.skillsOn(m && m.id) || []).map(function (live) {
+      var on = live.on !== false;
+      var one = skillCatalog().filter(function (each) {
+        return each.key === live.key;
+      })[0];
+      var label = one ? one.label : live.key;
+      var kind = one && one.kind ? SKILL_KIND_WORD[one.kind] || '' : '';
+      var btn = h(
+        'button.chatskill__chip' + (on ? '.is-on' : ''),
+        { type: 'button', dataset: { skill: live.key } },
+        (on ? kind + ' · ' : '已取下 · ') + label
+      );
+      var paint = function (now) {
+        btn.classList.toggle('is-on', now);
+        btn.textContent = (now ? kind + ' · ' : '已取下 · ') + label;
+        btn.title = now
+          ? '正在生效：「/' + label + '」—— 点一下取下'
+          : '这一条已经取下了（点一下再装回去）';
+      };
+      paint(on);
+      btn.addEventListener('click', function () {
+        var next = !btn.classList.contains('is-on');
+        QF.store.attachSkill({
+          cid: state.current || '',
+          mid: m.id == null ? '' : String(m.id),
+          key: live.key,
+          on: next,
+        });
+        // **就地改这一枚**，不整屏重画：位置标记那边重画是对的（它改的是正文），
+        // 而这里改的只是这一枚的亮灭 —— 整屏重画会在某些路径上把标记反复重建
+        //（实测：点一下炸出几百枚同样的标记）。
+        paint(next);
+        if (notesOpen) renderNotes();
+        ui.toast((next ? '又装上了 /' : '已取下 /') + label, 'info', 1600);
+      });
+      return btn;
+    });
+  }
+
   function onKeydown(event) {
+    // 清单开着时，键盘先归它：上下走、回车挑中、Esc 收起（都**不**发送）
+    var list = pickItems();
+    if (list.length) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        skillPickAt = (skillPickAt + (event.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length;
+        paintSkillPick();
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        inputEl.value = '';
+        growInput();
+        paintSkillPick();
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        chooseItem(list[skillPickAt] || list[0]);
+        return;
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       onSendClick();
@@ -6943,6 +9949,39 @@
     };
   }
 
+  /* 启动预热：空闲（或最多 5 秒后）先把 Python 壳建起来。与 latex.js 那份同源 ——
+   * 这里只管"什么时候"，"要不要"由 shellWarm 自己判（网络、就绪、重复调用）。 */
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(shellWarm, { timeout: 5000 });
+  } else {
+    window.setTimeout(shellWarm, 2500);
+  }
+
   var chat = { boot: boot, booted: false, mount: mount };
   QF.chat = chat;
+  /**
+   * 壳的账本（`bootMs` = 环境准备总时长）。挂出来是为了让"预热省了多少"能量，
+   * 而不是像 LaTeX 那次只能证明"机制在跑"。
+   *
+   * **名字是 `QF.pyrun`，不是 `QF.shell`** —— 后者是布局层（`theme/runtime/shell.js`，
+   * 带 `mount`）的地盘。我第一版就叫 `QF.shell`，于是把它**覆盖掉**了：`QF.chat.boot()`
+   * 一开口就是 `QF.shell.mount(...)`，直接 `TypeError` —— 整个应用**从那一刻起打不开**
+   * （用户："不是，是我现在根本就进不去 quizforge 里面"）。教训：`QF.*` 是共享命名空间，
+   * 占一个新名字前先 `grep "QF\."` 看一眼。
+   */
+  QF.pyrun = {
+    warm: shellWarm,
+    state: function () {
+      return {
+        started: !!shell.el,
+        ready: shell.ready,
+        // `bootMs` = 环境准备总时长（解释器 + 依赖 + 绘图预热），其余是分项
+        bootMs: Math.round(shell.bootMs || 0),
+        pyMs: Math.round(shell.pyMs || 0),
+        packMs: Math.round(shell.packMs || 0),
+        warmMs: Math.round(shell.warmMs || 0),
+        info: shell.info,
+      };
+    },
+  };
 })();

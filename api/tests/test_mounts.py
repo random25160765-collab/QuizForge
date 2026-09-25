@@ -125,7 +125,9 @@ def test_modes_are_group_times_access():
     assert m.MODE_KEYS == ("minimal", "query", "study")
     one = {item.key: item for item in m.MODES}
     assert one["minimal"].groups == () and one["minimal"].access == ("read",)
-    assert one["query"].groups == ("notes", "library", "graph")
+    # 查询那一档挂着 `trees`（对话树）："我上次是不是钻过这个"是查询类需求，
+    # 与查笔记、查资料同类（`docs/对话树.md` §三 的推论）。
+    assert one["query"].groups == ("notes", "library", "graph", "trees")
     assert one["query"].access == ("read",)
     assert set(one["study"].access) == set(tools.ACCESS_LEVELS)
 
@@ -195,7 +197,9 @@ def test_snapshot_maps_back_to_the_mode():
     from app import mounts as m
     from app import tools
 
-    groups, allow = m.from_snapshot('["notes", "library", "graph"]')
+    # 查询那一档的组**从 `MODES` 取**，不抄一串：加 `trees`（对话树）那天这里就不必改
+    #（与下面那条"用 `tools.ALL_GROUPS`"是同一个理由 —— 抄成两份必然漂）。
+    groups, allow = m.from_snapshot(json.dumps(list(m.MODE_BY_KEY["query"].groups)))
     assert m.mode_of_groups(groups) == "query"
     assert allow == ("read",)
 
