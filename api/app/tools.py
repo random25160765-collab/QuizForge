@@ -944,7 +944,23 @@ async function execute(job) {
           'import sys\n' +
           'if "matplotlib" not in sys.modules:\n' +
           '    import matplotlib\n' +
-          '    matplotlib.use("Agg")'
+          '    matplotlib.use("Agg")\n' +
+          // **把中文那几行再确认一遍**：环境准备里设过一次，但那不够 —— 壳是**常驻**的，
+          // 上一条脚本的副作用会留在这个解释器里（换 style、`rcdefaults()`、自己改
+          // `font.sans-serif` 都会把中文弄丢）。只设一次的话，翻车时机是"第二次运行"，
+          // 看着就像**有时行有时不行**（用户原话）。复核用模块上记住的名字，
+          // 不重新解析那 4.3MB 字体。
+          'import matplotlib\n' +
+          '_n = getattr(matplotlib, "_qf_cjk", "")\n' +
+          'if _n:\n' +
+          '    matplotlib.rcParams["font.sans-serif"] = [_n] + [f for f in matplotlib.rcParams["font.sans-serif"] if f != _n]\n' +
+          '    matplotlib.rcParams["font.serif"] = [_n] + [f for f in matplotlib.rcParams["font.serif"] if f != _n]\n' +
+          '    matplotlib.rcParams["axes.unicode_minus"] = False\n' +
+          '    matplotlib.rcParams["mathtext.fontset"] = "custom"\n' +
+          '    matplotlib.rcParams["mathtext.rm"] = _n\n' +
+          '    matplotlib.rcParams["mathtext.it"] = _n\n' +
+          '    matplotlib.rcParams["mathtext.bf"] = _n\n' +
+          '    matplotlib.rcParams["font.cursive"] = [_n]'
         );
       } catch (err) { /* 没装上就算了：脚本自己 import 时会报出真正的错 */ }
     }
@@ -1070,6 +1086,8 @@ window.addEventListener('message', function (event) {
   // 现在放在自述**之前**；顺手把 pyplot 的首个 import（那次 826ms 里的大头）也留在这里 ——
   // 这正是用户说的"预装包合并在环境准备里"：第一次真的画图时，这些都不必再等。
   var warmMs = 0;
+  var fontName = '';
+  var fontWarning = '';
   var hasPlot = want.some(function (n) { return n === "matplotlib"; });
   if (hasPlot) {
     var t3 = performance.now();
@@ -1081,6 +1099,68 @@ window.addEventListener('message', function (event) {
       );
     } catch (err) { /* 没装上就算了：脚本自己 import 时会报出真正的错 */ }
     warmMs = performance.now() - t3;
+
+    // **中文字体**：脚本里写中文标题、图例、轴标签时，别变成一屏"豆腐块"。
+    //
+    // 从前这里没有中文字形，所以提示词一直在劝模型"图里别写中文"（那是实话，但很碍事）。
+    // 用户要求把中文装上，两边都装：正文里的图走 LaTeX 那份（见 vendor/tikzjax），
+    // 沙箱里的图走这一份。
+    //
+    // 为什么要**另取一份 TTF**：matplotlib 不认 woff2（浏览器那套它读不了）。这份是
+    // vendor/cjk/gbsn00lp.ttf（构建时搬进 `assets/fonts/`）—— 同一份 Arphic 宋体、
+    // 同样的码点范围，所以用户在正文图与沙箱图里看到的是同一个字体的汉字。
+    //
+    // 为什么地址是 `/assets/fonts/` 而不是 tikzjax 那边：壳是**不透明源**的独立文档
+    //（sandbox 里没给 `allow-same-origin`），它的 fetch 带 `Origin: null`，会被 CORS 拦
+    //（实测：`blocked by CORS policy`）。而 `main.py` 只给 `/assets/fonts/` 开了 CORS
+    //（当初是为了沙箱里那份等宽字体，同一个道理）。
+    //
+    // 两处细节都不是可选项：
+    //   * 把族名**排到字体栈最前**，否则 matplotlib 仍然用默认的那套（没有汉字）；
+    //   * 关掉 `axes.unicode_minus` —— 不关的话负号会画成方框，是 CJK 场景的老毛病。
+    //
+    // 克制照旧：**计费/2G 网络不取**（4MB 不该在人没要的时候花掉他的流量）。取不到、
+    // 或登记失败都只是"中文会退回豆腐块"，不影响别的任何东西 —— 所以失败不抛，只记账。
+    var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    var stingy = conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''));
+    if (!stingy) {
+      var t4 = performance.now();
+      try {
+        var resp = await fetch('__ORIGIN__/assets/fonts/gbsn00lp.ttf');
+        if (resp.ok) {
+          var buf = await resp.arrayBuffer();
+          PY.FS.writeFile('/tmp/gbsn00lp.ttf', new Uint8Array(buf));
+          fontName = PY.runPython(
+            "import matplotlib, matplotlib.font_manager as _fm\n" +
+            "_fm.fontManager.addfont('/tmp/gbsn00lp.ttf')\n" +
+            "_nf = _fm.FontProperties(fname='/tmp/gbsn00lp.ttf').get_name()\n" +
+            "matplotlib.rcParams['font.sans-serif'] = [_nf] + [__f for __f in matplotlib.rcParams['font.sans-serif'] if __f != _nf]\n" +
+            "matplotlib.rcParams['font.serif'] = [_nf] + [__f for __f in matplotlib.rcParams['font.serif'] if __f != _nf]\n" +
+            "matplotlib.rcParams['axes.unicode_minus'] = False\n" +
+            // **mathtext 是另一套字体栈** —— 这一条是实测补上的：对数轴的刻度（`10^{-1}`）
+            // 与图里的 `$...$` 都由 mathtext 排，`font.sans-serif` **管不到**它。只设上面
+            // 那几行的话，负指数里的减号（U+2212）会变成"哑符号"，日志里一串
+            // `Font 'default' does not have a glyph for '-' [U+2212]`。
+            // 用户拿对数轴试了出来，模型为此来回改了四轮才对 —— 这种事该环境准备好。
+            "matplotlib.rcParams['mathtext.fontset'] = 'custom'\n" +
+            "matplotlib.rcParams['mathtext.rm'] = _nf\n" +
+            "matplotlib.rcParams['mathtext.it'] = _nf\n" +
+            "matplotlib.rcParams['mathtext.bf'] = _nf\n" +
+            // `font.cursive` 在 Pyodide 这份 matplotlib 里是空的 → mathtext 一探字体就吐
+            // `findfont: Font family ['cursive'] not found`（**不是错**，但看着像 ✗，
+            // 用户的输出里就出现过）。指到同一份字体，噪音就没了。
+            "matplotlib.rcParams['font.cursive'] = [_nf]\n" +
+            // 名字留在模块上：**每次运行前**要把这几行再确认一遍（脚本可能 `rcdefaults()`），
+            // 而重新解析一遍那 4.3MB 字体没必要 —— 记下来就够（见 execute 里那段）。
+            "matplotlib._qf_cjk = _nf\n" +
+            "_nf"
+          );
+        }
+      } catch (err) {
+        fontWarning = '中文字体没装上：' + String((err && err.message) || err);
+      }
+      warmMs += performance.now() - t4;
+    }
   }
 
   // 把环境报给宿主（它会把这几行摆进第一次运行的输出里）——模型因此知道
@@ -1101,24 +1181,43 @@ window.addEventListener('message', function (event) {
   } catch (err) {
     info = String((err && err.message) || err);
   }
+  // 让模型**知道沙箱里中文排得出来** —— 不然它会照旧避开图里的中文（提示词那一侧已经从
+  // "图里别写中文"改成允许）。自述会进第一次运行的输出，这是它唯一能读到"有中文字体"的地方。
+  if (fontName) info += ' · 中文字体 ' + fontName;
   send({
     qfReady: true,
     info: info,
     // `bootMs` = **环境准备总共花了多少**（含解释器、依赖、绘图预热），
-    // `pyMs` = 其中解释器那一笔，`packMs` = 依赖，`warmMs` = 绘图预热。
+    // `pyMs` = 其中解释器那一笔，`packMs` = 依赖，`warmMs` = 绘图预热
+    //（含 Agg + pyplot 首个 import + 中文字体那一笔 —— 都属"让绘图能用"的准备）。
     // 从前只报总时长，看着像"解释器很慢"；分开报是为了让"哪一段能被省掉"看得见。
     bootMs: Math.round(performance.now() - t0),
     pyMs: pyMs,
     packMs: Math.round(packMs),
     warmMs: Math.round(warmMs),
-    // 两条警告（预载失败 / 额外包失败）攒到这里一起报 —— 只发一次"就绪"
-    warning: (packWarning + (packWarning && extraWarning ? '；' : '') + extraWarning) || undefined,
+    // 三条警告（预载失败 / 额外包失败 / 中文字体失败）攒到这里一起报 —— 只发一次"就绪"
+    warning: [packWarning, extraWarning, fontWarning].filter(Boolean).join('；') || undefined,
   });
 
   // 就绪前排队的那几段，现在补跑
   while (QUEUE.length) execute(QUEUE.shift());
 })();
 </script></head><body></body></html>"""
+
+
+def shell_stamp() -> str:
+    """常驻壳那份页面的**运行时指纹**（内容哈希）。
+
+    存在理由：壳是"页面打开时建一次、之后一直用"，而它的环境准备里装着**要装一次**的
+    东西（matplotlib、中文字体）。壳的页面由服务端现渲染，跟 `make web` 无关 —— 于是
+    只盯构建戳的话，改了 `_PYODIDE_SHELL` 之后：构建戳没变 → 已经打开的页面不刷新 →
+    页面里的壳还是旧的 → 用户问"中文能画了吗"，模型在**旧壳**里跑出"一个中文字形都没有"，
+    就很诚实地回答"这台机器画不出汉字"（实测就这么绕了一圈，白折腾一轮）。
+    有了这个指纹，`/api/build` 与页面各自报一份，对不上就自己刷新。
+    """
+    import hashlib
+
+    return hashlib.sha1(shell_page().encode("utf-8")).hexdigest()[:12]
 
 
 def shell_page() -> str:
@@ -1157,16 +1256,19 @@ def run_python(db, args, ctx=None) -> dict:  # noqa: ANN001
     ## 能跑什么、跑不了什么
 
     * 标准库、纯计算、文本输出：没问题。
-    * `numpy` / `scipy`：**本机已经装好**（连同 openblas），开箱即用，不用等下载。
-    * `pandas` / `matplotlib`：**也能用**，本机备着 —— 但**用到了才装**（壳看你的
-      `import` 现装）。所以**第一次** import 它们会多等几秒（十几 MB 要从本机取一次），
-      之后就现成了。写 `import pandas as pd` / `import matplotlib.pyplot as plt`
-      这种**正常写法**就行，别用 `__import__("...")` 动态导入（那样壳扫不出来，
-      得在 `packages` 里点名）。
+    * **能用的第三方包就是 `PRELOAD_PACKAGES` 那一份**（numpy / scipy / pandas /
+      matplotlib / sympy / networkx，还有 `EXTRA_WHEELS` 里的 schemdraw），**全部在
+      环境准备时一次装好** —— 脚本里直接 `import` 就行，不用等下载，也不用点名。
+      （`packages` 只留给**动态导入**那种壳扫不出来的写法。）
+      **名单一律以那两个常量为准** —— 这里从前按印象抄过一份"numpy 与 scipy，
+      别的装不了"，结果 matplotlib 进了预载之后这句话还留着，模型照着它拒绝出图。
+      —— 所以这处只指名字、不再复述名单。
+    * 名单外的装不上：要编译、要系统库的（`torch` 之类）都没有。
     * **画图直接画** ✓：`plt.plot(...)` / `plt.hist(...)` 之后**不用** `savefig`、
       也不用 base64 —— 壳会把图收走贴在面板上给用户看（最多 3 张）。
-      下面这两行是踩过的坑，照抄：图里**别写中文**（这台运行时没装中文字体，
-      会变成一串豆腐块），图例与标题用英文。
+      下面这两行是踩过的坑，照抄：**图里可以写中文**（壳的环境准备里装好了一份简体宋体，
+      标题、图例、轴标签都排得出来），用**常见简体字**即可 —— 生僻字、繁体、日文假名
+      可能没有字形（那些会显示成方框）。
     * **电路图用 `schemdraw`**（本机装好了，专治"手算元件坐标"那种笨活）——
       网表式地拼：给元件与连接，它负责排版与符号。**别用 plt.plot 手画电阻**，
       那种图又难看、改一个参数就得重排。照这个骨架写：
@@ -1239,20 +1341,27 @@ def run_python(db, args, ctx=None) -> dict:  # noqa: ANN001
 
     title = str(args.get("title") or "").strip()[:80] or "Python 运行结果"
     run_id = uuid.uuid4().hex[:12]
+    # 这段是**回给模型的话**，包名单同样从常量生成（与注册表那份说明同一个来由：
+    # 名单会变、散文不会自己跟着变）。从前固定写"其中 <预载> 开箱就有；另有 <按需>
+    # —— 本机备着…"，而按需那份现在**是空的** —— 那句话会渲染成"另有  —— 本机备着"，
+    # 等于没说；更要紧的是它会让模型把"开箱就有"误解成"只有这几个"。
     note = (
         "代码已经交出去跑了，**这一次调用会等它跑完**（几毫秒到几秒）——"
         "输出会作为这次调用的结果给你，所以**拿到结果再说话**，可以直接下结论。"
         "**不要**把源码贴进正文，**也别说**「已经交进去跑了」「下一轮再看」这类话"
         "（那一轮就是现在）；更不许在没有输出的情况下声称跑出了什么。"
-        "沙箱能用的包：" + "、".join(PYODIDE_PACKAGES) + "。"
-        "其中 " + "、".join(PRELOAD_PACKAGES) + " **开箱就有**；"
-        "另有 " + "、".join(OPTIONAL_PACKAGES) + " —— 本机备着，**你的 import 用到哪个"
-        "就装哪个**（所以第一次 import 它们会多等几秒，之后现成）。"
+        "沙箱里**开箱就有**的包：" + "、".join(PRELOAD_PACKAGES) + "。"
+        + (
+            "另有本机备着、import 到才装的：" + "、".join(OPTIONAL_PACKAGES) + "。"
+            if OPTIONAL_PACKAGES
+            else ""
+        )
+        + "名单外的装不上。"
         "别用 `__import__(\"...\")` 那种动态写法（壳扫不出 import，装不上）——"
         "要这种写法就在 `packages` 里点名。"
         "**画图直接 `plt.plot(...)` 就行**：壳会把图收走贴在面板上，"
-        "不用 savefig、不用 base64；图里**别写中文**（没装中文字体，会糊成方块），"
-        "标题图例用英文。"
+        "不用 savefig、不用 base64；图里**可以写中文**（中文标题、图例、轴标签、刻度都行，"
+        "常见简体字有字形），**字体那几行也不用你写**（壳设好了，每次运行前复核）。"
     )
     if skipped:
         note += (
@@ -1501,6 +1610,26 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
         return {
             "error": f"演示太大了（{len(page)} 字，上限 {DEMO_MAX_CHARS}）—— 精简一版再看。",
             "note": "把动画逻辑压缩到最小可演示的程度，别把整份材料都塞进去。",
+        }
+
+    # **TikZ 不许塞进演示里** —— 这里排公式的是 KaTeX（`QFKit.Math`），它**不认 TikZ**：
+    # `\begin{tikzpicture}` 进去只会显示成源码或报错。实测：用户说"再来几张 tex 图"，
+    # 模型把三张 `\begin{tikzpicture}` 包进 `QFKit.Math` 交上来 —— 图**全是坏的**，
+    # 而正文里明明有真 TeX 引擎可以编它们（`$$…$$`）。
+    #
+    # 为什么这里硬拦、不只写进提示词：这件事它已经做错过一次，而错法的代价是
+    # "看着像演示、其实图是空的"。拒掉 + 说清出路，比再求一遍可靠。
+    tikz = re.search(r"begin\{(tikzpicture|axis|tikzcd|circuitikz)\}", page)
+    if tikz:
+        return {
+            "error": (
+                "这份 html 里有 TikZ（`\\begin{" + tikz.group(1) + "}`），而演示里的公式是 "
+                "KaTeX 排的 —— **它不认 TikZ**，放进来只会显示成源码或报错。"
+                "TikZ / pgfplots / tikz-cd / circuitikz 的图请**直接写在正文里**："
+                "用 `$$` 包起来（`$$\\begin{tikzpicture}…\\end{tikzpicture}$$`），"
+                "正文里的图由**真的 TeX 引擎**编译，一张消息里可以放好几张。"
+                "演示里真要画图就用 d3 / SVG / Canvas 自己画。"
+            )
         }
 
     if not _demo_kit_ready():
@@ -3080,22 +3209,35 @@ REGISTRY = {
         "access": "exec",
         "group": "sandbox",
         "fn": run_python,
+        # 包名单**按常量生成，一个字都别写死**。从前的原文是"固定一个子集：numpy 与
+        # scipy；别的装不了 —— 没有 pandas、没有 matplotlib（要图就用 render_demo 写 JS）"，
+        # 而 matplotlib 早就进了预载。后果实测过一次：用户说"用一下 matplotlib"，
+        # 模型照着自己那段过期的话回答"沙箱里没有 matplotlib，装不了别的东西"，
+        # 明明能画也不画了。**名单会变，散文不会自己跟着变** —— 所以这里 join 常量。
         "description": "在沙箱里**真跑**一段 Python（Pyodide：浏览器里跑 CPython）。"
         "用户说「跑一段脚本」「算一下」「验证一下这个算法」「试试这段代码」时**直接用它**，"
         "不要推辞、也不要让他自己去写页面。只给核心逻辑，用 print 出结果 —— "
         "样板（加载运行时、接 stdout、显示报错）由工具负责。"
-        "标准库 + **固定一个子集：numpy 与 scipy**（本机现成，不必点名，"
-        "面板开头会报出实际版本）；别的装不了 —— 没有 pandas、没有 matplotlib"
-        "（要图就用 render_demo 写 JS）、没有文件系统与网络。\n"
+        "**本机就有的包（开箱即用，不必点名）**：" + "、".join(PRELOAD_PACKAGES) + "；"
+        "别的装不了（要编译、要系统库的没有；也没有文件系统与网络）。"
+        "面板开头会报出实际版本。\n"
+        "**要画图就直接 `import matplotlib.pyplot as plt` 再 `plt.plot(...)`** —— "
+        "壳会把图收走贴在面板上，**不用** `savefig`、不用 base64（最多 3 张）；"
+        "图里**可以写中文**（壳里装好了一份简体宋体，标题、图例、轴标签、刻度都排得出来；"
+        "用常见简体字，生僻字与日文假名可能没字形）。"
+        "**字体那几行你不用写** —— `font.sans-serif`、`axes.unicode_minus`、`mathtext.*`"
+        "（对数轴的 `10^-1` 归 mathtext 管，是另一套字体栈）壳都设好了，"
+        "而且**每次运行前都会复核一遍**；你在脚本里再写一遍没用也多余，画就是了。"
+        "**电路图用 `schemdraw`**（网表式地拼元件与连接，别拿 plt 手画电阻）；"
+        "**推导用 `sympy`**。\n"
         "面板底部会把时间分成三段报出来（运行时 / 依赖 / 代码）。"
         "**scipy 的子模块（signal、optimize 这些）第一次 import 要 1–2 秒** —— "
         "那是它的固有成本，不是沙箱慢；跟他说清楚，别让他以为是环境有问题。\n"
-        "**你看不到运行输出** —— 它落在面板上（沙箱在 iframe 里，输出不进你的上下文）。"
-        "所以不要说「跑出来了，结果是 X」：那是编的，实测发生过（声称 numpy 可用，"
-        "面板上却是 No module named 'numpy'）。"
-        "你只需说清写这段在验证什么。**输出会自动回填到那条消息上**（界面上直接显示），"
-        "并且**在你下一轮说话时进你的上下文** —— 所以不要让他复制粘贴、也不要问他"
-        "「结果是什么」，下一条消息你自己就能看到。",
+        "不要说「跑出来了，结果是 X」这种编的话 —— 实测发生过：声称 numpy 可用，"
+        "面板上却是 No module named 'numpy'。你只需说清写这段在验证什么。"
+        "**输出会自动回填到那条消息上**（界面上直接显示），并且**在你下一轮说话时"
+        "进你的上下文** —— 所以不要让他复制粘贴、也不要问他「结果是什么」，"
+        "下一条消息你自己就能看到。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -3104,8 +3246,9 @@ REGISTRY = {
                 "packages": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "一般不用填（numpy / scipy 默认就装好了）。"
-                    "只有确实需要额外包时才列，且必须在名单内 —— 名单外的会被剔除并告知。",
+                    "description": "一般不用填 —— 上面那份名单都开箱即用。"
+                    "只有确实需要名单里的包、又是动态导入（`__import__`）时才列，"
+                    "且必须在名单内 —— 名单外的会被剔除并告知。",
                 },
             },
             "required": ["code"],
@@ -3117,7 +3260,17 @@ REGISTRY = {
         "fn": render_demo,
         "description": "产出一个**能动的演示**（跑在沙箱 iframe 里）。"
         "机制里有空间/时间结构时用它：数据怎么流、怎么切、怎么重叠、流水线怎么排、瓶颈在哪 —— "
-        "一张能动的图胜过三段文字。**不要**用它讲定义、结论或代码逐行解释；要跑 Python 用 run_python。\n"
+        "一张能动的图胜过三段文字。"
+        # 分工写清楚：用户说"用一下 matplotlib"时，模型从前会把它推到这里来（因为那份
+        # 说明里写着"没有 matplotlib"）。静态的图归 run_python，这里留给要动的。
+        "**静态的图不要用这里**：函数曲线、直方图、多组数据对比、频谱 —— 用 `run_python` "
+        "里的 matplotlib（`plt.plot(...)` 一行就出图，还能直接写中文标题与轴标签）。"
+        "**TikZ 与 pgfplots 更不要放这里** —— 演示里的公式是 **KaTeX** 排的，它**不认 TikZ**："
+        "`\\begin{tikzpicture}` / `axis` / `tikzcd` / `circuitikz` 放进去只会显示成源码或报错"
+        "（这个工具会**当场拒掉**）。那类图一律写在**正文的 `$$`** 里，它们由真 TeX 引擎编。"
+        "演示里真要画图，用 d3 / SVG / Canvas 自己画。"
+        "**不要**用它讲定义、结论或代码逐行解释；要跑 Python 用 run_python。**除非**用户就是"
+        "想看它动起来（数据怎么流、状态怎么变）。\n"
         "**沙箱里已经备好一套前端套件，由服务端自动注入 —— 你不要写任何 `<script src>`，"
         "也不要引 CDN。** 可用的是：React 18 + JSX（写在 `<script type=\"text/babel\">` 里）、"
         "htm、d3 v7、Tailwind，以及 `window.QFKit`：\n"

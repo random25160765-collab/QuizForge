@@ -299,6 +299,17 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
         shutil.copy2(src, fonts_out / src.name)
         font_count += 1
 
+    # 沙箱里的中文（matplotlib 画中文标题/图例）：它**不认 woff2**，所以要一份 TTF
+    # （同一份 Arphic 宋体、同样的码点范围，只是没压缩，见 api/app/tools.py 里那段）。
+    #
+    # 放 `assets/fonts/` 不是随手一放：`main.py` 只给这条路径开了 CORS，而沙箱是
+    # 「不透明源」的独立文档、它的 fetch 会被 CORS 拦（实测：origin 'null' 被拒）。
+    # 也**只往这里放一份** —— 正文里的图用 woff2（1.33MB），这份 4.3MB 只给沙箱取。
+    cjk_dir = ROOT / "vendor" / "cjk"
+    for src in sorted(cjk_dir.glob("*.ttf")) if cjk_dir.is_dir() else []:
+        shutil.copy2(src, fonts_out / src.name)
+        font_count += 1
+
     # 语法高亮：到位就优先用它（手写那份留在 theme/runtime/highlight.js 兜底）
     hljs_out = assets / "hljs.min.js"
     hljs_ready = (VENDOR_HLJS / "highlight.min.js").is_file()
@@ -376,9 +387,20 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     tikz_src = ROOT / "vendor" / "tikzjax"
     if tikz_src.is_dir():
         tikz_out = assets / "tikzjax"
-        # **先清空**：换了引擎之后，上一份的载荷会留在产物里（只覆盖同名文件，
-        # 结果是 27M 里躺着 20M 没用的旧文件 —— 实测踩过）
-        shutil.rmtree(tikz_out, ignore_errors=True)
+        # **把过期的删掉**。这条的本意一直是"别让上一份的载荷留在产物里"（只覆盖同名文件
+        # 的话，27M 里能躺着 20M 没用的旧文件 —— 实测踩过），从前写成"先整棵清空"。
+        #
+        # 为什么改成"只删过期的"：清空是**一次删掉几百上千个**，会撞上本机的批量删除守卫
+        # （一次 500 个就中止，`make web` 直接 Error 1 —— 实测：加了中文字体与 CJK 宏包
+        # 之后 743 个）。而真正该删的只是"产物里有、源里没有"的那一小撮，数量天然就小。
+        wanted = set()
+        for src in tikz_src.rglob("*"):
+            if src.is_file():
+                wanted.add(str(src.relative_to(tikz_src)))
+        if tikz_out.is_dir():
+            for old in sorted(tikz_out.rglob("*")):
+                if old.is_file() and str(old.relative_to(tikz_out)) not in wanted:
+                    old.unlink()
         copied = 0
         for src in sorted(tikz_src.rglob("*")):
             if src.is_file():

@@ -28,11 +28,25 @@ def _build_info() -> dict:
     """读产物根下的 `build.json`（没有就如实说没有，不编一个）。"""
     path = get_settings().web_dir / "build.json"
     if not path.is_file():
-        return {"stamp": "", "detail": "还没有构建信息（先 make web）"}
+        info: dict = {"stamp": "", "detail": "还没有构建信息（先 make web）"}
+    else:
+        try:
+            info = {"stamp": "", **json.loads(path.read_text(encoding="utf-8"))}
+        except ValueError:
+            info = {"stamp": "", "detail": "build.json 读不出来"}
+
+    # 再补一条**运行时**指纹：常驻 Python 壳那份页面（`tools.shell_page()`，服务端现渲染）。
+    # `build.json` 只管 `make web` 的产物 —— 改 shell 模板（例如给沙箱装中文字体）时
+    # 构建戳不会变，前端只看它就不会刷新，于是一整页都停在**旧壳**里（实测踩过：
+    # 用户以为中文装好了，模型在旧壳里跑出"没有中文字形"，回答"这台机器画不出汉字"）。
+    # 指纹取不到也不该影响 /build —— 所以吞掉异常，只报空串。
     try:
-        return {"stamp": "", **json.loads(path.read_text(encoding="utf-8"))}
-    except ValueError:
-        return {"stamp": "", "detail": "build.json 读不出来"}
+        from ..tools import shell_stamp
+
+        info["shell"] = shell_stamp()
+    except Exception:  # noqa: BLE001
+        info["shell"] = ""
+    return info
 
 
 @router.get("/build")

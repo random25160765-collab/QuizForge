@@ -761,6 +761,19 @@
     watchBuild.timer = setInterval(function () {
       if (document.visibilityState !== 'visible') return;
       api.get('/build').then(function (info) {
+        /* 除了"这一页的构建戳"，还要盯**常驻 Python 壳**的指纹。
+           壳的页面由服务端现渲染（`tools.shell_page()`），它的环境准备里装着要装一次的
+           东西（matplotlib、中文字体）—— 而改服务端**不会**动 `make web` 的构建戳。
+           只盯构建戳的话：改了壳模板 → 页面不刷新 → 页面里的壳还是旧的 → 实测就是这样
+           绕了一圈（用户以为中文装好了，壳里跑出来"一个中文字形都没有"，模型很诚实地
+           回答"这台机器画不出汉字"）。基准值来自建壳那一刻（chat.js 写在
+           `data-qf-shell` 上）；没建过壳的页面没有它，就跳过这一条。 */
+        var shellMine = document.documentElement.getAttribute('data-qf-shell') || '';
+        var shellTheirs = (info && info.shell) || '';
+        if (shellMine && shellTheirs && shellTheirs !== shellMine && !busyEditing()) {
+          location.reload();
+          return;
+        }
         var page = (QF.config && QF.config.page) || '';
         var theirs = ((info && info.pageStamps) || {})[page] || '';
         if (!theirs || theirs === mine || busyEditing()) return;
