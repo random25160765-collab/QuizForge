@@ -421,6 +421,59 @@
   }
 
   /**
+   * 把引擎**不认的写法**就地改对（两种改法都在实验室里逐条验过），而不是让它整张失败。
+   *
+   * 两处都是"模型写得很自然、这台引擎却吃不下"的：
+   *
+   * 1. **`shader=interp`**（曲面按高度插值上色）。这台引擎的 pgf 驱动是 `pgfsys-ximera.def`，
+   *    不支持函数式着色，实测报 `! Package pgfplots Error: … (shader=interp) is NOT available
+   *    for the selected driver`，整张图直接没有。**摘掉它**之后 `surf` 用默认的面片着色，
+   *    曲面照旧出来（少了渐变，形状与网格都在）。**代价说清楚**：图与"按高度上色"那句说明
+   *    不再对应 —— 所以提示词里仍然明写"不许写 `shader=interp`"，这里只是兜底。
+   *
+   * 2. **`symbolic x coords={取指, 译码, …}`**（分类轴的键是中文）。那些键是 pgfplots 要
+   *    **解析**的，而中文在这台引擎上是"活动字符"（CJK 靠它映字形；e-TeX 只有 8 位，绕不开），
+   *    两者冲突，实测报 `! Extra \else. \pgf@plotstreampoint …`（报在 pgf 内核宏上）。
+   *    **改法**：键换成 ASCII（`k1, k2, …`）、数据点里的键跟着换、中文挪进 `xticklabels`
+   *    （那是**排版**出去的，不参与解析）—— 实测出图正常，刻度上就是原来的中文。
+   *
+   * 两处都**先看有没有必要**（没写 interp、坐标里没中文就原样返回），所以绝大多数图一个字符都不动。
+   */
+  function rewriteUnsupported(tex) {
+    var src = String(tex == null ? '' : tex);
+
+    // 1) shader=interp：摘掉（连它前面的逗号一起，免得留下 `[surf, , ]` 这种）
+    if (/shader\s*=\s*interp/.test(src)) {
+      src = src.replace(/\s*,?\s*shader\s*=\s*interp\b/g, '');
+    }
+
+    // 2) 中文的分类轴键
+    var m = src.match(/symbolic\s+x\s+coords\s*=\s*\{([^}]*)\}/);
+    if (m && CJK_CHAR.test(m[1])) {
+      var labels = m[1].split(',').map(function (one) {
+        return one.trim();
+      });
+      var keys = labels.map(function (_one, i) {
+        return 'k' + (i + 1);
+      });
+      // 数据点里的键先换（此刻 `symbolic x coords` 里还是中文，改它不影响）
+      labels.forEach(function (label, i) {
+        if (!label) return;
+        var esc = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        src = src.replace(new RegExp('\\(\\s*' + esc + '\\s*(?=[,)])', 'g'), '(' + keys[i]);
+      });
+      // 再换声明本身，并把中文交给 xticklabels（模型自己写过就不重复写）
+      var hasLabels = /xticklabels\s*=/.test(src);
+      src = src.replace(
+        /symbolic\s+x\s+coords\s*=\s*\{[^}]*\}(\s*,)?/,
+        'symbolic x coords={' + keys.join(', ') + '},' +
+          (hasLabels ? '' : '\n  xticklabels={' + labels.join(', ') + '},')
+      );
+    }
+    return src;
+  }
+
+  /**
    * 摘掉模型误写在图里的**前言命令**（`\usepackage` / `\documentclass` / `\begin{document}` …）。
    *
    * 提示词里明说过"不必也不能自己写 `\usepackage`"，但它偶尔还是写。后果很硬：
@@ -449,7 +502,7 @@
     //
     // 兜底仍然在：引擎自己有 15 秒的渲染时限，超时就出 `tikzjax-broken`，
     // 于是"排不出来"表现为**一句明确的失败**，不是无限卡住（实测如此）。
-    tex = withCJK(stripPreamble(tex));
+    tex = withCJK(rewriteUnsupported(stripPreamble(tex)));
     return new Promise(function (resolve, reject) {
       queue.push({
         tex: tex,
@@ -518,8 +571,11 @@
     if (/feynhand/.test(src)) {
       return "这台引擎没有 tikz-feynhand：费曼图请用 TikZ 手画（`\\draw` + 顶点）。";
     }
-    if (/\\begin\\s*\\{\\s*(tikzcd|CD)\\s*\\}/.test(src)) {
-      return "这段 tikzcd 用了它不支持的选项（`phantom`、`very near start` 这类装饰性写法最容易中招）。";
+    /* 这里的正则**别再写双反斜杠**了：`\\s` 在正则里是"一个反斜杠后跟字母 s"，
+     * 不是"空白" —— 上一版这条就写成了 `/\\begin\\s*\\{…/`，于是**永远匹配不到**，
+     * 用户那段 tikzcd 拉回图拿到的是最笼统的兜底文案（实测：模型与用户都看不出所以然）。 */
+    if (/\\begin\s*\{\s*(tikzcd|CD)\s*\}/.test(src)) {
+      return "这段 tikz-cd 用了它不支持的写法（`phantom`、`very near start` 这类装饰最容易中招）。";
     }
     return "多半是用了它不支持的宏包或装饰性选项 —— 把写法简化一下再试。";
   }
