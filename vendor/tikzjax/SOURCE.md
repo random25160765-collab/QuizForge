@@ -123,3 +123,43 @@ xticklabels={取指, 译码, 执行},   % 中文放这儿：它是"排版"出去
 * 回归验过（实验室）：两张原话 ✓、pgfplots 三曲线 ✓、tikz-cd ✓、中文图 ✓、circuitikz ✓。
 * 两边分工别混：**正文里的矩阵走 KaTeX**（瞬间，见上面那条）；**图里节点里的矩阵**才需要
   amsmath。用户这两张是后者。
+
+## 静默预装与冷启动（2026-09-26）
+
+用户："把要用的宏包都给它静默预装好，不要再出现类似问题了！！冷启动延迟给它藏起来"。
+
+**宏包口径**
+
+* 前言现在装的是：`amsmath` `amssymb` `bm` `mathtools` `circuitikz` `amscd` `tikz-cd`
+  `pgfplots` `CJK`，加 `\usetikzlibrary{positioning,calc,fit,arrows.meta,matrix}`。
+  **故意不预载更多 TikZ 库**：库文件齐了之后 `\usetikzlibrary{…}` 本来就能成，预载只是把
+  成本加到**每一批**的编译上 —— 不划算。
+* 库文件**按名字对齐过** pgf 的完整清单（85 个名字）：只差 `luamath`（要 Lua）与
+  `tikzexternalshared`（内部用），两个在这儿都用不上 —— 也就是说模型想用哪个库，文件都在。
+  本机没有 TeX，成品 `.sty` 一律从 **TeX Live 包**里取
+  (`/CTAN/systems/texlive/tlnet/archive/<包>.tar.xz`)；CTAN 的目录包只有 `.dtx`/`.ins`。
+* 实测（实验室逐条）：`shapes.geometric`、`decorations.pathreplacing`、`patterns`、`topaths`、
+  `\usepgfplotslibrary{fillbetween}`、`\mathbb`、`\bm`、`\coloneqq` 全 ✓；前言成本也量过 ——
+  基线极小图与逐项**分不出差别**（都是 2.5s 量级，那是实验室页面自身的开销）。
+* **兜住一种"整死一张图"的写法**：模型偶尔会自己写 `\usepackage{…}`，TeX 报
+  `! LaTeX Error: Can be used only in preamble.`，整张图没了（实测确认）。现在
+  `latex.js` 的 `stripPreamble()` 会在编译前把那几行（`\usepackage` / `\documentclass` /
+  `\begin{document}` / `\end{document}`）摘掉：真要前言里没有的包，摘掉后会以
+  "未定义的控制序列"报出来 —— 那才是准确信号。实测：带 `\usepackage{amsmath}` 的图现在正常出图 ✓。
+
+**冷启动怎么藏的**：`prewarm()` 原来只在页面空闲时跑（最多 3 秒后）。现在**三处触发**：
+用户第一次 `pointerdown`/`keydown`、聊天那边**发出消息**那一刻（`chat.js` 的 `onSendClick`）、
+以及原来的空闲时机。三处幂等，也都在计费/2G 网络下自己退出。
+实测：**"发出消息"到引擎备好 = 3.5 秒** —— 而模型的思考时间就是这个量级，于是第一张图不再吃
+那 5.4 秒的冷启动。
+
+**两个被证伪的猜想**（记下来，免得下次再追）：
+
+* "工位放在屏幕外（`left:-10000px`）会被浏览器降频" —— 从外面把工位挪进视口（透明）再量，
+  同一张图 0.58s vs 0.59s，**没有差别**。
+* "每张图都套 `\begin{CJK}` 是那多出来的 1.6 秒" —— `withCJK` 本来就**只在含中文时才套**
+  (`if (!CJK_CHAR.test(text)) return text;`)，ASCII 图根本没套。
+
+**仍未解释的一处**（照实记）：同样一张极小图，在应用的热工位上量到 **2.2 秒**，在实验室量到
+**151ms**；而这个差异有时又消失（同一天另一次量到 **0.6 秒/张**）。引擎在应用那个上下文里
+有时会多花约 1.5 秒，原因尚未定位。缓存命中时是 **1ms**，所以**重复出现的图不受影响**。

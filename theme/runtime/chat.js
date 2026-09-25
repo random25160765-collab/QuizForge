@@ -8956,6 +8956,11 @@
       if (state.controller) state.controller.abort();
       return;
     }
+    // **发出消息这一刻就把图表的引擎热起来。** 引擎第一次要跑 WASM + 载入格式（实测冷启动
+    // 约 3~5 秒，第一张图因此要等 5.4 秒）；而模型思考几秒才吐出第一张图 —— 这段时间正好
+    // 把它用掉，用户那边看到的就是"一来就有图"。`prewarm` 幂等，且计费/2G 网络下会自己退出，
+    // 所以这里不必判断。
+    if (window.QF && QF.latex && QF.latex.prewarm) QF.latex.prewarm();
     send({ content: inputEl.value });
   }
 
