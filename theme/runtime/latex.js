@@ -420,6 +420,25 @@
     return '\\begin{CJK}{UTF8}{gbsn}\n' + text + '\n\\end{CJK}';
   }
 
+  /**
+   * 摘掉模型误写在图里的**前言命令**（`\usepackage` / `\documentclass` / `\begin{document}` …）。
+   *
+   * 提示词里明说过"不必也不能自己写 `\usepackage`"，但它偶尔还是写。后果很硬：
+   * TeX 报 `! LaTeX Error: Can be used only in preamble.` —— **整张图**没了
+   * （实验室实测确认：一张本该正常的极小图，前面多一行 `\usepackage{amsmath}` 就编不出来）。
+   *
+   * 而这些句子十有八九是"它以为要装的包"，前言里其实早装好了（amsmath、amssymb、bm、
+   * mathtools、pgfplots、tikz-cd、circuitikz、CJK …）。所以**替它摘掉**比让它整张失败好：
+   * 真要是前言里没有的包，摘掉之后会以"未定义的控制序列"报出来 —— 那才是准确的信号，
+   * 而且能看出来缺的是哪个命令。
+   */
+  function stripPreamble(tex) {
+    return String(tex == null ? '' : tex)
+      .replace(/\\documentclass(\[[^\]]*\])?\{[^}]*\}/g, '')
+      .replace(/\\usepackage(\[[^\]]*\])?\{[^}]*\}/g, '')
+      .replace(/\\(begin|end)\s*\{\s*document\s*\}/g, '');
+  }
+
   /** 画一张（异步）。一批里的图合成一次编译。 */
   function render(tex) {
     // 中文原来在这里被**拦下**：那时候引擎没有中文字形，TeX 会停在交互提示上（CPU 0%、
@@ -430,7 +449,7 @@
     //
     // 兜底仍然在：引擎自己有 15 秒的渲染时限，超时就出 `tikzjax-broken`，
     // 于是"排不出来"表现为**一句明确的失败**，不是无限卡住（实测如此）。
-    tex = withCJK(tex);
+    tex = withCJK(stripPreamble(tex));
     return new Promise(function (resolve, reject) {
       queue.push({
         tex: tex,
@@ -591,6 +610,14 @@
 
   /* 静默常备：页面空闲（或最多 3 秒后）先热一遍。这里只负责"什么时候"，
    * "要不要"由 `prewarm` 自己判（计费网络、重复调用都在它那儿挡掉）。 */
+  /* 再挂两处**更早**的时机：用户第一次碰页面（pointerdown / keydown）—— 那一刻首屏那些
+   * 忙活已经过去，人却还要打字；以及聊天那边"发出消息"时直接调（见 `chat.js` 的
+   * `onSendClick`）—— 模型的思考时间几秒起，正好够引擎把冷启动做完。
+   * 三处都幂等（`prewarmed` 挡着），也都过 `prewarm` 里那道计费/2G 判断。 */
+  ['pointerdown', 'keydown'].forEach(function (ev) {
+    window.addEventListener(ev, prewarm, { once: true, passive: true });
+  });
+
   if (typeof window.requestIdleCallback === 'function') {
     window.requestIdleCallback(prewarm, { timeout: 3000 });
   } else {
