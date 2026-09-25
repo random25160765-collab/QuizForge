@@ -540,7 +540,12 @@
     // 含图的正文**不进缓存**：缓存存的是 innerHTML，而图是异步填进去的 ——
     // 缓存下来就等于把"正在编译…"那个占位存死了。（注意：这句在本文件里有**两处**
     // —— 这里只改 `render()` 里那处，别把 `renderInto` 的也改了。）
-    var cacheable = (!options || !options.macros) && !/\\begin\s*\{/.test(source);
+    // 判据与"谁来排这段数学"同一处（`QF.latex.kind`）：走引擎的图**不能**缓存
+    //（它们是异步换上去的占位符），而走 KaTeX 的公式是**同步**的，能缓存。
+    // 从前这里写的是"只要有 `\begin{` 就不缓存" —— 于是连一条全是矩阵的消息也进不了缓存
+    //（那些矩阵现在由 KaTeX 排，秒出、稳定，没有任何理由不缓存）。
+    var cacheable =
+      (!options || !options.macros) && !(window.QF && QF.latex && QF.latex.kind(source));
 
     if (cacheable) {
       var hit = cachedHtml(source);
