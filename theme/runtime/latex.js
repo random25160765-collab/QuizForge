@@ -189,6 +189,12 @@
      *     原话就是 `TikZJax rendering failed: TikZJax: TeX did not produce input.dvi.`）。
      * 三条都能从收到的那条日志上当场认出来；认到就不必再等看门狗（用户："平均出一张图要几分钟"）。 */
     if (/did not produce input\.dvi|!\s*Emergency stop|\bEnd of file on the terminal\b/.test(text)) sawStop = true;
+    /* **把 TeX 那句 `! …` 单独留住。** 一张图的日志里，前言（我们预载的那二十个库）就能吃掉
+     * 几千字，而真正那句报错在**很后面** —— 只靠滚动缓冲的话，它会被 preamble 的噪声挤出去
+     * （实测：文案里于是只剩 `TikZJax … did not produce input.dvi` 这个没信息量的开头，
+     * 外加我的猜测）。见到 `! 开头的一句话` 就单独记下来，文案优先用它。 */
+    var bang = text.match(/!\s[^!\n]{4,200}/);
+    if (bang) lastBang = bang[0].replace(/\s+/g, ' ').trim();
     var joined = lastError ? lastError + ' ' + text : text;
     lastError = joined.length > 4000 ? joined.slice(-4000) : joined;
   });
@@ -251,6 +257,9 @@
   /** 这一批里**已经看见过** "TeX 停死"（`! Emergency stop` / `End of file on the terminal`）。
    * 逐条日志进来时当场认（`lastError` 会被后面的日志覆盖，不能只靠事后去里面找）。 */
   var sawStop = false;
+  /** 这一批里见到的**第一句** `! …`（TeX 的报错原文）。单独留是因为：一张图的日志里前言
+   * 就有几千字，滚动缓冲装不下全部，而最有用恰恰是那句报错。 */
+  var lastBang = '';
 
   /**
    * 把一个批次交给引擎。
@@ -268,6 +277,7 @@
     timer = 0;
     lastError = '';
     sawStop = false;
+    lastBang = '';
     if (!items.length) return;
 
     var doc;
@@ -379,11 +389,17 @@
               .trim();
             var mark = why.match(/!\s[^!]{4,180}/);
             if (mark) why = mark[0].trim();
+            // 单独留的那句优先（它一定是最有用的那句，见 `lastBang` 的说明）
+            if (lastBang) why = lastBang;
+            /* **引擎的原话放最前面。** 从前是"猜测 + 引擎原话"，而那句 `! …` 被
+             * `slice(0, 200)` 一截就没了 —— 于是用户（和模型）看到的全是我的猜测
+             * （实测：一张没有 `phantom` 的 tikz-cd 图，文案里却在说 `phantom` 最容易中招）。
+             * 现在反过来：真话在前，猜测垫后。 */
             one.fail(
               new Error(
                 '引擎编不出这段 LaTeX：' +
-                  whyFailed(one.tex) +
-                  (why ? '：' + why.slice(0, 200) : '（引擎没报原因）')
+                  (why ? why.slice(0, 200) + ' —— ' : '（引擎没报原因）') +
+                  whyFailed(one.tex)
               )
             );
           }
@@ -517,6 +533,19 @@
    */
   function rewriteUnsupported(tex) {
     var src = String(tex == null ? '' : tex);
+
+    /* 0) **引号标签里的 `!`**（tikz-cd / TikZ 的 `"…"` 标签）。
+     *
+     * 实测（用户的"极限的通用锥"那张图，实验室逐条二分）：
+     *   `"\exists!\,u"`      ✗ `! Missing character: There is no \" in font nullfont`
+     *                        （那个 `"` 被当成了**元音变音符** `\accent 21` —— 引号标签被
+     *                          解析成了别的东西，`!` 后面跟 `\,` 是触发条件）
+     *   `"\exists!u"`        ✓     `"\exists\,u"`  ✓ **单独都没事**
+     *   `"\exists{!}\,u"`    ✓     ← 把 `!` 用花括号裹起来即可
+     * 所以：**引号标签里的 `!` 一律裹成 `{!}`**（对本来就能过的写法无害，实测 C 那条 ✓）。 */
+    src = src.replace(/"(?:[^"\\\n]|\\.)*"/g, function (label) {
+      return label.replace(/!/g, '{!}');
+    });
 
     // 1) shader=interp：摘掉（连它前面的逗号一起，免得留下 `[surf, , ]` 这种）
     if (/shader\s*=\s*interp/.test(src)) {
@@ -688,6 +717,19 @@
     /* 这里的正则**别再写双反斜杠**了：`\\s` 在正则里是"一个反斜杠后跟字母 s"，
      * 不是"空白" —— 上一版这条就写成了 `/\\begin\\s*\\{…/`，于是**永远匹配不到**，
      * 用户那段 tikzcd 拉回图拿到的是最笼统的兜底文案（实测：模型与用户都看不出所以然）。 */
+    /* **tikz-cd 里"跨两行以上的箭头"**（`dd` / `rr` 这类）会和标签解析打架，报的是
+     * `! Missing character: There is no \" in font nullfont`（那个 `"` 被当成了元音变音符
+     * `\accent 21`）。实测（用户的"极限的通用锥"）：同一张图**去掉那支 `\arrow[dd, dashed, "…"]`
+     * 就正常出图**；把标签里的 `!` 裹成 `{!}`、把 `\ell` 换成 `l` **都没用** —— 我照小布局二分时
+     * 误判过一次，这条是按**完整那张**复核定下的。改不动（不能替他把一支箭头拆成两支），
+     * 所以文案直说怎么改。 */
+    if (/\\arrow\s*\[[^\]]*\b(d{2,}|u{2,}|l{2,}|r{2,})\b/.test(src)) {
+      return (
+        "这段 tikz-cd 里有**跨两行/两列**的箭头（`dd`、`rr` 这类）—— 实测这种箭头会与标签解析" +
+        "打架（报 `! Missing character: There is no \" in font nullfont`，那个引号被当成了元音变音符）。" +
+        "改成**两条接力**的箭头（例如 L→B、B→D 各一条），或者改用 TikZ 手画。"
+      );
+    }
     if (/\\begin\s*\{\s*(tikzcd|CD)\s*\}/.test(src)) {
       return "这段 tikz-cd 用了它不支持的写法（`phantom`、`very near start` 这类装饰最容易中招）。";
     }
