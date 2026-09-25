@@ -100,3 +100,21 @@ xticklabels={取指, 译码, 执行},   % 中文放这儿：它是"排版"出去
 **另记一笔：应用听不到引擎的报错。** 引擎把 TeX 日志打在 **worker 的 console** 里，
 而应用钩的是 iframe 的 console —— 于是"引擎判死"时应用只能等看门狗（90 秒）。
 `whyFailed` 现在也接在看门狗那条路上，至少让"卡住"这句带上按源码能判出来的原因。
+
+## 图里的矩阵：`amsmath` 进前言（2026-09-26）
+
+用户那两张 Jordan 分解图（节点里写 `$J=\begin{pmatrix}…\end{pmatrix}$`）编不出来。
+实验室里报的是 **`! Misplaced alignment tab character &`** —— 根因**不是那两张图的写法**，
+而是**引擎前言里没有 `amsmath`**：`pmatrix` / `bmatrix` / `matrix` / `cases` / `aligned`
+全在它里面；缺了它，`&` 就成了"对齐符之外的裸字符"。
+
+* 前言原件（`run-tex.js`）装的是 `circuitikz` / `amscd` / `tikz-cd` / `pgfplots` / `CJK`
+  + `\usetikzlibrary{positioning,calc,fit,arrows.meta,matrix}` —— **没有 amsmath**。
+  注意别被 `amscd` 骗了：那是引擎**格式里**那份，不代表 amsmath 在。
+* 装法：从 **TeX Live 的成品包**取（`/CTAN/systems/texlive/tlnet/archive/amsmath.tar.xz`；
+  CTAN 的目录包只有 `.dtx`/`.ins`，本机没有 TeX，生不成 `.sty`），把 `amsmath.sty`、
+  `amstext.sty`、`amsbsy.sty`、`amsopn.sty`、`amsgen.sty` 平铺 gzip 进 `tex_files/`；
+  并在前言**最前面**加 `\usepackage{amsmath}`（它要早于别的包）。
+* 回归验过（实验室）：两张原话 ✓、pgfplots 三曲线 ✓、tikz-cd ✓、中文图 ✓、circuitikz ✓。
+* 两边分工别混：**正文里的矩阵走 KaTeX**（瞬间，见上面那条）；**图里节点里的矩阵**才需要
+  amsmath。用户这两张是后者。

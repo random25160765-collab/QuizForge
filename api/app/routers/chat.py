@@ -180,6 +180,11 @@ VOICE = (
     "**别为了排公式去画图**（实测：五张矩阵图各花两秒多，而同样五张矩阵交给 KaTeX 是瞬间的事）。"
     "矩阵只有一条要点：**写在数学环境里**（列间 `&`、行间 `\\\\`）；`\\bordermatrix` 没有，"
     "要给矩阵加行列标签就用 `array` 配 `\\overbrace`/`\\underbrace`。"
+    # 2026-09-26：用户那两张 Jordan 分解图挂在这儿 —— 节点里写 pmatrix，而引擎前言当时
+    # **没有 amsmath**（报 `! Misplaced alignment tab character &`）。现在前言里装上了
+    # （`amsmath` 放在最前），所以这句是实话，也就该说一声：免得它因为"以前编不出来"而绕。
+    "**图里的节点也可以写矩阵**（`pmatrix`/`bmatrix`/`cases`/`aligned` 都认，引擎前言里有 "
+    "`amsmath`）—— 所以分块结构图那种，直接在 TikZ 节点里写 `$J=\\begin{pmatrix}…\\end{pmatrix}$` 就行。"
     "**只有真正的图形/图表**（TikZ 示意图、pgfplots 坐标图、circuitikz、tikz-cd）"
     "才走**真的 TeX 引擎**（TikZJax）—— 那是**每张 2 秒起**的编译："
     "`\\draw`、`\\node`、`child`、`matrix`、样式指令都认；"
