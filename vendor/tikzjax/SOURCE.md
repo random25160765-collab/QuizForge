@@ -97,9 +97,55 @@ xticklabels={取指, 译码, 执行},   % 中文放这儿：它是"排版"出去
 数据点相应写 `(A,2)`。实测这样出图正常（实验室与应用都验过）。提示词里已写明
 （`api/app/routers/chat.py`），失败文案里也会指出（`latex.js` 的 `whyFailed`）。
 
-**另记一笔：应用听不到引擎的报错。** 引擎把 TeX 日志打在 **worker 的 console** 里，
-而应用钩的是 iframe 的 console —— 于是"引擎判死"时应用只能等看门狗（90 秒）。
-`whyFailed` 现在也接在看门狗那条路上，至少让"卡住"这句带上按源码能判出来的原因。
+**另记一笔：应用听不到引擎的报错，根因不是 Worker（这句以前写错了，2026-09-26 纠正）。**
+
+从前这里写的是"引擎把 TeX 日志打在 **worker 的 console** 里"。**不对**：整个仓库里
+**没有任何 `new Worker`** —— 引擎根本不用 Worker。真相是：
+
+* 引擎确实把 `! …` 打在 console 里（证据：playwright 的 `console-*.log` 里躺着
+  `! Package pgfkeys Error: I do not know the key '/tikz/state'`）。
+* 而应用的钩子挂在**错的 window 上**：`ensureFrame()` 只在 iframe 刚建好时挂一次
+  （那时还是 `about:blank`），可 `fresh()` 是给同一个 iframe 设 **`srcdoc`** —— 那是
+  **一次导航**，新文档 + **新 window 对象**，旧 patch 跟着旧 window 一起没了。
+  于是 `lastError` 永远是空，用户看到"（引擎没报原因）"，而 `settle` 里那道
+  "TeX 已经停死就立刻结账"（认 `! Emergency stop` / `End of file on the terminal`）
+  **永远不触发** → 一张编不出来的图**干等 90 秒看门狗**（用户原话："平均出一张图要几分钟"）。
+
+修法：把钩子抽成 `hookConsole(win)`，并在 **iframe 的 `load` 事件**上重挂（每次导航都重挂）。
+`whyFailed` 仍然接在看门狗那条路上，作为读不到日志时的兜底。
+
+## "平均出一张图要几分钟" —— 真因与修法（2026-09-26，接上一条）
+
+上面那条查清了"应用听不到引擎的报错"。接着做了三件，缺一件都不成：
+
+* **日志桥**：在工位文档里、**引擎脚本之前**注入一小段，把 `console` 各档 `postMessage` 给应用
+  （`latex.js` 的 `LOG_BRIDGE` + 应用侧的 `message` 监听）。为什么非要在**引擎之前**：引擎
+  （压缩过的包）多半在加载时就把 `console.warn` 取进了变量，**事后替换 `console.warn` 对它无效**
+  —— 实测：钩子挂上了，`! Package pgfkeys Error …` 照样读不到。
+* **别只留最后一条**：引擎是**一次一条**地报，后一条会把前一条**覆盖** —— 那条关键的
+  `! Emergency stop.` 就是这么丢的。现在逐条**当场判**（`sawStop`）+ 一个 4000 字的滚动缓冲。
+* **多认一种"停死"**：引擎会自己宣告 `TikZJax: TeX did not produce input.dvi.`，而且**放在日志
+  最前面**（实测：收到的那条 4000 字日志，开头就是它）。把它也当成"立刻结账"的信号。
+
+**效果（应用里实测）**：一张编不出来的图（少一个分号）从 **92.9 秒 → 6.6 秒**结账，
+文案里也第一次带上了引擎原话。用户那句"平均出一张图要几分钟"就是这么来的 —— 一张坏图 90 秒，
+两张就是三分钟。
+
+**代价说清**：日志被截到 4000 字（一张图的 preamble 日志就能吃掉大半），所以文案里未必看得到
+那句 `! …` —— 那部分靠 `whyFailed` 兜。
+
+## 样式库：`[state]` 这类写法（2026-09-26）
+
+用户的自动机状态转移图挂在 `\node[state]` 上：`state` 是 **`automata`** 库的样式，模型没写
+`\usetikzlibrary{automata}`，TeX 报 `! Package pgfkeys Error: I do not know the key '/tikz/state'`，
+整张图没有。两个方向都堵上了：
+
+* 前言**预载**了常用的样式库（automata、shapes.*、decorations.*、patterns、chains、quotes、
+  angles、intersections 等约 20 个）；
+* `latex.js` 的 `rewriteUnsupported()` 还会**按用到的键自动补一行** `\usetikzlibrary{…}`
+  （键→库的表就在那儿，`state`/`diamond`/`pattern`/`decoration`/`rectangle split` …）。
+
+实测：那张图从"报错"变成 **605ms 出图**（模型一个字没写库）。
 
 ## 图里的矩阵：`amsmath` 进前言（2026-09-26）
 

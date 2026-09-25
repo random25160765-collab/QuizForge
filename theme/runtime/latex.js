@@ -134,6 +134,98 @@
     frame = null;
   }
 
+  /**
+   * 把工位文档的 console 接过来 —— **引擎的失败原因就写在那儿**
+   * （`! Package pgfkeys Error: I do not know the key '/tikz/state'` 这种）。
+   *
+   * **必须在每次文档被替换之后重新挂。** `fresh()` 是给同一个 iframe 设 `srcdoc`，
+   * 那是一次**导航**：新的文档、**新的 window 对象**，旧的那份 patch 跟着旧 window 一起没了。
+   * 从前只在 `ensureFrame()` 里挂一次（挂在 `about:blank` 那份上），于是 `srcdoc` 一设、
+   * 钩子就丢了 —— `lastError` 永远是空，用户看到的是"（引擎没报原因）"，
+   * 而**真正那句 `! …` 早就打出来了**（实测：playwright 的 console 日志里明明白白有它）。
+   *
+   * 后果不只是文案难看：`settle` 里那道"TeX 已经停死就立刻结账"的判断
+   * （读 `! Emergency stop` / `End of file on the terminal`）因为读不到 `lastError`
+   * **永远不触发**，一张编不出来的图就得**干等 90 秒的看门狗** ——
+   * 用户原话："平均出一张图要几分钟"。（这里也顺手纠正一句旧记录：引擎**不用 Worker**，
+   * 日志不是打在 worker 里，而是打在被导航丢掉的那个 window 上。）
+   */
+  /**
+   * 工位文档里**在引擎脚本之前**要跑的一小段：把 `console` 各档转发给应用。
+   *
+   * 为什么非要在**文档里**、非要**在引擎之前**：引擎（压缩过的包）多半在脚本加载时就把
+   * `console.warn` 取下来存进变量了，事后再替换 `console.warn` 对它**无效**（实测：
+   * 钩子挂上了，`! Package pgfkeys Error …` 照样读不到）。只有在它加载之前换掉才拦得住。
+   *
+   * 转发用 `postMessage`（工位与应用同源，但这是最省事也最不容易被绕过的一条路）。
+   * 应用那边在 `window.addEventListener('message')` 里收（见下面）。
+   */
+  var LOG_BRIDGE =
+    '<script>(function(){var p=function(a){try{parent.postMessage({__qfLatexLog:1,text:' +
+    'Array.prototype.slice.call(a).map(function(x){return String((x&&x.message)||x)})' +
+    ".join(' ').slice(0,4000)},'*')}catch(e){}};" +
+    "['log','info','warn','error','debug'].forEach(function(l){var o=console[l];if(!o)return;" +
+    'console[l]=function(){p(arguments);return o.apply(console,arguments)}});})();</scr' +
+    'ipt>';
+
+  /** 收工位转出来的日志（`LOG_BRIDGE` 发的），落进 `lastError` —— 结账与文案都靠它。 */
+  window.addEventListener('message', function (ev) {
+    var d = ev && ev.data;
+    if (!d || !d.__qfLatexLog) return;
+    var text = String(d.text || '');
+    /* **逐条判断"TeX 是否已经停死"，并且累积着存。**
+     *
+     * 两条都不能省（前两版各栽了一次）：
+     *   * 引擎是一次一条地报的，后一条会把前一条**覆盖**掉 —— 那条关键的
+     *     `! Emergency stop.` 就是这么被挤走、让"立刻结账"永远不触发的；
+     *   * 所以"停死"这件事要在这里**当场认**（`sawStop`），别等到结账时再去
+     *     `lastError` 里找 —— 那时候它可能已经被后面的日志盖掉了。
+     *
+     * `lastError` 仍然留一个滚动缓冲（文案里那句 `! …` 就是从它里挑的），窗口有限，
+     * 不至于越积越长。 */
+    /* **"停死"的三种说法，认到哪个都立刻结账**：
+     *   * `! Emergency stop` / `End of file on the terminal` —— TeX 自己停在提示上的长相；
+     *   * `did not produce input.dvi` —— 引擎**自己**宣告这次没跑出结果（实测：应用收到的
+     *     原话就是 `TikZJax rendering failed: TikZJax: TeX did not produce input.dvi.`）。
+     * 三条都能从收到的那条日志上当场认出来；认到就不必再等看门狗（用户："平均出一张图要几分钟"）。 */
+    if (/did not produce input\.dvi|!\s*Emergency stop|\bEnd of file on the terminal\b/.test(text)) sawStop = true;
+    var joined = lastError ? lastError + ' ' + text : text;
+    lastError = joined.length > 4000 ? joined.slice(-4000) : joined;
+  });
+
+  function hookConsole(win) {
+    if (!win || win.__qfHooked) return;
+    win.__qfHooked = true;
+    var take = function (args) {
+      try {
+        lastError = Array.prototype.slice
+          .call(args)
+          .map(function (one) {
+            return String((one && one.message) || one);
+          })
+          .join(' ')
+          .slice(0, 400);
+      } catch (err) {
+        /* 抓不到就算了 */
+      }
+    };
+    try {
+      win.onerror = function (msg) {
+        lastError = String(msg);
+      };
+      ['error', 'warn'].forEach(function (level) {
+        var original = win.console && win.console[level];
+        if (!original) return;
+        win.console[level] = function () {
+          take(arguments);
+          return original.apply(win.console, arguments);
+        };
+      });
+    } catch (err) {
+      /* 挂不上不影响编译 */
+    }
+  }
+
   function ensureFrame() {
     if (frame && frame.parentNode) return frame;
     frame = document.createElement('iframe');
@@ -143,41 +235,22 @@
     // **只移出视野，绝不隐藏**：引擎要量尺寸（`getBBox`），隐藏元素量出来是 0。
     frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:1000px;height:800px;border:0';
     document.body.appendChild(frame);
-    // 引擎把失败原因写在 console 里（"TeX did not produce input.dvi" + TeX 的日志）。
-    // 不抓就走失了 —— 那样用户只看到"没编出来"，不知道是自己哪句写法不被支持
-    // （实测：他有一段带 `phantom` / `very near start` 的 tikz-cd 就编不出来）。
-    try {
-      var win = frame.contentWindow;
-      win.onerror = function (msg) {
-        lastError = String(msg);
-      };
-      ['error', 'warn'].forEach(function (level) {
-        var original = win.console && win.console[level];
-        if (!original) return;
-        win.console[level] = function () {
-          try {
-            lastError = Array.prototype.slice
-              .call(arguments)
-              .map(function (one) {
-                return String((one && one.message) || one);
-              })
-              .join(' ')
-              .slice(0, 400);
-          } catch (err) {
-            /* 抓不到就算了 */
-          }
-          return original.apply(win.console, arguments);
-        };
-      });
-    } catch (err) {
-      /* 挂不上不影响编译 */
-    }
+    // 引擎把失败原因写在 console 里（"TeX did not produce input.dvi" + 整份 TeX 日志）。
+    // 见 `hookConsole` 的说明：**每次导航之后都要重挂**，否则 `fresh()` 设 srcdoc 时
+    // 这份钩子会跟着旧 window 一起丢掉。
+    hookConsole(frame.contentWindow);
+    frame.addEventListener('load', function () {
+      hookConsole(frame.contentWindow);
+    });
     return frame;
   }
 
   var queue = [];
   var timer = 0;
   var lastError = '';
+  /** 这一批里**已经看见过** "TeX 停死"（`! Emergency stop` / `End of file on the terminal`）。
+   * 逐条日志进来时当场认（`lastError` 会被后面的日志覆盖，不能只靠事后去里面找）。 */
+  var sawStop = false;
 
   /**
    * 把一个批次交给引擎。
@@ -194,6 +267,7 @@
     queue = [];
     timer = 0;
     lastError = '';
+    sawStop = false;
     if (!items.length) return;
 
     var doc;
@@ -281,7 +355,7 @@
          * surfshading.code.tex` 时就是这个长相）。这种情形只等看门狗的话，用户要等 94 秒
          * 才看到一句"引擎卡住了"，而真正的原因（`! …` 那一行）早就躺在 `lastError` 里了。
          * 这两句只在 TeX 真的停下来时出现，所以拿它结账是安全的。 */
-        var stopped = /End of file on the terminal|!\s*Emergency stop/.test(lastError);
+        var stopped = sawStop || /End of file on the terminal|!\s*Emergency stop/.test(lastError);
         if (!done && !stopped && broken < items.length && Date.now() - started < RENDER_TIMEOUT) {
           doc.contentWindow.setTimeout(settle, 200);
           return;
@@ -370,6 +444,8 @@
         origin() +
         '/assets/tikzjax/fonts.css">' +
         '</head><body>' +
+        // 先跑转发脚本，再加载引擎 —— 顺序不能换（见 LOG_BRIDGE 的说明）
+        LOG_BRIDGE +
         blocks +
         '<script src="' +
         ENGINE.replace('__ORIGIN__', origin()) +
@@ -469,6 +545,44 @@
         'symbolic x coords={' + keys.join(', ') + '},' +
           (hasLabels ? '' : '\n  xticklabels={' + labels.join(', ') + '},')
       );
+    }
+
+    /* 3) **用了某个库的样式，却没写 `\usetikzlibrary`** —— 这是失败率最高的一类：
+     * 模型很自然地写 `\node[state]`（状态转移图）、`[diamond]`（判定框）、`[pattern=…]`，
+     * 而这些样式分别来自 `automata` / `shapes.geometric` / `patterns`。引擎的文件**都在**，
+     * 只差那一行；缺了它 TeX 直接
+     * `! Package pgfkeys Error: I do not know the key '/tikz/state'` → 整张图没有
+     *（实测：用户的自动机状态转移图就是这么挂的；同一段加上那行就正常出图）。
+     *
+     * 所以**按用到的键把那行补上**（前言里另外预载了最常用的一批，这里兜住其余的）。
+     * 只是"补一行"，不动图：写在同一个片段里，引擎在正文里读它也有效（实测验过）。
+     */
+    var LIB_FOR_KEY = {
+      state: 'automata',
+      accepting: 'automata',
+      initial: 'automata',
+      'initial text': 'automata',
+      diamond: 'shapes.geometric',
+      trapezium: 'shapes.geometric',
+      'regular polygon': 'shapes.geometric',
+      cylinder: 'shapes.geometric',
+      kite: 'shapes.geometric',
+      'rectangle split': 'shapes.multipart',
+      signal: 'shapes.symbols',
+      cloud: 'shapes.symbols',
+      'single arrow': 'shapes.arrows',
+      'double arrow': 'shapes.arrows',
+      pattern: 'patterns',
+      decoration: 'decorations.pathreplacing,decorations.pathmorphing,decorations.markings',
+      'start chain': 'chains',
+      mindmap: 'mindmap',
+    };
+    var needLibs = [];
+    Object.keys(LIB_FOR_KEY).forEach(function (key) {
+      if (new RegExp('\\[\\s*' + key + '\\b|,\\s*' + key + '\\b').test(src)) needLibs.push(LIB_FOR_KEY[key]);
+    });
+    if (needLibs.length && !/\\usetikzlibrary/.test(src)) {
+      src = '\\usetikzlibrary{' + needLibs.join(',') + '}\n' + src;
     }
     return src;
   }
