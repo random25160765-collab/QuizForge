@@ -141,19 +141,58 @@ THINKING_MODELS: tuple[str, ...] = (
 )
 
 
-def thinking_params(model: str, enabled: bool) -> dict:
-    """这次请求要不要带思考开关；认识这个模型才带，带了就给**明确**的值。
+#: 思考强度：关 / 省 / 常规 / 使劲 —— **人按的那一档**。
+#:
+#: 用户原话："llm 有的时候会 overthinking，一个简单的问题思考特别久。给它加一个思考强度，
+#: 在命令里面控制。"
+#:
+#: 上游真正认的只有一件事：`thinking: enabled|disabled`（`deepseek-flash` 裸调就思考、
+#: 官方默认 effort=high；`deepseek-chat` 裸调不思考）—— 这是 2026-09-20 实测的，
+#: 两个方向都得显式写。至于中间几档，2026-09-25 拿最小请求逐个试过：`effort` /
+#: `level` / `reasoning_effort` 三种字段上游**一律回 200**（它静默忽略不认识的字段），
+#: 而在"1+1"这种题上思维链长度的差异（103/120/104/105/131 字）是噪声 ——
+#: **断定不了哪个真被采纳**。
+#:
+#: 所以这里的分工是诚实的：**"关"是硬开关**（真管用：思维链 0 字、也更快更省）；
+#: **中间几档靠两样** —— 一并带 `reasoning_effort`（它若认就是赚的；不认也只是被忽略，
+#: 实测不会 400），以及把"这一轮该想多深"写进系统提示
+#: （见 `routers/chat.py` 的 `thinking_line`）。不猜上游，也不假装设了档位它就一定照办。
+THINK_LEVELS: tuple[str, ...] = ("off", "low", "normal", "high")
 
-    不依赖上游默认：`deepseek-flash` 裸调就思考、`deepseek-chat` 裸调不思考，
-    同一个"开着"的请求在两个模型上该是同一种行为，所以两个方向都显式写
-    （`enabled` / `disabled` —— 后者 2026-09-20 实测有效：思维链 0 字）。
 
-    名单外返回空字典：那个字段对别家没有意义，塞过去只会招 400。
+def thinking_level(effort: object) -> str:
+    """把外面递进来的东西收敛成四档之一。
+
+    `True/False` 是历史写法（那颗「深度思考」药丸），照样认：`False` = 关，
+    `True` = 常规（= 从前的"开"，行为与改这版之前一致）。
+    """
+    if isinstance(effort, bool):
+        return "normal" if effort else "off"
+    raw = str(effort or "").strip().lower()
+    if raw in ("", "on", "true", "yes", "enabled", "deep"):
+        return "normal"
+    return raw if raw in THINK_LEVELS else "normal"
+
+
+def thinking_params(model: str, effort: object = True) -> dict:
+    """这次请求的思考参数。`effort` 收等级字符串（`off`/`low`/`normal`/`high`）或布尔。
+
+    * `off` → `thinking: {type: disabled}`（实测思维链 0 字：这才是治 overthinking 的那一手）；
+    * 其余三档 → `thinking: {type: enabled}` ＋ 一个 `reasoning_effort`
+      （best-effort，理由见 `THINK_LEVELS` 上面那段）。
+
+    名单外返回空字典：那个字段对别家没有意义，塞过去只会招 400（见 `THINKING_MODELS`）。
     """
     name = (model or "").strip().lower()
     if not any(name == key or name.startswith(key + "-") for key in THINKING_MODELS):
         return {}
-    return {"thinking": {"type": "enabled" if enabled else "disabled"}}
+    level = thinking_level(effort)
+    if level == "off":
+        return {"thinking": {"type": "disabled"}}
+    out: dict = {"thinking": {"type": "enabled"}}
+    if level in ("low", "high"):
+        out["reasoning_effort"] = level
+    return out
 
 
 def budget_tokens(model: str, conf: dict, cap: int) -> int:

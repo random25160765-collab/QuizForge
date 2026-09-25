@@ -338,3 +338,38 @@ html[data-theme='light'] {
     --tok-reg: #1D4ED8; --tok-var: #86198F; --tok-key: #0369A1; --tok-deco: #B45309;
   }
 }
+
+/* 正文里的 LaTeX 图（见 runtime/latex.js：真 TeX 引擎编出来的 SVG）。
+ * 引擎只给一个 `<svg>`，这一层管盒子：居中、窄屏不压变形、以及两种中间状态。 */
+.diagram-wrap {
+  margin: 0.9em 0;
+  display: flex;
+  justify-content: center;
+}
+
+.diagram-wrap > .diagram__svg {
+  max-width: 100%;
+  color: inherit;
+}
+
+.diagram-wrap > .diagram__svg > svg {
+  display: block;
+  /* **不是 width: 100%** —— 那会把小图拉成一整栏（"有的太大"）、大图里全是空白
+   *（"有的太小"）。图按它自己画出来的尺寸显示，上限才是栏宽。 */
+  max-width: 100%;
+  height: auto;
+}
+
+.diagram-wrap.is-loading,
+.diagram-wrap.is-failed {
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  color: var(--fg3);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+.diagram-wrap.is-failed {
+  color: var(--bad);
+}

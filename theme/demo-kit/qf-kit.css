@@ -1,23 +1,66 @@
 /* 演示套件的基础样式。
-   与 app 同一套色与圆角 —— 演示看起来该像这个应用的一部分。
+   演示看起来该像这个应用的一部分，**而不是另一个网站** —— 所以这里的每一个数
+   都从 app 的 token 表（`theme/app.css` 顶部 `:root`）**原样抄来**，后面注着出处。
+   以前这套是另起的一份色板（bg `#0e1116`、pri `#4da3ff`…），跟 app 只"有点像"：
+   同一个页面里两种青、两种灰，一眼就看得出是外来的。
+   改了 app 的 token，记得回来同步这里 —— 抄错一次，整页就"不像"。
    不依赖 Tailwind：下面是自足的 `.qf-*` 组件；Tailwind 在的时候可以用它的工具类，
    但**没有它也不该难看**。 */
 
 :root {
-  --qf-bg: #0e1116;
-  --qf-panel: #161b22;
-  --qf-panel2: #1c2430;
-  --qf-line: #2a3240;
-  --qf-line2: #39465a;
-  --qf-fg: #e6edf3;
-  --qf-fg2: #c3ccd8;
-  --qf-dim: #8b97a6;
-  --qf-pri: #4da3ff;
-  --qf-ok: #41d67a;
-  --qf-warn: #ffb454;
-  --qf-bad: #ff5c6c;
-  --qf-r: 10px;
+  --qf-bg: #0b1016; /* --bg */
+  --qf-panel: #131a22; /* --bg2 */
+  --qf-panel2: #1e2936; /* --bg3 */
+  --qf-line: #38495a; /* --line */
+  --qf-line2: #4e6478; /* --line-strong */
+  --qf-fg: #e6edf3; /* --fg */
+  --qf-fg2: #9aa7b4; /* --fg2 */
+  --qf-dim: #75838f; /* --fg3 */
+  --qf-pri: #2dd4bf; /* --pri */
+  --qf-pri2: #14b8a6; /* --pri-2 */
+  --qf-pri3: #5eead4; /* --pri-3 */
+  --qf-ok: #34d399; /* --ok */
+  --qf-warn: #fbbf24; /* --amber */
+  --qf-bad: #f87171; /* --bad */
+  --qf-blue: #60a5fa; /* --blue */
+  --qf-r-sm: 8px; /* --r-sm */
+  --qf-r: 12px; /* --r-md */
+  --qf-r-lg: 18px; /* --r-lg */
+  --qf-edge: inset 0 1px 0 rgba(255, 255, 255, 0.06); /* --edge-hi */
+  /* 离地高度**只有一档**（app 的 `--shadow-2`）：多一档就变成"谁都在浮"。
+     面板本身就贴在这两档之间，别再自己加更重的阴影。 */
+  --qf-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.75); /* --shadow-2 */
+  --qf-ease: cubic-bezier(0.2, 0.8, 0.3, 1); /* --ease */
+  --qf-dur: 0.18s; /* --dur */
   --qf-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* 白底那一套 —— 与 `theme/app.css` 的 `html[data-theme='light']` 同源同值。
+ *
+ * 为什么必须有：应用默认深色，但**用户可以在设置里切浅色**（"我们的软件是白底的"）。
+ * 从前套件只有深色一份，于是切了浅色的用户，正文是白底、一开演示就糊一块黑的 ——
+ * 用户："色号和元件都对了，但是总体组合起来的风格还是不搭配啊！我们的软件是白底的，
+ * 它的沙盒都是黑底的。"  色号抄对只是第一步，**主题**也得跟上来。
+ *
+ * `--qf-pri` 两套都是品牌青（app 里 `--pri` 在浅色下也没变）：
+ * 它适合做**填充**，白底上要当文字/线条的强调色就用 `--qf-pri3`（更深的同色）。
+ */
+html[data-theme='light'] {
+  --qf-bg: #f7f9fb;
+  --qf-panel: #ffffff;
+  --qf-panel2: #edf1f5;
+  --qf-line: #d2dce6;
+  --qf-line2: #b3c1ce;
+  --qf-fg: #0f1a24;
+  --qf-fg2: #4a5a68;
+  --qf-dim: #6f7f8e;
+  --qf-pri3: #0e7c6b;
+  --qf-ok: #059669;
+  --qf-warn: #b45309;
+  --qf-bad: #dc2626;
+  --qf-blue: #2563eb;
+  --qf-edge: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --qf-shadow: 0 12px 30px -20px rgba(15, 26, 36, 0.4);
 }
 
 * {
@@ -91,6 +134,27 @@ body {
   font-size: 13px;
 }
 
+/* ---------------------------------------------------------------- 画布与公式 */
+
+/* SVG 画布：跟着容器宽，别自己长出滚动条。`overflow: visible` 是有意的 ——
+ * 轴外的刻度标签宁可露到卡片内边距上，也别被切掉半个字。 */
+.qf-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* 公式（KaTeX 由演示页注入，与正文同一份） */
+.qf-math {
+  margin: 8px 0;
+}
+
+.qf-math--inline {
+  display: inline-block;
+  margin: 0;
+}
+
 /* ---------------------------------------------------------------- 面板 */
 
 .qf-card {
@@ -126,27 +190,32 @@ body {
 
 /* ---------------------------------------------------------------- 控件 */
 
+/* 按钮。色号全部走上面的 token —— 从前这里写的是 `#20293a` / `#1d3a5c` 这种
+ * 旧色板的派生色，与 app 的按钮并排看就是"两种界面"。 */
 .qf-btn {
   padding: 6px 12px;
   border: 1px solid var(--qf-line2);
-  border-radius: 7px;
-  background: #20293a;
+  border-radius: var(--qf-r-sm);
+  background: var(--qf-panel2);
   color: var(--qf-fg);
   font: inherit;
   font-size: 13px;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background var(--qf-dur) var(--qf-ease), border-color var(--qf-dur) var(--qf-ease),
+    color var(--qf-dur) var(--qf-ease);
 }
 
 .qf-btn:hover {
-  background: #2a3548;
-  border-color: #4a5b74;
+  /* 往前景色那边抬一档 = "浮起来一点"，不用再加一层阴影 */
+  background: color-mix(in srgb, var(--qf-panel2) 88%, var(--qf-fg));
+  border-color: var(--qf-line2);
 }
 
+/* 选中态用品牌色那一支（边框 + 淡底 + 亮字），与 app 里 `.chip.is-on` 同一套做法 */
 .qf-btn.is-on {
   border-color: var(--qf-pri);
-  background: #1d3a5c;
-  color: #cfe6ff;
+  background: color-mix(in srgb, var(--qf-pri) 18%, var(--qf-panel2));
+  color: var(--qf-pri3);
 }
 
 .qf-btn:disabled {
@@ -211,7 +280,7 @@ body {
   justify-content: space-between;
   gap: 10px;
   padding: 5px 0;
-  border-bottom: 1px dashed #232c39;
+  border-bottom: 1px dashed var(--qf-line);
 }
 
 .qf-kv__row:last-child {
@@ -219,7 +288,7 @@ body {
 }
 
 .qf-kv__val {
-  color: #9fb4cc;
+  color: var(--qf-fg2);
   font-family: var(--qf-mono);
   font-variant-numeric: tabular-nums;
 }

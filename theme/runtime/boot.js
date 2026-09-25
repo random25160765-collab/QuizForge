@@ -206,32 +206,97 @@
 
   /* ---------------------------------------------------------------- 启动 */
 
-  function start() {
-    showState({ title: '正在载入…', message: '读取题库与进度' });
+  /*: 启动自检的重试节奏（毫秒）。为什么必须退避重试：服务在 `--reload`（开发）或
+   * 重启的那几秒里会**短暂**不应答，而自检只试一次 —— 撞上那一下，页面就永久钉在
+   * "连不上服务"上（用户连着两次："（还是显示这个玩意）"）。这不是猜的：实测在**同一个
+   * 页面**里，那条消息显示之后几秒 `fetch('/api/bank')` 是 200（99ms）—— 服务一直好着，
+   * 只是开机那一瞬间没赶上。 */
+  var BOOT_RETRY_MS = [400, 900, 1800, 3000, 5000];
 
-    loadBank()
-      .then(function (ok) {
-        if (!ok) return false;
-        return loadProgress().then(function () {
-          return true;
-        });
-      })
-      .then(function (ready) {
-        if (!ready) return;
-        startPage();
-      })
-      .catch(function (err) {
-        var isNetwork = !err.status;
-        replaceState({
-          tone: 'bad',
-          icon: 'warn',
-          title: isNetwork ? '连不上服务' : '启动失败',
-          message: isNetwork
-            ? '本地服务没有在运行（或端口被占）。把它起起来再刷新本页。'
-            : err.message || '未知错误',
-          actions: [{ label: '重试', onClick: function () { location.reload(); } }],
-        });
+  //: 错误页挂上之后，还隔多久自己再试一次。让"把服务起起来"这件事不必由人来告诉它。
+  var BOOT_POLL_MS = 5000;
+
+  /** 试一次完整的启动读取。返回 `false` = 界面已经说清了（题库空之类），不必重试。 */
+  function startAttempt() {
+    return loadBank().then(function (ok) {
+      if (!ok) return false;
+      return loadProgress().then(function () {
+        return true;
       });
+    });
+  }
+
+  function start() {
+    var tries = 0;
+
+    function showFailure(err) {
+      // `api.js` 给**真正的网络失败**标的记号是 `status === 0`（请求压根没拿到响应）。
+      // 从前这里写的是 `!err.status` —— 那把 `TypeError` 之类**我们自己写错**的错也
+      // 归成了"服务没应答"，于是屏幕上一直在说服务的事，真凶一个字都不露
+      // （这轮就是被它带偏的：真正的原因是 `QF.shell.mount is not a function`）。
+      var isNetwork = err.status === 0;
+      // 网络错误只说"本地服务没有在运行"会把人指错方向：页面若不是从服务自己的地址
+      // 打开的（IDE 预览、别的端口、`file://` 快照），服务明明活着也照样连不上。
+      // 所以把**两个地址**都摆出来 —— 一眼能看出是不是打开的地方不对。
+      var here = location.origin || '(未知)';
+      var there = (api && api.base) || here;
+      replaceState({
+        tone: 'bad',
+        icon: 'warn',
+        title: isNetwork ? '连不上服务' : '启动失败',
+        message: isNetwork
+          ? '本地服务没有应答（已重试 ' +
+            tries +
+            ' 次，每 ' +
+            BOOT_POLL_MS / 1000 +
+            ' 秒自己再试一次）。若它其实在运行，检查这一页是不是从服务自己的地址打开的：本页 ' +
+            here +
+            ' ，接口 ' +
+            there +
+            '。'
+          : err.message || '未知错误',
+        actions: [
+          { label: '再试一次', onClick: run },
+          { label: '刷新本页', onClick: function () { location.reload(); } },
+        ],
+      });
+      if (isNetwork) window.setTimeout(run, BOOT_POLL_MS);
+    }
+
+    function run() {
+      showState({
+        title: '正在载入…',
+        message: tries ? '服务还没应答，正在再试（第 ' + (tries + 1) + ' 次）…' : '读取题库与进度',
+      });
+      startAttempt()
+        .then(function (ready) {
+          if (!ready) return; // 题库空之类：界面已经说清了，再试没有意义
+          startPage();
+        })
+        .catch(function (err) {
+          // **先留痕**：这条链上出的错从前一个字都不留（只有一屏"连不上服务"），
+          // 于是排查时全靠猜 —— 实测为此白跑了好几轮（服务明明好着、接口也通，
+          // 却只看到"服务没应答"）。写了这一行，下次一眼就知道是哪一层的事。
+          try {
+            window.console.warn('[qf] 启动读取失败（第 ' + (tries + 1) + ' 次）：', err);
+          } catch (e) {
+            /* 打不出来不影响流程 */
+          }
+          // 只对**真正的网络失败**（`status === 0`）退避重试：401/500 是服务答了、要人
+          // 处理的事；`status === undefined` 则是**代码自己抛的**（比如某个全局被覆盖 ——
+          // 这轮踩过的那个 `QF.shell.mount is not a function`），重试一万次也没用，
+          // 必须立刻原样报出来。
+          if (err.status === 0 && tries < BOOT_RETRY_MS.length) {
+            var delay = BOOT_RETRY_MS[tries];
+            tries += 1;
+            window.setTimeout(run, delay);
+            return;
+          }
+          showFailure(err);
+        });
+    }
+
+    run();
   }
 
   if (document.readyState === 'loading') {

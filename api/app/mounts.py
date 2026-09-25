@@ -64,8 +64,11 @@ MODES: tuple[Mode, ...] = (
     Mode(
         key="query",
         label="查询",
-        hint="只查不改：翻笔记、读资料原文、走知识图谱",
-        groups=("notes", "library", "graph"),
+        hint="只查不改：翻笔记、读资料原文、走知识图谱、翻别的对话",
+        # `trees`（对话树）也挂在这一档：**"我上次是不是钻过这个"是查询类需求**
+        #（`docs/对话树.md` §三 的推论），跟查笔记、查资料同类，不是"学习"模式独有的。
+        # 这一组四个工具全是 `read` 档，所以进了查询模式也只读、不改。
+        groups=("notes", "library", "graph", "trees"),
         access=("read",),
         color="#3B82F6",  # 蓝：翻找/查看
     ),
