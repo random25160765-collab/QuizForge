@@ -211,11 +211,18 @@
       finished = true;
       dropFrame();
       items.forEach(function (one) {
+        /* 走到这里说明**引擎什么都没回**（既没出图、也没留 `tikzjax-broken`）——
+         * 常见成因是 TeX 停在报错提示上等人按键，而它的报错**打在 worker 的 console 里**，
+         * 应用这一侧听不到（钩的是 iframe 的 console）。所以别只说"卡住了、简化一点"，
+         * 把**按源码能判出来的**原因一并说给他（`whyFailed` 认那几种已知写法）。 */
+        var guess = whyFailed(one.tex);
         one.fail(
           new Error(
             '编译超过 ' +
               Math.round((RENDER_TIMEOUT + 4000) / 1000) +
-              ' 秒还没有结果 —— 引擎卡住了（多半是某个宏包在这台上跑不动）。工位已经重建，让他把这张图简化一点再试。'
+              ' 秒还没有结果 —— 引擎卡住了（多半是某个宏包或某句写法在这台上走不通）。' +
+              '工位已经重建，让他改一版再试。' +
+              (guess ? '可能的成因：' + guess : '')
           )
         );
       });
@@ -249,7 +256,16 @@
          * 实测（用户："三张 TikZ 图…引擎的bug"）：那三张在实验室里**几秒内就明确报错退出**，
          * 而应用里报的是"卡住 94 秒" —— 我照着那句去追"谁卡住了"，白追了一轮。
          * 现在：**这一批全都判死**就直接落到下面那段结账，把真原因（`lastError`）说出来。 */
-        if (!done && broken < items.length && Date.now() - started < RENDER_TIMEOUT) {
+        /* **TeX 已经停死了** —— 那就别再等。
+         *
+         * 缺文件（引擎 fetch 到 404、把空内容当正文读）时，TeX 会停在报错提示上等人按键：
+         * 一个 svg 都不出，日志里留两句铁证 —— `! Emergency stop.` 与
+         * `End of file on the terminal!`（实测：pgfplots 缺 `tikzlibrarypgfplots.
+         * surfshading.code.tex` 时就是这个长相）。这种情形只等看门狗的话，用户要等 94 秒
+         * 才看到一句"引擎卡住了"，而真正的原因（`! …` 那一行）早就躺在 `lastError` 里了。
+         * 这两句只在 TeX 真的停下来时出现，所以拿它结账是安全的。 */
+        var stopped = /End of file on the terminal|!\s*Emergency stop/.test(lastError);
+        if (!done && !stopped && broken < items.length && Date.now() - started < RENDER_TIMEOUT) {
           doc.contentWindow.setTimeout(settle, 200);
           return;
         }
@@ -429,6 +445,27 @@
 
   function whyFailed(tex) {
     var src = String(tex || "");
+    /* **中文不能放进 `symbolic x coords`**（实测，2026-09-26）。
+     *
+     * CJK 是靠把高位字节的字符变成**活动字符**来映字形的（e-TeX 只有 8 位，绕不开），
+     * 而 `symbolic x coords={取指, 译码, …}` 里的键是 pgfplots **要解析**的东西 ——
+     * 活动字符会把它的 `\if…\else` 弄乱，报出来是
+     * `! Extra \else. \pgf@plotstreampoint …`（报在 **pgf 内核宏**上，看着像引擎坏了）。
+     *
+     * 这是 TeX 8 位编码与 pgf 解析器的固有冲突，**修不了**；但能绕开，而且写法很自然：
+     * 坐标用 ASCII 键，中文放到 `xticklabels`（那是**排版**出去的，不参与解析）。
+     * 实验室实测：`symbolic x coords={A, B, C}` + `xticklabels={取指, 译码, 执行}` 正常出图。
+     */
+    var sym = src.match(/symbolic\s+x\s+coords\s*=\s*\{([^}]*)\}/);
+    if (sym && /[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]/.test(sym[1])) {
+      return (
+        "`symbolic x coords` 里放了中文 —— 这些键是 pgfplots **要解析**的，而中文在这台引擎上" +
+        "是「活动字符」（CJK 靠它映字形），两者冲突，报出来是 `! Extra \\else. \\pgf@plotstreampoint …`。" +
+        "改法：坐标用 ASCII 键，中文交给 `xticklabels` —— " +
+        "`symbolic x coords={A, B, C}` 加 `xticklabels={取指, 译码, 执行}`（实测这样能出图），" +
+        "数据点也跟着写成 `(A,2)`。"
+      );
+    }
     if (/shader\s*=\s*interp/.test(src)) {
       return (
         "`shader=interp` 这台引擎不支持（它的 pgf 驱动是 pgfsys-ximera.def，实测报 " +

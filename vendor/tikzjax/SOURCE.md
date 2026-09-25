@@ -68,3 +68,35 @@
    `python3 -m http.server 8199 --directory <仓库根>`，打开 `/tools/texlab/index.html`。
    它**在引擎之前**就钩住 console，TeX 的日志与 `! 报错` 都能读到；上面几条都是在那儿定案的。
    **一次只加一个变量**，并且每次**重开页面**（工位是复用的，卡过一次的页面会一直卡）。
+
+## pgfplots：装齐、且**同一个版本**（2026-09-26）
+
+上一轮那句"整批装上就编不出来"的**真因不是批量**，是**缺文件**与**版本混装**：
+
+* **缺文件**：`tikzlibrarypgfplots.surfshading.code.tex`（上游叫 `pgflibrary…`，这片引擎按
+  `tikzlibrary…` 找）之类。少一个 → 引擎取到 404 → TeX 把空内容当正文读 → 报出来是
+  `! Missing $ inserted` 停在 `\end{axis}` → **一个 svg 都不出** → 只能干等看门狗。
+  **对策：整套铺**（`tex/generic/pgfplots/**` + `tex/latex/pgfplots/**`，627 个文件量级），
+  别再一个个试 —— 缺一个与缺一套是同一个后果。
+* **版本混装**：铺的时候若"已存在就跳过"，会留下两代文件（实测 **1.18.2 与 1.18.3 混住**），
+  报出来是 `! Extra \else. \pgf@plotstreampoint …` —— 报在 **pgf 内核宏**上，看着像引擎坏了，
+  实际是 pgfplots 自家两代文件打架。**对策：整批覆盖，一个版本。**
+  实测这台：引擎内 **pgf 3.1.10a**、**pgfplots 1.18.3**（后者要的正是 ≥ 3.1.10，配得上）。
+
+## 中文分类轴：`symbolic x coords` 里**不能**放中文（2026-09-26）
+
+那里的键是 pgfplots **要解析**的，而中文在这台引擎上是**活动字符**（CJK 靠它映字形；
+e-TeX 只有 8 位，绕不开）—— 两者冲突，报 `! Extra \else. \pgf@plotstreampoint …`。
+**修不了**（编码方式的固有冲突），但绕得开，而且写法很自然：
+
+```latex
+symbolic x coords={A, B, C},
+xticklabels={取指, 译码, 执行},   % 中文放这儿：它是"排版"出去的，不参与解析
+```
+
+数据点相应写 `(A,2)`。实测这样出图正常（实验室与应用都验过）。提示词里已写明
+（`api/app/routers/chat.py`），失败文案里也会指出（`latex.js` 的 `whyFailed`）。
+
+**另记一笔：应用听不到引擎的报错。** 引擎把 TeX 日志打在 **worker 的 console** 里，
+而应用钩的是 iframe 的 console —— 于是"引擎判死"时应用只能等看门狗（90 秒）。
+`whyFailed` 现在也接在看门狗那条路上，至少让"卡住"这句带上按源码能判出来的原因。
