@@ -111,10 +111,15 @@ xticklabels={取指, 译码, 执行},   % 中文放这儿：它是"排版"出去
 * 前言原件（`run-tex.js`）装的是 `circuitikz` / `amscd` / `tikz-cd` / `pgfplots` / `CJK`
   + `\usetikzlibrary{positioning,calc,fit,arrows.meta,matrix}` —— **没有 amsmath**。
   注意别被 `amscd` 骗了：那是引擎**格式里**那份，不代表 amsmath 在。
-* 装法：从 **TeX Live 的成品包**取（`/CTAN/systems/texlive/tlnet/archive/amsmath.tar.xz`；
-  CTAN 的目录包只有 `.dtx`/`.ins`，本机没有 TeX，生不成 `.sty`），把 `amsmath.sty`、
-  `amstext.sty`、`amsbsy.sty`、`amsopn.sty`、`amsgen.sty` 平铺 gzip 进 `tex_files/`；
-  并在前言**最前面**加 `\usepackage{amsmath}`（它要早于别的包）。
+* **真因是"文件在、前言没挂"**：`amsmath.sty` 其实**早就在** `tex_files/` 里了 —— 提交
+  `56b2507` 就带着它（`amssymb`/`amsfonts` 也在），同族那四个也一直躺在目录里（只是当时
+  还是**未跟踪**状态，靠 `make web` 整目录拷贝才进的产物，现在已入库）。缺的**从来只是
+  前言里那句 `\usepackage{amsmath}`** —— 所以引擎一次都没加载过它们。
+  这与 tikz-feynhand 那条是**同一个教训**：**铺了文件 ≠ 装上了**，得进前言才生效。
+* 这次的活儿因此只剩两件：前言**最前面**加一句 `\usepackage{amsmath}`（它要早于别的包），
+  以及把那 5 个文件入库。以后若要重铺同族文件，从 **TeX Live 的成品包**取
+  （`/CTAN/systems/texlive/tlnet/archive/amsmath.tar.xz`）—— CTAN 的目录包只有
+  `.dtx`/`.ins`，本机没有 TeX，生不成 `.sty`。
 * 回归验过（实验室）：两张原话 ✓、pgfplots 三曲线 ✓、tikz-cd ✓、中文图 ✓、circuitikz ✓。
 * 两边分工别混：**正文里的矩阵走 KaTeX**（瞬间，见上面那条）；**图里节点里的矩阵**才需要
   amsmath。用户这两张是后者。
