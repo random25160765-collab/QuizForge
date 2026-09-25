@@ -6239,6 +6239,14 @@
         // 挂在 body 上（不在消息里）：它是**整页共用**的一个东西
         document.body.appendChild(el);
         shell.el = el;
+        // 记下"这一页的壳是按哪一版建的"：`shell.js` 的构建轮询会拿它跟 `/api/build`
+        // 报的那份 `shell` 对账，对不上就整页刷新。为什么需要：壳模板是**服务端**渲染的，
+        // 改它不动 `make web` 的构建戳，于是已经打开的页面会一直用旧壳（实测踩过：
+        // 沙箱里装好了中文字体，旧壳里却"一个中文字形都没有"，模型据此回答用户
+        // "这台机器画不出汉字"，白绕一轮）。记不上也不影响跑。
+        try {
+          document.documentElement.setAttribute('data-qf-shell', String(data.shell || ''));
+        } catch (err) { /* 无所谓 */ }
         shellFlush();
       })
       .catch(function () {
@@ -6418,10 +6426,17 @@
         )
       );
     }
-    // 输出与图是**一块**（`resultNode`）：一起收、一起展 —— 图往往才是最占地方的那个
+    // 输出与图是**一块**（`resultNode`）：一起收、一起展 —— 图往往才是最占地方的那个。
+    //
+    // 判"跑完了没有"看的是 **run 在不在**，不是 `run.text` 里有没有字。从前写的是
+    // `run && run.text`，于是**只出图、不打印**的脚本（画图脚本十有八九就是这样）
+    // 在重画那一刻被当成"还没跑完"：图已经出来过一次，随后整块被换回"运行中…"，
+    // 而模型那边还接着说话（用户原话："出图之后，立马输出消失显示运行中，
+    // 然后模型接着回答"）。上一轮那些"留得住"的图，恰恰是因为 matplotlib 吐了
+    // `Glyph missing` 警告、`text` 非空 —— 这也是"有时行有时不行"的另一半原因。
     rows.push(
-      run && run.text
-        ? resultNode(run.text, run.images)
+      run
+        ? resultNode(run.text || '（没有输出）', run.images)
         : h('div.pyrun__wait', { text: '运行中…' })
     );
     // 执行分两条路：
@@ -6476,14 +6491,16 @@
       }),
       // 跑出来的输出直接摆在这儿 —— 不必点开面板才知道它跑成什么样。
       // 它同时也是回填给服务端的那一份（见 message 监听里的回填）。
-      part.run && part.run.text
+      // 判据同 `pythonRun`：有 run 就摆（哪怕 `text` 是空的 —— 演示常常只画图、
+      // 一个字不打印，按 `text` 判的话那块会整块不出现）。
+      part.run && (part.run.text || (part.run.images || []).length)
         ? h(
             'div.chatdemo__inline' + (part.run.ok === false ? '.is-bad' : ''),
             null,
             h('div.chatdemo__inlinelabel', {
               text: part.run.ok === false ? '沙箱报错（已回填给模型）' : '沙箱输出（已回填给模型）',
             }),
-            h('pre.chatdemo__inlinepre', { text: part.run.text })
+            h('pre.chatdemo__inlinepre', { text: part.run.text || '（没有输出）' })
           )
         : null
     );
