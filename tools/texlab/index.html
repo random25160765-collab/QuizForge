@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh" data-theme="light">
+<head>
+<meta charset="utf-8">
+<title>TeX lab —— 独立试引擎，不碰 quizforge</title>
+<!--
+  独立 TeX 实验室（用户："你搞一个独立tex环境测试稳定了再装进quizforge"）。
+
+  为什么要有它：在 quizforge 里试，一出问题就是"页面卡死、而且什么也看不到"——
+  引擎的 TeX 日志跑在它自己的 worker 里，应用侧抓不到（那是"死得莫名其妙"的根源）。
+  这里页面是我们自己的：**在引擎之前**就把 console 钩住，于是
+  TeX 的每一句 `! 错误` / 日志都能原样落到 `window.__texLog`。
+
+  跑法（仓库根目录起一个静态服务，只为把 vendor/tikzjax 暴露在同源路径下）：
+      python3 -m http.server 8199 --directory /home/rd/Desktop/quizforge
+  然后打开 http://127.0.0.1:8199/tools/texlab/index.html
+
+  引擎按**相对自己的路径**找 run-tex.js / core.dump.gz / tex_files/（见 SOURCE.md），
+  所以这里照旧引 /vendor/tikzjax/tikzjax.js 就行。
+-->
+<link rel="stylesheet" href="/vendor/tikzjax/fonts.css">
+<script>
+  // —— 先装钩子，再让引擎进场 ——
+  window.__texLog = [];
+  window.__consoleLog = [];
+  (function () {
+    ['error', 'warn', 'log', 'info'].forEach(function (k) {
+      var orig = console[k];
+      console[k] = function () {
+        try {
+          var line = Array.prototype.slice
+            .call(arguments)
+            .map(function (a) {
+              return String((a && a.message) || a);
+            })
+            .join(' ');
+          window.__consoleLog.push(k + ': ' + line.slice(0, 2000));
+          window.__texLog.push(line);
+        } catch (e) {
+          /* 钩子自己不能出错 */
+        }
+        return orig.apply(console, arguments);
+      };
+    });
+    window.onerror = function (m) {
+      window.__texLog.push('onerror: ' + m);
+    };
+  })();
+</script>
+</head>
+<body style="margin:0;font:14px/1.6 -apple-system,sans-serif;background:#fff">
+<div id="lab" style="padding:12px"></div>
+<div id="out" style="position:fixed;right:0;top:0;width:380px;height:100%;overflow:auto;background:#f6f8fa;border-left:1px solid #ddd;padding:10px;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap"></div>
+
+<script>
+  // 一段一段地送进引擎；每段自己一个 div，结果与日志都记下来。
+  window.labRun = function (tex, id) {
+    return new Promise(function (resolve) {
+      var box = document.createElement('div');
+      box.className = 'case';
+      box.id = 'case-' + id;
+      var body = document.createElement('div');
+      body.textContent = '正在编译 ' + id + ' …';
+      box.appendChild(body);
+      document.getElementById('lab').appendChild(box);
+      var started = performance.now();
+      var timer = null;
+      var done = function (state, html, why) {
+        if (timer) clearTimeout(timer);
+        body.innerHTML = html || '';
+        var tag = document.createElement('div');
+        tag.style.cssText = 'color:#666;font-size:12px;margin-top:4px';
+        tag.textContent = id + ' → ' + state + '（' + Math.round(performance.now() - started) + 'ms）' + (why ? ' ' + why : '');
+        box.appendChild(tag);
+        resolve({ id: id, state: state, ms: Math.round(performance.now() - started), why: why || '', log: window.__texLog.slice(-40) });
+      };
+      // 父窗口的硬闹钟：工位卡住时它自己的定时器不会响，这个一定会。
+      timer = window.setTimeout(function () {
+        done('超时(180s)', '', '引擎没有返回');
+      }, 180000);
+      var host = document.createElement('div');
+      host.className = 'one';
+      host.setAttribute('data-lab', id);
+      var script = document.createElement('script');
+      script.type = 'text/tikz';
+      script.textContent = tex;
+      host.appendChild(script);
+      document.body.appendChild(host);
+      // 引擎扫描 DOMContentLoaded；这里补发一次，让它重新扫一遍
+      setTimeout(function () {
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+      }, 30);
+      var watch = setInterval(function () {
+        var svg = host.querySelector('svg');
+        var cls = svg ? svg.getAttribute('class') || '' : '';
+        if (!svg) return;
+        if (/loader/.test(cls)) return;
+        clearInterval(watch);
+        if (host.parentNode) host.parentNode.removeChild(host); // 关键：别留给自己下一轮重扫
+        if (/broken/.test(cls)) {
+          done('引擎报错', '', '（TeX 日志见右侧）');
+        } else {
+          body.innerHTML = '';
+          body.appendChild(svg.cloneNode(true));
+          done('出图', body.innerHTML);
+        }
+      }, 150);
+    });
+  };
+  document.getElementById('out').textContent = '等待引擎…\n（TeX 日志会出现在这里）';
+  setInterval(function () {
+    document.getElementById('out').textContent = window.__texLog.slice(-60).join('\n');
+  }, 500);
+</script>
+<script src="/vendor/tikzjax/tikzjax.js"></script>
+</body>
+</html>

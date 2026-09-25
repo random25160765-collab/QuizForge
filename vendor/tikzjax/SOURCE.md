@@ -15,3 +15,56 @@
   能跑，但**只支持纯 TikZ** —— `circuitikz` / `tikz-cd` / AMScd 一律内部致命错误（`unreachable`）。
   实测四块对照页：纯 TikZ ✓、其余三块 ✗。
 * npm `node-tikzjax` 的载荷：格式对不上（`tex_files.tar.gz` 与浏览器包不是一代）。
+
+## pgfplots：试过一次，已回滚（2026-09-25）
+
+* 装法（照上面那条规矩）：CTAN `pgfplots.tds.zip` 里 `tex/generic/pgfplots/**` 的 75 个
+  `.sty`/`.tex` 平铺 gzip 进 `tex_files/`（新增 44 个，另 31 个同名文件引擎本来就有）。
+* 结果：**装上之后 TeX 编不出来了**（用户与我这边都是「tex 编译一直出不来」）。
+  于是整批挪走、提示词跟着说回「没有 pgfplots」。真原因没查清
+  （嫌疑：这份载荷与引擎的格式不是一代；或某个 `.gz` 让它卡住）。
+* 再试的话别一次全放：一次只加几个文件、每加一次就用一张 `\begin{axis}` 图验一次，
+  并盯着控制台里对 `tex_files/<名>.gz` 的 404（引擎取不到会去 fetch 同名文件）。
+
+## 现状（2026-09-25 晚）
+
+前言里现在有：`circuitikz` / `amscd` / `tikz-cd` / `pgfplots` / `CJK`，外加
+`\usetikzlibrary{positioning,calc,fit,arrows.meta,matrix}`（都在 `run-tex.js` 内那一串）。
+
+上面那条"pgfplots 已回滚"是**当时的**结论：后来查明真正的原因不是那份载荷，而是**缺 `.fdx`**
+（见下面第 1 条）—— 补上之后 pgfplots 正常（`\begin{axis}` 能用）。
+
+这五条都是**同一类事故**：模型按最自然的写法写，引擎却缺一件东西；而**缺什么都不会报错**，
+表现得像卡死。所以宁可一次把常用的备齐，也别让它一个个踩。
+
+## 中文（CJK）：装了什么、从哪来
+
+* **宏包**：CTAN `cjk-4.8.5.tar.gz` 的 `texinput/**`（171 个 `.sty`/`.tex`/`.fd`/`.fdx`/`.enc`），
+  平铺 gzip 进 `tex_files/`。
+* **度量**：CTAN `gbsn00lp-20071107.tar.bz2` 里 `gbsnu` 全族 **98 个 `.tfm`**，同样平铺 gzip。
+* **引擎的字体表**：`run-tex.js` 里那段 `"cmr10":"<base64>"` 是**内嵌的 tfm**。中文那族要按
+  **同格式**塞进去（98 片、约 140KB base64），**还得配一张 `字符码 → Unicode` 的表**
+  （`"gbsnu53":{"214":21494,…}`）—— 少那张表引擎会崩（`Cannot read properties of undefined`）。
+  对应关系是实测出来的：`取` = U+53D6 → 字体 `gbsnu53`、码 **214**，即
+  **`gbsnu<HH>` 的 `<LL>` 号字 ↔ 码点 `U+HHLL`**。
+* **字形**：CTAN `arphic-ttf.zip` 的 `gbsn00lp.ttf` 按同一范围做子集 →
+  `fonts/gbsn00lp.woff2`（1.33MB，**按需下载**，见 `fonts.css` 末尾那条前缀规则）。
+  Python 沙箱另用一份 **TTF**（matplotlib 不认 woff2）：`vendor/cjk/gbsn00lp.ttf`，
+  构建时进 `assets/fonts/` —— 那条路径才有 CORS（沙箱是不透明源的独立文档）。
+* **那层环境**：`\usepackage{CJK}` 只是把宏包装上；真正把 UTF-8 汉字映到字形上的是**正文里**
+  的 `\begin{CJK}{UTF8}{gbsn}…\end{CJK}`。所以应用在交给引擎前**自己套**
+  （`theme/runtime/latex.js` 的 `withCJK`）—— 不能指望模型记得写这一层。
+
+## "看起来像卡死"的四个坑（都实测过，照这条查）
+
+1. **缺文件 → TeX 停在报错提示上等人按键**：既不报错也不出 dvi。线索是服务端日志里对
+   `tex_files/<名>.gz` 的 404。典型：`ot1cmr.fdx`、**`omlcmm.fdx`** —— CJK 会去读**当前字族**
+   的 `.fdx`，缺一个就是 `! Missing $ inserted` → `Emergency stop`。**空文件也对**，关键是别缺。
+2. **引擎的 svg 带 `tikzjax-broken` 类**：那是"引擎判死"的标记，不是图。应用从前把它当成
+   "还没好"，于是一路等到 90 秒看门狗、报"引擎卡住了" —— 其实几秒前就有结论了。
+3. **诊断要挑有用的那段**：引擎抛的错里**嵌着整份 TeX 日志**；从头截只会截到
+   `This is e-TeX…`，要挑 `! …` 那一行（`theme/runtime/latex.js` 里就是这么做的）。
+4. **实验室**：`tools/texlab/index.html` —— 仓库根起
+   `python3 -m http.server 8199 --directory <仓库根>`，打开 `/tools/texlab/index.html`。
+   它**在引擎之前**就钩住 console，TeX 的日志与 `! 报错` 都能读到；上面几条都是在那儿定案的。
+   **一次只加一个变量**，并且每次**重开页面**（工位是复用的，卡过一次的页面会一直卡）。

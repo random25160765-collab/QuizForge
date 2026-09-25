@@ -558,3 +558,22 @@
     font-family: msbm9;
     src: url('fonts/msbm9.woff2') format('woff2');
 }
+
+/* ---------------------------------------------------------------- 中文（CJK）
+   引擎（TikZJax）把中文字排成 `<text font-family="gbsnu<HH>">` —— 分片名就是码点的高字节
+   （`取` U+53D6 落在 `gbsnu53`）。字体数据那边由引擎自己认（已把 gbsnu 全族的 .tfm 与
+   码点对照装进它的表里），**字形**则由浏览器按下面这份字体画。
+
+   所有分片其实是同一个字体（Arphic 宋体 gbsn00lp，TeX 侧的度量也取自它），所以只声明
+   一份、用一条前缀规则把 `gbsnu*` 整族名字指过来。字体是**按需下载**的：页面上没有
+   中文图时，这 1.33MB 不会被取走。
+
+   为什么还要写那条 `text[...]` 规则：SVG 上的 font-family 是呈现属性，命中的字体缺字形时
+   浏览器不会自己往后找；给了字体栈，罕见字（子集里没有的）才会退到系统 CJK 字体。 */
+@font-face {
+    font-family: gbsn00lp;
+    src: url('fonts/gbsn00lp.woff2') format('woff2');
+}
+text[font-family^="gbsnu"] {
+    font-family: gbsn00lp, "Noto Sans CJK SC", "Source Han Sans SC", "WenQuanYi Zen Hei", sans-serif;
+}
