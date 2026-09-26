@@ -9540,6 +9540,7 @@
     ui.clear(skillPickEl);
     if (!list.length) {
       skillPickEl.classList.remove('is-open');
+      syncSkillPill();
       return;
     }
     if (skillPickAt >= list.length) skillPickAt = 0;
@@ -9566,6 +9567,7 @@
       );
     });
     skillPickEl.classList.add('is-open');
+    syncSkillPill();
   }
 
   /**
@@ -9734,6 +9736,23 @@
    * 都动态插进补药丸那一行（`.chat__tools`）：那一行是别处建的，这里只往里插；
    * 找不到就什么都不做 —— 布局变了顶多少两颗药丸，不该把输入区弄崩。
    */
+  /** 输入框里现在是"刚由 skill 药丸填进去的那个 `/skill`"吗？
+   *
+   * 只看 `/skill` 这一种：别的命令（`/思考`）不是这颗药丸填的，那一下该当成"换一个"，不该
+   * 把用户自己打的字抹掉（见 `paintSkillPills` 里那颗药丸的 onClick）。 */
+  function isSkillCompose() {
+    return /^\/skill\b/i.test(String((inputEl && inputEl.value) || '').trim());
+  }
+
+  /** 那颗药丸"按下去"的样子：清单开着的时候它就亮着（`is-on`，与「深度思考」同一套）。
+   *
+   * 加它的理由不只是好看：开与关**都得有反馈**。原先点一下是"重新填一遍 /skill"，界面
+   * 看上去毫无变化（用户："再点一下菜单栏不会自动收回去"）。 */
+  function syncSkillPill() {
+    var btn = document.querySelector('.chatskill__open');
+    if (btn) btn.classList.toggle('is-on', !!skillPickEl && skillPickEl.classList.contains('is-open'));
+  }
+
   function paintSkillPills() {
     var tools = document.querySelector('.chat__tools');
     if (!tools) return;
@@ -9746,6 +9765,21 @@
           type: 'button',
           title: '装一个 skill（也可以直接在输入框里打 /）',
           onClick: function () {
+            /* **再点一下要收回去**（用户："点击 skill 那个按钮，再点一下菜单栏不会自动收回去，
+             * 输入框中的 /skill 也不会消失"）。判据 = "清单正开着**且**输入框里就是这个 /skill"
+             * —— 那种状态下这一下点的是"关"，其余情况都是"开"。
+             *
+             * 清空是**要**的：`/skill` 这三个字本来就是这颗药丸写进去的（清单的内容也完全由
+             * 输入框里的字决定，见 `pickItems`）—— 不清的话，它俩谁都不会自己消失。 */
+            var open = skillPickEl && skillPickEl.classList.contains('is-open');
+            if (open && isSkillCompose()) {
+              inputEl.value = '';
+              growInput();
+              skillPickAt = 0;
+              paintSkillPick(); // 输入框空了 → 清单自己收（见 `paintSkillPick`）
+              inputEl.focus();
+              return;
+            }
             inputEl.value = '/skill ';
             growInput();
             skillPickAt = 0;
