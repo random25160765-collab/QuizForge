@@ -81,6 +81,17 @@ MODEL_REPO = "Xenova/bge-m3"
 MODEL_BASE = f"https://hf-mirror.com/{MODEL_REPO}/resolve/main/"
 MODEL_ITEMS = {
     "model.onnx": "onnx/model_quantized.onnx",  # int8 动态量化，542MB
+    # fp16：**GPU 那条路要的就是它**。
+    #
+    # 为什么 int8 在 GPU 上不划算：QDQ 那个图会被 ORT 插进几百个 Memcpy 节点
+    # （实测 336 个），数据在 GPU 与 CPU 之间来回搬 —— 结果 717ms/条，只比 CPU 的 822ms
+    # 快 13%，等于白占一张卡。换成 fp16：149ms/条（真跑起来约 16ms/窗，快 5.5 倍）。
+    # 反过来 fp16 在 CPU 上更慢（1803ms/条），所以"用哪个"是**跟着设备走**的，
+    # 由 `config/embed.local.json` 定（见 `scripts/gpu-setup.sh`），不是写死在这里。
+    #
+    # 进清单的意义：它有 sha256 校验、任何机器上 `ensure()` 都能取（以前是我手工 curl
+    # 的一个没校验的文件）。两种都留着 —— CPU 那台机器仍然该用 int8。
+    "model_fp16.onnx": "onnx/model_fp16.onnx",  # fp16，1.13GB
     "tokenizer.json": "tokenizer.json",
 }
 MODEL_DIM = 1024  # bge-m3
@@ -242,7 +253,13 @@ def main(argv: list[str]) -> int:
     total = sum(int((m or {}).get("bytes") or 0) for m in files.values())
     payload = {
         "version": "2026-09-21",
-        "model": f"{MODEL_REPO}（int8 ONNX）",
+        # **标签只说"哪个模型"，精度由 `local_embed.model_label()` 附加**。
+        #
+        # 原先这里写死 `（int8 ONNX）`：那时只有一种精度，看着没毛病；加了 fp16 之后，
+        # 它就成了**假话** —— 记账名会变成 `Xenova/bge-m3（int8 ONNX） + model_fp16`，
+        # 而那一列是"库里这些向量是谁算的"的唯一凭据（`embed` 拿它判 stale_model）。
+        # 一个会撒谎的凭据，比没有凭据更坏。
+        "model": MODEL_REPO,
         "dim": MODEL_DIM,
         "onnx": "model.onnx",
         "tokenizer": "tokenizer.json",

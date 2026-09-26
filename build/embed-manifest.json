@@ -1,10 +1,10 @@
 {
  "version": "2026-09-21",
- "model": "Xenova/bge-m3（int8 ONNX）",
+ "model": "Xenova/bge-m3",
  "dim": 1024,
  "onnx": "model.onnx",
  "tokenizer": "tokenizer.json",
- "bytes": 661161343,
+ "bytes": 1795154279,
  "note": "本地向量小模型清单：首启下载后逐个校验（build/embed_manifest.py 生成）",
  "files": {
   "flatbuffers-25.12.19-py2.py3-none-any.whl": {
@@ -91,6 +91,14 @@
    "sha256": "0826f8c1ab9edf1801db86c61919d4d108e8bfc0b809ec823ad366882ff0b77d",
    "url": "https://hf-mirror.com/Xenova/bge-m3/resolve/main/onnx/model_quantized.onnx",
    "bytes": 569694530,
+   "platform": "any",
+   "python": "any",
+   "kind": "model"
+  },
+  "model_fp16.onnx": {
+   "sha256": "4f1a646a3d4f39985589e9991a717044ede8278617fe55e3d246838bc05055e9",
+   "url": "https://hf-mirror.com/Xenova/bge-m3/resolve/main/onnx/model_fp16.onnx",
+   "bytes": 1133992936,
    "platform": "any",
    "python": "any",
    "kind": "model"

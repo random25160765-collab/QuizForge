@@ -141,8 +141,12 @@ def _slice_digest(windows: list[tuple[int, int, int, str]]) -> str:
 
 
 def _model_name() -> str:
-    """写进 `slice_embeddings.model` 的名字。换模型 = 整批重算，判据就是它。"""
-    return str(local_embed.manifest().get("model") or "")
+    """写进 `slice_embeddings.model` 的名字。换模型**或换精度** = 整批重算，判据就是它。
+
+    走 `local_embed.model_label()`：它会把 `QF_EMBED_ONNX` 指定的精度也拼进名字里 ——
+    否则换了 int8/fp16 而名字不变，两种不可混用的向量会共用一把名字，检索照样出结果。
+    """
+    return local_embed.model_label()
 
 
 def _pending(db, *, material: str, rebuild: bool, limit: int) -> tuple[list, dict]:  # noqa: ANN001
@@ -251,11 +255,45 @@ def _close_run(db, *, status: str, note: str = "", written: int = 0) -> None:  #
         db.rollback()
 
 
+def _other_embed_running() -> str:
+    """还有别的 `pipeline.embed` 在跑吗？返回它的 pid（没有就是空串）。
+
+    **为什么要有这道闸**（2026-09-26 实测踩过）：两个 embed 同时跑会抢同一批切片 ——
+    一个刚把某片的向量删掉、另一个正往里插，于是报出来的是
+
+        INSERT INTO slice_embeddings … 上一个看不懂的约束错
+
+    而**真正的原因（两个进程在算同一批片）在报错里一个字都没提**，现场只剩一个
+    卡住不动、`make watch` 里数字不涨的进程。判活走 `/proc` 而**不查跑单账本**：
+    手工起的进程本来就不在账本里（面板上那句"旧版/手工起的进程"就是它）。
+    """
+    me = os.getpid()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) == me:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "pipeline.embed" in cmdline and "python" in cmdline:
+            return entry.name
+    return ""
+
+
 def _run(args) -> int:  # noqa: ANN001
     if args.fetch:
         ok, detail = local_embed.ensure(log=lambda message: print("   ", message))
         print(("  ✓ " if ok else "  ✗ ") + detail)
         return 0 if ok else 1
+
+    other = _other_embed_running()
+    if other:
+        print(
+            f"已经有一个 embed 在跑（pid {other}）—— 两个进程算同一批切片会互相插队，\n"
+            f"  报出来的是 `INSERT INTO slice_embeddings` 上一个看不懂的约束错。\n"
+            f"  等它跑完；或者确认它已经死了再重来：kill {other}"
+        )
+        return 2
 
     db = get_session_factory()()
     try:
@@ -365,6 +403,10 @@ def _run(args) -> int:  # noqa: ANN001
                 written += 1
             # 跑单上的进度**每批落一次**：于是"跑到哪一步"是查得到的，不必只看进程还在不在。
             run.windows_written = written
+            if not run.device:
+                # 第一批算完就知道自己落在哪块芯片上了 —— 会话是**懒建**的，
+                # 所以开跑那一刻还问不出来（见 `local_embed._load`）。
+                run.device = str(local_embed.active_provider() or "")
             db.commit()
             print(
                 f"  已写 {written}/{len(flat)} 窗（这批 {len(chunk)} 窗 / {elapsed:.0f} ms）",

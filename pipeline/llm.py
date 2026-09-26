@@ -228,8 +228,20 @@ class LLM:
         json_mode: bool = True,
     ) -> Reply:
         path = Path(image_path)
-        mime = mimetypes.guess_type(path.name)[0] or "image/webp"
-        data_url = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        # **MIME 按魔数认，不只看扩展名**：浏览器保存网页时 `*_files/` 里的图常常
+        # 没有扩展名（`rcdszc74add_qnwhvt8…` 这种），`guess_type` 猜不出来，
+        # 而给它一个不符的 MIME 上游可能直接拒。
+        data = path.read_bytes()
+        head = data[:16]
+        sniffed = (
+            "image/png" if head.startswith(b"\x89PNG")
+            else "image/jpeg" if head.startswith(b"\xff\xd8\xff")
+            else "image/gif" if head.startswith(b"GIF8")
+            else "image/webp" if head.startswith(b"RIFF") and head[8:12] == b"WEBP"
+            else ""
+        )
+        mime = sniffed or mimetypes.guess_type(path.name)[0] or "image/webp"
+        data_url = f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
         messages = [
             {
                 "role": "user",

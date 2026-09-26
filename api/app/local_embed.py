@@ -79,6 +79,61 @@ MAX_TOKENS = 1024
 _lock = threading.Lock()
 _session = None
 _tokenizer = None
+#: 这一进程**实际**用上的 provider（`_load()` 里定）。给日志、`ops bench` 与排查用 ——
+#: "以为在跑 GPU、其实悄悄退回 CPU"是这条路上最难发现的一种慢（它不报错）。
+_provider_used = ""
+
+
+def active_provider() -> str:
+    """现在用的是哪个 provider（还没建会话时是空串）。"""
+    return _provider_used
+
+
+def cuda_lib_dirs() -> list[Path]:
+    """pip 装的 CUDA / cuDNN 库在哪（`site-packages/nvidia/*/lib`）。
+
+    为什么得自己找：`onnxruntime-gpu` 是**动态链** `libcudart.so.12` / `libcublas.so.12` /
+    `libcudnn.so.9` 的，而 pip 的 `nvidia-*-cu12` 把库放在 `site-packages/nvidia/*/lib`
+    —— 那里不在动态库搜索路径上。ORT 找不到就只用 CPU，而且**不报错**（只是慢）。
+    """
+    out: list[Path] = []
+    for base in sys.path:
+        nvidia = Path(base or ".") / "nvidia"
+        if not nvidia.is_dir():
+            continue
+        out.extend(sorted(one for one in nvidia.glob("*/lib") if one.is_dir()))
+    return out
+
+
+def cuda_lib_path() -> str:
+    """上面那些目录拼成 `LD_LIBRARY_PATH` 该有的样子（空串 = 没用 pip 装 CUDA 库）。"""
+    return ":".join(str(one) for one in cuda_lib_dirs())
+
+
+def _providers(onnxruntime) -> list[str]:  # noqa: ANN001
+    """这一轮用哪个 provider：**能用 GPU 就用**，但允许被显式指定。
+
+    `QF_ORT_PROVIDER=CUDAExecutionProvider`（或 `CPUExecutionProvider`）用来做 A/B ——
+    量"到底快了多少"时，切环境变量比改代码干净，也比改完忘了改回来安全。
+
+    （原先这里写死 `["CPUExecutionProvider"]`：装的本来就是 CPU 版，写死没毛病；
+    可它会让"换成 GPU 版 onnxruntime"**完全没效果** —— 一脚踩空，还不报错。）
+    """
+    forced = str(os.environ.get("QF_ORT_PROVIDER") or "").strip()
+    if not forced:
+        # 第二档：**本机配置**（`config/embed.local.json` 的 `provider`）——
+        # 它是持久的：换台机器、开个新终端，都跟着这台机器的实际情况走。
+        # 环境变量仍然优先（临时做 A/B 用），清单默认放最后（自动挑）。
+        forced = str(local_config().get("provider") or "").strip()
+    if forced:
+        return [forced, "CPUExecutionProvider"] if forced != "CPUExecutionProvider" else [forced]
+    try:
+        have = list(onnxruntime.get_available_providers())
+    except Exception:  # noqa: BLE001
+        have = []
+    if "CUDAExecutionProvider" in have:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
 
 
 def _root() -> Path:
@@ -118,6 +173,67 @@ def manifest() -> dict:
     except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def local_config_path() -> Path:
+    """本机的推理配置：`config/embed.local.json`。
+
+    与 `config/ai.local.json` 同一条约定（同目录、同样不进 git）：**机器相关的东西不该
+    写进代码**。这里就两件事 —— 用哪个 ONNX 变体、用哪个 provider —— 它们跟着"这台机器
+    有没有 GPU、哪张卡配哪种精度"走，换台机器就该换一套（见 `scripts/gpu-setup.sh`）。
+    """
+    return Path(get_settings().ai_beta_config_file).parent / "embed.local.json"
+
+
+def local_config() -> dict:
+    """读本机推理配置。没有、坏了都当空字典 —— 缺省就是清单里那份 int8 + 自动挑 provider。"""
+    path = local_config_path()
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def onnx_file() -> str:
+    """用哪个 ONNX 文件：环境变量 → 本机配置 → 清单默认值。
+
+    * `QF_EMBED_ONNX`：临时用（做 A/B 最方便，比改代码干净）；
+    * `config/embed.local.json` 的 `onnx`：**持久**，这台机器就该用这个；
+    * 清单里那个（`model.onnx`，int8 —— CPU 机器上它是对的）。
+
+    为什么必须有"持久"那一档：这次切 fp16 全靠命令行上的环境变量，于是**换个终端再跑
+    一次 `pipeline.embed`，它就会拿 int8 把整库重算回去**（记账名一换，`_pending` 把
+    所有片都判成 stale_model）。"默认值取决于你今天怎么敲的"这种状态不能留。
+    """
+    env = str(os.environ.get("QF_EMBED_ONNX") or "").strip()
+    if env:
+        return env
+    conf = str(local_config().get("onnx") or "").strip()
+    if conf:
+        return conf
+    return str(manifest().get("onnx") or "model.onnx")
+
+
+def model_label() -> str:
+    """写进 `slice_embeddings.model` 的名字 —— **精度也算在里面**。
+
+    这不是装饰：那一列是"存量是不是同一套"的唯一判据（`pipeline/embed.py` 拿它判
+    `stale_model`）。换了变体却不换名字，库里就会同时躺着两种不可混用的向量，
+    而检索照样出结果 —— 只是结果是错的，且很难查。
+
+    精度直接取自 `onnx_file()`：**记账名必须等于实际用的那份文件**，不做第二套判断
+    （环境变量、本机配置、清单三处各说各话时，也只认最终生效的那个）。
+    `model.onnx` 那个默认变体不加后缀 —— 它一直叫这个名字，加了会让所有 CPU 机器
+    凭空多出一次整库重算。
+    """
+    base = str(manifest().get("model") or "")
+    variant = Path(onnx_file()).stem
+    if base and variant and variant != "model":
+        return "%s + %s" % (base, variant)
+    return base
 
 
 def _tags() -> tuple[str, str]:
@@ -228,14 +344,24 @@ def status() -> dict:
 
 
 def activate() -> None:
-    """把解包目录挂进 `sys.path`（**幂等**）。
+    """把解包目录挂进 `sys.path`（**幂等**）—— 挂在**末尾**。
 
     公开的：`semantic` 也要用它 —— numpy 就在这个目录里，而算余弦要用 numpy
     （千级窗口 × 1024 维，纯 Python 要一秒多，numpy 是几毫秒）。
+
+    为什么是 `append` 而不是 `insert(0, …)`：这个目录是给"打包版机器上什么都没有"
+    兜底的，里面放的是清单里那份 **CPU** 轮子。插到最前面时，它会挡住 venv 里装好的
+    `onnxruntime-gpu` —— 表现最难查：进程照样起、照样算，只是慢十倍，日志里只有一行
+
+        Specified provider 'CUDAExecutionProvider' is not in available provider names
+
+    （实测踩过：`ops` 账本里那条"GPU 车道"报的是 `CPUExecutionProvider`。）
+    追加到末尾则各取所需：venv 有的（onnxruntime、numpy）优先用 venv 的，
+    venv 没有的（tokenizers 一直只在这个目录里）照样找得到 —— 三个模块一次解决。
     """
     site = str(site_dir())
     if site not in sys.path:
-        sys.path.insert(0, site)
+        sys.path.append(site)
 
 
 def _copy_from_vendor(log: Callable[[str], None]) -> bool:
@@ -393,10 +519,13 @@ def _load():
         import onnxruntime  # noqa: PLC0415
         from tokenizers import Tokenizer  # noqa: PLC0415
 
-        model_file = str(manifest().get("onnx") or "model.onnx")
-        _session = onnxruntime.InferenceSession(
-            str(files_dir() / model_file), providers=["CPUExecutionProvider"]
-        )
+        model_file = onnx_file()
+        providers = _providers(onnxruntime)
+        _session = onnxruntime.InferenceSession(str(files_dir() / model_file), providers=providers)
+        # 记下**实际**用上的那个：`providers` 是"希望"，`get_providers()` 才是事实 ——
+        # CUDA 的库没配好时 ORT 会静默退回 CPU，而那种慢最难查（不报错、只是慢十倍）。
+        global _provider_used
+        _provider_used = str((_session.get_providers() or providers)[0])
         tokenizer = Tokenizer.from_file(str(files_dir() / str(manifest().get("tokenizer") or "tokenizer.json")))
         tokenizer.enable_truncation(max_length=MAX_TOKENS)
         tokenizer.enable_padding()

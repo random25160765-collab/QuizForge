@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -34,16 +35,145 @@ RENDER_DPI = 200
 PAGE_TIMEOUT = 120
 
 _ENGINE = None
+_ENGINE_PROVIDERS: list[str] = []
+#: `_patch_upstream_cuda_keys` 只该跑一次
+_PATCHED = False
+
+
+def _preload_cuda() -> None:
+    """把 pip 装的那几个 CUDA 库喂给 ONNX Runtime。
+
+    为什么必须显式做：`onnxruntime-gpu` 是**动态链** `libcudart.so.12` / `libcublas.so.12`
+    / `libcudnn.so.9`，而 pip 的 `nvidia-*-cu12` 把它们放在 `site-packages/nvidia/*/lib`
+    —— 那里不在动态库搜索路径上（`local_embed.cuda_lib_dirs()` 那段注释讲的是同一件事）。
+    `make` / `ops` 起的子进程能走 CUDA，是因为父进程替它们设好了 `LD_LIBRARY_PATH`；
+    **裸着跑的 python 不能**（`make images` 就是这样），而且症状不好认：
+    不是"找不到库"，是会话建得起来、一推理就
+
+        CudaKernel::RequireCudnnHandle → NOT_IMPLEMENTED
+
+    ORT 1.19+ 的 `preload_dlls()` 就是干这件事的。老版本没有它、或本机没有 pip 的
+    CUDA 库，都不是错误 —— 那就按 CPU 跑，慢一点，结果一样。
+    """
+    try:
+        import onnxruntime as ort  # noqa: PLC0415
+
+        ort.preload_dlls()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cuda_kwargs() -> dict:
+    """给 RapidOCR 的 CUDA 开关。**三件事都得对**，少一件就白给（都实测过）：
+
+    * `*_use_cuda=True` —— 开关本身；
+    * `*_model_path=""` —— 包的 `UpdateParameters` 把前缀后的键塞进各段配置时**同时读
+      `model_path`**，不给就 `KeyError: 'model_path'`（给空串即可，它会补默认路径）；
+    * 先 `preload_dlls()`（见 `_preload_cuda`），否则会话建得起来、一推理就死在 cudnn 句柄上。
+
+    没有 CUDA provider 就退回 CPU；`QF_OCR_CUDA=0` 强制 CPU（做 A/B 用）。
+    """
+    forced = str(os.environ.get("QF_OCR_CUDA") or "").strip().lower()
+    if forced in ("0", "false", "no", "off"):
+        return {}
+    try:
+        import onnxruntime as ort  # noqa: PLC0415
+
+        if "CUDAExecutionProvider" not in ort.get_available_providers():
+            return {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return {
+        "det_use_cuda": True, "det_model_path": "",
+        "rec_use_cuda": True, "rec_model_path": "",
+        "cls_use_cuda": True, "cls_model_path": "",
+    }
+
+
+def _providers_of(engine) -> list[str]:  # noqa: ANN001
+    """从引擎里掏出各子模块**真实**用的 provider。
+
+    属性名不写在石头里（`text_detector` / `text_recognizer` 下面还有一层），所以递归找
+    第一个带 `get_providers()` 的东西 —— 这样这份代码不会因为包内改名而静默报错。
+    """
+    found: list[str] = []
+    seen: set[int] = set()
+
+    def walk(obj, depth: int = 0) -> None:  # noqa: ANN001
+        if depth > 5 or id(obj) in seen or not hasattr(obj, "__dict__"):
+            return
+        seen.add(id(obj))
+        if hasattr(obj, "get_providers"):
+            found.append(str(obj.get_providers()[0]))
+            return
+        for value in list(vars(obj).values())[:30]:
+            if isinstance(value, (str, int, float, bool, bytes)) or value is None:
+                continue
+            walk(value, depth + 1)
+
+    walk(engine)
+    return sorted(set(found))
+
+
+def _patch_upstream_cuda_keys() -> None:
+    """给上游那两个方法补上 `use_cuda` 的前缀处理（**只在内存里换掉方法，不动它的文件**）。
+
+    `rapidocr_onnxruntime.utils.UpdateParameters` 把 kwargs 按前缀分流到 Det / Cls / Rec
+    三段，但清洗前缀时**只认** `rec_model_path` / `cls_model_path` / `cls_label_list`：
+    `rec_use_cuda=True` 于是被原样塞进配置，成了一个没人读的怪键，真正的 `use_cuda`
+    还是 false —— 症状是 **det 上了 GPU、rec 还在 CPU**（实测：providers 报
+    `['CPUExecutionProvider', 'CUDAExecutionProvider']`，而不是三个都 CUDA）。
+    Det 那段没这个问题（它对所有键都去前缀），所以只看 det 会以为"已经成功了"。
+    """
+    global _PATCHED
+    if _PATCHED:
+        return
+    from rapidocr_onnxruntime import utils as upstream  # noqa: PLC0415
+
+    original_cls = upstream.UpdateParameters.update_cls_params
+    original_rec = upstream.UpdateParameters.update_rec_params
+
+    def update_cls_params(self, config, cls_dict):  # noqa: ANN001
+        if cls_dict and "cls_use_cuda" in cls_dict:
+            cls_dict = dict(cls_dict)
+            cls_dict["use_cuda"] = cls_dict.pop("cls_use_cuda")
+        return original_cls(self, config, cls_dict)
+
+    def update_rec_params(self, config, rec_dict):  # noqa: ANN001
+        if rec_dict and "rec_use_cuda" in rec_dict:
+            rec_dict = dict(rec_dict)
+            rec_dict["use_cuda"] = rec_dict.pop("rec_use_cuda")
+        return original_rec(self, config, rec_dict)
+
+    upstream.UpdateParameters.update_cls_params = update_cls_params
+    upstream.UpdateParameters.update_rec_params = update_rec_params
+    _PATCHED = True
 
 
 def engine():
-    """RapidOCR 引擎**只建一次**：它要加载检测与识别两个模型，反复建会白等十几秒。"""
-    global _ENGINE
+    """RapidOCR 引擎**只建一次**：它要加载检测与识别两个模型，反复建会白等十几秒。
+
+    **默认尽量走 GPU**：OCR 是本机唯一 CPU 密集的一步（4 路并发能吃掉 14 个核），
+    实测同一张图 0.70 秒 → 0.37 秒，而且那 14 个核能放下来。
+    """
+    global _ENGINE, _ENGINE_PROVIDERS
     if _ENGINE is None:
         from rapidocr_onnxruntime import RapidOCR  # 延迟导入：没装 OCR 的计划外的人不该被它拖累
 
-        _ENGINE = RapidOCR()
+        kwargs = _cuda_kwargs()
+        if kwargs:
+            _preload_cuda()
+            _patch_upstream_cuda_keys()
+        _ENGINE = RapidOCR(**kwargs)
+        _ENGINE_PROVIDERS = _providers_of(_ENGINE)
     return _ENGINE
+
+
+def providers() -> list[str]:
+    """现在这套 OCR 跑在哪个 provider 上（会顺手把引擎建起来）。给人一个交代。"""
+    if _ENGINE is None:
+        engine()
+    return list(_ENGINE_PROVIDERS)
 
 
 def _has_pdftoppm() -> bool:

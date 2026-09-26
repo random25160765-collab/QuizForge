@@ -735,6 +735,10 @@ class EmbedRun(Base):
     batch: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     pid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     host: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    #: **跑在哪块芯片上** —— 开跑时还不知道，第一批算完写上（就是 ORT 报的实际 provider，
+    #: 例如 `CUDAExecutionProvider` / `CPUExecutionProvider`）。不记这个的话，
+    #: "这条跑单到底用没用上 GPU"只能靠猜，而 GPU 这条路最典型的事故正是静默退回 CPU。
+    device: Mapped[str] = mapped_column(String(48), default="", nullable=False)
     #: `running` / `ok` / `failed`。中断是**外面看出来的**：`running` 而 pid 不在。
     status: Mapped[str] = mapped_column(String(16), default="running", nullable=False, index=True)
     #: 打算算多少片 / 多少窗（开跑定下），以及已经写进去多少窗。
