@@ -21,6 +21,24 @@
     python3 tools/db_snapshot.py load --path db/quizforge.db.gz  # 快照 → 库（--force 覆盖）
     python3 tools/db_snapshot.py load --path … --target /tmp/x.db  # 换个落点（自检用）
 
+## 快照分两份：一份进 git，一份本机自己留
+
+2026-09-26 起，`save` 一次写**两个文件**：
+
+* `db/quizforge.db.gz` —— **进 git**，**不含向量**。题、考纲、图谱、材料正文
+  （正文是"坐标的唯一来源"，删不得）都在里面，几十 MB 级别。
+* `db/quizforge.db.with-vectors.gz` —— **本机留**（已 gitignore），含向量。
+  换机器时带上它，不必重算；不带也行，`make embed` 重建。
+
+为什么这么分：向量占全库的 **82.9%**（实测 159.7 / 192.6 MB），而它**是派生物** ——
+`make embed` 随时能从正文重算出来（GPU 约 10 分钟）。更要紧的是它**压不动**：
+float32 的向量 blob 走 zlib 只有 **1.08 倍**，而正文有 3.8 倍 —— 也就是说向量一旦进了
+版本库，仓库体积几乎按它的原始大小增长，历史里还删不掉（旧对象仍按 SHA 可取）。
+所以它不该进 git；而那份 core 快照拿去 clone 之后，一条 `make embed` 就补齐了。
+
+`load --no-vectors`（载入时剔掉向量）与 `save --with-vectors/--no-vectors` 都留着口子，
+两条路都验过：core 快照载入后 `make embed` 能从零重建。
+
 ## 两件不许省的事
 
 * **落盘前抹掉 AI 密钥**。`user_settings.data.ai.apiKey` 存着用户自己填的密钥，
@@ -128,7 +146,22 @@ def _summary(path: Path) -> str:
         conn.close()
 
 
-def save(out: Path, db: Path = DEFAULT_DB) -> int:
+def _drop_vectors(conn: sqlite3.Connection) -> int:
+    """清空 `slice_embeddings`，返回删了几行（表不在就 0）。
+
+    删之前**先数**：这个数要打给用户看 —— "剔掉 14 万条向量"比"存完了"有信息量，
+    而且它就是"core 这份为什么小"的答案。表不存在不炸：工具也可能被指向一份更老的库。
+    """
+    try:
+        rows = conn.execute("SELECT COUNT(*) FROM slice_embeddings").fetchone()[0]
+    except sqlite3.OperationalError:
+        return 0
+    if rows:
+        conn.execute("DELETE FROM slice_embeddings")
+    return int(rows)
+
+
+def save(out: Path, db: Path = DEFAULT_DB, *, with_vectors: bool = True) -> int:
     if not db.is_file():
         print(f"没有库可存：{db} 不存在", file=sys.stderr)
         return 1
@@ -154,6 +187,9 @@ def save(out: Path, db: Path = DEFAULT_DB) -> int:
     conn = sqlite3.connect(str(stage))
     try:
         stripped = _strip_secrets(conn)
+        # 剥向量也在 VACUUM **之前** —— 顺序与抹密钥同理：VACUUM 会把删掉的内容
+        # 真正从页里挤出去，core 那份才是真的小，而不是"小在元数据里"。
+        dropped = 0 if with_vectors else _drop_vectors(conn)
         conn.commit()
         conn.execute("VACUUM")
     finally:
@@ -165,12 +201,17 @@ def save(out: Path, db: Path = DEFAULT_DB) -> int:
     tmp.replace(out)
 
     size = out.stat().st_size / 1024 / 1024
+    parts = [f"抹掉密钥 {stripped} 处"]
+    if dropped:
+        parts.append(f"**剔掉向量 {dropped} 条**（派生物：目标机器上 `make embed` 重建）")
+    elif not with_vectors:
+        parts.append("库里本来就没有向量")
     print(f"快照已写入 {out}（{size:.2f} MB）")
-    print(f"  抹掉密钥 {stripped} 处 · {_summary(db)}")
+    print(f"  {' · '.join(parts)} · {_summary(db)}")
     return 0
 
 
-def load(path: Path, target: Path, force: bool = False) -> int:
+def load(path: Path, target: Path, force: bool = False, *, with_vectors: bool = True) -> int:
     if not path.is_file():
         print(f"快照不存在：{path}", file=sys.stderr)
         return 1
@@ -203,6 +244,19 @@ def load(path: Path, target: Path, force: bool = False) -> int:
             print(f"  ✗ {item}", file=sys.stderr)
         return 1
 
+    # `--no-vectors`：把带向量的快照载入成"只缺向量"的库（`make embed` 补回来）。
+    # 放在**校验之后、替换正式库之前** —— 这一步万一出错，正式库还在原地。
+    if not with_vectors:
+        conn = sqlite3.connect(str(staging))
+        try:
+            dropped = _drop_vectors(conn)
+            conn.commit()
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+        if dropped:
+            print(f"  载入时剔掉向量 {dropped} 条（`make embed` 可重建）")
+
     for sidecar in (target.with_name(target.name + "-wal"), target.with_name(target.name + "-shm")):
         sidecar.unlink(missing_ok=True)  # 旧库的 WAL 不能留着和新库混在一起
     staging.replace(target)
@@ -222,16 +276,20 @@ def main(argv: list[str] | None = None) -> int:
     save_parser = sub.add_parser("save", help="库 → 快照（抹密钥后落盘）")
     save_parser.add_argument("--out", default="db/quizforge.db.gz")
     save_parser.add_argument("--db", default=str(DEFAULT_DB), help="源库路径（默认 data/quizforge.db）")
+    save_parser.add_argument("--no-vectors", action="store_true",
+                             help="不带向量（进 git 的那份；向量在目标机器上 make embed 重建）")
 
     load_parser = sub.add_parser("load", help="快照 → 库（载入前校验）")
     load_parser.add_argument("--path", default="db/quizforge.db.gz")
     load_parser.add_argument("--target", default=str(DEFAULT_DB), help="落点（默认 data/quizforge.db）")
     load_parser.add_argument("--force", action="store_true", help="目标已存在也覆盖")
+    load_parser.add_argument("--no-vectors", action="store_true", help="载入时剔掉向量（改主意想换一台重算）")
 
     args = parser.parse_args(argv)
     if args.cmd == "save":
-        return save(Path(args.out), Path(args.db))
-    return load(Path(args.path), Path(args.target), force=args.force)
+        return save(Path(args.out), Path(args.db), with_vectors=not args.no_vectors)
+    return load(Path(args.path), Path(args.target), force=args.force,
+                with_vectors=not args.no_vectors)
 
 
 if __name__ == "__main__":

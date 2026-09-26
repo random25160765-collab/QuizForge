@@ -12,9 +12,12 @@
 #   make test           上面的校验 + 前端逻辑自测
 #   make graph-check    图谱体检（无环 / 能走到根 / 闭包不矛盾）
 #
-# 数据快照（**唯一进版本库的数据形态**，就是 SQLite 库本身）：
-#   make db-snapshot   库里 → db/quizforge.db.gz（提交它）
-#   make db-restore    db/quizforge.db.gz → data/quizforge.db（解压即用）
+# 数据快照（**唯一进版本库的数据形态**，就是 SQLite 库本身）—— 分两份：
+#   make db-snapshot   一次写两个：
+#                        db/quizforge.db.gz               不含向量 → **提交它**
+#                        db/quizforge.db.with-vectors.gz  含向量   → 本机自己留（已 gitignore）
+#   make db-restore    db/quizforge.db.gz → data/quizforge.db（解压即用；向量靠 make embed 重建）
+#                      要连向量一起搬：make db-restore ARGS="--path db/quizforge.db.with-vectors.gz"
 # ============================================================================
 
 PYTHON ?= python3
@@ -163,22 +166,47 @@ api-venv:
 
 # ---- 数据快照：**唯一进版本库的数据形态**（SQLite 库本身，不是某种导出版本）----
 #
-# 权威是 `data/quizforge.db`（本机一个文件）；`db/quizforge.db.gz` 是它的快照，
-# 用来"换台机器接着干"。这里刻意**不再有 Postgres**：
+# 权威是 `data/quizforge.db`（本机一个文件）；快照用来"换台机器接着干"。
+# 这里刻意**不再有 Postgres**：
 #   * 快照就是 SQLite 库本身，解压即用，没有"先起一台库再灌 dump"这一步；
 #   * 载入即校验（完整性 + 外键悬空），坏快照当场拒绝，不会悄悄给出一个半库。
 #
-# 快照**必须抹掉 AI 密钥**再落盘：它是进版本库的（仓库公开），而 `user_settings`
+# 快照**必须抹掉 AI 密钥**再落盘：它是进版本库的（仓库公开），而 `app_settings`
 # 里存着用户自己填的密钥。踩过：2026-09-17 导出的快照里带过一把真密钥。
+#
+# **分两份**（2026-09-26）：向量占全库 82.9%，而它是派生物、又**压不动**
+# （float32 的 blob 走 zlib 只有 1.08 倍，正文有 3.8 倍）—— 进了版本库就是按原始
+# 大小长、历史里还删不掉。所以进 git 的那份**不含向量**，带向量的那份本机自己留：
+# 换机器带上它就不用重算，不带也行（`make embed` 重建）。详见 tools/db_snapshot.py。
 DB_SNAPSHOT ?= db/quizforge.db.gz
+DB_VECTORS  ?= db/quizforge.db.with-vectors.gz
 
-# 库里 → 快照。用 SQLite 的 backup API 取一致性快照（有 WAL 也不会读到半写状态）。
+# 库里 → 两份快照。用 SQLite 的 backup API 取一致性快照（有 WAL 也不会读到半写状态）。
 db-snapshot:
-	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_SNAPSHOT)
+	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_SNAPSHOT) --no-vectors
+	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_VECTORS)
 
 # 快照 → 库里（`--force` 覆盖已有的库）。这是**换新机器/首次上手**那条路。
+# 这份没有向量：`make embed` 补齐（GPU 约 10 分钟、CPU 一小时多）。
+# 要连向量一起搬：make db-restore ARGS="--path $(DB_VECTORS)"
 db-restore:
 	@$(VENV)/bin/python tools/db_snapshot.py load --path $(DB_SNAPSHOT) $(ARGS)
+
+# ---------------------------------------------------------------- 数据库运维（只读）
+# 这些以前是"每次开个 python -c 现场写"：库多大、哪个表占地方、某个 slug 在不在。
+# 写一次扔一次的代价不是打字，是**结论留不下来** —— 下次还得再量一遍，而量法稍有
+# 不同就会得出不同的数。所以固化成 tools/db_ops.py（只读，改不到你的库）。
+db-size:
+	@$(VENV)/bin/python tools/db_ops.py size
+
+db-counts:
+	@$(VENV)/bin/python tools/db_ops.py counts
+
+db-query:
+	@test -n "$(Q)" || { echo '需要 Q="一句 SQL"（只读）'; exit 1; }
+	@$(VENV)/bin/python tools/db_ops.py query "$(Q)"
+
+.PHONY: db-size db-counts db-query
 
 # 起开发服务前**必构建前端**：前端是静态产物，不构建看到的就是上一次的样子 ——
 # 实测踩过（"开发端找不到笔记入口"，其实是产物还是旧的）。构建戳会打出来，
@@ -209,6 +237,105 @@ dev: web
 
 api-test:
 	@cd api && .venv/bin/python -m pytest
+
+# ---------------------------------------------------------------------- 资料运维
+# 资料（向量化）的进度。**前台看**，刷新一屏、带进度条，没活了自己退出。
+#
+#   make watch      实时刷新（Ctrl-C 退出；后台的活不受影响）
+#   make ops        只画一帧（脚本与 agent 用这个）
+#   make ops-json   同一份数据，给程序读
+#
+# 为什么做成快捷键：这一点上反复敲命令 = 反复写一次性脚本，而 `pipeline/ops.py`
+# 就是为了把那件事固化下来（它同时也负责调度、对账与跑单账本）。
+watch:
+	@$(VENV)/bin/python -m pipeline.ops watch
+
+ops:
+	@$(VENV)/bin/python -m pipeline.ops
+
+ops-json:
+	@$(VENV)/bin/python -m pipeline.ops --json
+
+.PHONY: watch ops ops-json
+
+# ---------------------------------------------------------------------- GPU
+# 装了 N 卡的那台机器上跑一次。它只做两件事：装依赖、把"这台机器该用什么"写进
+# `config/embed.local.json` —— CUDA 那几个包 1.4G，不该写进所有人的 requirements。
+#
+#   make gpu-check   只体检（卡在不在、provider 有没有、现在会用哪个变体）
+#   make gpu-setup   装依赖 + 写本机配置（有卡就用 fp16 走 GPU）
+#   make gpu-fp16    顺带取 fp16 模型（1.1G，清单里有 sha256 校验）
+gpu-check:
+	@scripts/gpu-setup.sh --check
+
+gpu-setup:
+	@scripts/gpu-setup.sh
+
+gpu-fp16:
+	@scripts/gpu-setup.sh --with-fp16
+
+.PHONY: gpu-check gpu-setup gpu-fp16
+
+# ---------------------------------------------------------------------- 一键补充向量
+# 往 Windows 那边（F:\Books 之类）丢一个新文件 → `make add` → 前端就能查到。
+#
+# 它做四件事，一件都不少：**扫目录找新文件**（正文抽过没有，是唯一判据）→ **抽正文**
+# （PDF 走 pdftotext / docx 走 pandoc，见 api/app/library.py）→ **登记 + 切片** → **算向量**。
+# 三者的幂等性都是现成的：抽正文按修改时间增量、登记按 sha256 判"已最新"、
+# 向量只算缺的与正文变了的 —— 所以**重复跑不会重算**，第二次跑就是几秒的"没有新东西"。
+#
+#   make add                      收 SRC 这个目录（默认 /mnt/f/Books）
+#   make add SRC=/mnt/f/Website   收别的目录（一次一个）
+#   make add SUBJECT=cuda         新条目归到哪个学科（默认按路径猜）
+#   make add DRY=1                只说要收哪些，一个字都不写
+#
+# 收进来的东西一律落在**检索**档（`materials.depth`，拿来查、不进出题链）；
+# 哪几篇值得精读出题，在资料库里把它们提到 `出题`，那是另一条路（见 pipeline/intake.py）。
+SRC     ?= /mnt/f/Books
+SUBJECT ?=
+add:
+	@$(VENV)/bin/python -m pipeline.intake --from $(SRC) \
+		$(if $(SUBJECT),--subject $(SUBJECT),) $(if $(WORKERS),--workers $(WORKERS),) $(if $(DRY),--dry-run,)
+	@$(VENV)/bin/python -m pipeline.embed $(if $(EMBED_ARGS),$(EMBED_ARGS),)
+	@echo "  好了，前端可以直接查：http://127.0.0.1:$(API_PORT)/chat.html"
+
+.PHONY: add
+
+# ---------------------------------------------------------------------- 图片进检索
+# 材料里的图，**图里的字**用本地 OCR、**图的内容**让模型说一句，都写回正文 —— 只有
+# 写回正文，图才进得了切片与向量（否则问"这张图画了什么"是搜不到的：实测那批网页
+# 材料 148 条图片引用，只有 34% 带 alt，大半还是"图片"两个字）。
+#
+# 写进去的行首标着来路（`图里的字（OCR）：` / `图说明（模型读图）：`）—— 机器从图里
+# 读出来的与原生正文不是一个可信度，引用落到它上面时要看得出来。重跑先删后写，不叠加。
+#
+#   make images                    所有带图的材料
+#   make images MATERIAL=<slug>    只做一份
+#   make images DRY=1              只列要抓/要读哪些图，一个字不写、不联网
+#   make images OCR=1              只要 OCR（本地、免费；不花钱读图）
+#   make images FORCE=1            处理过的图也重来（默认跳过：读图按张收费）
+#   make images WORKERS=8          读图并发（默认 8）
+#   make images OCR_WORKERS=2      OCR 并发（默认 4）。**走 GPU 时显存吃得凶**：
+#                                  4 路实测 7.8/8.1 GB —— 要和 `make embed` 同时跑就把
+#                                  这里降到 2；`QF_OCR_CUDA=0` 则强制回 CPU（OCR 默认走卡）。
+#
+# 图会抓到 data/library/.text/.media/<slug>/（CDN 那种本机没有副本的），抓过不重抓。
+# 之后自动重切 + 增量算向量：**只重算正文变了的材料**。
+# 默认**只做"检索"层**（资料库：网页、书）。出题层那 16 份材料有它们自己的读图支路，
+# 而重切它们的正文会动到出题账本认的切片 —— 要一起做加 ALL=1（或点名 MATERIAL=<slug>）。
+IMAGES_ARGS = $(if $(MATERIAL),--material $(MATERIAL),) $(if $(DRY),--dry-run,) \
+              $(if $(OCR),--no-caption,) $(if $(ALL),--all-depths,) $(if $(FORCE),--force,) \
+              $(if $(WORKERS),--workers $(WORKERS),) $(if $(OCR_WORKERS),--ocr-workers $(OCR_WORKERS),)
+
+images:
+	@# PYTHONUNBUFFERED：这一步要跑十几分钟（抓图 + OCR + 逐张读图），输出被缓冲的
+	@# 话，后台跑起来看着像卡死 —— 与 `dist` 那条目标同一个理由。
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python -m pipeline.images $(IMAGES_ARGS)
+	@$(VENV)/bin/python -m pipeline.intake $(if $(MATERIAL),--citekey $(MATERIAL),)
+	@$(VENV)/bin/python -m pipeline.embed $(if $(MATERIAL),--material $(MATERIAL),)
+	@echo "  好了，图里的内容现在和正文一样可检索：http://127.0.0.1:$(API_PORT)/chat.html"
+
+.PHONY: images
 
 # 整套跑在容器里（含构建镜像与迁移）
 # docker-up / docker-down 已删（2026-09-20）：它们起的是「api 容器」那套部署，
@@ -363,6 +490,8 @@ help:
 	@echo "quizforge · 常用目标"
 	@echo ""
 	@echo "  上手        make api-venv · make api-dev（http://127.0.0.1:8100）"
+	@echo "  补充向量    make add（收 /mnt/f/Books 里的新文件 → 抽正文 → 切片 → 向量）"
+	@echo "              make add SRC=/mnt/f/Website SUBJECT=cuda · make add DRY=1 先看会做什么"
 	@echo "  流水线      make coverage · make coverage-gaps MATERIAL=x · make drive [ARGS=...]"
 	@echo "              四步：dispatch → worker → promote --apply → rework --apply（drive 已含）"
 	@echo "  校验        make check（密钥扫描 + 题库校验）· make test · make graph-check"

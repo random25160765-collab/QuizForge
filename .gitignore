@@ -1,6 +1,15 @@
 # ---------------------------------------------------------------- 密钥
 # 含 AI 密钥的本地配置，绝不入库
 config/ai.local.json
+# 本机推理配置（用哪个 ONNX 变体、用哪个 provider）—— 机器相关，不进 git。
+# 由 `scripts/gpu-setup.sh` 写；见 `local_embed.local_config()`。
+config/embed.local.json
+
+# 带向量的那份数据快照 —— **本机自己留**，不进 git。
+# 向量是派生物（`make embed` 能重建），而且 float32 的 blob 走 zlib 只压到 1.08 倍：
+# 进了版本库就几乎按原始大小增长，历史里还删不掉。要提交的是不含向量的
+# `db/quizforge.db.gz`（见 tools/db_snapshot.py 的文件头）。
+db/*.with-vectors.gz
 # 本机跑服务时读的环境变量（端口、用量上限等，用 make env-init 生成）
 /.env
 api/.env

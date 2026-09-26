@@ -164,6 +164,8 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 分母，而分母要读正文才算得出来。默认 0 = 还不知道（老行就是 0；跑一次
     # `pipeline.ops audit --exact` 会把它校准回去）。
     ("material_slices", "windows", "INTEGER NOT NULL DEFAULT 0"),
+    # 这条跑单跑在哪块芯片上（ORT 的实际 provider）。空 = 还没写（刚开跑，或老行）。
+    ("embed_runs", "device", "VARCHAR(48) NOT NULL DEFAULT ''"),
 )
 
 #: 补完列之后要跑**一次**的回填：`(表, 列) → SQL`，只在那一列**刚补上**时跑。

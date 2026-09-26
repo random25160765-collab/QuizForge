@@ -365,7 +365,14 @@ def walk(root: Path) -> list[Path]:
     for path in sorted(base.rglob("*")):
         if not path.is_file():
             continue
-        if any(part in SKIP_DIRS or part.startswith(".") for part in path.relative_to(base).parts[:-1]):
+        parts = path.relative_to(base).parts[:-1]
+        if any(part in SKIP_DIRS or part.startswith(".") for part in parts):
+            continue
+        # `*_files/` 里的一切都是"某份材料的资源"：浏览器保存网页时拖下来的 js / css /
+        # 图片，以及 `frame.html` 那种脚手架。这条边界在 `pipeline/normalize.is_asset_path`
+        # 里早就立过（"一个主 HTML = 一份材料"），这里对齐 —— 不对齐的后果实测：
+        # `make add SRC=/mnt/f/Website/zartbot` 会把 36 个 frame.html 当成 36 篇文章收进来。
+        if any(part.endswith("_files") for part in parts):
             continue
         if path.name.startswith(".") or path.suffix.lower() in SKIP_SUFFIXES:
             continue
@@ -1250,8 +1257,21 @@ def extract_text(item: Item, text_dir: Path, citekey: str, *, force: bool = Fals
     # kind 交给 `attachments.kind_of` 一处决定：pdf / docx / pptx / text / legacy ——
     # 资料这边不再自己映射一遍（自己映射一遍的话，新加的格式会在这里被漏掉：
     # 现象是"能看但搜不到"，比看不了更隐蔽）。
-    kind = attachments.kind_of(item.path.name, "")
-    raw = attachments.extract(item.path, kind)[:TEXT_LIMIT]
+    #
+    # **网页是这条规矩的一个例外**：`kind_of` 把 `.html` 归在 `text` 一类，直接抽出来
+    # 是带标签的原文（`<div class="rich_media_content">` 和正文混在一起），而
+    # `pipeline/htmlmd.py` 才认微信那套 `data-src` 懒加载图、公式与正文定位 ——
+    # 材料那条链（`pipeline/normalize.py`）走的就是它。这里对齐，否则"同一个网页，
+    # 走资料库收进来是一堆标签、走材料收进来是干净的 md"。
+    if item.path.suffix.lower() in (".html", ".htm"):
+        from pipeline import htmlmd  # noqa: PLC0415
+
+        got = htmlmd.convert(item.path)
+        raw = str(got.get("md") or "") if got.get("ok") else ""
+    else:
+        kind = attachments.kind_of(item.path.name, "")
+        raw = attachments.extract(item.path, kind)
+    raw = raw[:TEXT_LIMIT]
     judged = judge_text(raw)
     judged.update({"mtime": item.mtime, "at": datetime.now().isoformat(timespec="seconds")})
     Path(text_dir).mkdir(parents=True, exist_ok=True)
@@ -1308,17 +1328,22 @@ def text_only_entries(text_dir: Path, *, skip: set[str]) -> list[Entry]:
     out: list[Entry] = []
     base = Path(text_dir)
     for sidecar in sorted(base.glob("*.json")):
-        if sidecar.name.endswith(".meta.json"):
-            continue
         try:
             meta = json.loads(sidecar.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if not isinstance(meta, dict):
             continue
-        key = str(meta.get("citekey") or sidecar.stem)
-        body = base / f"{key}.md"
-        if not key or key in skip or not body.is_file():
+        # 两种旁注命名都要认（见 `_text_variants`）：`<键>.json`（抓网页、抽书）
+        # 与 `<键>.meta.json`（PDF / docx 抽正文那条路，`extract_text` 写的）。
+        # 只认前一种的话，`make add` 收进来的 PDF 正文进了库、检索也查得到，
+        # 却**不在资料库列表里** —— 与网站那批踩过的是同一个坑。
+        stem = sidecar.name[: -len(".meta.json")] if sidecar.name.endswith(".meta.json") else sidecar.stem
+        key = str(meta.get("citekey") or stem)
+        if not key or key in skip:
+            continue
+        body = next((path for path in _text_variants(base, key)[0] if path.is_file()), None)
+        if body is None:
             continue
         try:
             stat = body.stat()
