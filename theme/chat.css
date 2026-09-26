@@ -3885,11 +3885,11 @@ body.is-colresize .panes__host > .chat {
 /* 高亮：给眼睛做标记。底色用 --amber（与"这里有个分叉"同一色系），
  * 文字保持继承色 —— 高亮不该改变正文的可读性。 */
 .chatmsg__parts .chatmark--hl {
-  background: color-mix(in srgb, var(--amber) 24%, transparent);
+  background: color-mix(in srgb, var(--mark-color, var(--amber)) 24%, transparent);
 }
 
 .chatmsg__parts .chatmark--hl:hover {
-  background: color-mix(in srgb, var(--amber) 42%, transparent);
+  background: color-mix(in srgb, var(--mark-color, var(--amber)) 42%, transparent);
 }
 
 /* 删除线："这一段不算数" —— 文字压灰一档 + 一条划线，没有底色。 */
@@ -3912,10 +3912,22 @@ body.is-colresize .panes__host > .chat {
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
+  /* 三种颜色（红/蓝/黑）由这一行决定；没选色时跟随正文色 —— 与从前那条默认下划线一模一样 */
+  text-decoration-color: var(--mark-color, currentColor);
 }
 
 .chatmsg__parts .chatmark--underline:hover {
-  text-decoration-color: color-mix(in srgb, var(--amber) 80%, transparent);
+  text-decoration-color: var(--mark-color, color-mix(in srgb, var(--amber) 80%, transparent));
+}
+
+/* 菜单项里那枚**色点**（下划线三色、高亮的自定义色都用它）：放在图标的位置上。
+ * 颜色由 JS 用 `style.background` 赋值（见 `showChatMenu`），这里只管长相。 */
+.chattree__menuswatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
 /* 批注：正文这边只留一道虚线下划线（"这里挂了句话"），话本身在右边那栏 ——

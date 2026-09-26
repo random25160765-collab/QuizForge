@@ -1787,11 +1787,71 @@
         box.className = 'chatmark chatmark--' + QF.store.markKind(mark);
         box.dataset.mark = mark.id;
         if (mark.text) box.title = mark.text;
+        /* **颜色**（可选）落成一个 CSS 变量，样式那边只管取 `var(--mark-color, 默认)`：
+         * 高亮把它当**底色**，下划线把它当**那条线**；没选色的标记什么都不设 →
+         * 回落到默认长相（老数据也是如此）。 */
+        var tone = safeMarkColor(mark.color);
+        if (tone) box.style.setProperty('--mark-color', tone);
         range.surroundContents(box);
       } catch (err) {
         /* 某一段包不上就只是那一段没画上 —— 别把整条消息搞坏 */
       }
     }
+  }
+
+  /** 标记的颜色 —— 只有"确定是颜色"的字符串才放行（它要进 CSS，不能原样信）。
+   *
+   *  * **红/蓝/黑**是三选一的**语义名**（用户："下划线又三种颜色可选：红，蓝，黑"），
+   *    在这里翻成具体色。黑用 `var(--fg)` 而不是 `#000` —— 暗色主题下纯黑等于看不见；
+   *  * 高亮的**自定义颜色**来自原生取色器（`<input type=color>` 给的就是 `#rrggbb`）；
+   *  * 两样都不通过就当没选色 —— 样式回落到默认，绝不因为一条脏数据把正文搞坏。 */
+  var MARK_TONES = { red: '#d3402f', blue: '#2f6fd3', black: 'var(--fg)' };
+
+  function safeMarkColor(raw) {
+    var v = String(raw == null ? '' : raw).trim();
+    if (!v) return '';
+    if (MARK_TONES[v]) return MARK_TONES[v];
+    if (/^#[0-9a-f]{3,8}$/i.test(v)) return v;
+    try {
+      if (window.CSS && CSS.supports && CSS.supports('color', v)) return v;
+    } catch (err) {
+      /* 不认就不认 */
+    }
+    return '';
+  }
+
+  /** 开一次**系统取色器**，选到颜色后回调（`#rrggbb`）。给高亮的"自定义颜色"用。
+   *
+   * 用原生 `<input type=color>` 就够，不自己画色板 —— 颜色空间、色盲辅助那些浏览器已经做对了。
+   * 它必须由**一次用户手势**触发，所以调用它的地方只能是"点了菜单里那一项"（`run`），
+   * 不能是页面载入或快捷键的默认分支。用户按取消时 `change` 不触发 → 什么都不做。 */
+  function pickColor(done) {
+    var input = document.createElement('input');
+    input.type = 'color';
+    input.value = '#ffd400'; // 默认落在"荧光笔黄"上，与现在的高亮同色系
+    input.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px';
+    document.body.appendChild(input);
+    var cleanup = function () {
+      if (input.parentNode) input.parentNode.removeChild(input);
+    };
+    input.addEventListener('change', function () {
+      var v = String(input.value || '');
+      cleanup();
+      done(v);
+    });
+    // 取消时通常伴随一次 blur：等一拍再收，免得把接着到来的 change 打断
+    input.addEventListener('blur', function () {
+      window.setTimeout(cleanup, 300);
+    });
+    if (input.showPicker) {
+      try {
+        input.showPicker();
+        return;
+      } catch (err) {
+        /* 有些浏览器不给非手势调用 → 退回 click */
+      }
+    }
+    input.click();
   }
 
   /* ------------------------------------------------------------------ 旁批
@@ -2071,25 +2131,10 @@
   }
 
   /** 卡片按各自那一行摆好，并从**标的文字**拉一根线到卡片。 */
-  /** 输入区上沿在**视口**里的位置（它是吸底的，量不到就返回 null，那就什么都不兜）。 */
-  function composerTopOf() {
-    var composer = document.querySelector('.chat__composer');
-    return composer ? composer.getBoundingClientRect().top : null;
-  }
-
   function placeMargin(host, box, notes, draft) {
     var boxRect = box.getBoundingClientRect();
     var svg = ensureLeadSvg(box);
     ui.clear(svg);
-    /* **不要再在"栏内坐标"里算上边界。**
-     *
-     * 我先前那么写过（`composer.top - boxRect.top`），栽了：卡片贴在哪儿、那一栏的顶边在哪儿，
-     * 都受折叠块、离屏重画这些事影响，坐标系里算出来的"上边界"很可能是假数。实测那次
-     * `limit` 是 8731（远大于卡片底），我的兜底**根本没触发**，而卡片却被摆到了栏顶 ——
-     * 说明"顶上去"是别的原因（锚点量不到 → `top = 0`，见 `marginItems`）。
-     * 所以这里不预判：**先把卡片摆到锚点旁**，摆完再看它落在视口的哪儿（见下面那道兜底）。 */
-    var composerTop = composerTopOf();
-
     var floor = 0;
     marginItems(host, box, notes, draft).forEach(function (item) {
       var card = item.draft
@@ -2098,31 +2143,11 @@
       if (!card.parentNode) box.appendChild(card);
       // `top` 相对旁批这一栏的顶边算（这一栏与正文同顶，所以两个坐标系差一个常量）
       var top = Math.round(Math.max(item.top, floor));
-      var height = card.offsetHeight;
-      /* **只把这一张往上挪，且挪得刚好够。**
-       *
-       * 用户的要求是两句：批注**尽量贴着**被批的那段话，但**不能被下面的输入框盖住**。
-       * 我先前写错过一版：见最后一张越界，就把**整摞一起**往上顶 —— 结果所有批注都被推到
-       * 顶上去了（用户："现在全部顶到上面了！！"）。所以这里各管各的：`top + height` 越过
-       * `limit` 时，把这一张抬到"底边正好落在 limit 上"为止，多一点不挪。
-       *
-       * 两张卡片因此可能挨在一起（`floor` 那条"别叠"的规则会让位）—— 这是有意的取舍：
-       * 离自己的那段话近，比"彼此不挨着"更重要。
-       */
       card.style.top = top + 'px';
-      /* **真压住输入框了，才让路，而且让得刚好够。**
-       *
-       * 用**视口坐标**判（不碰栏内坐标）：先把卡片按锚点摆好，量它落在视口里的底边；
-       * 越过输入区上沿就往上挪"越过的像素数 + 8"。于是"尽量贴着被批注的那段话"是默认结果，
-       * 只有确实会被盖住的那一张才动 —— 这正是用户要的两句：尽量近，但不被盖住。 */
-      if (composerTop !== null) {
-        var over = card.getBoundingClientRect().bottom - (composerTop - 8);
-        if (over > 0) card.style.top = Math.round(top - over) + 'px';
-      }
       // 线接在卡片**上沿往下一点**，不用正中间：改到一半的卡片会变高，
       // 用中点会让这根线在编辑时上下乱跑。
       if (item.rect) leadLine(svg, boxRect, item.rect, top + 13);
-      floor = top + height + 6;   // 挨着就往下让，别叠在一起
+      floor = top + card.offsetHeight + 6;   // 挨着就往下让，别叠在一起
     });
   }
 
@@ -2267,6 +2292,18 @@
           applyMark('hl', target);
         },
       });
+      /* **自定义颜色**（用户："高亮给它支持自定义颜色"）：开系统取色器。
+       * 用原生 `<input type=color>`，不自己造色板 —— 颜色空间、色盲辅助这些浏览器已经做对了。
+       * 它必须由一次用户手势触发，而"点了这一项"就是那次手势。 */
+      items.push({
+        icon: 'marker',
+        label: '高亮 · 自定义颜色…',
+        run: function () {
+          pickColor(function (tone) {
+            applyMark('hl', target, tone);
+          });
+        },
+      });
     }
     if (!has.strike) {
       items.push({
@@ -2278,14 +2315,24 @@
         },
       });
     }
+    /* **下划线的三种颜色**（用户："下划线又三种颜色可选：红，蓝，黑"）。
+     * 三项直接摆出来，不再单独给一条"无色"的：其中"黑"取的是正文色（`var(--fg)`），
+     * 看起来就是从前那条默认下划线 —— 而快捷键 ⌘⇧U 落的正是它，与菜单一致。 */
     if (!has.underline) {
-      items.push({
-        icon: 'underline',
-        label: '加下划线',
-        hint: '⌘⇧U',
-        run: function () {
-          applyMark('underline', target);
-        },
+      [
+        { tone: 'red', name: '红' },
+        { tone: 'blue', name: '蓝' },
+        { tone: 'black', name: '黑', hint: '⌘⇧U' },
+      ].forEach(function (one) {
+        items.push({
+          icon: 'underline',
+          swatch: MARK_TONES[one.tone],
+          label: '加下划线 · ' + one.name,
+          hint: one.hint || '',
+          run: function () {
+            applyMark('underline', target, one.tone);
+          },
+        });
       });
     }
     if (!has.note) {
@@ -2364,10 +2411,12 @@
   }
 
   /** 钉一条标记。右键菜单与快捷键**共用这一条路**（两处各写一份，迟早只改一处）。 */
-  function applyMark(kind, pick) {
+  function applyMark(kind, pick, tone) {
     if (
       !addMarkTracked({
         kind: kind,
+        // 颜色（可选）：下划线是 `red`/`blue`/`black`，高亮是自定义的 `#rrggbb`
+        color: tone || '',
         cid: pick.cid,
         mid: pick.mid,
         quote: pick.quote,
@@ -2420,7 +2469,8 @@
     if (!pick) return;
     ev.preventDefault();
     if (key === 'a') annotatePick(pick);
-    else if (key === 'u') applyMark('underline', pick);
+    // ⌘⇧U 走"黑"那一种（= 正文色），与菜单里三项中的一项对齐；看起来和从前那条默认下划线一样
+    else if (key === 'u') applyMark('underline', pick, 'black');
     else applyMark(key === 'x' ? 'strike' : 'hl', pick);
   });
 
@@ -5481,6 +5531,19 @@
       });
       row.querySelector('.chattree__menutext').textContent = item.label;
       if (item.hint) row.querySelector('.chattree__menuhint').textContent = item.hint;
+      /* `item.swatch`：这一项的图标位置放一枚**色点**（下划线三色、高亮的自定义色都用它）。
+       * 色点用 DOM 造、`style.background` 赋值，**不拼进 innerHTML** —— 颜色是要进样式的东西，
+       * 绝不拿字符串拼 HTML。 */
+      if (item.swatch) {
+        var ico = row.querySelector('.chattree__menuico');
+        if (ico) {
+          ui.clear(ico);
+          var dot = document.createElement('i');
+          dot.className = 'chattree__menuswatch';
+          dot.style.background = item.swatch;
+          ico.appendChild(dot);
+        }
+      }
       menu.appendChild(row);
     });
     document.body.appendChild(menu);
