@@ -3930,6 +3930,62 @@ body.is-colresize .panes__host > .chat {
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
+/* 菜单里的**色板**（高亮用）：一行色点 + 末尾一个原生取色器。
+ * 它长在菜单里、而不是"另开一个屏幕外的取色器"—— 原生弹层就贴着这一行（见 chat.js 的
+ * `hlSwatches`）。上一版把 input 藏在 `left:-9999px`，取色器就跑到窗口左上角去了。 */
+.chattree__swatchrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 8px;
+}
+
+.chattree__swatchcap {
+  /* 用 opacity 而不是某个"次要文字色"变量：这个主题里没有 `--dim`，写它等于这句静默失效 */
+  opacity: 0.72;
+  font-size: 12px;
+}
+
+.chattree__swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.chattree__swatch:hover {
+  transform: scale(1.12);
+}
+
+.chattree__swatch.is-on {
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.18),
+    0 0 0 2.5px var(--line);
+}
+
+.chattree__swatchinput {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+
+.chattree__swatchinput::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.chattree__swatchinput::-webkit-color-swatch {
+  border: 0;
+  border-radius: 50%;
+}
+
 /* 批注：正文这边只留一道虚线下划线（"这里挂了句话"），话本身在右边那栏 ——
  * 若也铺一层底色，它和高亮就分不出来了。 */
 .chatmsg__parts .chatmark--note {

@@ -146,6 +146,21 @@
     return settingsCache;
   }
 
+  /** 高亮用的颜色 —— **记住上次选的那个**，之后的高亮全部跟随（用户："选定一个颜色之后，
+   * 之后的高亮颜色全部跟随"）。存在 settings 里，于是换页面、关掉再开都还在。
+   *
+   * 只存不解释：它可能是色板里的十六进制串，也可能为空（= 没选过，用原来的琥珀色）。
+   * 合不合法由渲染那边判（`chat.js` 的 `safeMarkColor`）—— 存的地方管"记住"，画的地方管"认得"。 */
+  function hlTone() {
+    return String(settings().chatHlTone || '');
+  }
+
+  function setHlTone(tone) {
+    var v = String(tone == null ? '' : tone).trim().slice(0, 40);
+    saveSettings({ chatHlTone: v });
+    return v;
+  }
+
   function resetSettings() {
     settingsCache = null;
     rawRemove(K.settings);
@@ -1438,6 +1453,8 @@
     masteryBand: masteryBand,
     masteryBands: MASTERY_BANDS,
     setNote: setNote,
+    hlTone: hlTone,
+    setHlTone: setHlTone,
     setMastered: setMastered,
     resetRecord: resetRecord,
     resetAll: resetAll,
