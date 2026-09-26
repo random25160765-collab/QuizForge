@@ -77,3 +77,6 @@ build/.pyinstaller/
 
 # 分享页产物（make share 生成，一条会话一个文件，几 MB）
 share-*.html
+
+# `git filter-branch` 的中间目录（整份仓库副本），永远不该进版本库
+.git-rewrite/
