@@ -43,7 +43,7 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from . import config
 
@@ -160,16 +160,24 @@ def _pending(db, *, material: str, rebuild: bool, limit: int) -> tuple[list, dic
     rows = db.execute(stmt).all()
 
     model = _model_name()
-    # 每片已有的向量：随便取一行的 `(指纹, 模型)` 就够 —— 同片的行是一起写的，
-    # 指纹与模型一定相同（`_store` 是一次写一整片）。
-    existing: dict[int, tuple[str, str]] = {}
-    for row in db.execute(select(SliceEmbedding.slice_id, SliceEmbedding.text_hash,
-                                 SliceEmbedding.model)).all():
-        existing.setdefault(row.slice_id, (row.text_hash, row.model))
+    # 每片已有的向量：`(指纹, 模型, 存了几行)`。
+    #
+    # 指纹与模型取一行就够（同片的行是一起写的、一定相同）；**行数却必须单独数** ——
+    # 它是"这片刻完了没有"的唯一凭据，理由见下面那条 `previous[2] < len(windows)`。
+    existing: dict[int, tuple[str, str, int]] = {}
+    for row in db.execute(
+        select(
+            SliceEmbedding.slice_id,
+            func.min(SliceEmbedding.text_hash),
+            func.min(SliceEmbedding.model),
+            func.count(),
+        ).group_by(SliceEmbedding.slice_id)
+    ).all():
+        existing.setdefault(row[0], (str(row[1]), str(row[2]), int(row[3])))
 
     todo: list = []
     stats = {"slices": len(rows), "unchanged": 0, "missing_file": 0, "stale_model": 0,
-             "slices_to_do": 0, "windows": 0}
+             "partial": 0, "slices_to_do": 0, "windows": 0}
     for slice_row, mat in rows:
         try:
             lines = _source_lines(mat.source_path)
@@ -188,6 +196,15 @@ def _pending(db, *, material: str, rebuild: bool, limit: int) -> tuple[list, dic
                 pass  # ② 正文变了
             elif previous[1] != model:
                 stats["stale_model"] += 1  # ③ 换了模型
+            elif previous[2] < len(windows):
+                # ④ **存的行数不够** —— 跑了一半被打断的那种片。
+                #
+                # 这一条不能省：指纹（`text_hash`）说的是"这一片该有哪几窗"，而它在**第一窗**
+                # 落库时就写进去了 —— 于是半片与整片长得一模一样，下一轮判成"没变"、跳过，
+                # 缺的那几窗**永远补不回来**。实测：三本跑过一半的书（该 50 窗只存 1 窗、
+                # 存的还是最后一窗），而 `--dry-run` 报的是"要算 0 片 / 没变跳过 445"。
+                # 行数才是"刻完了没有"；指纹只说明"刻的是哪一份"。
+                stats["partial"] += 1
             else:
                 stats["unchanged"] += 1
                 continue
