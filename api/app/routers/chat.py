@@ -1816,6 +1816,29 @@ def attach_run(
     return {"ok": True, "chars": len(text)}
 
 
+@router.post("/figures/{fig_id}")
+def deliver_figures(fig_id: str, body: dict) -> dict:
+    """页面报回"这一轮那几张图编出来没有"。
+
+    与 `/runs/{runId}` 是同一个会合点（见 `app/runs.py`）：那边等的是**沙箱输出**，
+    这边等的是**TeX 引擎的编译结果** —— 两者都是"只有页面知道，等它回话再往下说"。
+
+    为什么不沿用"客户端再发一条消息请模型重画"（2026-09-26 之前就是这么做的）：
+    那会**另起一轮**（用户："怎么能另起一个对话呢？"），改图落到下一条回复里；现在它
+    发生在**同一轮之内**（见 `agent_loop._verify_figures`）。
+    """
+    from .. import runs  # noqa: PLC0415 —— 与本文件里其它懒导入同一个理由
+
+    fails = [
+        {"why": str(one.get("why") or "")[:400], "raw": str(one.get("raw") or "")[:2000]}
+        for one in list((body or {}).get("fails") or [])
+        if isinstance(one, dict)
+    ][:3]
+    # `waited=False` 不是错：那一轮可能已经超时走掉了（页面回得太晚），照常收下就行。
+    waited = runs.deliver(fig_id, {"fails": fails})
+    return {"ok": True, "waited": waited, "fails": len(fails)}
+
+
 @router.post("/conversations/{cid}/messages/{mid}/stop")
 def stop_message(cid: uuid.UUID, mid: int, db: DbSession) -> dict:
     """前端按了停止 —— 把这条正在生成的消息收尾成「已中断」。
@@ -2249,6 +2272,11 @@ def _stream(  # noqa: ANN001
                 yield _sse("run", {"runId": event["runId"], "run": run})
             elif kind == "note":
                 yield _sse("note", {"text": event["text"]})
+            elif kind == "figures":
+                # 这一轮正文里的图**交回页面**用真引擎编一遍（TikZJax 只在浏览器里跑）。
+                # 那一轮正停在 `agent_loop._verify_figures` 上等这张回执 —— 页面编完
+                # POST 回 `/chat/figures/{id}` 才放行：正常它就接着说，不正常它当场重画。
+                yield _sse("figures", {"id": event["id"], "blocks": event["blocks"]})
             elif kind == "tool_start":
                 part = msgparts.tool_part(
                     name=event["name"], args=event["args"], call_id=event["callId"]

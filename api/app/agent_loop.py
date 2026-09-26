@@ -32,12 +32,32 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 
 from . import ai_gateway as gateway
 from . import runs
 from .parts import clip
 
 MAX_TURNS = 6
+#: 同一轮里最多为"图没编出来"重来几次。一次就够：引擎的原话已经原样给它了，
+#: 再编不出来是它还没弄懂 —— 那不如让用户看见失败，而不是没完没了地重画。
+FIGURE_RETRIES = 1
+#: 等页面把图编完最多等多久。一批几秒（引擎冷启动再多两三秒），卡住的图自己有 15 秒自限。
+#: 比沙箱那 90 秒短，是因为它等的不是"这一轮的结果"：等不到就照常往下走（见 `_verify_figures`）。
+FIGURE_TIMEOUT = 30.0
+
+#: 哪些 `$$…$$` 值得停下来等它编：**真在画画的那种**。
+#:
+#: 与 `theme/runtime/latex.js` 的 `DRAW_ENV` 同源（同一份环境名表），但只管"要不要等"：
+#: 那边决定"这张给引擎还是给 KaTeX"，这边决定"这一轮要不要停下来听结果"。
+#: 两边都得**保守** —— 判宽了会把矩阵也拿去等编译（用户为这个骂过一次：
+#: "有的东西不要走 latex！！！"），判窄了只是"图没被验"，两种代价不对称。
+#: 所以这里连命令名都不看（`\draw` 之类），只认画图环境。
+_FIGURE_ENV = re.compile(
+    r"\\begin\s*\{\s*(tikzpicture|axis|semilogyaxis|loglogaxis|polaraxis|smithchart|"
+    r"ternaryaxis|groupplot|tikzcd|circuitikz|scope|pgfonlayer|quantikz|pspicture)\*?\s*[\[}]"
+)
+_DISPLAY_BLOCK = re.compile(r"\$\$(.+?)\$\$", re.S)
 #: 没人给预算时用的兜底。**它不该是个小数字**：8000 那会儿一顿工具调用就装满了，
 #: 于是历史被悄悄截掉（用户看到的"更早的 N 条消息没有带进来"就是这么来的）。
 #: 现在的规矩是"按模型自己的窗口定"（见 `ai_gateway.budget_tokens`），
@@ -299,6 +319,72 @@ def _specs_without(specs: list[dict], drop: tuple[str, ...]) -> list[dict]:
     ]
 
 
+def figure_blocks(text: str) -> list[str]:
+    """这一轮正文里**要送去真引擎编**的图：`$$…$$` 里那些真在画画的。去重、保序。
+
+    只取 `$$…$$`（图只写在那里，与 `theme/runtime/md.js` 的抽取同此）；行内 `$…$` 不是图。
+    """
+    out: list[str] = []
+    for found in _DISPLAY_BLOCK.findall(str(text or "")):
+        body = found.strip()
+        if body and _FIGURE_ENV.search(body) and body not in out:
+            out.append(body)
+    return out
+
+
+def _figure_note(fails: list[dict]) -> str:
+    """图编不出来时退回给模型的话：**引擎的原话 + 它原来写的源码**，只要它改这几张。
+
+    与从前那条"（系统自动，不是用户发的）"是同一段话，但它**不进对话树**：那一条是让
+    客户端再发一条用户消息（用户："怎么能另起一个对话呢？应该是串行的"），于是模型改图
+    落到了**下一条回复**里；这里只是在本轮的上下文里追一条内部消息，改对之后的图仍然
+    长在**同一条回复**里。
+    """
+    rows = []
+    for index, one in enumerate(fails[:3]):
+        why = re.sub(r"\s+", " ", str(one.get("why") or "")).strip()
+        rows.append(
+            "%d) 引擎的原话：%s\n源码：\n```latex\n%s\n```"
+            % (index + 1, why[:220] or "（引擎没报原因）", str(one.get("raw") or "")[:1200])
+        )
+    return (
+        "（自动，不是用户发的）刚才这几张图在 TeX 引擎里没编出来。"
+        "**只**针对下面这些把源码改对，然后用同样的 `$$…$$` 重新给出这几张图 —— "
+        "不要解释、不要重发正文、不要改别的部分。\n\n" + "\n\n".join(rows)
+    )
+
+
+def _verify_figures(chunks: list[str], retries: int):  # noqa: ANN201
+    """这一轮的图**当场**交给页面编：编不出来就把引擎的原话退回去，让它在同一轮里改对。
+
+    为什么必须"同一轮"（用户的原话）：
+
+    > 怎么能另起一个对话呢？应该是串行的，渲染的时候模型等待，如果正常就继续，
+    > 不正常就重来。
+
+    真引擎（TikZJax）只在浏览器里跑，**这件事只有页面知道** —— 所以它和 `run_python`
+    等沙箱输出走的是同一个会合点（`runs.wait_blocking` / `POST /chat/figures/{id}`）。
+    从前客户端是"等这一轮说完，再发一条用户消息请它重画"：那等于另起一轮，而且要等到
+    下一轮才可能改对；现在停在这里等回执。
+
+    yield 事件；返回 `(fails, retries)` —— `fails` 非空 = 这一轮得让它重来。
+    """
+    blocks = figure_blocks("".join(chunks))
+    if not blocks or retries >= FIGURE_RETRIES:
+        return [], retries
+    fig_id = "fig_" + uuid.uuid4().hex[:12]
+    # **先 `yield` 再等**：页面正是拿到这个零件才知道要编哪些图，顺序反了会互相等
+    #（`run_python` 那条写着同一个坑）。
+    yield {"kind": "figures", "id": fig_id, "blocks": blocks}
+    report = runs.wait_blocking(fig_id, timeout=FIGURE_TIMEOUT)
+    if report is None:
+        # 没人来报（页面没开、纯 API 调用、引擎卡死）：**不编造结果，也不退回重来** ——
+        # 这一轮照常往下走；页面在的话用户自己会看到那个红框。
+        return [], retries
+    fails = [one for one in (report.get("fails") or []) if isinstance(one, dict)]
+    return fails, retries
+
+
 def run(  # noqa: ANN001
     db,
     conf,
@@ -335,6 +421,8 @@ def run(  # noqa: ANN001
     allow_tools = True
     #: 收尾那句"工具收走了，现在交付"只插一次（见循环里那处）
     nudged = False
+    #: "图没编出来、让它重来"用过几次（见 `_verify_figures`，上限 FIGURE_RETRIES）
+    fig_retries = 0
 
     for _turn in range(max_turns):
         chunks: list[str] = []
@@ -490,6 +578,19 @@ def run(  # noqa: ANN001
                 return
 
         if not calls:
+            # **图先编出来再收尾**（见 `_verify_figures`）：正常就 `finish`，不正常就
+            # 退回重来。这两句就是"渲染的时候模型等待，正常就继续、不正常就重来"。
+            fails, fig_retries = yield from _verify_figures(chunks, fig_retries)
+            if fails:
+                fig_retries += 1
+                # **先把这一轮它自己说的话记进上下文**：`messages` 只在那条"要工具"的
+                # 路里追加过 assistant 消息，走到这儿是没有的 —— 不补的话，退回的那条会
+                # 紧跟在用户的问题后面（两条 `user` 连着），而上游看到的是"用户问了一句、
+                # 又问了一句"，它写的那张图不在上下文里，改起来只能照抄我们引的源码。
+                # 补上之后是干净的三段：用户 → 它写（含图）→ 退回 → 它改。
+                messages.append({"role": "assistant", "content": "".join(chunks)})
+                messages.append({"role": "user", "content": _figure_note(fails)})
+                continue
             yield {"kind": "finish", "reason": finish or "stop", "usage": usage}
             return
 
@@ -622,6 +723,14 @@ def run(  # noqa: ANN001
                         ],
                     }
                 )
+
+        # 这一轮**既调了工具、又画了图**的情况：轮到你下一轮之前也验一次，
+        # 否则"有图的那一回合恰好还调了工具"就跳过了验图这一步。
+        fails, fig_retries = yield from _verify_figures(chunks, fig_retries)
+        if fails:
+            fig_retries += 1
+            messages.append({"role": "user", "content": _figure_note(fails)})
+            continue
 
     # 轮数用尽：这是"模型在打转"，不是上游故障，所以要明确说出来
     yield {

@@ -9373,6 +9373,38 @@
               if (!box || box.textContent === d.text) return;
               box.textContent = d.text;
             },
+            figures: function (d) {
+              /* 服务端把**这一轮正文里的图**交回页面：真引擎（TikZJax）只在浏览器里跑，
+               * 所以"这张图到底编出来没有"只有这里知道。那一轮正停在那儿等回执
+               *（`agent_loop._verify_figures`）—— 报完它才继续：编出来了就接着说，
+               * 没编出来当场把引擎的原话退回去让它重画。
+               *
+               * 于是**这里不再自己发消息**（从前是攒一条"系统自动"的用户消息，等于另起一轮）。
+               * 缓存命中时这一步几乎不花时间（编过的图 1ms）；真失败的图会重编一次，
+               * 那是值得的：它换来的是一次**当场**改对的机会。 */
+              if (!d || !d.id || !QF.latex || !QF.latex.render) return;
+              var blocks = (d.blocks || []).filter(function (tex) {
+                return QF.latex.kind(tex);
+              });
+              Promise.all(
+                blocks.map(function (tex) {
+                  return QF.latex.render(tex).then(
+                    function () {
+                      return null;
+                    },
+                    function (err) {
+                      // 原因只要引擎那句真话（`! …` 开头的行）——后面垫的猜测由服务端
+                      // 那份文案决定要不要给模型看，这里别掺进来（见 latex.js 里那段说明）。
+                      var msg = String((err && err.message) || '');
+                      var mark = msg.match(/!\s[^!]{4,180}/);
+                      return { why: (mark ? mark[0].trim() : msg).slice(0, 400), raw: tex };
+                    }
+                  );
+                })
+              ).then(function (rows) {
+                api.post('/chat/figures/' + d.id, { fails: rows.filter(Boolean) }).catch(function () {});
+              });
+            },
             tool: function (d) {
               if (!state.live || !d) return;
               if (d.phase === 'start') state.live.toolStart(d);
@@ -9610,57 +9642,15 @@
     );
   }
 
-  /** 这一轮里是否还允许"自动请模型重画一次"（用户每发一条消息就重新给一张许可）。 */
-  var repairArmed = false;
-
-  /** 等这一轮说完再动手（模型正在回话时插消息会打断它），最多等 60 秒。 */
-  function waitIdleThen(fn) {
-    var tries = 0;
-    var tick = function () {
-      if (!state.busy) return fn();
-      if (++tries > 120) return; // 等不到就放弃，别把消息一直憋在手里
-      window.setTimeout(tick, 500);
-    };
-    window.setTimeout(tick, 300);
-  }
-
-  /**
-   * 图编不出来时，**让模型自己改**（这是"三层分工"里的最后一根线）。
+  /* 这里原先有 `armingRepair()`：图编不出来时，客户端攒一条"（系统自动，不是用户发的）"
+   * 用户消息再发出去，请模型重画一次。
    *
-   * 从前这条线是断的：引擎的报错应用听不到，于是要么我拿正则替它擦，要么用户看着一段红字。
-   * 现在引擎把 `! …` 原话送上来（见 `latex.js` 的日志桥），这里把它连同**模型原来写的源码**
-   * 一起发回去，请它只改这几张图。规矩两条：
-   *   * **一轮只重画一次**（`repairArmed`）—— 改完还不行就如实告诉用户，不没完没了地重发；
-   *   * **等它说完再发**（`waitIdleThen`）—— 半路插消息会把正在跑的那一轮打断。
-   */
-  function armingRepair() {
-    repairArmed = true;
-    if (QF.latex.onFail) return; // 只注册一次
-    QF.latex.onFail = function (fails) {
-      if (!repairArmed) return;
-      repairArmed = false;
-      var list = fails.slice(0, 3).map(function (one, i) {
-        return (
-          i +
-          1 +
-          ') 引擎的原话：' +
-          String(one.why || one.msg || '').replace(/\s+/g, ' ').slice(0, 220) +
-          '\n源码：\n```latex\n' +
-          String(one.raw || '').slice(0, 1200) +
-          '\n```'
-        );
-      });
-      var note =
-        '（系统自动，不是用户发的）刚才有 ' +
-        fails.length +
-        ' 张图在 TeX 引擎里没编出来。**只**针对下面这些把源码改对，然后用同样的 `$$…$$` ' +
-        '重新给出这几张图 —— 不要解释、不要重发正文、不要改别的部分。\n\n' +
-        list.join('\n\n');
-      waitIdleThen(function () {
-        send({ content: note });
-      });
-    };
-  }
+   * 2026-09-26 删掉。用户的原话："怎么能另起一个对话呢？应该是串行的，渲染的时候模型
+   * 等待，如果正常就继续，不正常就重来。" —— 那一条等于**另起一轮**，而且模型改图要等到
+   * 下一条回复才看得见。现在这件事在**同一轮之内**做：`agent_loop._verify_figures` 把这一轮
+   * 的图交给页面编（`figures` 事件 → `QF.latex.render` → `POST /chat/figures/{id}`），
+   * 编不出来就把引擎的原话当场退给模型 —— 改对之后的图仍然长在**同一条回复**里。
+   * 页面这边因此只剩下面事件表里那个回执（`figures`），不再自己发消息。 */
 
   function onSendClick() {
     if (state.busy) {
@@ -9672,8 +9662,6 @@
     // 把它用掉，用户那边看到的就是"一来就有图"。`prewarm` 幂等，且计费/2G 网络下会自己退出，
     // 所以这里不必判断。
     if (window.QF && QF.latex && QF.latex.prewarm) QF.latex.prewarm();
-    // 这一轮里若某张图编不出来，允许自动请模型重画一次（见 armingRepair）
-    armingRepair();
     var body = String(inputEl.value || '');
     if (quoted && quoted.text) {
       // **引文走在最前面**（见 paintQuote）：他看到的、对面看到的都是"先这段、再他的问题"
