@@ -310,6 +310,53 @@ def _quote_of(material, start_line: int) -> dict:  # noqa: ANN001
     }
 
 
+#: 标题命中给多少加成。RRF 的分数量级是 `1/(60+名次)` ≈ 0.016 —— 0.02 这个量级
+#: 足以让"标题就叫这个"的材料翻上去，又不会把向量那一路整个盖掉。
+TITLE_BOOST = 0.02
+
+#: 同一份材料最多占几格。实测：问 `zartbot GPU 架构演变史` 时《Machine Learning Systems》
+#: 在前 25 个窗口里占了 15 个 —— 一本书的许多窗口语义都像，不设上限就会把真正对的那几篇
+#: 挤出视野（用户看到的正是这个：8 格里 4 格是两本书）。
+PER_MATERIAL = 2
+
+#: 这些中文字太常见，算标题亲和度时会把"沾一点边"抬得太高
+STOP_CHARS = frozenset("的了和与及是在有为对从到就也都还很只把被给让这那些什么怎么如何")
+
+
+def _title_affinity(query: str, title: str) -> float:
+    """问句与**标题**的亲密度，0~1 —— 问的不是"内容像不像"，是"**名字对不对得上**"。
+
+    为什么必须有这个信号：内容相似度分不开"讲 GPU 的一本书"和"就叫《GPU 架构演化史》
+    的那一篇"。实测 `zartbot GPU 架构演变史`：真命中 0.7776 / 0.7461，而
+    《Machine Learning Systems》是 **0.7374** —— 差 0.009，因为它整本书都在讲 GPU 与
+    训练硬件，语义上确实像。只有标题能把这两类分开。
+
+    两半相加，各占一半：
+    * **ASCII 词**（≥2 字符）：在不在标题里；
+    * **中文**：单字重合率（**不做分词**）。单字是刻意的 —— 用户打的是"演变史"，标题写的是
+      "演化史"，分词或二元组都匹配不上，而单字能认出 3 个字里的 2 个。
+    """
+    text = str(title or "").lower()
+    if not text:
+        return 0.0
+    words = [
+        one
+        for one in "".join(ch if ch.isalnum() else " " for ch in str(query or "").lower()).split()
+        if len(one) >= 2 and one.isascii()
+    ]
+    chars = {
+        one
+        for one in str(query or "")
+        if "\u4e00" <= one <= "\u9fff" and one not in STOP_CHARS
+    }
+    parts: list[float] = []
+    if words:
+        parts.append(sum(1 for one in words if one in text) / len(words))
+    if chars:
+        parts.append(sum(1 for one in chars if one in text) / len(chars))
+    return sum(parts) / len(parts) if parts else 0.0
+
+
 def search_fused(  # noqa: ANN001
     db,
     query: str,
@@ -319,6 +366,7 @@ def search_fused(  # noqa: ANN001
     limit: int = 5,
     k: int = RRF_K,
     depth: str = "",
+    per_material: int = PER_MATERIAL,
 ) -> dict:
     """检索入口：**字面 + 向量**两路融合（第三路"图"不在这里，它回答的是另一个问题）。
 
@@ -370,6 +418,11 @@ def search_fused(  # noqa: ANN001
         vector_rank.append(key)
         vector_of[key] = hit
 
+    affinity = {
+        material.slug: _title_affinity(query, material.title)
+        for material in db.scalars(select(Material))
+    }
+
     hits = []
     for key, score in rrf(literal_rank, vector_rank, k=k):
         window_row = slice_row = material = None
@@ -394,9 +447,11 @@ def search_fused(  # noqa: ANN001
         label = (slice_row.summary or slice_row.slice_id) if slice_row is not None else ""
 
         paths = (["字面"] if key in literal_of else []) + (["向量"] if key in vector_of else [])
+        row_slug = str(material.slug if material is not None else base.get("material"))
+        bonus = TITLE_BOOST * affinity.get(row_slug, 0.0)
         hits.append(
             {
-                "material": material.slug if material is not None else base.get("material"),
+                "material": row_slug,
                 "title": material.title if material is not None else base.get("title"),
                 "startLine": start_line,
                 "endLine": end_line,
@@ -405,15 +460,34 @@ def search_fused(  # noqa: ANN001
                 "text": base.get("text") or "",
                 "matched": base.get("matched") or 0,
                 "slice": label,
-                "score": round(score, 6),
+                # `score` 是**最终排序分**（RRF + 标题加成）；`rrf` 与 `cosine` 都留着 ——
+                # "为什么这条排在前面"必须能一眼看出是哪一路、什么强度。
+                # （原先只留 RRF：两路的分量纲不可比是对的，但把**原始余弦丢掉**就过了 ——
+                # 于是谁都看不出"这条其实是弱匹配"，弱匹配也就理直气壮地混进结果里。）
+                "score": round(score + bonus, 6),
+                "rrf": round(score, 6),
+                "cosine": round(float((vector_of.get(key) or {}).get("score") or 0.0), 6),
+                "titleMatch": round(affinity.get(row_slug, 0.0), 3),
                 "via": "+".join(paths) if paths else "字面",
             }
         )
 
+    # 排序 → 去重 → 限格：**同一份材料最多 `per_material` 格**。一本书的十几个窗口
+    # 语义都像，不设上限就会把真正对的那几篇挤出视野。同分按 material → 行号（可复现）。
+    hits.sort(key=lambda hit: (-hit["score"], str(hit["material"]), int(hit["startLine"])))
+    kept: list[dict] = []
+    used: dict[str, int] = {}
+    for hit in hits:
+        slug = str(hit["material"])
+        if used.get(slug, 0) >= max(1, int(per_material)):
+            continue
+        used[slug] = used.get(slug, 0) + 1
+        kept.append(hit)
+
     result = {
         "query": query,
         "semantic": bool(query_vec),
-        "hits": hits[: max(1, int(limit))],
+        "hits": kept[: max(1, int(limit))],
         "scanned": literal.get("scanned"),
         "total": literal.get("total"),
     }
