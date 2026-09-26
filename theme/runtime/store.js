@@ -161,6 +161,37 @@
     return v;
   }
 
+  /** **读到哪儿了** —— 每条会话一份：`{mid, dy, bottom, at}`。
+   *
+   * 存的是"第一条还露在视口里的消息 + 它在视口上方被推掉多少"，**不是像素数**：消息的高会变
+   *（图是异步换上去的、字号也会变），对着"那条消息"记才稳（见 chat.js 的 anchorNow）。 */
+  function readAnchor(cid) {
+    var k = String(cid || '');
+    if (!k) return null;
+    var one = (settings().chatRead || {})[k];
+    return one && typeof one === 'object' ? one : null;
+  }
+
+  /** 记下读到哪儿。只留最近 60 条会话 —— 它是"顺手记的"，不该无限长下去。 */
+  function setReadAnchor(cid, anchor) {
+    var k = String(cid || '');
+    if (!k) return null;
+    var all = deepMerge({}, settings().chatRead || {});
+    if (anchor) all[k] = anchor;
+    else delete all[k];
+    var keys = Object.keys(all);
+    if (keys.length > 60) {
+      keys.sort(function (a, b) {
+        return (all[a] && all[a].at ? all[a].at : 0) - (all[b] && all[b].at ? all[b].at : 0);
+      });
+      keys.slice(0, keys.length - 60).forEach(function (one) {
+        delete all[one];
+      });
+    }
+    saveSettings({ chatRead: all });
+    return all[k] || null;
+  }
+
   function resetSettings() {
     settingsCache = null;
     rawRemove(K.settings);
@@ -1455,6 +1486,8 @@
     setNote: setNote,
     hlTone: hlTone,
     setHlTone: setHlTone,
+    readAnchor: readAnchor,
+    setReadAnchor: setReadAnchor,
     setMastered: setMastered,
     resetRecord: resetRecord,
     resetAll: resetAll,
