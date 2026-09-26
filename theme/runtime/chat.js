@@ -2323,8 +2323,9 @@
         run: function () {
           quoted = { text: pick.quote, mid: pick.mid };
           paintQuote();
+          // **不弹提示**（用户："右键的时候右下角不要跳一个提示出来"）：反馈就是眼前那条引文
+          // 和已经在闪烁的光标 —— 再来一个右下角的小方块，纯粹是多余的动静。
           if (inputEl) inputEl.focus();
-          ui.toast('引用了这一段 —— 直接写你的问题就行', 'info', 2200);
         },
       });
     }
