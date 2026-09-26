@@ -1970,6 +1970,59 @@ def _search_by_depth(db, args, depth: str) -> dict:  # noqa: ANN001
     return result
 
 
+def list_materials(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """**列出**材料与资料（只列，不读正文）—— 回答「有没有 / 有几份 / 都是哪些」。
+
+    为什么必须有它：工具集里一直只有 `list_notes`（笔记）与 `list_conversations`（对话），
+    **材料这一层从来没有"列出来"的能力**。于是"这一系列有几篇"只能靠检索去凑，而
+    **检索不到不等于不存在**。实测踩过：同一个来源入库时 slug 会被截短并加哈希，
+    `gpu` / `gpu-3926` / `gpuan` 是同一系列的三种形状，按标题串搜命中率很低 ——
+    于是"演化史 2、4 不在库"这种错结论就出来了，而它们其实都在（`gpusgi`、`gpuan`）。
+
+    **规矩：「有没有 / 有几份 / 哪些」用这个工具，别拿检索结果反推**：检索那两路都有
+    自己的盲区（字面那路单次只扫 40 份、向量那路没有下限总会返回东西），而列清单没有盲区。
+    """
+    depth = str(args.get("depth") or "").strip()
+    subject = str(args.get("subject") or "").strip()
+    contains = str(args.get("contains") or "").strip()
+    limit = max(1, min(int(args.get("limit") or 60), 300))
+
+    stmt = select(Material).order_by(Material.subject, Material.title)
+    if depth:
+        stmt = stmt.where(Material.depth == depth)
+    if subject:
+        stmt = stmt.where(Material.subject == subject)
+    if contains:
+        stmt = stmt.where(Material.title.ilike("%" + contains + "%"))
+    rows = db.scalars(stmt).all()
+    filters = {"depth": depth, "subject": subject, "contains": contains}
+    if not rows:
+        return {
+            "count": 0,
+            "filters": filters,
+            "materials": [],
+            # 空结果要说清**是哪一层空**：筛过 subject/depth 之后空，和库里根本没有是两回事
+            "hint": "没有符合条件的材料。**别据此断定「库里没有」** —— 去掉 subject/depth/contains "
+                    "再列一次试试；标题片段给短一点（slug 是截短加哈希的，按 slug 猜不出来）。",
+        }
+    return {
+        "count": len(rows),
+        "filters": filters,
+        "subjects": sorted({str(one.subject or "") for one in rows}),
+        "materials": [
+            {
+                "slug": one.slug,
+                "title": one.title,
+                "subject": one.subject,
+                "depth": one.depth,
+                "lines": one.lines,
+            }
+            for one in rows[:limit]
+        ],
+        "note": ("只列了前 %d 条（一共 %d 条）" % (limit, len(rows))) if len(rows) > limit else "",
+    }
+
+
 def search_library(db, args, ctx=None) -> dict:  # noqa: ANN001
     """在**资料库**里检索（`depth=检索` 的那一档）—— 和 `search_material` 是一对。
 
@@ -3401,6 +3454,27 @@ REGISTRY = {
             },
         },
     },
+    "list_materials": {
+        "access": "read",
+        "group": "library",
+        "fn": list_materials,
+        "description": "**列出**材料与资料（只给 slug / 标题 / 学科 / 档位 / 行数，不读正文）——"
+        "回答「有没有 / 有几份 / 都是哪些」这类问题。可按 `subject`（学科）、"
+        "`depth`（出题=我在学的 / 检索=我查的）、`contains`（标题里的片段）筛。"
+        "**问「有没有」必须用它，别拿检索结果反推** —— 检索不到不等于不存在："
+        "slug 是**截短加哈希**的（`gpu`、`gpu-3926`、`gpuan` 是同一个系列的三种形状，"
+        "按标题串搜很容易漏），而且字面那一路单次只扫 40 份。"
+        "列清单没有盲区，也不花什么钱。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string", "description": "只看这个学科（可省略）"},
+                "depth": {"type": "string", "description": "只看这一档：出题 / 检索（可省略）"},
+                "contains": {"type": "string", "description": "标题里含这个片段（可省略，给短一点）"},
+                "limit": {"type": "integer", "description": "最多列几条，默认 60"},
+            },
+        },
+    },
     "search_material": {
         "access": "read",
         "group": "library",
@@ -3417,7 +3491,12 @@ REGISTRY = {
         "字面那一路要求所有词在**同一行**同时出现才算命中，放宽就少给一个词。"
         "返回里的 scanned/total 说明这次扫了多少份：没扫完就别说「材料里没有」。"
         "**semantic 为 false 说明向量那一路这次没参与**（本地小模型还没就绪）——"
-        "那种情况下「换个说法就搜不到」是正常的，**别当成材料里没有这件事**。",
+        "那种情况下「换个说法就搜不到」是正常的，**别当成材料里没有这件事**。"
+        "**每条带三个数，用它们判断强弱**：`cosine` 是真实的余弦相似度（硬数）、"
+        "`score` 是排序分（名次融合 + 标题加成）、`titleMatch` 是问句与**标题**的亲密度。"
+        "明显低于首位的那几条就是**弱匹配**，别拿来当答案 —— "
+        "向量那一路**没有下限，总会返回东西**（拿一串乱码去问它也回 5 条）。"
+        "`titleMatch` 高（≥0.5）通常就是它。同一份材料最多占 2 格。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -3438,7 +3517,11 @@ REGISTRY = {
         "但不必出成题），那个查 `depth=出题` 的那一档（我在学的、值得精读与出题的材料）。"
         "**两边的检索方式完全一样**（字面 + 向量融合，`via` 会说清是哪条找到的）。"
         "**在一个里没找到，就去另一个里再问一次** —— 它们是两个书架，不是同一堆东西的两种搜法；"
-        "只搜一个就说「没有」，是这里最容易犯的错。",
+        "只搜一个就说「没有」，是这里最容易犯的错。"
+        "**每条带三个数**：`cosine`（真实余弦，硬数）、`score`（排序分）、"
+        "`titleMatch`（问句与标题的亲密度，≥0.5 通常就是它）。"
+        "向量那一路**没有下限、总会返回东西**：明显低于首位的那几条是**弱匹配**，"
+        "别当成答案用。同一份材料最多占 2 格。",
         "parameters": {
             "type": "object",
             "properties": {
