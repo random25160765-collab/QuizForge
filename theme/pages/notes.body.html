@@ -17,21 +17,17 @@
 -->
 <div id="app-root" data-page="notes">
   <div class="notes" id="notes-root" data-side="open">
-    <!-- 文件面板：搜索 → 树 → 页脚（库名与回收站） -->
+    <!-- 文件面板：库 → 搜索 → 树 → 页脚（库名与设置） -->
     <aside class="nfiles" id="notes-files" aria-label="笔记列表">
-      <!-- 新建笔记这一颗**只有一个**（用户："现在有两个重复的按钮，右边那个删掉"）：
-           文档流里留在原处（`hidden`），渲染树栏时由 JS 收进那一行的左上。
-           为什么用"搬同一个节点"而不是新建一颗：监听器、快捷键提示、aria 都在它身上，
-           搬节点等于零成本复用；重建一颗就要把三样再挂一遍（漏一样就是一个哑按钮）。 -->
-      <button class="nicon nicon--mini" id="notes-new" type="button"
-              title="新建笔记（⌘O 同级 / ⌘P 子级）" aria-label="新建笔记" hidden>＋</button>
+      <header class="nfiles__head">
+        <select class="nfiles__lib" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
+        <button class="nicon" id="notes-new" type="button" title="新建笔记（⌘O 同级 / ⌘P 子级）"
+                aria-label="新建笔记">＋</button>
+      </header>
       <div class="nfiles__searchrow">
-        <!-- 清空 × **写在搜索框里面**的右端（用户："检索的清空图标直接写在搜索栏里面的最右侧"）：
-             `nclear` 让它绝对定位贴住框右内缘，输入框留出同宽的右内距，
-             文字因此不会钻到 × 底下 —— 对齐与间距是这里唯一要盯的两件事。 -->
         <input class="nfiles__search" id="notes-search" type="search" placeholder="搜索…（支持 #标签 / title: / -词）"
                autocomplete="off" spellcheck="false" aria-label="搜索笔记">
-        <button class="nicon nicon--mini nclear" id="notes-clear" type="button" title="清空检索"
+        <button class="nicon nicon--mini" id="notes-clear" type="button" title="清空检索"
                 aria-label="清空检索" hidden>×</button>
       </div>
       <!-- 条目数与「全部展开」固定在这里：它是**面板的一部分**，不是列表的第一行。
@@ -39,19 +35,9 @@
       <div class="nfiles__bar" id="notes-treebar"></div>
       <div class="nfiles__scroll" id="notes-tree" role="tree"></div>
       <footer class="nfiles__foot">
-        <!-- 库选择在**底部**（用户："Math 这个地方是用户选定的 vault，这个的选择移到下面"）
-             —— 它是"当前在哪一间库"，属于面板的底座，不是每写一个字都要碰的东西。
-             名字里也不带条目数（原先写「Math（91）」）：那个数字在树栏里已经有了。 -->
-        <select class="nfiles__lib nfiles__lib--foot" id="notes-lib" title="笔记库" aria-label="笔记库"></select>
-        <button class="nicon nicon--mini" id="notes-reveal" type="button"
-                title="在系统文件管理器中显示这个库的位置"
-                aria-label="在系统文件管理器中显示"></button>
-        <!-- 回收站：删掉的笔记在后端那儿（`.trash/`），这颗按钮能看见、能捞回来。
-             它曾经被回滚吃掉过 —— 于是 JS 那边接好的监听器成了哑的、回收站入口不可达。
-             它和 `#notes-reveal` 的图标由 JS 填（`el.trash.innerHTML = ui.icon('trash')`）。 -->
-        <button class="nicon nicon--mini" id="notes-trash" type="button"
-                title="回收站（删掉的笔记在这里，可以捞回来）"
-                aria-label="回收站"></button>
+        <span class="nfiles__vault" id="notes-vault">—</span>
+        <button class="nicon nicon--mini" id="notes-collapse" type="button" title="全部展开 / 收起"
+                aria-label="全部展开或收起">⇅</button>
       </footer>
     </aside>
 
