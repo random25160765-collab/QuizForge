@@ -43,6 +43,10 @@
   //: **真正画在屏幕上的那条会话**。换会话时 `state.current` 是立刻改的（左栏要马上跟手），
   //: 而正文要等取数据回来才换 —— 两者之间有一缝，记阅读位置时必须以这个为准（见 saveReadAnchor）。
   var paintedCid = '';
+  //: 这一条会话**恢复过没有**（见 paintThread 收尾那一段）：换会话时清空。
+  //: 用它而不是只用 `entering`：换会话那一次重画有可能落在正文还没回来的一拍上（实测踩过，
+  //: 回来就停在窗口最上面），那样 `entering` 那一轮被白吃掉，后面再没人去接。
+  var restoredCid = '';
   //: 恢复之后一小段里盯着的那个锚点：图（TeX/图片）是异步换上去的，一变高位置就漂（见 keepAnchor）。
   //: 用户自己一动、或过了 `holdUntil`，就收手。
   var heldAnchor = null;
@@ -6138,7 +6142,14 @@
     // `.chat__thread` 上有 `scroll-behavior: smooth`：直接赋 scrollTop 会走动画，而紧接着
     // fitArea 改布局会把动画打断（实测跳动 -98px，见 repaintKeepingScroll）。
     threadEl.style.scrollBehavior = 'auto';
-    threadEl.scrollTop += row.getBoundingClientRect().top - threadEl.getBoundingClientRect().top + (one.dy || 0);
+    /* **减，不是加。** 把"那条消息相对视口顶的偏移"从当前值 `cur` 摆成记录里的 `dy`，
+     * 视口要移动的量是 `cur - dy`（往下滚，内容的偏移就变小）。
+     *
+     * 原来是 `cur + dy` —— `dy` 只有 ±9 时看不出来（18px 的偏差当时被我当成像素取整 ✗），
+     * 可 `dy = -3638` 时它正好把两项**互相抵消**，于是恢复出来是 `scrollTop 0`、落在窗口最
+     * 上面（实测：读一条很长的回答，切走再回来就跳到了最顶上）。
+     */
+    threadEl.scrollTop += row.getBoundingClientRect().top - threadEl.getBoundingClientRect().top - (one.dy || 0);
     anchorScrollAt = Date.now();
     // 从半腰接着读：**别让随后写出来的新内容把他拖回底部**
     stickBottom = false;
@@ -6148,7 +6159,21 @@
   }
 
   /** 进会话时消费 `pendingAnchor`（由 openConversation 放好）。没有记录就照旧跳到底。 */
+  /** 兜底恢复（见 paintThread 收尾那一段）：这条会话还没恢复过、而且行已经画出来了 —— 就接着读。
+   *  返回"是否真的做了"：没记录时返回 false，让调用方照旧跳到底。 */
+  function restoreNow() {
+    if (!threadEl || !threadEl.querySelector('.chatmsg[data-id]')) return false;
+    restoredCid = String(state.current || '');
+    var one = QF.store.readAnchor ? QF.store.readAnchor(state.current) : null;
+    if (!one) return false;
+    applyAnchor(one);
+    heldAnchor = one.bottom ? null : one;
+    holdUntil = Date.now() + 12000;
+    return true;
+  }
+
   function consumeAnchor() {
+    restoredCid = String(state.current || ''); // 正常那一轮接过就算恢复过了
     var one = pendingAnchor;
     pendingAnchor = null;
     if (!one) {
@@ -6241,7 +6266,11 @@
     // 这一轮是不是"刚进/切了这个会话"：只有它去接着上次读到的地方（见 consumeAnchor）
     var enteringNow = entering;
     entering = false;
-    paintedCid = String(state.current || ''); // 从这一刻起，屏幕上这条就是它了
+    // **屏幕上这条是哪条** —— 必须跟着**取回来的那条会话**走，不是 `state.current`：
+    // `state.current` 在点下去那一刻就改了（左栏要跟手），而正文要等取数据回来；这一缝里
+    // 画出来的还是上一条会话的行，把它当成"当前会话"会让所有基于视口的判断都算错窗口
+    //（实测：切走再回来停在窗口最上面，见 `sameConv` 那一段）。
+    paintedCid = String(state.messagesCid || '') || String(state.current || '');
     renderBar();
     // 药丸要在 `renderBar()` **之后**补：那一行是 `renderBar` 重建的，
     // 插早了会被它连锅端掉（这颗药丸是动态插进那一行的，见 `paintSkillPills`）。
@@ -6262,14 +6291,27 @@
     // 回溯条跟着一次重画走：切对话、打标记之后"哪些在这里"要跟着变
     //（内容没变时它自己会跳过，见 placesKey）
     renderStations();
+    /* **只有"这一轮画的就是当前会话"才配去动视口。**
+     *
+     * 换会话时那次重画有可能落在正文**还没换过来**的一拍上 —— 实测：那一刻线程里还是上一条
+     * 会话的行（`paintedCid` 已经是对的，行还是旧的）。在那样的窗口上做任何决定都是错的：
+     * `applyAnchor` 找不到记录里那条（因为手上是别人的行），而 `entering` 那一轮就此被白吃掉，
+     * 后面再没人去接 —— 现象就是"回来停在窗口最上面"。
+     */
+    var sameConv = !!state.current && String(state.current) === paintedCid;
     if (keepScroll) refreshJump();
-    // 刚进 / 切了会话：接着上次读到的地方（见 consumeAnchor）；其余（发消息、流式、删改）照旧跳到底
-    else if (enteringNow) consumeAnchor();
+    else if (enteringNow && sameConv) consumeAnchor();
+    else if (enteringNow) entering = true; // 这一拍正文还没换过来：留给下一轮
+    // **兜底**：这一轮不是"进会话"，可这条会话**一次都还没恢复过**（见 restoreNow）。
+    else if (sameConv && restoredCid !== state.current && restoreNow()) {
+      /* 已经摆正了：不再往下走"跳到底" */
+    }
     // **刚恢复过、而他自己还没动过**：这多半是一条迟到的重画（后台同步、Python 输出收尾…）——
     // 别把他拽到底（用户报的正是"回来之后给我跳到最新"，而 `scrollToEnd(true)` 干的就是这个）。
     // 他一动手 `heldAnchor` 就清了（见那条 scroll 监听），所以这一条不会跟人抢。
-    else if (heldAnchor && Date.now() < holdUntil) applyAnchor(heldAnchor);
-    else scrollToEnd(true);
+    else if (sameConv && heldAnchor && Date.now() < holdUntil) applyAnchor(heldAnchor);
+    else if (sameConv || !state.current) scrollToEnd(true);
+    // 不是当前会话的重画：什么都不做（别拿上一条会话的窗口当裁判）
     // 视口落定之后再标"你在这儿"：这一句必须在上面那几行**之后**（位置是它们定的）
     markReading();
   }
@@ -10187,6 +10229,8 @@
     // 原先要等数据回来、`renderAside()` 跑完才亮 —— 那一下"点了没反应"的迟滞
     // 正是"不丝滑"的一半。
     state.current = id;
+    // 换会话了：这一条**还没恢复过**（见 paintThread 收尾那层兜底）
+    restoredCid = '';
     markCurrent();
     return api
       .get('/chat/conversations/' + id)
@@ -10194,6 +10238,9 @@
         // 等待期间他又点了别的：这次结果作废 —— 否则先回来的旧响应会把新的顶掉
         if (state.current !== id) return;
         state.messages = (res && res.messages) || [];
+        // 这批消息属于哪条会话：`state.current` 是"点下去就改"的，而正文要等这一句 —— 两者
+        // 之间那一缝里画的还是上一条的行（见 paintThread 里的 `paintedCid`）。
+        state.messagesCid = id;
         state.picks = {}; // 默认跟最新那一支
         state.replacing = null; // 换会话了，上一轮"被顶掉的那条"与这里无关
         state.treeFolded = {}; // 收起状态也是按会话算的，换个对话就不该还收着
