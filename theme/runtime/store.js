@@ -1235,6 +1235,11 @@
         end: Math.max(0, parseInt(one.end, 10) || 0),
         at: Date.now(),
         cid: one.cid ? String(one.cid) : '',
+        /* **颜色**（2026-09-26 加）。存的是**语义名或十六进制串**（`red`/`blue`/`black`，
+         * 或 `#rrggbb`），渲染时才翻译成具体颜色（见 chat.js 的 `safeMarkColor`）——
+         * 于是**老数据（没这一栏）与没选色的新标记，长相与从前一模一样**（样式那边取
+         * `var(--mark-color, 默认)`）。 */
+        color: String(one.color || '').trim().slice(0, 40),
       };
       list.unshift(piece); // 新的在最前：批注也是往前翻的
       saveSettings({ notes: list });
