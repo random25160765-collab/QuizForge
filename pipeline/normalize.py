@@ -55,7 +55,17 @@ from app import attachments, library  # noqa: E402  （要在 sys.path 之后）
 TEXT_DIR = ROOT / "data" / "library" / ".text"
 
 #: 默认扫什么。一个资料根下往往混着图片与附件，所以默认只认"能出正文"的那几类。
-DEFAULT_GLOBS = ("**/*.pdf", "**/*.md", "**/*.markdown", "**/*.txt")
+DEFAULT_GLOBS = ("**/*.pdf", "**/*.md", "**/*.markdown", "**/*.txt", "**/*.html", "**/*.htm")
+
+
+def is_asset_path(path: Path) -> bool:
+    """是不是"某份材料的资源"？
+
+    **一个主 HTML = 一份材料**（用户确认的边界）：浏览器保存网页时会把整页资源拖进
+    `xxx_files/`，实测 `/mnt/f/Website` 有 1398 个文件、其中只有 29 个是真页面 ——
+    那 1369 个（js / css / 图片 / 子页面）都算那份材料的资源，不进材料清单。
+    """
+    return any(part.endswith("_files") or part in (".orphans", ".text") for part in path.parts)
 
 #: 判成这两档的进"待 OCR"队列，不落产物（空材料进库比搜不到更糟：它会占元数据判定与切片）。
 GOOD_STATES = ("ok", "poor")
@@ -98,18 +108,34 @@ def ascii_words(text: str, words: int = 3, limit: int = 20) -> str:
     return "".join(chunks[:words]).lower()[:limit]
 
 
-def citekey_for(path: Path, taken: set[str]) -> str:
+def is_ours(key: str, path: Path, out_dir: Path) -> bool:
+    """产物目录里那个 `{key}.md` 是不是**这份原件**上一次跑出来的？
+
+    为什么要问这一句：`taken` 用"已存在的文件名"做种子，那重跑同一份原件就会被判成撞车、
+    写到 `xxx-2.md` 去 —— 实测踩过（改完代码复跑一遍，读到的还是旧文件，白折腾一轮）。
+    判据用旁注里的 `source`：同一份原件 → 同一个键，**覆盖自己那份**，这才叫幂等。
+    """
+    sidecar = out_dir / f"{key}.json"
+    if not sidecar.is_file():
+        return False
+    try:
+        return str(json.loads(sidecar.read_text(encoding="utf-8")).get("source") or "") == str(path)
+    except (OSError, ValueError):
+        return False
+
+
+def citekey_for(path: Path, taken: set[str], out_dir: Path) -> str:
     """这份产物的引用键 —— **不出自己的规则**，调资料库那一份（合流的锚就在这一处）。
 
     纯中文书名（`算法导论（原书第3版）`）取不到骨架，`citekey_for` 会退到 `doc-` + 8 位哈希：
     稳定、不撞车，而**原名照旧进 `title`**（人看得见的永远是原名）。
-    同一轮里若真撞了（同名文件在不同目录），补一个 `-2`、`-3`。
+    真撞了（比如两本 `book.pdf` 在不同目录、或 Vol1/Vol2 的骨架都被截到同一串）才补 `-2`。
     """
     base = library.citekey_for({}, fallback=str(path))
-    if base not in taken:
+    if base not in taken or is_ours(base, path, out_dir):
         return base
     index = 2
-    while f"{base}-{index}" in taken:
+    while f"{base}-{index}" in taken and not is_ours(f"{base}-{index}", path, out_dir):
         index += 1
     return f"{base}-{index}"
 
@@ -199,14 +225,25 @@ def normalize_one(path: Path, subject: str, out_dir: Path, taken: set[str], *, d
     kind = attachments.kind_of(path.name, "")
     if kind in ("image", "legacy", "other"):
         return {"path": str(path), "ok": False, "why": f"不抽正文（kind={kind}）"}
-    if path.suffix.lower() in (".html", ".htm"):
-        # 第 3 步的支路（HTML→MD + 正文定位）。先如实说"还没接"，别拿原始 HTML 冒充正文。
-        return {"path": str(path), "ok": False, "why": "html 支路还没接（第 3 步）"}
 
-    # limit=0 = 不截断（书要从第一页到最后一页都能被检索到）；再过一道全角→半角，
-    # 否则中文数学排版的书会被质量门误判成乱码（见 `to_halfwidth`）。
-    raw = to_halfwidth(attachments.extract(path, kind, limit=0, timeout=PDF_TIMEOUT_LONG))
-    judged = library.judge_text(raw)
+    # 两条支路：网页走 HTML→Markdown（它自带标题层级），其余走抽取 + 章节识别。
+    page_map: list[dict] = []
+    if path.suffix.lower() in (".html", ".htm"):
+        from . import htmlmd  # 网页那一格：转换表与正文定位都在它里面
+
+        got = htmlmd.convert(path)
+        if not got.get("ok"):
+            return {"path": str(path), "ok": False, "why": "html：" + str(got.get("why") or "没抽出来")}
+        text = to_halfwidth(str(got["md"]))
+        title = str(got["title"])
+    else:
+        # limit=0 = 不截断（书要从第一页到最后一页都能被检索到）；再过一道全角→半角，
+        # 否则中文数学排版的书会被质量门误判成乱码（见 `to_halfwidth`）。
+        raw = to_halfwidth(attachments.extract(path, kind, limit=0, timeout=PDF_TIMEOUT_LONG))
+        text, page_map = structure(raw, title_of(path))
+        title = title_of(path)
+
+    judged = library.judge_text(text)
     state = str(judged.get("state") or "none")
     if state not in GOOD_STATES:
         return {
@@ -217,14 +254,13 @@ def normalize_one(path: Path, subject: str, out_dir: Path, taken: set[str], *, d
             "chars": judged.get("chars") or 0,
         }
 
-    citekey = citekey_for(path, taken)
+    citekey = citekey_for(path, taken, out_dir)
     taken.add(citekey)
-    text, page_map = structure(raw, title_of(path))
     lines = text.splitlines()
     meta = {
         **judged,
         "citekey": citekey,
-        "title": title_of(path),
+        "title": title,
         "subject": subject,
         "source": str(path),
         "kind": kind,
@@ -288,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
         found: list[Path] = []
         for pattern in patterns:
             found.extend(sorted(base.glob(pattern)))
-        files = [one for one in found if one.is_file()]
+        files = [one for one in found if one.is_file() and not is_asset_path(one)]
 
     if not files:
         raise SystemExit(f"没匹配到文件：{target} --glob {' '.join(patterns)}")
