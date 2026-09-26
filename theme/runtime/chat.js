@@ -6039,6 +6039,42 @@
     }, 400);
   }
 
+  /** 记录里那条不在这一窗里时：退到**窗口里离它最近**的那条（消息 id 递增，按 id 比大小）。
+   *
+   * 为什么不是"退到最上面"：那一样是跳到不知道什么地方 —— 用户要的是"接着刚才那儿读"，
+   * 而"最近的已知位置"是这个诉求下能给出的最好答案（窗口里若都比它小，就落在最下面那条，
+   * 也就是窗口的末尾；都比它大就落在最上面那条，与 goTop 同）。
+   * 对不上 id（非数字 id 之类）才真的退到最上面。 */
+  function goNear(mid) {
+    if (!threadEl) return;
+    var want = Number(mid);
+    var rows = threadEl.querySelectorAll('.chatmsg[data-id]');
+    var best = null;
+    var gapBest = Infinity;
+    if (isFinite(want)) {
+      for (var i = 0; i < rows.length; i += 1) {
+        var id = Number(rows[i].dataset.id);
+        if (!isFinite(id)) continue;
+        var gap = Math.abs(id - want);
+        if (gap < gapBest) {
+          gapBest = gap;
+          best = rows[i];
+        }
+      }
+    }
+    if (!best) {
+      goTop();
+      return;
+    }
+    threadEl.style.scrollBehavior = 'auto';
+    threadEl.scrollTop += best.getBoundingClientRect().top - threadEl.getBoundingClientRect().top;
+    anchorScrollAt = Date.now();
+    stickBottom = false;
+    requestAnimationFrame(function () {
+      if (threadEl) threadEl.style.scrollBehavior = '';
+    });
+  }
+
   /** 退回最上面。**坏记录**用它（见 applyAnchor）——绝不跳到底：那正是他不想要的"跳到最新"。
    *  记录坏了就别假装知道他在哪，但也不必把他丢到另一个极端。 */
   function goTop() {
@@ -6077,7 +6113,18 @@
       return;
     }
     if (mid && !row) {
-      goTop(); // 那条消息找不到：不跳到底（底正是他不想要的）
+      /* 两条完全不同的情形，别混在一起：
+       *
+       * 1. **行还一条都没画出来** —— 换会话时正文要等取数据回来，而这一拍可能就落在那个空窗里
+       *    （实测：一进一出之后停在窗口最上面，`scrollTop 0`）。这时**先别动视口**：在一个空
+       *    线程上退到哪儿都没有意义，留着 `heldAnchor` 等行到了那次 resize 再摆正
+       *    （见 `keepAnchor`）。
+       * 2. **行有，但记录里那条不在这一窗里**（换会话时渲染的窗口会变）—— 退到**窗口里离它最近**
+       *    的那条（见 `goNear`），而不是"整条对话的最上面"：那跟退到底一样，都是跳到不知道
+       *    什么地方。
+       */
+      if (!threadEl.querySelector('.chatmsg[data-id]')) return;
+      goNear(mid);
       return;
     }
     if (one.bottom && last) {
