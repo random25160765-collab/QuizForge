@@ -2216,7 +2216,7 @@
       items.push({
         icon: 'trash',
         danger: true,
-        label: row.kind === 'strike' ? '取消删除线' : row.kind === 'note' ? '取消这条批注' : '取消高亮',
+        label: row.kind === 'note' ? '取消这条批注' : '取消' + markWord(row.kind),
         run: function () {
           dropMark(row.id);
         },
@@ -2240,6 +2240,16 @@
         hint: '⌘⇧X',
         run: function () {
           applyMark('strike', target);
+        },
+      });
+    }
+    if (!has.underline) {
+      items.push({
+        icon: 'underline',
+        label: '加下划线',
+        hint: '⌘⇧U',
+        run: function () {
+          applyMark('underline', target);
         },
       });
     }
@@ -2370,11 +2380,12 @@
   document.addEventListener('keydown', function (ev) {
     if (!(ev.metaKey || ev.ctrlKey) || !ev.shiftKey || ev.altKey) return;
     var key = String(ev.key || '').toLowerCase();
-    if (key !== 'h' && key !== 'x' && key !== 'a') return;
+    if (key !== 'h' && key !== 'x' && key !== 'u' && key !== 'a') return;
     var pick = selectionMark();
     if (!pick) return;
     ev.preventDefault();
     if (key === 'a') annotatePick(pick);
+    else if (key === 'u') applyMark('underline', pick);
     else applyMark(key === 'x' ? 'strike' : 'hl', pick);
   });
 
@@ -2392,9 +2403,15 @@
     if (markUndo.length > MARK_UNDO_MAX) markUndo.shift();
   }
 
+  /** 标记的中文名 —— 工具条、撤回提示、面板都读它；**新增一种只改这里**。 */
+  var MARK_WORD = { hl: '高亮', strike: '删除线', underline: '下划线', note: '批注' };
+
+  function markWord(kind) {
+    return MARK_WORD[kind] || '高亮';
+  }
+
   function markKindWord(piece) {
-    var kind = QF.store.markKind(piece);
-    return kind === 'strike' ? '删除线' : kind === 'note' ? '批注' : '高亮';
+    return markWord(QF.store.markKind(piece));
   }
 
   /** 加一条标记并记进撤回栈 —— 三个入口（右键 / 快捷键 / 面板）共用它。 */

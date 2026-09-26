@@ -434,6 +434,7 @@ def _my_marks(db: Session, conv: Conversation, limit: int) -> tuple[dict, list[s
         "批注": len([one for one in notes if str(one.get("kind") or "note") == "note"]),
         "高亮": len([one for one in notes if str(one.get("kind") or "") == "hl"]),
         "删除线": len([one for one in notes if str(one.get("kind") or "") == "strike"]),
+        "下划线": len([one for one in notes if str(one.get("kind") or "") == "underline"]),
         "书签": len([one for one in places if str(one.get("kind") or "back") == "mark"]),
         "回溯": len([one for one in places if str(one.get("kind") or "back") != "mark"]),
     }

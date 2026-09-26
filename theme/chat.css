@@ -3904,6 +3904,20 @@ body.is-colresize .panes__host > .chat {
   color: var(--fg2);
 }
 
+/* 下划线："这一句是重点" —— 与删除线分得开：那条是**穿过字形**的横线、还把字压灰；
+ * 这条压在**脚下**、颜色不变，只多一条线（所以正文可读性也不受影响）。
+ * 悬停时线转成 amber，让"这是我标的"这件事看得见。 */
+.chatmsg__parts .chatmark--underline {
+  background: none;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.chatmsg__parts .chatmark--underline:hover {
+  text-decoration-color: color-mix(in srgb, var(--amber) 80%, transparent);
+}
+
 /* 批注：正文这边只留一道虚线下划线（"这里挂了句话"），话本身在右边那栏 ——
  * 若也铺一层底色，它和高亮就分不出来了。 */
 .chatmsg__parts .chatmark--note {
