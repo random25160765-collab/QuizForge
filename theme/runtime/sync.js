@@ -85,6 +85,16 @@
     schedule();
   }
 
+  /** 本机还有**没推上去**的设置改动吗？
+   *
+   * 给 `store.hydrateSettings` 用，判"服务端那份该不该盖掉本机这份"。
+   * 少了它就会丢东西（实测 2026-09-26）：本机 rev 落后服务端时（另一处把计数推高了、
+   * 或本地存储被清过），加载时会把**本机刚写、还没推上去**的设置整份换成服务端的旧副本 ——
+   * 用户看到的正是"批注打完回车，过一会儿就没了"。 */
+  function settingsPending() {
+    return !!state.settings;
+  }
+
   function daysSeedDirty() {
     state.daysSeed = true;
     schedule();
@@ -137,6 +147,12 @@
         QF.store.dropAttempts(body.attemptIds);
         QF.store.dropResets(body.resetIds);
         applyRejected(res);
+        // **问一句"那份设置收下没有"**：服务端在 rev 不大于已存值时会保留旧副本，
+        // 而 200 照样是 200 —— 不核对的话，本机会以为自己推成功了，
+        // 下一次加载就把刚写的批注换成服务端那份旧的（实测就是这么丢的）。
+        if (body.sentSettings && QF.store.noteSettingsPush) {
+          QF.store.noteSettingsPush(res && res.settingsAccepted, res && res.settingsRev);
+        }
 
         notify();
         // 期间可能又攒了新的，接着推
@@ -328,6 +344,7 @@
   QF.sync = {
     recordDirty: recordDirty,
     settingsDirty: settingsDirty,
+    settingsPending: settingsPending,
     daysSeedDirty: daysSeedDirty,
     attemptsDirty: attemptsDirty,
     resetsDirty: resetsDirty,

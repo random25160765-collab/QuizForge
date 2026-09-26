@@ -85,12 +85,14 @@ def sync(payload: dict, db: DbSession) -> dict:
 
     has_settings = "settings" in payload and payload.get("settings") is not None
     settings_out = None
+    settings_accepted = None
     if has_settings:
-        settings_out = _upsert_settings(
+        settings_out, settings_accepted = _upsert_settings(
             db, payload.get("settings"), int(payload.get("settingsRev") or 0)
         )
 
     db.commit()
+    stored = settings_row(db)
 
     return {
         "ok": True,
@@ -100,6 +102,13 @@ def sync(payload: dict, db: DbSession) -> dict:
         "patchesRejected": rejected,
         "daysSeedAccepted": seeded,
         "settings": settings_out,
+        # **这一份设置到底收下没有**。不说的话客户端会以为推上去了 ——
+        # 而它下一次加载就会被服务端这份旧副本整份盖掉（2026-09-26 实测：
+        # 批注打完回车就"自己没了"，根因正是这个静默拒收）。
+        "settingsAccepted": settings_accepted,
+        # 服务端**真正存着**的 rev：客户端拿它把本机 rev 抬到不低于它，
+        # 于是下一轮推送自然比它高、就不再被拒。
+        "settingsRev": stored.client_rev if stored else 0,
     }
 
 
@@ -115,23 +124,27 @@ def reset(db: DbSession) -> dict:
     return {"ok": True}
 
 
-def _upsert_settings(db: DbSession, incoming: dict, rev: int) -> dict:
-    """设置整体覆盖，按 rev 的 LWW。
+def _upsert_settings(db: DbSession, incoming: dict, rev: int) -> tuple[dict, bool]:
+    """设置整体覆盖，按 rev 的 LWW。返回 `(库里那份, 这一份收下没有)`。
 
     设置是一份小 JSON，逐字段合并反而会在「删掉某个键」时表现怪异；
     整体覆盖符合心智。rev 的单调性由客户端的 Lamport 递增保证。
+
+    **第二个返回值是这次补的**：`rev <= 已存` 时这里保留服务端那份（对 ✓），
+    但原先**不告诉客户端**，于是客户端以为推成功了 —— 下一次加载它就把本机那份
+    （含刚写的批注）换成服务端这份旧的，而且一声不响。收没收下必须回话。
     """
     row = settings_row(db)
     if row is None:
         row = AppSettings(data=incoming, client_rev=rev)
         db.add(row)
         db.flush()
-        return row.data
+        return row.data, True
 
     if rev and rev <= row.client_rev:
-        return row.data
+        return row.data, False
 
     row.data = incoming
     row.client_rev = max(rev, row.client_rev)
     db.flush()
-    return row.data
+    return row.data, True

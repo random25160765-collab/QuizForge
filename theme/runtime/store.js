@@ -23,6 +23,10 @@
     meta: PREFIX + 'meta',
     // 设置项的写入序号（记录自己的 rev 存在记录对象里）
     settingsRev: PREFIX + 'settingsRev',
+    // 「本机有设置改动**还没被服务端收下**」—— 这个标记必须落盘。
+    // 丢数据恰恰发生在刷新那一刻：只在内存里记的话，刷新就等于忘了它，
+    // 于是加载时被服务端那份旧副本整份盖掉（批注就是这样"自己没了"的）。
+    settingsDirty: PREFIX + 'settingsDirty',
     // 待上传的作答流水（增量）
     attempts: PREFIX + 'attempts',
     // 待上传的「重新设基线」（重置 / 导入）
@@ -405,6 +409,33 @@
 
   function markSettingsDirty() {
     if (QF.sync) QF.sync.settingsDirty();
+    rawSet(K.settingsDirty, '1');   // 落盘：刷新之后还得知道"本机有没推上去的改动"
+  }
+
+  /** 本机有没有**没被服务端收下**的设置改动（跨刷新存活）。 */
+  function settingsDirtyLocal() {
+    return rawGet(K.settingsDirty) === '1';
+  }
+
+  function clearSettingsDirty() {
+    rawSet(K.settingsDirty, '');
+  }
+
+  /** 同步器把服务端的回执交给这里：这一份设置**收下没有**。
+   *
+   * 收下了 → 清掉未推标记（以后可以放心接受服务端那份）；
+   * 没收下（服务端在 rev 不大于已存值时会静默保留旧副本）→ 把本机 rev 抬到服务端那一版，
+   * 下一轮推送自然比它高，就能推上去。**不抬的话会退化成"改了白改"** ——
+   * 每一次推送都被拒，而本机始终以为自己成功了。
+   */
+  function noteSettingsPush(accepted, serverRev) {
+    if (accepted) {
+      clearSettingsDirty();
+      return 'accepted';
+    }
+    var theirs = Number(serverRev || 0) || 0;
+    if (theirs > 0) rawSet(K.settingsRev, String(theirs));
+    return 'rejected';
   }
 
   function markDaysSeedDirty() {
@@ -481,9 +512,27 @@
 
     // 本机那份更新（刚改过、还没推上去）就留着，只标脏等同步器推 ——
     // 与 records 的合并规则一个道理：本地的热改动不该被服务端的旧值按回去。
+    //
+    // **`|| settingsPending()` 这一半是 2026-09-26 补的，它治的是一类"东西自己没了"**：
+    // 原先只比 rev，而 rev 是本机与服务端**各自递增的计数**，不是内容的指纹 ——
+    // 本机一旦落后（另一台设备/另一个页面把服务端的计数推高了、本地存储被清过），
+    // 每次加载都会拿服务端的旧副本**整份盖掉**本机刚写的改动，而且**一声不响**。
+    // 用户报的就是这个现象：右键加批注、打完字回车，界面上还在（内存里也写了 localStorage），
+    // 可下次加载就没了 —— 实测那一份服务端 rev 4890 压着本机 4839，批注因此蒸发。
+    // 规则改成：**本机有没推上去的改动时，服务端的副本一律不许盖**（推上去之后 rev 自然追上）。
     var theirsRev = typeof snapshot.settingsRev === 'number' ? snapshot.settingsRev : 0;
-    if (settingsRev() > theirsRev) {
+    // 两类"本机有没推上去的改动"都要看：内存里刚标的（同一个页面内），
+    // 以及**落盘的那个标记**（刷新/换页之后仍然算数 —— 丢数据正是发生在这一刻）。
+    var pending = settingsDirtyLocal() ||
+      !!(QF.sync && QF.sync.settingsPending && QF.sync.settingsPending());
+    if (settingsRev() > theirsRev || pending) {
       if (snapshot.settings) markSettingsDirty();
+      // **早退之前也要把本机 rev 抬到不低于服务端**（与下面那条 `Math.max` 同一条理由，
+      // 见 497 行那段注释）：不抬的话，本机之后每一次设置变更都会被服务端按
+      // "rev 不大于已存值"静默拒绝 —— 从"会丢东西"变成"改了白改"，一样是错的。
+      if (typeof snapshot.settingsRev === 'number') {
+        rawSet(K.settingsRev, String(Math.max(settingsRev(), snapshot.settingsRev)));
+      }
       return false;
     }
 
@@ -491,6 +540,9 @@
     if (snapshot.settings && typeof snapshot.settings === 'object') {
       settingsCache = deepMerge(DEFAULT_SETTINGS, snapshot.settings);
       writeJSON(K.settings, settingsCache);
+      // 本机那份已经被服务端这份取代了（它就是权威）→ 未推标记可以清掉。
+      // 这一步不能省：不清的话，每次加载都会走上面那条早退，本机再也接受不到服务端的更新。
+      clearSettingsDirty();
       got = true;
     }
 
@@ -1234,6 +1286,9 @@
     pendingResets: pendingResets,
     dropResets: dropResets,
     saveSettings: saveSettings,
+    settingsDirtyLocal: settingsDirtyLocal,
+    clearSettingsDirty: clearSettingsDirty,
+    noteSettingsPush: noteSettingsPush,
     resetSettings: resetSettings,
     pinnedTopics: function () {
       var list = settings().pinnedTopics;
