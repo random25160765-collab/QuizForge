@@ -228,6 +228,10 @@ class Entry:
     #: 索引要不要跳过它，看的是这个，而不是"键在不在已知表里" —— 两者会分家：
     #: 撞键被改名的那一份，键不在表里、但元数据确实冻结过（实测因此反复重抓）。
     frozen: bool = False
+    #: **只有正文**的条目：正文在 `.text/` 里，资料库根目录下却没有它对应的文件
+    #: （网站抓下来的页、抽出来的书都是这样进来的）。`path` 就指向那份正文。
+    #: 见了它别去写元数据文件、也别当成"库里有这个文件"（见 `text_only_entries`）。
+    text_only: bool = False
 
     @property
     def citekey(self) -> str:
@@ -262,6 +266,9 @@ class Entry:
                 "odd": float(self.text_state.get("odd") or 0.0),
             },
             "arxiv": str(self.meta.get("arxiv") or ""),
+            # 这条只有正文（网站页 / 抽出来的书）：界面上要说清"它的原文件不在资料库里"，
+            # 否则人点开只看到一份 `.text/…md`，会以为是哪里出错了。
+            "textOnly": self.text_only,
         }
 
 
@@ -1077,6 +1084,22 @@ def _text_paths(text_dir: Path, citekey: str) -> tuple[Path, Path]:
     return Path(text_dir) / f"{safe}.txt", Path(text_dir) / f"{safe}.meta.json"
 
 
+def _text_variants(text_dir: Path, citekey: str) -> tuple[list[Path], list[Path]]:
+    """这份正文**可能**落在哪几个文件上：`([正文…], [旁注…])`，按可信度排序。
+
+    两条路留下的名字不一样，都得认：
+
+    * 文件那条（PDF / 手册）→ `<键>.txt` + `<键>.meta.json`；
+    * 抓网页与抽书那条 → `<键>.md` + `<键>.json`。
+
+    只认前一种的话，后一种材料正文明明在盘上、检索也查得到，却被判成"没抓过"：
+    资料库页里搜不到它的正文、列表里也不出现（实测：网站那 29 页与 10 本书）。
+    """
+    safe = _safe_key(citekey)
+    base = f"{Path(text_dir) / safe}"
+    return [Path(base + ".txt"), Path(base + ".md")], [Path(base + ".meta.json"), Path(base + ".json")]
+
+
 def rename_text(text_dir: Path, old: str, new: str) -> bool:
     """把正文缓存从一个引用键挪到另一个。
 
@@ -1098,24 +1121,27 @@ def rename_text(text_dir: Path, old: str, new: str) -> bool:
 
 
 def text_state(text_dir: Path, citekey: str) -> dict[str, Any]:
-    """读**已缓存**的抽取状态（不触发抽取）。"""
-    _, sidecar = _text_paths(text_dir, citekey)
-    if not sidecar.is_file():
-        return {"state": "none", "chars": 0, "ratio": 0.0, "mtime": 0.0}
-    try:
-        return json.loads(sidecar.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"state": "none", "chars": 0, "ratio": 0.0, "mtime": 0.0}
+    """读**已缓存**的抽取状态（不触发抽取）。两种命名都认（见 `_text_variants`）。"""
+    for sidecar in _text_variants(text_dir, citekey)[1]:
+        if not sidecar.is_file():
+            continue
+        try:
+            return json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+    return {"state": "none", "chars": 0, "ratio": 0.0, "mtime": 0.0}
 
 
 def text_of(text_dir: Path, citekey: str, *, limit: int = TEXT_LIMIT) -> str:
-    path, _ = _text_paths(text_dir, citekey)
-    if not path.is_file():
-        return ""
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")[:limit]
-    except OSError:
-        return ""
+    """这份条目的正文（两种命名都认，见 `_text_variants`）。"""
+    for path in _text_variants(text_dir, citekey)[0]:
+        if not path.is_file():
+            continue
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[:limit]
+        except OSError:
+            continue
+    return ""
 
 
 #: 判正文可用性时采几段。五段够稳，也不快不慢（每段只看 4000 字）。
@@ -1265,6 +1291,59 @@ def entry_for(item: Item, meta_dir: Path, text_dir: Path, meta: dict[str, Any] |
     )
 
 
+def text_only_entries(text_dir: Path, *, skip: set[str]) -> list[Entry]:
+    """**只有正文的条目**：正文在 `.text/` 里，资料库根目录下却没有它对应的文件。
+
+    为什么需要它：网站抓下来的页与抽出来的书是**直接进 `.text/`** 的（原文件在
+    `/mnt/f/Website`、`/mnt/f/Books` 这种库外目录里），`scan` 扫根目录当然扫不到 ——
+    于是出现"正文进了库、检索查得到，唯独资料库页列不出来"（用户："我这边还查不到"）。
+    这里把它们补进列表：`path` 指向 `.text/<键>.md`，点开就是正文。
+
+    `skip` 是资料库里的真文件已经占掉的引用键：**撞键的一律不要**。宁可少列一条，
+    也不能让清单里两条共用一把键（引用、笔记、题都按这个键走，共用就是错的）。
+
+    `frozen=False`：它不是资料库里的文件，不该在键的抢占里挤掉真条目；
+    也因此**不会**被索引流程当成"有主"去重抓。
+    """
+    out: list[Entry] = []
+    base = Path(text_dir)
+    for sidecar in sorted(base.glob("*.json")):
+        if sidecar.name.endswith(".meta.json"):
+            continue
+        try:
+            meta = json.loads(sidecar.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        key = str(meta.get("citekey") or sidecar.stem)
+        body = base / f"{key}.md"
+        if not key or key in skip or not body.is_file():
+            continue
+        try:
+            stat = body.stat()
+        except OSError:
+            continue
+        merged = dict(meta)
+        merged.setdefault("citekey", key)
+        out.append(
+            Entry(
+                item=Item(
+                    path=body,
+                    root=base,
+                    rel=str(body.relative_to(base.parent)),
+                    size=stat.st_size,
+                    mtime=stat.st_mtime,
+                ),
+                meta=merged,
+                assets=[],
+                text_state=text_state(base, key),
+                text_only=True,
+            )
+        )
+    return out
+
+
 def entries(roots: list[Path], meta_dir: Path, text_dir: Path) -> list[Entry]:
     """所有根下的所有条目。引用键冲突时加后缀（`-2`），不让两个条目共用一个键。"""
     by_key, by_source = metadata_index(meta_dir)
@@ -1280,6 +1359,10 @@ def entries(roots: list[Path], meta_dir: Path, text_dir: Path) -> list[Entry]:
             entry = entry_for(item, meta_dir, text_dir, meta=meta)
             entry.frozen = meta is not None
             out.append(entry)
+
+    # 再补上**只有正文的那种**（网站页、抽出来的书）：原文件在库外，`scan` 扫不到它们。
+    # 键已被真文件占掉的一律跳过（见 `text_only_entries`）。
+    out.extend(text_only_entries(text_dir, skip={entry.citekey for entry in out}))
 
     # **冻结过的键先占位**：它是"有主"的，不能被后来的条目挤掉。
     # 踩过：一份手册的键先被旁边的中文版占了，于是它每轮都被改名一次 ——
