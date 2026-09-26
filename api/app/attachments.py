@@ -117,7 +117,7 @@ def kind_of(name: str, mime: str) -> str:
     return "other"
 
 
-def _extract_pdf(path: Path) -> str:
+def _extract_pdf(path: Path, limit: int = TEXT_LIMIT, timeout: int = PDF_TIMEOUT) -> str:
     """`pdftotext` 抽 PDF 正文。
 
     命令从 `toolchain` 拿（系统 → 仓库自带 → 本机缓存 → 首启下载），
@@ -130,14 +130,18 @@ def _extract_pdf(path: Path) -> str:
         done = subprocess.run(
             [str(found), "-layout", "-q", str(path), "-"],
             capture_output=True,
-            timeout=PDF_TIMEOUT,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
     if done.returncode != 0:
         return ""
-    return done.stdout.decode("utf-8", errors="replace")[:TEXT_LIMIT]
+    text = done.stdout.decode("utf-8", errors="replace")
+    # `limit=0` = **不截断**：资料流水线要整本书（现在的默认值照旧，应用那边行为一个字不变）。
+    # 从前这里只有 `[:TEXT_LIMIT]`，于是"一本书只有开头一百来页进得了检索"（实测：信号与系统
+    # 前 20 页就 78,861 字，200k 只够两百页，而它、算法导论、深入理解计算机系统都是六百页往上）。
+    return text if not limit else text[:limit]
 
 
 #: pandoc 的**输入格式必须显式给**：实测这台机器上的 pandoc 不认 `-f auto`
@@ -201,10 +205,16 @@ def slides_of(path: Path) -> list[dict]:
         return []
 
 
-def extract(path: Path, kind: str) -> str:
-    """抽正文。抽不出来就返回空串 —— 调用方要接受这一点，不要当成错误。"""
+def extract(path: Path, kind: str, limit: int = TEXT_LIMIT, timeout: int = PDF_TIMEOUT) -> str:
+    """抽正文。抽不出来就返回空串 —— 调用方要接受这一点，不要当成错误。
+
+    * `limit=0` = **不截断**（资料流水线的归一用它；上传那条路用默认值）；
+    * `timeout` = 单个抽取子进程的上限秒数。默认 20 秒够上传的文档用，但**不够书**：
+      实测 `book.pdf` 有 **4492 页、整本抽出 486 万字符、要 32 秒** —— 走默认值会被
+      超时吞成空串，现象是"这本有文字层的书被判成没有文字层"（流水线的归一因此传更长的值）。
+    """
     if kind == "pdf":
-        return _extract_pdf(path)
+        return _extract_pdf(path, limit, timeout)
     if kind == "docx":
         return _run_pandoc(path, "plain")[:TEXT_LIMIT]
     if kind == "pptx":
