@@ -158,14 +158,15 @@
   var NOTES_MAX = 500;
   var NOTE_MAX_CHARS = 4000;
 
-  /* ------------------------------------------------- 三种标记（别混为一谈）
+  /* ------------------------------------------------- 四种标记（别混为一谈）
    *
-   * `settings.notes` 这一份列表装的是**三种不同的东西**（用户原话：
+   * `settings.notes` 这一份列表装的是**四种不同的东西**（用户原话：
    * "高亮和批注是分开的两个东西"）：
    *
-   *   hl     高亮    —— 给眼睛做记号，正文底色变了就行
-   *   strike 删除线  —— "这一段不算数"，灰 + 划线
-   *   note   批注    —— 给这一段**写一句话**（话记在 `text` 里，正文旁边出旁批）
+   *   hl        高亮    —— 给眼睛做记号，正文底色变了就行
+   *   strike    删除线  —— "这一段不算数"，灰 + 划线
+   *   underline 下划线  —— "这一句是重点"，只在脚下加一条线，不改颜色（2026-09-26 加）
+   *   note      批注    —— 给这一段**写一句话**（话记在 `text` 里，正文旁边出旁批）
    *
    * 它们共用一条记录、一份同步、一套冲突规则（这是当初合在一起的理由）；
    * 但**界面上一律按 `kind` 分开**：批注栏只收 note，点在高亮上右键给的是
@@ -174,7 +175,7 @@
    * 老数据没有 `kind` 这一栏（那时只有两种）：有字的是批注，没字的是高亮。
    * 这一条只在这里判一次，别的地方都问 `QF.store.markKind`。
    */
-  var MARK_KINDS = { hl: 1, strike: 1, note: 1 };
+  var MARK_KINDS = { hl: 1, strike: 1, underline: 1, note: 1 };
 
   function kindOf(mark) {
     var kind = mark && mark.kind;
@@ -1210,7 +1211,7 @@
     notes: function () {
       return notesAll();
     },
-    /** 这条标记是哪一种（`hl` / `strike` / `note`）—— 老数据也认，见 `kindOf`。 */
+    /** 这条标记是哪一种（`hl` / `strike` / `underline` / `note`）—— 老数据也认，见 `kindOf`。 */
     markKind: function (mark) {
       return kindOf(mark);
     },
