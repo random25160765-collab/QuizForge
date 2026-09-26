@@ -2075,6 +2075,16 @@
     var boxRect = box.getBoundingClientRect();
     var svg = ensureLeadSvg(box);
     ui.clear(svg);
+    /* **卡片不许压到输入区**（用户："批注和下面的输入内容会重叠"）。
+     *
+     * 下边界取 `.chat__composer` 的上沿：输入区是吸底的，它的 `top` 就是"可读区到此为止"，
+     * 而且比去找滚动容器更稳（不必知道这一页是哪层在滚）。量不到就不兜（`Infinity`）。
+     * 留 8px 余量，免得卡片紧贴那条分隔线。 */
+    var composer = document.querySelector('.chat__composer');
+    var limit = composer
+      ? composer.getBoundingClientRect().top - boxRect.top - 8
+      : Infinity;
+
     var floor = 0;
     marginItems(host, box, notes, draft).forEach(function (item) {
       var card = item.draft
@@ -2083,11 +2093,25 @@
       if (!card.parentNode) box.appendChild(card);
       // `top` 相对旁批这一栏的顶边算（这一栏与正文同顶，所以两个坐标系差一个常量）
       var top = Math.round(Math.max(item.top, floor));
+      var height = card.offsetHeight;
+      /* **只把这一张往上挪，且挪得刚好够。**
+       *
+       * 用户的要求是两句：批注**尽量贴着**被批的那段话，但**不能被下面的输入框盖住**。
+       * 我先前写错过一版：见最后一张越界，就把**整摞一起**往上顶 —— 结果所有批注都被推到
+       * 顶上去了（用户："现在全部顶到上面了！！"）。所以这里各管各的：`top + height` 越过
+       * `limit` 时，把这一张抬到"底边正好落在 limit 上"为止，多一点不挪。
+       *
+       * 两张卡片因此可能挨在一起（`floor` 那条"别叠"的规则会让位）—— 这是有意的取舍：
+       * 离自己的那段话近，比"彼此不挨着"更重要。
+       */
+      if (limit !== Infinity && top + height > limit) {
+        top = Math.max(0, Math.round(limit - height));
+      }
       card.style.top = top + 'px';
       // 线接在卡片**上沿往下一点**，不用正中间：改到一半的卡片会变高，
       // 用中点会让这根线在编辑时上下乱跑。
       if (item.rect) leadLine(svg, boxRect, item.rect, top + 13);
-      floor = top + card.offsetHeight + 6;   // 挨着就往下让，别叠在一起
+      floor = top + height + 6;   // 挨着就往下让，别叠在一起
     });
   }
 
