@@ -72,6 +72,10 @@
   var demoEl = null;
   var clipInput = null;
   var pendingEl = null;
+  //: **引文**（"就这段追问"，见 paintQuote）：一次一段，跟着下一条消息走。
+  //: 与 `pendingEl` 那条不是一回事 —— 那条装的是**上传后的附件**（每项带 id，见 state.pending）。
+  var quoteEl = null;
+  var quoted = null;
   var pickEl = null; // 左栏头部那条批量操作条（多选时出现；见 renderPickBar）
 
   /** `/api/ai/usage` 的结果：走哪条通道、能不能用（决定提示怎么写） */
@@ -2305,6 +2309,22 @@
         label: '改这条批注',
         run: function () {
           startMarginEdit(note.id);   // 就地改，不跳到总览面板
+        },
+      });
+    }
+    /* **就这段追问**（用户："我右键选一段，然后输入框不用复制直接问"）—— "先复制到输入框"那一步
+     * 是多余的：选中的那段话直接跟着问题走（见 `paintQuote` / `onSendClick`）。
+     * 只认**选中的一段**：点在已有标记上、而没有选区时这一条不出现 —— 那会儿他要的是改标记。 */
+    if (pick && pick.quote) {
+      items.push({
+        icon: 'bulb',
+        label: '就这段追问',
+        hint: '不用复制',
+        run: function () {
+          quoted = { text: pick.quote, mid: pick.mid };
+          paintQuote();
+          if (inputEl) inputEl.focus();
+          ui.toast('引用了这一段 —— 直接写你的问题就行', 'info', 2200);
         },
       });
     }
@@ -4723,6 +4743,8 @@
             'div.chat__composer',
             null,
             pendingEl,
+            // 引文那一条（"就这段追问"）：与待发附件同一位子、同一种长相，但是另一件事
+            (quoteEl = h('div.chat__quote', { hidden: true })),
             (jumpBtn = iconButton('down', '回到最新', function () {
               scrollToEnd(true);
             }, '.chat__jump')),
@@ -8939,6 +8961,57 @@
     return kind + ' · ' + kb + 'KB' + (info.textChars ? ' · 抽出 ' + info.textChars + ' 字' : '');
   }
 
+  /** 引文那一条（用户："我右键选一段，然后输入框不用复制直接问"）。
+   *
+   * 它长得像"待发的附件"，但不是一回事：附件那条装的是**上传后的文件**（每项带 id，发给服务端
+   * 的是 id 列表，见 `send` 里的 attachedIds），而引文只是一段文字 —— 所以它自己一条，
+   * 别混进 `state.pending`（混进去那一步就会把 id 列表搞坏）。
+   *
+   * 发送时它并进**正文最前面**（见 `onSendClick`）：他看到的、对面看到的都是"先这段、再他的
+   * 问题"，模型当然也知道他在问哪一段 —— 手动复制粘贴那一步就是这样省掉的。 */
+  function paintQuote() {
+    if (!quoteEl) return;
+    ui.clear(quoteEl);
+    if (!quoted || !quoted.text) {
+      quoteEl.hidden = true;
+      return;
+    }
+    quoteEl.hidden = false;
+    // **三个孩子要一个个 append**：`appendChild(a, b, c)` 只吃**第一个**，后面两个会被静静丢掉
+    //（实测踩过：引文条上只剩一个「引用」标签，那段话根本没出来）。
+    [
+      h('span.chat__quotetag', { text: '引用' }),
+      h('span.chat__quotetext', { text: quoted.text, title: quoted.text }),
+      h(
+        'button.chat__quotex',
+        {
+          type: 'button',
+          title: '不引用了',
+          'aria-label': '不引用了',
+          onClick: function () {
+            quoted = null;
+            paintQuote();
+            if (inputEl) inputEl.focus();
+          },
+        },
+        iconNode('close', 12)
+      ),
+    ].forEach(function (node) {
+      quoteEl.appendChild(node);
+    });
+  }
+
+  /** 引文进正文的样子：**逐行加 `>`**。用户发出那条消息是**纯文本**渲染的（见 messageRow），
+   *  所以别用别的花活 —— 这个写法他一看就懂，模型也一看就懂。 */
+  function quoteBlocks(text) {
+    return String(text || '')
+      .split('\n')
+      .map(function (line) {
+        return '> ' + line;
+      })
+      .join('\n');
+  }
+
   function renderPending() {
     if (!pendingEl) return;
     ui.clear(pendingEl);
@@ -9488,7 +9561,14 @@
     if (window.QF && QF.latex && QF.latex.prewarm) QF.latex.prewarm();
     // 这一轮里若某张图编不出来，允许自动请模型重画一次（见 armingRepair）
     armingRepair();
-    send({ content: inputEl.value });
+    var body = String(inputEl.value || '');
+    if (quoted && quoted.text) {
+      // **引文走在最前面**（见 paintQuote）：他看到的、对面看到的都是"先这段、再他的问题"
+      body = quoteBlocks(quoted.text) + (body.trim() ? '\n\n' + body : '');
+      quoted = null;
+      paintQuote();
+    }
+    send({ content: body });
   }
 
   /* ------------------------------------------------------------ 流程（skill）
