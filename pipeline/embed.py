@@ -38,8 +38,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
+import socket
 import sys
 import time
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -51,7 +54,7 @@ sys.path.insert(0, str(config.ROOT / "api"))
 
 from app import local_embed  # noqa: E402
 from app.db import get_session_factory  # noqa: E402
-from app.models import Material, MaterialSlice, SliceEmbedding  # noqa: E402
+from app.models import EmbedRun, Material, MaterialSlice, SliceEmbedding  # noqa: E402
 
 #: 一次推理送多少窗。本地推理不按次计费，批量纯粹是为了把 CPU 吃满。
 BATCH = 16
@@ -217,6 +220,37 @@ def _pending(db, *, material: str, rebuild: bool, limit: int) -> tuple[list, dic
     return todo, stats
 
 
+def _close_run(db, *, status: str, note: str = "", written: int = 0) -> None:  # noqa: ANN001
+    """把这次跑单收尾（开跑登记见 `_run` 里那段）。
+
+    用"找 pid 是自己、还挂着 `running` 的那一行"来收尾，而不是把 `run` 对象传遍全场：
+    出错可能发生在登记**之前**（模型没下下来就直接走人了），那时根本没有对象可传，
+    而库里也不该留下一条永远 `running` 的行 —— 那正是"分不清在跑还是死了"的来源。
+    """
+    try:
+        row = (
+            db.execute(
+                select(EmbedRun)
+                .where(EmbedRun.pid == os.getpid())
+                .where(EmbedRun.status == "running")
+                .order_by(EmbedRun.id.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if row is None:
+            return
+        row.status = status
+        row.note = note
+        if written:
+            row.windows_written = written
+        row.ended_at = datetime.now(UTC)
+        db.commit()
+    except Exception:  # noqa: BLE001
+        # 收尾失败不该盖住真正的错：这条只是账，不是结果。
+        db.rollback()
+
+
 def _run(args) -> int:  # noqa: ANN001
     if args.fetch:
         ok, detail = local_embed.ensure(log=lambda message: print("   ", message))
@@ -231,8 +265,12 @@ def _run(args) -> int:  # noqa: ANN001
         print(
             f"切片 {stats['slices']} 片：要算 {stats['slices_to_do']} 片 / "
             f"{stats['windows']} 个窗口、没变跳过 {stats['unchanged']}"
+            + (f"、**半片要补 {stats['partial']}**" if stats["partial"] else "")
             + (f"、换模型 {stats['stale_model']}" if stats["stale_model"] else "")
-            + (f"、**正文不在本机 {stats['missing_file']}**" if stats["missing_file"] else "")
+            + (f"、**正文不在本机 {stats['missing_file']}**" if stats["missing_file"] else ""),
+            # **立刻落盘**：这句是进度，被重定向到文件时 python 会缓冲 —— 实测那份日志
+            # 跑了半小时还是空的，运维的人只能看着一个 CPU 在转却不知道到哪一步。
+            flush=True,
         )
         if not todo:
             print("没有要算的 —— 向量已经是最新的。")
@@ -268,6 +306,24 @@ def _run(args) -> int:  # noqa: ANN001
         # 排序不影响正确性 —— 写回是按片分组做的（见下面的 `cleared`）。
         flat.sort(key=lambda item: len(item[4]))
 
+        # 每片**该有几个窗口**：写回时顺手记进 `material_slices.windows` —— 运维对账
+        # （`python -m pipeline.ops audit`）靠它先把话说出来，不必每次读一遍正文。
+        want = {slice_row.id: len(windows) for slice_row, _mat, windows, _digest in todo}
+
+        # **开一张跑单**：从这一刻起"谁在跑、跑到哪"库里有账，不必再去 `ps` 与临时日志里猜
+        #（见 `EmbedRun` 的 docstring；`pipeline.ops` 就是读它）。
+        run = EmbedRun(
+            material=str(args.material or "(全部)"),
+            batch=int(args.batch),
+            pid=os.getpid(),
+            host=socket.gethostname(),
+            status="running",
+            slices_planned=len(todo),
+            windows_planned=len(flat),
+        )
+        db.add(run)
+        db.commit()
+
         cleared: set[int] = set()  # 这一轮已经清过旧行的切片
         written = 0
         for offset in range(0, len(flat), args.batch):
@@ -291,6 +347,8 @@ def _run(args) -> int:  # noqa: ANN001
                     db.execute(
                         delete(SliceEmbedding).where(SliceEmbedding.slice_id == slice_row.id)
                     )
+                    # 顺手把分母记上（对账用；`ops audit --exact` 会校准它）
+                    slice_row.windows = int(want.get(slice_row.id) or 0)
                     cleared.add(slice_row.id)
                 db.add(
                     SliceEmbedding(
@@ -305,10 +363,21 @@ def _run(args) -> int:  # noqa: ANN001
                     )
                 )
                 written += 1
+            # 跑单上的进度**每批落一次**：于是"跑到哪一步"是查得到的，不必只看进程还在不在。
+            run.windows_written = written
             db.commit()
-            print(f"  已写 {written}/{len(flat)} 窗（这批 {len(chunk)} 窗 / {elapsed:.0f} ms）")
-        print(f"完成：{len(cleared)} 片 / {written} 个窗口入库，模型 {model}。")
+            print(
+                f"  已写 {written}/{len(flat)} 窗（这批 {len(chunk)} 窗 / {elapsed:.0f} ms）",
+                flush=True,  # 同上：进度被重定向进文件时也要看得见
+            )
+        _close_run(db, status="ok", written=written)
+        print(f"完成：{len(cleared)} 片 / {written} 个窗口入库，模型 {model}。", flush=True)
         return 0
+    except BaseException as exc:  # noqa: BLE001
+        # **失败也要落账**（见 `_close_run`）：留着一条永远 `running` 的行，
+        # 运维就分不清"还在跑"和"早就死了"。
+        _close_run(db, status="failed", note=f"{type(exc).__name__}: {exc}"[:400])
+        raise
     finally:
         db.close()
 

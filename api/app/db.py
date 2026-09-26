@@ -160,6 +160,10 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 缺省 NULL = **还没问过**，正是想要的语义（补上之后那些概念会被重新选中，
     # 这是对的：老库里的边本来就少，正该把没问过的补问一遍）。
     ("concepts", "centric_at", "DATETIME"),
+    # 这一片**该有几个窗口**（向量化时写进来，见 `pipeline/embed.py`）—— 运维对账要比
+    # 分母，而分母要读正文才算得出来。默认 0 = 还不知道（老行就是 0；跑一次
+    # `pipeline.ops audit --exact` 会把它校准回去）。
+    ("material_slices", "windows", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 #: 补完列之后要跑**一次**的回填：`(表, 列) → SQL`，只在那一列**刚补上**时跑。

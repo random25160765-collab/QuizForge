@@ -643,6 +643,13 @@ class MaterialSlice(Base):
     tokens: Mapped[str] = mapped_column(String(32), default="", nullable=False)
     figures: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 这一片**该有几个窗口**（向量化时写进来；0 = 还不知道）。
+    #:
+    #: 它是给**对账**用的缓存，不是权威：真正的答案是拿正文重算（`pipeline/ops.py` 的
+    #: `--exact`）。为什么值得存一份：`slice_embeddings` 里"存了几行"只说明进度，
+    #: 要判断"刻完了没有"必须知道分母，而分母要读材料正文才算得出来 —— 全库上百份
+    #: 材料每次读一遍是几十秒，运维命令不该那么慢。
+    windows: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     __table_args__ = (UniqueConstraint("material_id", "slice_id", name="uq_slice_material"),)
 
@@ -696,6 +703,50 @@ class SliceEmbedding(Base):
     )
 
     __table_args__ = (UniqueConstraint("slice_id", "ordinal", name="uq_embedding_window"),)
+
+
+class EmbedRun(Base):
+    """一次**向量化的跑单** —— 运维与观测要看的头一样东西。
+
+    ## 为什么它必须进库
+
+    向量化是这条流水线上唯一"分钟到小时级"的一步，而它以前在库里**一点痕迹都没有**：
+    谁在跑、跑了多久、写到第几窗、是正常结束还是半途没了，只能靠 `ps` 加临时日志猜。
+    实测为此吃了两次亏，都记在这儿：
+
+    * 一个进程**退出码 0**，其实只写了每片的最后一窗（因为它是被上一次中断留下的半片）；
+    * 另一个还在跑，而"每片至少有一行"被当成"算完了"，于是报了两次"齐了"。
+
+    有了这张表，"正在跑"就是一条 `status='running'` 的行，配上 `pid` 还活着没有 ——
+    中断能被看出来（进程没了、行还挂着），进度是 `windows_written / windows_planned`
+    （**分母在开跑时就定下**，不是猜的），速率与 ETA 也从它算。
+
+    ## 它只记事实，不做调度
+
+    调度在 `pipeline/ops.py`（`drive` 子命令）。这张表是**账**，谁都能读（界面、
+    运维命令、将来的定时任务），写它的只有一个地方：`pipeline/embed.py` 开跑与收尾。
+    """
+
+    __tablename__ = "embed_runs"
+
+    id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
+    #: 材料的 slug；`(全部)` 表示这一跑没限定材料。
+    material: Mapped[str] = mapped_column(String(120), default="", nullable=False, index=True)
+    batch: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pid: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    host: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    #: `running` / `ok` / `failed`。中断是**外面看出来的**：`running` 而 pid 不在。
+    status: Mapped[str] = mapped_column(String(16), default="running", nullable=False, index=True)
+    #: 打算算多少片 / 多少窗（开跑定下），以及已经写进去多少窗。
+    slices_planned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    windows_planned: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    windows_written: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=lambda: datetime.now(UTC), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    #: 失败原因 / 备注（成功时留空）。
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
 class MaterialFigure(Base):
