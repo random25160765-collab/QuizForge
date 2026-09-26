@@ -36,6 +36,16 @@
   //: 与那条 scroll 监听）—— 他滚回贴底处再自动打开。发消息、换会话这类动作
   //: 走 `scrollToEnd(true)`，会强制恢复跟随。
   var stickBottom = true;
+  //: **读到哪儿了**（见下面那一组 anchor* 函数）。进/切会话时从记录处接着读，不再一律跳到底。
+  //: `entering` 标记"这一轮重画是刚进这个会话" —— 只有它会去消费 `pendingAnchor`。
+  var entering = false;
+  var pendingAnchor = null;
+  //: 恢复之后一小段里盯着的那个锚点：图（TeX/图片）是异步换上去的，一变高位置就漂（见 keepAnchor）。
+  //: 用户自己一动、或过了 `holdUntil`，就收手。
+  var heldAnchor = null;
+  var holdUntil = 0;
+  var anchorScrollAt = 0; // 上一次"程序化挪视口"的时刻：用来把自己的赋值与用户滚动分开
+  var anchorSaveTimer = 0;
   var noticeEl = null;
   var jumpBtn = null;
   //: **传送球**（回溯的门）：贴在正文区边上的一颗圆球，拖动可挪、点开是一列带序号的
@@ -4580,13 +4590,29 @@
     // 尺寸（窗口缩放、收起会话栏、面板开合）就得重算一次（见 relayoutMargins）。
     // 盯线程自己而不是 window：工作台把这一套挂进窗格时，窗口尺寸根本不变。
     if (window.ResizeObserver) {
-      new ResizeObserver(scheduleMarginRelayout).observe(threadEl);
+      new ResizeObserver(function () {
+        scheduleMarginRelayout();
+        // 刚恢复阅读位置之后的一小段里，内容长高（图/公式换上去）就把位置补回来
+        keepAnchor();
+      }).observe(threadEl);
     }
     threadEl.addEventListener('scroll', function () {
       // 用户**自己**滚动时才更新跟随状态。程序化的 `scrollTop = scrollHeight`
       // 也会走到这里，但那时本来就贴着底，判定为真、状态不变。
       stickBottom = nearBottom();
       refreshJump();
+      // 读到哪儿了：攒着写（关页面那次是立刻写）。**自己那几次程序化挪视口不算** ——
+      // 否则刚恢复就被当成"用户滚了一下"，位置会被写成一个中间态（见 applyAnchor 里的 anchorScrollAt）。
+      if (Date.now() - anchorScrollAt > 150) {
+        heldAnchor = null; // 他自己动了手：不再去补位置，不跟他抢
+        saveReadAnchorSoon();
+      }
+    });
+    /* 关页面 / 切到后台也算"先退出"：把读到哪儿记下来（用户："下次退出再进入，直接在原来的位置
+     * 继续阅读"）。`pagehide` 比 `beforeunload` 可靠 —— 手机上后者常常根本不触发。 */
+    window.addEventListener('pagehide', saveReadAnchor);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') saveReadAnchor();
     });
     inputEl = h('textarea.chat__input', {
       rows: '1',
@@ -5859,7 +5885,100 @@
     });
   }
 
+  /* ------------------------------------------------------------ 读到哪儿了
+   *
+   * `paintThread` 收尾那句 `scrollToEnd(true)` 是给"发完消息 / 流式输出"用的，可它**也是
+   * 重新打开页面走的那条路** —— 于是"退出再进来"总是跳到不知道什么地方（用户原话）。这里把
+   * 阅读位置记下来，进会话时接着读。
+   *
+   * 记的是**第一条还露在视口里的消息 + 它在视口上方被推掉多少**，不是像素数：消息的高会变
+   *（TeX 图与图片都是异步换上去的、字号也会变），对着"那条消息"记才稳。
+   */
+
+  /** 此刻读到哪儿。没有消息就返回 null（空对话没什么可记的）。 */
+  function anchorNow() {
+    if (!threadEl) return null;
+    var box = threadEl.getBoundingClientRect();
+    var bottom = nearBottom();
+    var rows = threadEl.querySelectorAll('.chatmsg[data-id]');
+    for (var i = 0; i < rows.length; i += 1) {
+      var r = rows[i].getBoundingClientRect();
+      // 第一条**下缘还在视口顶边之下**的，就是"还在读的那条"
+      if (r.bottom > box.top + 2) {
+        return { mid: rows[i].dataset.id, dy: Math.round(r.top - box.top), bottom: bottom, at: Date.now() };
+      }
+    }
+    return { mid: '', dy: 0, bottom: bottom, at: Date.now() };
+  }
+
+  /** 立刻记一次（关页面、切会话时用）。 */
+  function saveReadAnchor() {
+    if (!state.current || !QF.store.setReadAnchor) return;
+    var one = anchorNow();
+    if (one) QF.store.setReadAnchor(state.current, one);
+  }
+
+  /** 滚动时**攒着写**：每滚一格都落一次盘太重，400ms 合一次就够（关页面那次是立刻写）。 */
+  function saveReadAnchorSoon() {
+    if (anchorSaveTimer) return;
+    anchorSaveTimer = window.setTimeout(function () {
+      anchorSaveTimer = 0;
+      saveReadAnchor();
+    }, 400);
+  }
+
+  /** 把视口放回"那条消息的那个位置"（`dy` < 0 = 它的头被推到视口上方去了）。 */
+  function applyAnchor(one) {
+    if (!threadEl || !one) return;
+    if (one.bottom) {
+      scrollToEnd(true); // 上次本来就贴着底：那这次也贴底，并恢复自动跟随
+      return;
+    }
+    var sel = '.chatmsg[data-id="' + (window.CSS && CSS.escape ? CSS.escape(one.mid) : one.mid) + '"]';
+    var row = one.mid ? threadEl.querySelector(sel) : null;
+    if (!row) {
+      scrollToEnd(true); // 那条消息没了（被删/换了分支）：退回最底，别停在半空
+      return;
+    }
+    // `.chat__thread` 上有 `scroll-behavior: smooth`：直接赋 scrollTop 会走动画，而紧接着
+    // fitArea 改布局会把动画打断（实测跳动 -98px，见 repaintKeepingScroll）。
+    threadEl.style.scrollBehavior = 'auto';
+    threadEl.scrollTop += row.getBoundingClientRect().top - threadEl.getBoundingClientRect().top + (one.dy || 0);
+    anchorScrollAt = Date.now();
+    // 从半腰接着读：**别让随后写出来的新内容把他拖回底部**
+    stickBottom = false;
+    requestAnimationFrame(function () {
+      if (threadEl) threadEl.style.scrollBehavior = '';
+    });
+  }
+
+  /** 进会话时消费 `pendingAnchor`（由 openConversation 放好）。没有记录就照旧跳到底。 */
+  function consumeAnchor() {
+    var one = pendingAnchor;
+    pendingAnchor = null;
+    if (!one) {
+      // 没有记录（新会话、或从没读过）：照旧跳到底
+      heldAnchor = null;
+      scrollToEnd(true);
+      return;
+    }
+    applyAnchor(one);
+    // 图/公式是异步换上去的：它们一变高，锚点就漂。恢复之后的一小段里盯住（见 keepAnchor）。
+    heldAnchor = one && !one.bottom ? one : null;
+    holdUntil = Date.now() + 12000;
+  }
+
+  /** 内容长高了就把位置补回来；用户一动、或过了时限，就收手（不跟他抢滚动）。 */
+  function keepAnchor() {
+    if (!heldAnchor) return;
+    if (Date.now() > holdUntil || Date.now() - anchorScrollAt < 120) return;
+    applyAnchor(heldAnchor);
+  }
+
   function paintThread() {
+    // 这一轮是不是"刚进/切了这个会话"：只有它去接着上次读到的地方（见 consumeAnchor）
+    var enteringNow = entering;
+    entering = false;
     renderBar();
     // 药丸要在 `renderBar()` **之后**补：那一行是 `renderBar` 重建的，
     // 插早了会被它连锅端掉（这颗药丸是动态插进那一行的，见 `paintSkillPills`）。
@@ -5881,6 +6000,8 @@
     //（内容没变时它自己会跳过，见 placesKey）
     renderStations();
     if (keepScroll) refreshJump();
+    // 刚进 / 切了会话：接着上次读到的地方（见 consumeAnchor）；其余（发消息、流式、删改）照旧跳到底
+    else if (enteringNow) consumeAnchor();
     else scrollToEnd(true);
   }
 
@@ -9693,6 +9814,8 @@
   }
 
   function openConversation(id) {
+    // 离开这一条之前，先把**读到哪儿了**记下来（下一句 `state.current` 就变成新的了）
+    saveReadAnchor();
     // 大题面板是**某一道题**，不是页面级的常驻物：不关掉的话，换一条对话它还杵在那儿
     // （用户反馈："换了一个对话还是出现"）。
     if (problemOpen) closeProblem();
@@ -9714,6 +9837,10 @@
         state.live = null;
         // 这里**不再调 renderAside()**：左栏内容一条没变（变的只有"哪条是当前"，
         // 上面已经切过）。整块重建的代价见 `markCurrent` 的说明。
+        // **这一轮重画是"刚进这个会话"**：让它接着上次读到的地方（见 consumeAnchor），
+        // 而不是一律 `scrollToEnd(true)` 跳到最底（那是给"发完消息 / 流式输出"用的）。
+        entering = true;
+        pendingAnchor = QF.store.readAnchor ? QF.store.readAnchor(id) : null;
         ui.swap(function () {
           paintThread();
           updateComposer();
