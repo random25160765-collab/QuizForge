@@ -692,6 +692,8 @@
     treeEl.appendChild(h('div.chattree__screen', null, treeBar(close), canvas));
     paintPlayUI();   // 工具栏刚挂上去，把"播放/速度"两颗键的字刷对
     drawTree(canvas);
+    // 地图刚画好就把"你在这儿"标上（打开地图第一眼就该看得出读到哪一条）
+    markReading();
     // 抽屉装在**画布这一层**里，不是整屏：遮罩只压地图，工具栏还留着 ——
     // 否则开着抽屉时那颗「书签」自己也被压住，点不动了。
     canvas.appendChild(marksEl);
@@ -849,6 +851,19 @@
       group.appendChild(ink);
       ink.appendChild(
         sv('rect', { class: 'ctnode__box', x: 0, y: 0, width: TREE.w, height: node.h, rx: 12, ry: 12 })
+      );
+      // **"你在这儿"那一圈**：每个节点都画上、默认透明（见 CSS），`markReading` 只切一个类。
+      // 比框大 5px —— 它是**另一层**，不去抢边框：边框的颜色说的是"这一条用的模式"。
+      ink.appendChild(
+        sv('rect', {
+          class: 'ctnode__here',
+          x: -5,
+          y: -5,
+          width: TREE.w + 10,
+          height: node.h + 10,
+          rx: 16,
+          ry: 16,
+        })
       );
       ink.appendChild(
         sv('text', { class: 'ctnode__who', x: 12, y: 18 }, [
@@ -4607,6 +4622,9 @@
         heldAnchor = null; // 他自己动了手：不再去补位置，不跟他抢
         saveReadAnchorSoon();
       }
+      // 地图上的"你在这儿"跟着走 —— 这一处**不分**是不是程序化滚动：追赶、传送、恢复位置
+      // 之后标记都该立刻对上（地图没开时它第一句就返回，代价是一次判断）。
+      markReadingSoon();
     });
     /* 关页面 / 切到后台也算"先退出"：把读到哪儿记下来（用户："下次退出再进入，直接在原来的位置
      * 继续阅读"）。`pagehide` 比 `beforeunload` 可靠 —— 手机上后者常常根本不触发。 */
@@ -5895,20 +5913,38 @@
    *（TeX 图与图片都是异步换上去的、字号也会变），对着"那条消息"记才稳。
    */
 
+  /** 此刻**第一条还露在视口里的消息** id —— "我读到哪一条"的**唯一判据**。
+   *
+   * 记阅读位置（`anchorNow`）与在地图上标"你在这儿"（`markReading`）都用这一个：两处各判
+   * 各的话，迟早出现"位置恢复了、地图上的标记却在别处"。
+   * 量不到（正文字体还没排、面板收起了、或者地图把正文盖住了）时返回空串。 */
+  function firstVisibleMid() {
+    if (!threadEl || !threadEl.clientHeight) return '';
+    var box = threadEl.getBoundingClientRect();
+    var rows = threadEl.querySelectorAll('.chatmsg[data-id]');
+    for (var i = 0; i < rows.length; i += 1) {
+      // 第一条**下缘还在视口顶边之下**的，就是"还在读的那条"
+      if (rows[i].getBoundingClientRect().bottom > box.top + 2) return rows[i].dataset.id;
+    }
+    return '';
+  }
+
   /** 此刻读到哪儿。没有消息就返回 null（空对话没什么可记的）。 */
   function anchorNow() {
     if (!threadEl) return null;
-    var box = threadEl.getBoundingClientRect();
     var bottom = nearBottom();
-    var rows = threadEl.querySelectorAll('.chatmsg[data-id]');
-    for (var i = 0; i < rows.length; i += 1) {
-      var r = rows[i].getBoundingClientRect();
-      // 第一条**下缘还在视口顶边之下**的，就是"还在读的那条"
-      if (r.bottom > box.top + 2) {
-        return { mid: rows[i].dataset.id, dy: Math.round(r.top - box.top), bottom: bottom, at: Date.now() };
-      }
-    }
-    return { mid: '', dy: 0, bottom: bottom, at: Date.now() };
+    var mid = firstVisibleMid();
+    lastReadMid = mid || lastReadMid;
+    var row = mid
+      ? threadEl.querySelector('.chatmsg[data-id="' + (window.CSS && CSS.escape ? CSS.escape(mid) : mid) + '"]')
+      : null;
+    if (!row) return { mid: '', dy: 0, bottom: bottom, at: Date.now() };
+    return {
+      mid: mid,
+      dy: Math.round(row.getBoundingClientRect().top - threadEl.getBoundingClientRect().top),
+      bottom: bottom,
+      at: Date.now(),
+    };
   }
 
   /** 立刻记一次（关页面、切会话时用）。 */
@@ -5975,6 +6011,46 @@
     applyAnchor(heldAnchor);
   }
 
+  /* ---- 地图上标"你在这儿"
+   *
+   * 用户："当我阅读对话树的时候，对话树界面要实时标记我现在在哪一个位置。" 判据与"记住阅读位置"
+   * 同一个（`firstVisibleMid`）：**第一条还露在视口里的消息**。
+   *
+   * 只切一个类、不重画地图：正文一滚（每帧都可能）就重画整张 SVG 代价太大。所以"你在这儿"
+   * 那一圈（`.ctnode__here`）是 `drawTree` 时就画在每个节点里、默认透明的（见下面的样式），
+   * 这里只负责把 `.is-reading` 挪到该在的那个节点上。
+   */
+  var lastReadMid = '';
+  var readMarkTimer = 0;
+
+  /** 把"你在这儿"挪到当前读到的那一条上（地图没开就什么都不做）。 */
+  function markReading() {
+    if (!treeEl || !state.treeOpen) return;
+    var mid = firstVisibleMid();
+    // 量不到（地图把正文盖住了 / 面板收起来了）：沿用上一次 —— 宁可标旧的那条，
+    // 也不要在"正在看的地图"上把标记整个撤掉（那等于打开地图反而不知道该看哪儿）。
+    if (mid) lastReadMid = mid;
+    else mid = lastReadMid;
+    mid = String(mid || '');
+    var lit = treeEl.querySelector('.ctnode.is-reading');
+    if (lit && lit.dataset.node === mid) return; // 还是那一条，不折腾
+    Array.prototype.forEach.call(treeEl.querySelectorAll('.ctnode.is-reading'), function (one) {
+      one.classList.remove('is-reading');
+    });
+    if (!mid) return;
+    var node = treeEl.querySelector('.ctnode[data-node="' + (window.CSS && CSS.escape ? CSS.escape(mid) : mid) + '"]');
+    if (node) node.classList.add('is-reading');
+  }
+
+  /** 滚动时每帧最多算一次（滚一下要量几十行 rect，别在 scroll 事件里直接干）。 */
+  function markReadingSoon() {
+    if (readMarkTimer) return;
+    readMarkTimer = window.requestAnimationFrame(function () {
+      readMarkTimer = 0;
+      markReading();
+    });
+  }
+
   function paintThread() {
     // 这一轮是不是"刚进/切了这个会话"：只有它去接着上次读到的地方（见 consumeAnchor）
     var enteringNow = entering;
@@ -6003,6 +6079,8 @@
     // 刚进 / 切了会话：接着上次读到的地方（见 consumeAnchor）；其余（发消息、流式、删改）照旧跳到底
     else if (enteringNow) consumeAnchor();
     else scrollToEnd(true);
+    // 视口落定之后再标"你在这儿"：这一句必须在上面那几行**之后**（位置是它们定的）
+    markReading();
   }
 
   /** `‹ 2 / 3 ›`：同一个父节点下的几个分支，翻着看（LibreChat 的 SiblingSwitch）。 */

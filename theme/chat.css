@@ -2273,6 +2273,41 @@ body.is-colresize {
   stroke-width: 1.6;
 }
 
+/* **"你在这儿"**（用户："当我阅读对话树的时候，对话树界面要实时标记我现在在哪一个位置"）：
+ * 读到哪一条，地图上就把那一个节点圈出来。它**不抢边框** —— 边框的颜色说的是"这一条用的模式"
+ *（见下面那几条 `mode-*`），所以这里另画一圈（`.ctnode__here`，比框大 5px）、默认透明；
+ * JS 只切 `.is-reading` 这个类（滚动时每帧最多算一次，重画整张 SVG 代价太大）。
+ * 加一点"呼吸"：满屏节点里，一圈完全不动的线很容易被看漏。 */
+.ctnode__here {
+  fill: none;
+  stroke: var(--pri);
+  stroke-width: 2;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ctnode.is-reading .ctnode__here {
+  animation: cthere 2.4s ease-in-out infinite;
+}
+
+@keyframes cthere {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctnode.is-reading .ctnode__here {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 .ctnode.is-user .ctnode__box {
   fill: color-mix(in srgb, var(--pri) 9%, var(--bg2));
 }
