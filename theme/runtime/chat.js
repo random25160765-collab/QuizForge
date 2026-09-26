@@ -40,6 +40,9 @@
   //: `entering` 标记"这一轮重画是刚进这个会话" —— 只有它会去消费 `pendingAnchor`。
   var entering = false;
   var pendingAnchor = null;
+  //: **真正画在屏幕上的那条会话**。换会话时 `state.current` 是立刻改的（左栏要马上跟手），
+  //: 而正文要等取数据回来才换 —— 两者之间有一缝，记阅读位置时必须以这个为准（见 saveReadAnchor）。
+  var paintedCid = '';
   //: 恢复之后一小段里盯着的那个锚点：图（TeX/图片）是异步换上去的，一变高位置就漂（见 keepAnchor）。
   //: 用户自己一动、或过了 `holdUntil`，就收手。
   var heldAnchor = null;
@@ -5838,6 +5841,10 @@
 
     var row = threadEl ? threadEl.querySelector('[data-id="' + messageId + '"]') : null;
     if (!row) return;
+    // **他挑了一个地方要去**（点节点 / 点图钉 / 搜索里跳过来）：这次移动是他要的 ——
+    // 把"刚恢复的阅读位置"那根缰绳松掉，否则接下来 12 秒里内容一变高，`keepAnchor` 会把人
+    // 拽回进来时的位置（见 keepAnchor / applyAnchor）。
+    heldAnchor = null;
     row.scrollIntoView({ block: 'center', behavior: 'smooth' });
     row.classList.add('is-flash');
     setTimeout(function () {
@@ -5979,9 +5986,19 @@
 
   /** 立刻记一次（关页面、切会话时用）。 */
   function saveReadAnchor() {
-    if (!state.current || !QF.store.setReadAnchor) return;
+    /* **只记"画在屏幕上的那条会话"**（`paintedCid`），不记 `state.current`：
+     * 换会话时 `state.current` 是**立刻**改的（左栏要马上跟手），而正文要等取数据回来才换 ——
+     * 这中间那一缝里若来了一记滚动或一条迟到的重画，就会把**旧正文的位置**记到**新会话**名下。
+     * 后果正是用户报的"切去看另一个对话，再回来给我跳到最新"：记错的锚点在回来时找不到那条
+     * 消息，兜底跳到底（见 applyAnchor）—— 而且**记错了就一直是错的**。 */
+    var cid = paintedCid || '';
+    if (!cid || !QF.store.setReadAnchor) return;
     var one = anchorNow();
-    if (one) QF.store.setReadAnchor(state.current, one);
+    if (!one) return;
+    // 正文一条都没画出来（正在换会话的那一缝、或这条对话真的是空的）：`nearBottom()` 在空线程上
+    // 恒为真，记下去就是 `{bottom:true}` —— 下次进来直接被拽到底。
+    if (!one.mid && state.messages.length) return;
+    QF.store.setReadAnchor(cid, one);
   }
 
   /** 滚动时**攒着写**：每滚一格都落一次盘太重，400ms 合一次就够（关页面那次是立刻写）。 */
@@ -6112,6 +6129,7 @@
     // 这一轮是不是"刚进/切了这个会话"：只有它去接着上次读到的地方（见 consumeAnchor）
     var enteringNow = entering;
     entering = false;
+    paintedCid = String(state.current || ''); // 从这一刻起，屏幕上这条就是它了
     renderBar();
     // 药丸要在 `renderBar()` **之后**补：那一行是 `renderBar` 重建的，
     // 插早了会被它连锅端掉（这颗药丸是动态插进那一行的，见 `paintSkillPills`）。
@@ -6135,6 +6153,10 @@
     if (keepScroll) refreshJump();
     // 刚进 / 切了会话：接着上次读到的地方（见 consumeAnchor）；其余（发消息、流式、删改）照旧跳到底
     else if (enteringNow) consumeAnchor();
+    // **刚恢复过、而他自己还没动过**：这多半是一条迟到的重画（后台同步、Python 输出收尾…）——
+    // 别把他拽到底（用户报的正是"回来之后给我跳到最新"，而 `scrollToEnd(true)` 干的就是这个）。
+    // 他一动手 `heldAnchor` 就清了（见那条 scroll 监听），所以这一条不会跟人抢。
+    else if (heldAnchor && Date.now() < holdUntil) applyAnchor(heldAnchor);
     else scrollToEnd(true);
     // 视口落定之后再标"你在这儿"：这一句必须在上面那几行**之后**（位置是它们定的）
     markReading();
@@ -9921,6 +9943,9 @@
     if (force) {
       // 发消息、换会话、开一条回答这类动作：重新贴底并恢复跟随
       stickBottom = true;
+      // **这是一次"我要到底"**（发消息、点「回到最新」…）：把"刚恢复的阅读位置"那根缰绳松掉，
+      // 否则接下来 12 秒里内容一变高，`keepAnchor` 会把人拽回他进来时的位置（见 keepAnchor）。
+      heldAnchor = null;
       threadEl.scrollTop = threadEl.scrollHeight;
       refreshJump();
       return;
