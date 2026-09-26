@@ -30,6 +30,7 @@ LibreChat 的对应决定值得抄：它把循环整个外包给 `@librechat/age
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from . import ai_gateway as gateway
@@ -63,6 +64,63 @@ _NO_TOOLS_HINTS = (
     "tool_choice is not supported",
     "不支持 tools",
 )
+
+
+#: 泄漏原文里那个工具名（标记本身就长成 `<||DSML|| invoke name="run_python">`）。
+#: 引号半角全角都要认 —— 与竖线同理，那个通道两种都吐过。
+_LEAK_NAME_RE = re.compile(r"invoke\s+name\s*=\s*[\"'“”]?([A-Za-z_][\w-]*)")
+
+
+def _leak_tool_name(text: str) -> str:
+    """从泄漏的原文里读工具名；读不到就返回空串。"""
+    match = _LEAK_NAME_RE.search(text or "")
+    return match.group(1) if match else ""
+
+
+def leak_note(name: str, mounted: set[str]) -> str:
+    """泄漏时给用户看的那一句话。
+
+    为什么值得为它分情况：用户看到这句话时最想知道的是"**我那件事办了没有**"。
+    只说"协议泄漏、本轮不作数"，读起来像我们坏了 —— 实测用户的原话是
+    "气死了，我还以为是故障"。所以能认出工具名就把名字说出来，并分清
+    "这一轮没挂它"（自己切个模式就好）与"通道没走工具调用"（换个模型通道）。
+    """
+    head = "模型把工具调用写进了正文（协议泄漏）"
+    tail = "后面的正文已丢弃、本轮不作数。"
+    if not name:
+        return head + "，这一段" + tail + "（不是故障，是它没用工具通道。）"
+    if name in mounted:
+        return (
+            head
+            + "：它想调 `"
+            + name
+            + "`，但上游通道没有走工具调用通道 —— "
+            + tail
+            + "换个支持工具调用的模型通道即可。"
+        )
+    group_label = ""
+    try:
+        from . import tools as _tools  # noqa: PLC0415
+
+        group_key = str((_tools.REGISTRY.get(name) or {}).get("group") or "")
+        labels = {key: label for key, label, _hint in _tools.GROUPS}
+        group_label = labels.get(group_key, "")
+    except Exception:  # noqa: BLE001 —— 说清这句话比分类更重要，出错就别分类
+        group_label = ""
+    return (
+        head
+        + "：它想调 `"
+        + name
+        + "`"
+        + ("（" + group_label + "那一组）" if group_label else "")
+        + "，但这一轮没挂这个工具 —— 所以**没有执行，不是故障**。"
+        + (
+            "想让它跑，把「" + group_label + "」这组挂上（换个带这一组的模式）再说一次即可。"
+            if group_label
+            else "想让它跑，先把这个工具挂上再说一次即可。"
+        )
+        + tail
+    )
 
 
 def _tools_unsupported(exc) -> bool:  # noqa: ANN001
@@ -300,6 +358,8 @@ def run(  # noqa: ANN001
         )
         hold = ""
         leaked = False
+        leak_name = ""
+        mounted_names = None  # 只在这一轮真的泄漏时才去算（正常路径零开销）
 
         def _marker_tail(text: str) -> int:
             """尾巴里"可能是标记开头"的那几个字符有多长。
@@ -350,14 +410,30 @@ def run(  # noqa: ANN001
                 ):
                     if kind == "delta":
                         if leaked:
+                            if not leak_name:
+                                # 名字被切到下一块了：从被丢掉的正文里再找一眼
+                                leak_name = _leak_tool_name(value)
                             continue  # 这一轮已判定是泄漏：剩下的正文全丢
                         hold += value
                         if any(mark in hold for mark in leak_marks):
                             leaked = True
+                            # 名字通常就在同一块里，读出来 —— 那句提示才能说清
+                            # "你想干的那件事为什么没办成"（见 leak_note）。
+                            leak_name = _leak_tool_name(hold)
                             hold = ""
+                            if mounted_names is None:
+                                # 这一轮**实际**给出去的声明：最后一轮工具已被收走
+                                # （见上面 `_turn < max_turns - 1` 那处），也别算成挂了。
+                                mounted_names = {
+                                    spec["function"]["name"]
+                                    for spec in tools.specs(
+                                        mounts,
+                                        allow if (allow_tools and _turn < max_turns - 1) else (),
+                                    )
+                                }
                             yield {
                                 "kind": "note",
-                                "text": "模型把工具调用写进了正文（协议泄漏），这一段已丢弃、本轮不作数。",
+                                "text": leak_note(leak_name, mounted_names),
                             }
                             continue
                         # 正常情况一个字都不按；只有尾巴像标记开头时才留一截等下一块
