@@ -269,7 +269,11 @@ def test_a_long_report_is_cut_at_a_line_break(db_session, monkeypatch):
     实测那条就是这样："…未扫的 20 份被列在 `skipped` 字段，且" 后面直接接一句
     截断说明，看起来像原文只写到一半。
     """
-    long = "## 依据\n" + "".join("- 第 %d 行：%s END\n" % (i, "x" * 120) for i in range(1, 80))
+    # 按常量**动态**构造，别写死行数：上限调过一次（3500 → 18000），写死的话
+    # 测试会在"上限变大"时**假绿**（`len(long) > REPORT_MAX` 不成立就直接断言失败，
+    # 或者更糟 —— 没超长却以为测到了截断）。
+    lines = subagent.REPORT_MAX // 130 + 20
+    long = "## 依据\n" + "".join("- 第 %d 行：%s END\n" % (i, "x" * 120) for i in range(1, lines))
     assert len(long) > subagent.REPORT_MAX, "得真的超长，不然测不到截断"
 
     def stream(conf, messages, tools=None, params=None):  # noqa: A002
