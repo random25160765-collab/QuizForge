@@ -1,0 +1,123 @@
+{
+ "cases": [
+  {
+   "name": "tikz-basic",
+   "expect": "ok",
+   "needle": null,
+   "note": "最普通的 TikZ：前言/引擎活着",
+   "tex": "\\begin{tikzpicture}\n\\node[draw]{k};\n\\end{tikzpicture}"
+  },
+  {
+   "name": "tikzcd-simple",
+   "expect": "ok",
+   "needle": null,
+   "note": "tikz-cd 基本款",
+   "tex": "\\begin{tikzcd}\nA \\arrow[r, \"f\"] & B\n\\end{tikzcd}"
+  },
+  {
+   "name": "tikzcd-pullback-phantom",
+   "expect": "ok",
+   "needle": null,
+   "note": "拉回图：\\lrcorner 属于 amssymb（靠它修好）",
+   "tex": "\\begin{tikzcd}\nP \\arrow[r] \\arrow[d] \\arrow[dr, phantom, \"\\lrcorner\" very near start] & A \\arrow[d, \"f\"] \\\\\nB \\arrow[r, \"g\" swap] & C\n\\end{tikzcd}"
+  },
+  {
+   "name": "pgfplots-axis-samples100",
+   "expect": "ok",
+   "needle": null,
+   "note": "pgfplots 曲线：samples=100（实测约 3 秒）",
+   "tex": "\\begin{tikzpicture}\n\\begin{axis}[width=10cm,height=5cm,domain=0:2*pi,samples=100]\n\\addplot[thick] {sin(deg(x))};\n\\end{axis}\n\\end{tikzpicture}"
+  },
+  {
+   "name": "pgfplots-errorbars",
+   "expect": "ok",
+   "needle": null,
+   "note": "误差棒",
+   "tex": "\\begin{tikzpicture}\n\\begin{axis}[width=10cm,height=5cm]\n\\addplot[only marks, mark=*, error bars/.cd, y dir=both, y explicit] coordinates {(0,1) +- (0,0.1) (1,0.6) +- (0,0.05)};\n\\end{axis}\n\\end{tikzpicture}"
+  },
+  {
+   "name": "pgfplots-bars-cjk-xticklabels",
+   "expect": "ok",
+   "needle": null,
+   "note": "中文分类轴的正确写法（键 ASCII、中文进 xticklabels）",
+   "tex": "\\begin{tikzpicture}\n\\begin{axis}[width=10cm,height=5cm,ybar,symbolic x coords={A, B, C}, xtick=data, xticklabels={取指, 译码, 执行}, ylabel={周期}]\n\\addplot coordinates {(A,2) (B,3) (C,5)};\n\\end{axis}\n\\end{tikzpicture}"
+  },
+  {
+   "name": "tikz-lib-automata",
+   "expect": "ok",
+   "needle": null,
+   "note": "[state] 属于 automata：前言预载，模型不必写 \\usetikzlibrary",
+   "tex": "\\begin{tikzpicture}\n\\node[state] (q0) at (0,0) {$q_0$}; \\node[state] (q1) at (2,0) {$q_1$}; \\draw (q0) edge[bend left] (q1);\n\\end{tikzpicture}"
+  },
+  {
+   "name": "tikz-lib-shapes",
+   "expect": "ok",
+   "needle": null,
+   "note": "shapes.geometric 的样式（预载）",
+   "tex": "\\begin{tikzpicture}\n\\node[diamond,draw]{x}; \\node[trapezium,draw] at (2,0){y};\n\\end{tikzpicture}"
+  },
+  {
+   "name": "math-pmatrix-in-node",
+   "expect": "ok",
+   "needle": null,
+   "note": "节点里的矩阵：靠前言里的 amsmath",
+   "tex": "\\begin{tikzpicture}\n\\node at (0,0) {$\\begin{pmatrix}1&2\\\\3&4\\end{pmatrix}$};\n\\end{tikzpicture}"
+  },
+  {
+   "name": "math-amssymb-bm-mathtools",
+   "expect": "ok",
+   "needle": null,
+   "note": "amssymb / bm / mathtools 都在前言里",
+   "tex": "\\begin{tikzpicture}\n\\node at (0,0) {$\\mathbb{R}^n, \\bm{v}, x \\coloneqq y$};\n\\end{tikzpicture}"
+  },
+  {
+   "name": "cjk-node",
+   "expect": "ok",
+   "needle": null,
+   "note": "节点里的中文：应用替它套 CJK 环境",
+   "tex": "\\begin{tikzpicture}\n\\node at (0,0) {取指 译码};\n\\end{tikzpicture}"
+  },
+  {
+   "name": "preamble-strip",
+   "expect": "ok",
+   "needle": null,
+   "note": "模型误写的 \\usepackage：应用摘掉（以前整张编不出来）",
+   "tex": "\\usepackage{amsmath}\n\\begin{tikzpicture}\n\\node[draw]{k};\n\\end{tikzpicture}"
+  },
+  {
+   "name": "symbolic-x-cjk-rewrite",
+   "expect": "ok",
+   "needle": null,
+   "note": "中文键：应用改写 ASCII 键 + xticklabels",
+   "tex": "\\begin{tikzpicture}\n\\begin{axis}[width=10cm,height=5cm,ybar,symbolic x coords={取指, 译码, 执行}, xtick=data]\n\\addplot coordinates {(取指,2) (译码,3) (执行,5)};\n\\end{axis}\n\\end{tikzpicture}"
+  },
+  {
+   "name": "tikzcd-empty-cell-target",
+   "expect": "fail",
+   "needle": "No shape named",
+   "note": "箭头指向空格子（模型写错，交给重试）",
+   "tex": "\\begin{tikzcd}[column sep=5em, row sep=3.8em]\n\\mathcal{E} \\arrow[rr, \"p\"] \\arrow[dd, \"\\mathrm{cod}\"'] & & \\mathcal{C} \\arrow[dd, \"\\mathrm{cod}\"] \\\\\n& & \\\\\n\\mathsf{Arr} \\arrow[urr, \"\\mathrm{cod}\"'] & &\n\\end{tikzcd}"
+  },
+  {
+   "name": "tikzcd-invalid-key",
+   "expect": "fail",
+   "needle": "I do not know the key",
+   "note": "dashed near start 不是箭头选项（位置词要跟标签走）",
+   "tex": "\\begin{tikzcd}[column sep=4em, row sep=3em]\n& x \\arrow[dd, \"v\", dashed near start] & \\\\\n& & y \\\\\na & & b &\n\\end{tikzcd}"
+  },
+  {
+   "name": "pgfplots-shader-interp",
+   "expect": "fail",
+   "needle": "shader=interp",
+   "note": "shader=interp：驱动不支持（不再悄悄摘掉，交给重试）",
+   "tex": "\\begin{tikzpicture}\n\\begin{axis}[width=10cm,height=6cm,view={140}{32},domain=-2:2,samples=12]\n\\addplot3[surf, shader=interp] {exp(-(x^2+y^2))};\n\\end{axis}\n\\end{tikzpicture}"
+  },
+  {
+   "name": "tikz-missing-semicolon",
+   "expect": "fail",
+   "needle": null,
+   "note": "少一个分号：真正的 TeX 语法错",
+   "tex": "\\begin{tikzpicture}\n\\draw (0,0) -- (1,1)\n\\end{tikzpicture}"
+  }
+ ]
+}

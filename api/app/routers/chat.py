@@ -244,12 +244,17 @@ VOICE = (
     "`column sep` 至少给到 5em、`row sep` 给到 4em，复杂图（三行以上）再往上加。"
     "两条经验：**图的大小就是你画的坐标有多大**（TikZ 1cm ≈ 38px）—— 想让它显眼就把坐标"
     "画大（`\\draw (0,0) -- (4,2);` 而不是 `-- (1,0.5);`），别去调宽度样式（会被裁掉）；"
-    # 2026-09-26：用户那张"极限的通用锥"挂在这儿 —— `\arrow[dd, dashed, "…"]` 这种**跨两行**
-    # 的箭头会与标签解析打架（报 `! Missing character: There is no \" in font nullfont`，
-    # 那个引号被当成了元音变音符）。同一张图去掉那支箭头就正常出图，实测确凿。
-    "tikz-cd **别用跨两行/两列的箭头**（`dd`、`rr` 这类：实测会和标签解析打架、整张编不出来）"
-    "—— 要那种效果就拆成两条接力的箭头，或改用 TikZ 手画；"
-    "其余常见写法都认（`\\arrow[r, \"f\"]`、`\\arrow[d, \"g\"]`、`swap`、`bend left`），"
+    # 2026-09-26：三张 tikz-cd 图接连编不出来，逐条查到真因（前两轮我判断错过两次，这次是按
+    # **引擎原话**定的）：
+    #   * `\arrow[dd, …]` 打到**空格子** → `No shape named tikz@f@1-3-3`（tikz-cd 只给有内容的
+    #     格子建节点）。两张图都是这个毛病，而且把标签里的中文换成英文**照样报**，与中文无关。
+    #   * `dashed near start` → `I do not know the key '/tikz/dashed near start'`：
+    #     `near start` 是**标签**的位置词，得跟在引号后面（`"v" near start`），不是箭头选项。
+    "tikz-cd 两条硬规矩：①**箭头只能指向有内容的格子**（空格子没有节点，会报 "
+    "`No shape named tikz@f@1-3-3` —— 要连线就先把那格填上，哪怕一个 `{}`）；"
+    "②**位置词跟标签走**（`\\arrow[dd, dashed, \"v\" near start]` 对，"
+    "`\\arrow[dd, \"v\", dashed near start]` 错 —— 那会被当成不存在的键）。"
+    "其余常见写法都认（`\\arrow[r, \"f\"]`、`swap`、`bend left`、`shift left=0.6ex`），"
     "`phantom`、`very near start` 这类装饰性选项引擎不一定支持 —— 编不出来就简化它）"
     "（如果你确实想先交代一句，那句也必须是中文；任何情况下都不要输出英文句子。）\n"
     # 这一条**不分模式** —— 极简那份另有自己的版本（见 MINIMAL_PROMPT），而挂了

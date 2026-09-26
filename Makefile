@@ -40,7 +40,7 @@ CHECK_PYTHON = $(VENV)/bin/python
         env-init db-snapshot db-restore \
         bank-export bank-import graph graph-check graph-relate graph-relate-centric \
         graph-export share skills-link embed intake \
-        coverage coverage-gaps drive help
+        coverage coverage-gaps drive help cases
 
 vendor:
 	@$(PYTHON) tools/vendor.py
@@ -57,6 +57,17 @@ new:
 
 web:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT)
+
+# 图表引擎的回归套件（见 tools/texlab/run_cases.js 的说明）。
+# 规矩：**每加一处兜底，必须在这里带一条用例**；没有用例的改写一律不加。
+# 需要两个服务在跑：仓库根（8199，用例文件在那儿）与 应用（8100）。
+cases: web
+	@cp tools/texlab/cases.json $(WEB_OUT)/cases.json
+	@curl -s -o /dev/null --max-time 3 http://127.0.0.1:8100/cases.json || \
+	  { echo "  先起应用服务（8100，见 make dev）"; exit 1; }
+	@playwright-cli close >/dev/null 2>&1 || true
+	@playwright-cli open http://127.0.0.1:8100/chat.html --browser=chromium >/dev/null 2>&1
+	@playwright-cli run-code "$$(cat tools/texlab/run_cases.js)" 2>&1 | sed -n '2p' | $(PYTHON) tools/texlab/report.py
 
 # 单独挂 watcher（`make dev` 已经带了；只想盯前端时用这个）
 web-watch:
