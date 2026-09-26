@@ -275,6 +275,14 @@ TOOL_DISCIPLINE = (
     "**调用工具前后那半句话也必须是中文**。"
     "凡引用材料，必须来自工具返回的出处，**不要凭记忆编材料名或行号**；"
     "工具查不到就直说没查到，然后用你自己的理解回答，并说明这部分没有材料支撑。\n"
+    # 2026-09-26 实测踩过：子代理把 `gpu-3926` 的形状当成"编号规律"，于是"推"出了
+    # `gpu-4c7d`《1994-2000 图形工作站与PC的融合》这样一个**库里根本不存在**的条目，
+    # 还标了行号。根子在 slug 是入库时从文件名派生的残片（中文全被丢掉），它**不是名字**。
+    "**`slug` 是编号，不是标题**：它是入库时从文件名/标题派生出来的，常常只是个残片"
+    "（`gpusgi`、`gpu-3926`、`doc-df51313b` 都是这种）—— **别把它当标题读，更别从它的"
+    "形状去推断「库里还应该有什么」**，那条路上编出来的名字一定不存在。"
+    "名字看 `title`；要判断「有没有 / 有几份」就 `list_materials` 列出来看。"
+    "写 slug 或标题，只能照抄工具输出。\n"
     "说「我去查一下」然后就把话停在那里，等于什么都没做 —— 说完就去查，查完再说结论；"
     "但**查到够回答就收口**，别把回合全花在检索上（最后一轮工具会被收走，你必须开口）。\n"
     # 长工具链派给子代理（详细说明在 `run_subagent` 的工具描述里）：
@@ -325,6 +333,9 @@ GROUP_PROMPTS = {
         "`search_library` 搜**资料库**（论文 / 白皮书这类「看看就好」的）。"
         "两边检索方式完全一样（字面 + 向量融合），**在一个里没找到就去另一个里再问一次** ——"
         "它们是两个书架，不是同一堆东西的两种搜法；只搜一个就说「没有」是最容易犯的错。"
+        "**盘点「有没有 / 有几份」用 `list_materials`**（列 slug 与标题，没有盲区），"
+        "别拿检索结果反推。"
+        "`slug` 只是编号（`gpusgi`、`gpu-3926` 这种是文件名残片）—— **名字看 `title`**。"
         "引用原文时给出行号和材料名，别改写原话。"
     ),
     "graph": (
@@ -421,7 +432,8 @@ GROUP_TOOLS = {
     # 它是**兜底**，正常路径由调用方传入真声明的工具名，所以漂了也看不出来。
     # 兜底一旦被用到（`declared` 没传），模型会被告知"你只有那两个工具"。
     "notes": ("list_notes", "read_note", "search_notes", "write_note", "edit_note"),
-    "library": ("attach_material", "search_material", "search_library", "read_material"),
+    "library": ("list_materials", "attach_material", "search_material", "search_library",
+                "read_material"),
     "graph": ("search_knowledge", "get_point_detail", "explore_graph"),
     # `read_learning_tree` **不再是工具**：轨迹是每轮自动带上的仪表盘
     #（见 `recursion.dashboard` 与 `build_prompt(..., dashboard=...)`）。
