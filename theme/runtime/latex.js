@@ -163,7 +163,7 @@
   var LOG_BRIDGE =
     '<script>(function(){var p=function(a){try{parent.postMessage({__qfLatexLog:1,text:' +
     'Array.prototype.slice.call(a).map(function(x){return String((x&&x.message)||x)})' +
-    ".join(' ').slice(0,4000)},'*')}catch(e){}};" +
+    ".join(' ').slice(0,40000)},'*')}catch(e){}};" +
     "['log','info','warn','error','debug'].forEach(function(l){var o=console[l];if(!o)return;" +
     'console[l]=function(){p(arguments);return o.apply(console,arguments)}});})();</scr' +
     'ipt>';
@@ -335,6 +335,7 @@
       var started = Date.now();
       var settle = function () {
         var found = [];
+        var fails = []; // 这一批里失败的图（连同引擎原话），交给外面处置
         var done = true;
         var broken = 0;
         items.forEach(function (one, index) {
@@ -395,15 +396,26 @@
              * `slice(0, 200)` 一截就没了 —— 于是用户（和模型）看到的全是我的猜测
              * （实测：一张没有 `phantom` 的 tikz-cd 图，文案里却在说 `phantom` 最容易中招）。
              * 现在反过来：真话在前，猜测垫后。 */
-            one.fail(
-              new Error(
-                '引擎编不出这段 LaTeX：' +
-                  (why ? why.slice(0, 200) + ' —— ' : '（引擎没报原因）') +
-                  whyFailed(one.tex)
-              )
-            );
+            var msg =
+              '引擎编不出这段 LaTeX：' +
+              (why ? why.slice(0, 200) + ' —— ' : '（引擎没报原因）') +
+              whyFailed(one.tex);
+            fails.push({ raw: one.raw, why: why || '', msg: msg });
+            one.fail(new Error(msg));
           }
         });
+        /* **把这一批的失败交给外面**（`QF.latex.onFail`，客户端注册，见 chat.js）。
+         *
+         * 这是三层分工里被接上的那根线：引擎把**原话**送到这里，客户端拿着它去请模型
+         * **自己改**（重画一次）—— 于是"模型写错语法"这一类不必再靠正则去猜、去堵。
+         * 外面出什么事都不该影响渲染，所以包一层 try。 */
+        if (fails.length && QF.latex && typeof QF.latex.onFail === 'function') {
+          try {
+            QF.latex.onFail(fails);
+          } catch (err) {
+            /* 外面的事不该影响渲染 */
+          }
+        }
       };
       doc.contentWindow.setTimeout(settle, 250);
     };
@@ -534,23 +546,20 @@
   function rewriteUnsupported(tex) {
     var src = String(tex == null ? '' : tex);
 
-    /* 0) **引号标签里的 `!`**（tikz-cd / TikZ 的 `"…"` 标签）。
+    /* 0) 引号标签里的 `!`：**改过，2026-09-26 撤掉**。
      *
-     * 实测（用户的"极限的通用锥"那张图，实验室逐条二分）：
-     *   `"\exists!\,u"`      ✗ `! Missing character: There is no \" in font nullfont`
-     *                        （那个 `"` 被当成了**元音变音符** `\accent 21` —— 引号标签被
-     *                          解析成了别的东西，`!` 后面跟 `\,` 是触发条件）
-     *   `"\exists!u"`        ✓     `"\exists\,u"`  ✓ **单独都没事**
-     *   `"\exists{!}\,u"`    ✓     ← 把 `!` 用花括号裹起来即可
-     * 所以：**引号标签里的 `!` 一律裹成 `{!}`**（对本来就能过的写法无害，实测 C 那条 ✓）。 */
-    src = src.replace(/"(?:[^"\\\n]|\\.)*"/g, function (label) {
-      return label.replace(/!/g, '{!}');
-    });
-
-    // 1) shader=interp：摘掉（连它前面的逗号一起，免得留下 `[surf, , ]` 这种）
-    if (/shader\s*=\s*interp/.test(src)) {
-      src = src.replace(/\s*,?\s*shader\s*=\s*interp\b/g, '');
-    }
+     * 当时那支 `"\exists!\,u"` 报 `! Missing character: There is no \" in font nullfont`，
+     * 我按一张**简化过**的锥图二分，得出"把 `!` 裹成 `{!}` 就好" —— 对**完整那张并不成立**
+     *（后来按原样又验了一遍：裹了照样报，真因是箭头指向了空格子）。
+     * 按新规矩：**没有用例支撑的改写一律不加**。真需要它的时候，先往
+     * `tools/texlab/cases.json` 里放一条能复现的用例，再连同用例一起加回来。 */
+    // 1) shader=interp：**不再摘掉**（2026-09-26 改）。
+    //
+    // 摘掉它确实能让图出来，但出来的是**另一张图**（少了"按高度插值上色"），而模型在正文里
+    // 还写着那句话 —— 图与说明对不上，等于我替它改了作业。按新的分工：**有损的改写一律不做**，
+    // 让引擎如实报错（`surface shading (shader=interp) is NOT available for the selected
+    // driver`），把这话回给模型，让它自己重画（见 `whyFailed` 里那条分支与客户端的一次重试）。
+    // 用例：`tools/texlab/cases.json` 的 `pgfplots-shader-interp`。
 
     // 2) 中文的分类轴键
     var m = src.match(/symbolic\s+x\s+coords\s*=\s*\{([^}]*)\}/);
@@ -645,10 +654,13 @@
     //
     // 兜底仍然在：引擎自己有 15 秒的渲染时限，超时就出 `tikzjax-broken`，
     // 于是"排不出来"表现为**一句明确的失败**，不是无限卡住（实测如此）。
-    tex = withCJK(rewriteUnsupported(stripPreamble(tex)));
+    // `raw` = **模型原来写的那份**（下面的改写是给引擎看的；要请模型重画时，得把它原样还回去）
+    var raw = String(tex == null ? '' : tex);
+    tex = withCJK(rewriteUnsupported(stripPreamble(raw)));
     return new Promise(function (resolve, reject) {
       queue.push({
         tex: tex,
+        raw: raw,
         ok: resolve,
         fail: function (err) {
           reject(err);
@@ -723,11 +735,22 @@
      * 就正常出图**；把标签里的 `!` 裹成 `{!}`、把 `\ell` 换成 `l` **都没用** —— 我照小布局二分时
      * 误判过一次，这条是按**完整那张**复核定下的。改不动（不能替他把一支箭头拆成两支），
      * 所以文案直说怎么改。 */
-    if (/\\arrow\s*\[[^\]]*\b(d{2,}|u{2,}|l{2,}|r{2,})\b/.test(src)) {
+    /* **箭头指向了"空格子"。**
+     *
+     * tikz-cd **只给有内容的格子**建节点；`\arrow[dd, …]` 若打到一格空的，就报
+     * `! Package pgf Error: No shape named `tikz@f@1-3-3' is known.`（那个名字就是"第 1 张图、
+     * 第 3 行、第 3 列"）。实测：用户那三张图里两张是这个毛病，而且**把标签里的中文换成英文
+     * 照样报同一个错** —— 与中文无关。
+     *
+     * **这里我先前判断错过一轮**：一度写成"跨两行/两列的箭头（`dd`/`rr`）有问题"，那是错的 ——
+     * `dd` 本身完全正常，问题在**目标格子空着**。改法：把那格填上东西（哪怕一个 `{}`），
+     * 或者把箭头改指到有内容的格子。 */
+    if (/\\arrow\s*\[[^\]]*\b(d|u|l|r){2,}/.test(src)) {
       return (
-        "这段 tikz-cd 里有**跨两行/两列**的箭头（`dd`、`rr` 这类）—— 实测这种箭头会与标签解析" +
-        "打架（报 `! Missing character: There is no \" in font nullfont`，那个引号被当成了元音变音符）。" +
-        "改成**两条接力**的箭头（例如 L→B、B→D 各一条），或者改用 TikZ 手画。"
+        "这段 tikz-cd 里的箭头**跨了两格以上**（`dd`/`urr` 这类）：引擎报的 " +
+        "`No shape named tikz@f@1-3-3` 意思是**它要去的那一格是空的** —— " +
+        "tikz-cd 只给**有内容**的格子建节点。把那格填上东西（哪怕一个 `{}`），" +
+        "或把箭头改指到有内容的格子。"
       );
     }
     if (/\\begin\s*\{\s*(tikzcd|CD)\s*\}/.test(src)) {
