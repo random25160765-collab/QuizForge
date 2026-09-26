@@ -65,13 +65,35 @@ def _lower(path: str) -> tuple[str, ...]:
     return tuple(line.lower() for line in _lines(path))
 
 
+#: 相对路径按**仓库根**解析，而不是按进程的 cwd：后端是从 `api/` 起的
+#:（`make api-dev` 就是 `cd api && uvicorn …`），同一个 `data/library/.text/x.md`
+#: 在两个 cwd 下指向不同文件。
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def source_file(material: Material) -> str:
+    """这份材料的正文文件。绝对路径原样用，相对路径按仓库根解析。
+
+    为什么不能只认绝对路径（原先那条 `isabs` 检查）：库里既有绝对路径的材料，也有相对的
+    —— 网站抓的页与抽出来的书存的就是 `data/library/.text/<键>.md`。差别不是风格问题，
+    是**这一批材料在服务端彻底读不出来**：`_checked` 抛错 → 词法检索把它整份跳过
+    （`scanned` 里没有它）、检索结果里 `quote`/`text` 全是空的、`read_material` 直接报
+    "路径不是绝对路径"。实测就是用户看到的那样：问 zartbot 的博客，四条线上一条都取不到正文。
+    """
+    raw = str(getattr(material, "source_path", "") or "")
+    if not raw or os.path.isabs(raw):
+        return raw
+    return os.path.join(REPO_ROOT, raw)
+
+
 def _checked(material: Material) -> None:
-    if not os.path.isabs(material.source_path or ""):
-        raise MaterialError("材料路径不是绝对路径：" + str(material.source_path))
-    if not os.path.exists(material.source_path):
+    path = source_file(material)
+    if not path:
+        raise MaterialError("这份材料没记正文路径：" + str(material.slug))
+    if not os.path.exists(path):
         raise MaterialError(
             "材料文件不在这台机器上："
-            + material.source_path
+            + path
             + "（库只存坐标、正文在文件里，所以换台机器要确保文件也在）"
         )
 
@@ -79,7 +101,7 @@ def _checked(material: Material) -> None:
 def read_lines(material: Material, start, end) -> list[dict]:  # noqa: ANN001
     """按行区间读原文（1-based，含两端）。行号越界就夹到文件范围内。"""
     _checked(material)
-    all_lines = _lines(material.source_path)
+    all_lines = _lines(source_file(material))
     total = len(all_lines)
 
     start = max(1, int(start or 1))
@@ -160,7 +182,7 @@ def search(  # noqa: ANN001
             continue
         try:
             _checked(material)
-            lines = _lower(material.source_path)
+            lines = _lower(source_file(material))
         except (MaterialError, OSError):
             skipped.append(material.slug)
             continue
@@ -174,7 +196,7 @@ def search(  # noqa: ANN001
         if not numbers:
             continue
 
-        raw = _lines(material.source_path)
+        raw = _lines(source_file(material))
         for start, end in _blocks(numbers, len(raw)):
             inside = [number for number in numbers if start <= number <= end]
             hits.append(

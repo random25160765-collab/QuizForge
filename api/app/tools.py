@@ -2672,6 +2672,10 @@ def attach_material(db, args, ctx=None) -> dict:  # noqa: ANN001
     if not lib.text_state(text_dir, key).get("at"):
         lib.extract_text(hit.item, text_dir, key)
     state = lib.text_state(text_dir, key)
+    # **正文取进一个变量**（下面两处都用它）。原先这里写的是 `if not text`，而 `text` 这个
+    # 名字在函数里根本没定义 —— 于是整条 `attach_material` 必然 `NameError`，报错还看不出
+    # 是哪里来的（用户看到的就是一句 `{"error":"NameError: name 'text' is not defined"}`）。
+    body = lib.text_of(text_dir, key, limit=chars)
     return {
         "citekey": key,
         "title": str(hit.meta.get("title") or ""),
@@ -2680,7 +2684,7 @@ def attach_material(db, args, ctx=None) -> dict:  # noqa: ANN001
         "kind": str(hit.meta.get("kind") or ""),
         "source": str(hit.item.path),
         "textState": str(state.get("state") or "none"),
-        "text": lib.text_of(text_dir, key, limit=chars),
+        "text": body,
         # 抽不出文字时说清缺哪个组件 —— 不然用户只会觉得"这份文件坏了"
         "capabilities": (
             [
@@ -2688,7 +2692,7 @@ def attach_material(db, args, ctx=None) -> dict:  # noqa: ANN001
                 for one in attachments_mod.capabilities()["components"]
                 if not one["available"]
             ]
-            if not text
+            if not body
             else []
         ),
         "note": "text 是这份资料的正文节选。引用时请说清是**哪一份的哪一段**；"
