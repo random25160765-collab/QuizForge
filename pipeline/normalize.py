@@ -41,6 +41,8 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
+import subprocess
 import sys
 import unicodedata
 from datetime import datetime
@@ -56,6 +58,27 @@ TEXT_DIR = ROOT / "data" / "library" / ".text"
 
 #: 默认扫什么。一个资料根下往往混着图片与附件，所以默认只认"能出正文"的那几类。
 DEFAULT_GLOBS = ("**/*.pdf", "**/*.md", "**/*.markdown", "**/*.txt", "**/*.html", "**/*.htm")
+
+
+#: PDF 的"每页最少多少字"才认它有文字层。
+#: 为什么需要这条（实测踩过）：`算法导论`（142M）与 `人月神话`（31M）都是扫描件，
+#: 但封面那两三行是**真文字** —— 两三行干净的文字词密度天然很高，`judge_text` 判 `ok`，
+#: 于是它们会以"2 行、2 页"的样子进库（库里那条 7 行的 `attentionsparsityrev` 就是这么来的）。
+#: 一页真文字通常上千字，扫描页 0~50 字，100 这条线落在两者之间很稳。
+MIN_CHARS_PER_PAGE = 100
+
+
+def pdf_pages(path: Path) -> int:
+    """用 `pdfinfo` 问页数（poppler 本机就有；问不到就返回 0 = 不判）。"""
+    found = shutil.which("pdfinfo")
+    if not found:
+        return 0
+    try:
+        done = subprocess.run([found, str(path)], capture_output=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    hit = re.search(r"^Pages:\s+(\d+)", done.stdout.decode("utf-8", "replace"), re.MULTILINE)
+    return int(hit.group(1)) if hit else 0
 
 
 def is_asset_path(path: Path) -> bool:
@@ -131,7 +154,11 @@ def citekey_for(path: Path, taken: set[str], out_dir: Path) -> str:
     稳定、不撞车，而**原名照旧进 `title`**（人看得见的永远是原名）。
     真撞了（比如两本 `book.pdf` 在不同目录、或 Vol1/Vol2 的骨架都被截到同一串）才补 `-2`。
     """
-    base = library.citekey_for({}, fallback=str(path))
+    # 文件名里的下载站装饰要先去掉：`人月神话 (…)(Z-Library).pdf` 那份，骨架会取到
+    # "Z-Library" 里的词，算出 `library`（这个语料里几乎每本都带这个后缀，必然撞车，
+    # 而且名字毫无信息）。`title_of` 那一步已经在去它了，这里复用它。
+    cleaned = path.parent / (title_of(path) + path.suffix)
+    base = library.citekey_for({}, fallback=str(cleaned))
     if base not in taken or is_ours(base, path, out_dir):
         return base
     index = 2
@@ -220,7 +247,16 @@ def title_of(path: Path) -> str:
     return stem or path.name
 
 
-def normalize_one(path: Path, subject: str, out_dir: Path, taken: set[str], *, dry_run: bool = False) -> dict:
+def normalize_one(
+    path: Path,
+    subject: str,
+    out_dir: Path,
+    taken: set[str],
+    *,
+    dry_run: bool = False,
+    ocr: bool = False,
+    ocr_pages: int = 0,
+) -> dict:
     """一份原件 → 一份 md + 一份旁注。返回这次的结果（给 CLI 打印用）。"""
     kind = attachments.kind_of(path.name, "")
     if kind in ("image", "legacy", "other"):
@@ -245,11 +281,35 @@ def normalize_one(path: Path, subject: str, out_dir: Path, taken: set[str], *, d
 
     judged = library.judge_text(text)
     state = str(judged.get("state") or "none")
+    used_ocr = False
+    # **每页字数**是单独一条下限（见 `MIN_CHARS_PER_PAGE`）：扫描件的封面那两三行是真文字，
+    # `judge_text` 会判 `ok`，于是一本上千页的扫描书以"2 行"进库。这条只在**还没走 OCR** 时判。
+    thin = ""
+    if kind == "pdf" and not used_ocr:
+        pages = pdf_pages(path) or len(page_map)
+        body_chars = len(text.strip())
+        if pages >= 5 and body_chars / pages < MIN_CHARS_PER_PAGE:
+            thin = f"每页只有 {body_chars / pages:.0f} 字（{pages} 页共 {body_chars} 字），像扫描件"
+            state = "thin"
+    if state not in GOOD_STATES and ocr and kind == "pdf":
+        # 没文字层（`garbled` / `none`）：走 OCR 支路补一份。产出的结构只到"页"这一级
+        #（扫描件认不出章节标题，硬造会把切片切歪），所以不再走 `structure`。
+        from . import ocr as ocr_mod
+
+        got = ocr_mod.convert(path, max_pages=ocr_pages)
+        if got.get("ok"):
+            text = to_halfwidth(str(got["md"]))
+            title = title_of(path)
+            page_map = [{"page": one, "lines": [0, 0]} for one in range(1, int(got.get("pages") or 0) + 1)]
+            judged = library.judge_text(text)
+            state = str(judged.get("state") or "none")
+            used_ocr = True
     if state not in GOOD_STATES:
+        hint = thin or ("待 OCR" if not ocr else "OCR 也没认出来")
         return {
             "path": str(path),
             "ok": False,
-            "why": f"文字不足（{state}）—— 待 OCR",
+            "why": f"文字不足（{state}）—— {hint}",
             "state": state,
             "chars": judged.get("chars") or 0,
         }
@@ -264,6 +324,8 @@ def normalize_one(path: Path, subject: str, out_dir: Path, taken: set[str], *, d
         "subject": subject,
         "source": str(path),
         "kind": kind,
+        # 来路要标出来：「OCR 认出来的」与「原生文字层」在下游不是一个可信度，不能混
+        "ocr": used_ocr,
         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "lines": len(lines),
         "pages": page_map,
@@ -278,6 +340,7 @@ def normalize_one(path: Path, subject: str, out_dir: Path, taken: set[str], *, d
         "chapters": chapters,
         "pages": len(page_map),
         "state": state,
+        "ocr": used_ocr,
     }
     if dry_run:
         # dry-run 也把这几项报全（少一项，CLI 就会打出 `?` 与 0，看着像识别失败）
@@ -310,6 +373,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default=str(TEXT_DIR), help=f"产物目录（默认 {TEXT_DIR}）")
     parser.add_argument("--glob", action="append", default=[], help="目录模式下的匹配式，可给多次")
     parser.add_argument("--dry-run", action="store_true", help="只打印，不落盘")
+    parser.add_argument("--ocr", action="store_true", help="质量门不过的 PDF 走 OCR 支路（RapidOCR）")
+    parser.add_argument("--ocr-pages", type=int, default=0, help="OCR 只做前 N 页（0 = 全本；试跑用）")
     args = parser.parse_args(argv)
 
     target = Path(args.path).expanduser()
@@ -333,7 +398,15 @@ def main(argv: list[str] | None = None) -> int:
     done = 0
     pending: list[dict] = []
     for path in files:
-        result = normalize_one(path, subject_of(path, base, args.subject), out_dir, taken, dry_run=args.dry_run)
+        result = normalize_one(
+            path,
+            subject_of(path, base, args.subject),
+            out_dir,
+            taken,
+            dry_run=args.dry_run,
+            ocr=args.ocr,
+            ocr_pages=args.ocr_pages,
+        )
         if result.get("ok"):
             done += 1
             print(
