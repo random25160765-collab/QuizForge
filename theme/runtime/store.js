@@ -1313,8 +1313,12 @@
       var kind = one.kind === 'mark' ? 'mark' : 'back';
       var list = placesAll();
       if (kind === 'back') {
+        /* **按对话数**：回溯点是"这个对话里趁手的那几个"，所以"最多 5 个"也得按对话算。
+         * 从前这里数的是**全库** —— 别的对话占满了，这个对话一个也打不上；而"切对话时
+         * 传送球上的数量不变"是同一根因的另一面（球那边取的是全库，见 chat.js `backsHere`）。 */
+        var cid = String(one.cid || '');
         var backs = list.filter(function (each) {
-          return each.kind === 'back';
+          return each.kind === 'back' && String(each.cid || '') === cid;
         });
         // 满了、或这条上已经有一个回溯点（再点一次本来就是"取消"），都返回 null
         if (backs.length >= BACK_MAX) return null;

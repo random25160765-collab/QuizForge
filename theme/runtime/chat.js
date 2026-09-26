@@ -3041,7 +3041,9 @@
       closePortal();
       return;
     }
-    var backs = backsOf(QF.store.places());
+    // 与 `renderStations` 同一份数据（本对话）—— 两处都必须是"本对话"，否则球上显示 3 个、
+    // 点开却是别的对话的那几个。
+    var backs = backsHere();
     if (backs.length === 1) {
       gotoPlace(backs[0], stationsEl.querySelector('.chatportal__core'));
       return;
@@ -3125,9 +3127,27 @@
     applyPortalPos();
   }
 
+  /**
+   * **本对话的**回溯点 —— 传送球只认它。
+   *
+   * `QF.store.places()` 是**全库**：地图那一侧看全库是对的（书签抽屉的文案就写着"含别的
+   * 对话里的"），但传送球是"这个对话里趁手快跳"的东西，必须只看当前对话。用户报的 bug 正是
+   * 这里：切到另一个对话，球上的数量纹丝不动 —— 因为取的还是同一份全库列表
+   *（`renderStations` 的缓存键里甚至带着 `state.current`，说明"换对话该重画"这件事本来就想到了，
+   *  只是**取数**没跟着换）。
+   *
+   * 没有 `cid` 的老记录一律不算（与后端 `recursion.py` 的算法一致：`str(one.get("cid")) == cid`）。
+   */
+  function backsHere() {
+    var cid = String(state.current || '');
+    return backsOf(QF.store.places()).filter(function (one) {
+      return String(one.cid || '') === cid;
+    });
+  }
+
   function renderStations() {
     if (!stationsEl) return;
-    var backs = backsOf(QF.store.places());
+    var backs = backsHere();
     var key =
       String(state.current || '') +
       '|' +
@@ -3463,7 +3483,11 @@
    * 点一枚 = 去那个地点（与点节点同一条路）；右键 = 写描述 / 取消。
    */
 
-  /** 回溯点的**全局编号**（与传送球扇子里那几枚的号是同一个）。 */
+  /** 回溯点的**全局编号** —— 只给地图上那枚图钉用。
+   *
+   * （从前这里写着"与传送球扇子里那几枚的号是同一个"，2026-09-26 起不再成立：
+   *  传送球只装**本对话**的回溯点、按本对话内的顺序编号；而地图是全局视角，
+   *  编号也就按全库排。两边的号**不该**一致。） */
   function backIndexOf(place) {
     var all = backsOf(QF.store.places()).map(function (one) {
       return one.id;
