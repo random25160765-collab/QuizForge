@@ -2071,19 +2071,24 @@
   }
 
   /** 卡片按各自那一行摆好，并从**标的文字**拉一根线到卡片。 */
+  /** 输入区上沿在**视口**里的位置（它是吸底的，量不到就返回 null，那就什么都不兜）。 */
+  function composerTopOf() {
+    var composer = document.querySelector('.chat__composer');
+    return composer ? composer.getBoundingClientRect().top : null;
+  }
+
   function placeMargin(host, box, notes, draft) {
     var boxRect = box.getBoundingClientRect();
     var svg = ensureLeadSvg(box);
     ui.clear(svg);
-    /* **卡片不许压到输入区**（用户："批注和下面的输入内容会重叠"）。
+    /* **不要再在"栏内坐标"里算上边界。**
      *
-     * 下边界取 `.chat__composer` 的上沿：输入区是吸底的，它的 `top` 就是"可读区到此为止"，
-     * 而且比去找滚动容器更稳（不必知道这一页是哪层在滚）。量不到就不兜（`Infinity`）。
-     * 留 8px 余量，免得卡片紧贴那条分隔线。 */
-    var composer = document.querySelector('.chat__composer');
-    var limit = composer
-      ? composer.getBoundingClientRect().top - boxRect.top - 8
-      : Infinity;
+     * 我先前那么写过（`composer.top - boxRect.top`），栽了：卡片贴在哪儿、那一栏的顶边在哪儿，
+     * 都受折叠块、离屏重画这些事影响，坐标系里算出来的"上边界"很可能是假数。实测那次
+     * `limit` 是 8731（远大于卡片底），我的兜底**根本没触发**，而卡片却被摆到了栏顶 ——
+     * 说明"顶上去"是别的原因（锚点量不到 → `top = 0`，见 `marginItems`）。
+     * 所以这里不预判：**先把卡片摆到锚点旁**，摆完再看它落在视口的哪儿（见下面那道兜底）。 */
+    var composerTop = composerTopOf();
 
     var floor = 0;
     marginItems(host, box, notes, draft).forEach(function (item) {
@@ -2104,10 +2109,16 @@
        * 两张卡片因此可能挨在一起（`floor` 那条"别叠"的规则会让位）—— 这是有意的取舍：
        * 离自己的那段话近，比"彼此不挨着"更重要。
        */
-      if (limit !== Infinity && top + height > limit) {
-        top = Math.max(0, Math.round(limit - height));
-      }
       card.style.top = top + 'px';
+      /* **真压住输入框了，才让路，而且让得刚好够。**
+       *
+       * 用**视口坐标**判（不碰栏内坐标）：先把卡片按锚点摆好，量它落在视口里的底边；
+       * 越过输入区上沿就往上挪"越过的像素数 + 8"。于是"尽量贴着被批注的那段话"是默认结果，
+       * 只有确实会被盖住的那一张才动 —— 这正是用户要的两句：尽量近，但不被盖住。 */
+      if (composerTop !== null) {
+        var over = card.getBoundingClientRect().bottom - (composerTop - 8);
+        if (over > 0) card.style.top = Math.round(top - over) + 'px';
+      }
       // 线接在卡片**上沿往下一点**，不用正中间：改到一半的卡片会变高，
       // 用中点会让这根线在编辑时上下乱跑。
       if (item.rect) leadLine(svg, boxRect, item.rect, top + 13);
