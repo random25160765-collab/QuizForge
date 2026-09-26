@@ -5972,15 +5972,21 @@
     var bottom = nearBottom();
     var mid = firstVisibleMid();
     lastReadMid = mid || lastReadMid;
+    var rows = threadEl.querySelectorAll('.chatmsg[data-id]');
+    // **凭据**：记下"存的时候这条对话最新那条消息"。读回来时先拿它对一对 —— 记录若挂到了
+    // 别的对话名下（换会话那一缝，见 saveReadAnchor），这个 id 就不在这条对话里。
+    // 光验 `mid` 不够：另一条对话的消息 id 可能**恰好**在这条里也存在（实测：857 两边都有）。
+    var last = rows.length ? String(rows[rows.length - 1].dataset.id) : '';
     var row = mid
       ? threadEl.querySelector('.chatmsg[data-id="' + (window.CSS && CSS.escape ? CSS.escape(mid) : mid) + '"]')
       : null;
-    if (!row) return { mid: '', dy: 0, bottom: bottom, at: Date.now() };
+    if (!row) return { mid: '', dy: 0, bottom: bottom, at: Date.now(), last: last };
     return {
       mid: mid,
       dy: Math.round(row.getBoundingClientRect().top - threadEl.getBoundingClientRect().top),
       bottom: bottom,
       at: Date.now(),
+      last: last,
     };
   }
 
@@ -6010,17 +6016,53 @@
     }, 400);
   }
 
+  /** 退回最上面。**坏记录**用它（见 applyAnchor）——绝不跳到底：那正是他不想要的"跳到最新"。
+   *  记录坏了就别假装知道他在哪，但也不必把他丢到另一个极端。 */
+  function goTop() {
+    if (!threadEl) return;
+    threadEl.style.scrollBehavior = 'auto';
+    threadEl.scrollTop = 0;
+    anchorScrollAt = Date.now();
+    stickBottom = false;
+    requestAnimationFrame(function () {
+      if (threadEl) threadEl.style.scrollBehavior = '';
+    });
+  }
+
   /** 把视口放回"那条消息的那个位置"（`dy` < 0 = 它的头被推到视口上方去了）。 */
   function applyAnchor(one) {
     if (!threadEl || !one) return;
-    if (one.bottom) {
-      scrollToEnd(true); // 上次本来就贴着底：那这次也贴底，并恢复自动跟随
+    var esc = function (id) {
+      return window.CSS && CSS.escape ? CSS.escape(String(id)) : String(id);
+    };
+    var mid = one.mid ? String(one.mid) : '';
+    var row = mid ? threadEl.querySelector('.chatmsg[data-id="' + esc(mid) + '"]') : null;
+    var last = one.last ? String(one.last) : '';
+    /* **先验"这条记录是不是这条对话的"，再听 `bottom`。**
+     *
+     * 记录可能是坏的：换会话时 `state.current` 先改、正文后换，那一缝里记下的位置会挂到**另一条**
+     * 对话名下（早先版本会这样，见 saveReadAnchor）。这种记录里那个 `bottom:true` 是个**谎** ——
+     * 它说的是"他当时贴着底"，而那本是**另一条对话**的底部。用户报的"切去看另一个对话，再回来
+     * 就给我跳到最新"就是这么来的，而且**它自己不会好**：一进来就被拽到底，再存还是 `bottom:true`。
+     *
+     * 判据用**凭据**（`last` = 存的时候最新那条消息，见 anchorNow），**不是** `mid`：
+     * 另一条对话的消息 id 可能恰好在这条里也存在（实测 857 两边都有）—— 那种"验得出合法、其实挂错
+     * 了归属"的记录，只有凭据认得出来。没有凭据的是早先版本留下的老记录，一律**不听它的 bottom**。
+     */
+    if (last && !threadEl.querySelector('.chatmsg[data-id="' + esc(last) + '"]')) {
+      goTop(); // 凭据不在这条对话里：挂错归属了
       return;
     }
-    var sel = '.chatmsg[data-id="' + (window.CSS && CSS.escape ? CSS.escape(one.mid) : one.mid) + '"]';
-    var row = one.mid ? threadEl.querySelector(sel) : null;
+    if (mid && !row) {
+      goTop(); // 那条消息找不到：不跳到底（底正是他不想要的）
+      return;
+    }
+    if (one.bottom && last) {
+      scrollToEnd(true); // 有凭据、也确实是贴着底：那这次也贴底，并恢复自动跟随
+      return;
+    }
     if (!row) {
-      scrollToEnd(true); // 那条消息没了（被删/换了分支）：退回最底，别停在半空
+      scrollToEnd(true); // 空对话之类：照旧贴底
       return;
     }
     // `.chat__thread` 上有 `scroll-behavior: smooth`：直接赋 scrollTop 会走动画，而紧接着
