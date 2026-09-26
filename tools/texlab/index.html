@@ -76,8 +76,8 @@
       };
       // 父窗口的硬闹钟：工位卡住时它自己的定时器不会响，这个一定会。
       timer = window.setTimeout(function () {
-        done('超时(180s)', '', '引擎没有返回');
-      }, 180000);
+        done('超时(30s)', '', '引擎没有返回');
+      }, 30000);
       var host = document.createElement('div');
       host.className = 'one';
       host.setAttribute('data-lab', id);
@@ -96,7 +96,6 @@
         if (!svg) return;
         if (/loader/.test(cls)) return;
         clearInterval(watch);
-        if (host.parentNode) host.parentNode.removeChild(host); // 关键：别留给自己下一轮重扫
         if (/broken/.test(cls)) {
           done('引擎报错', '', '（TeX 日志见右侧）');
         } else {
