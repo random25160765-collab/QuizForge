@@ -3910,7 +3910,9 @@ body.is-colresize .panes__host > .chat {
 .chatmsg__parts .chatmark--underline {
   background: none;
   text-decoration: underline;
-  text-decoration-thickness: 1px;
+  /* 2px（用户："三种下划线都稍微做粗一点点"）：1px 在细体字下细得几乎看不见，
+   * 而这条线是"这一句是重点"的唯一信号 —— 三种颜色共用这一处，粗细一起变。 */
+  text-decoration-thickness: 2px;
   text-underline-offset: 2px;
   /* 三种颜色（红/蓝/黑）由这一行决定；没选色时跟随正文色 —— 与从前那条默认下划线一模一样 */
   text-decoration-color: var(--mark-color, currentColor);
