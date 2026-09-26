@@ -8885,6 +8885,27 @@
      * 权威），而**那条路不一定带着 `parts`** —— 不先把队列补完，最后那一截
      * 会凭空少掉（少的是回答的结尾，最难被发现的那种丢内容）。
      */
+    /** 把队列里**已经收到**的字立刻并进 `parts`（不动帧循环、不收带子）。
+     *
+     * **为什么必须有它**（2026-09-26 实测报障）：文本与思考进的是"匀速吐字"队列
+     *（见 `enqueue`），而工具卡、题卡、凭条、脚本块是**立刻** `parts.push` 的。
+     * 上游一口气给完长文本、紧接着又给工具调用时，工具卡先落进 `parts` 末尾，而剩下
+     * 的文本还在队列里 —— 等它慢慢吐完再插进去，就排到工具卡**后面**了。用户看到的
+     * 正是"工具调用和脚本跑到文字后面去了"（刷新一次又好了：那时读的是服务端那份，
+     * 而服务端是**按事件顺序**攒的）。
+     *
+     * 规矩：**任何直接往 `parts` 末尾追加的地方，先 `drain()`** ——
+     * 顺序是事实，不该由"谁先渲染"决定。
+     */
+    function drain() {
+      while (queue.length) {
+        var head = queue.shift();
+        pending -= head.text.length;
+        pushPart(parts, head.type, head.text);
+      }
+      pending = 0;
+    }
+
     function flush() {
       if (frame) {
         window.cancelAnimationFrame(frame);
@@ -8895,12 +8916,7 @@
       flowTail = 0;
       flowWant = 0;
       flowIdleAt = 0;
-      while (queue.length) {
-        var head = queue.shift();
-        pending -= head.text.length;
-        pushPart(parts, head.type, head.text);
-      }
-      pending = 0;
+      drain();
     }
 
     return {
@@ -8923,11 +8939,13 @@
         enqueue('think', chunk);
       },
       pushNote: function (text) {
+        drain();   // 先补上还没吐出来的字（见 `drain`），否则它会排到这条之后
         parts.push({ type: 'summary', text: text });
         render();
       },
       // 工具事件立刻刷：用户最想知道的正是"它现在在干什么"，等 100ms 就没意思了
       toolStart: function (data) {
+        drain();   // **关键**：工具卡插进来之前，先把上面那段文字吐完（见 `drain`）
         parts.push({
           type: 'tool_call',
           id: data.callId,
@@ -8952,15 +8970,20 @@
       },
       // 卡片一到就立刻画：用户最想马上做的就是动手答
       pushCard: function (card) {
+        drain();
         parts.push({ type: 'card', kind: 'question', payload: card });
         render();
       },
       // 凭条也一样：它得在回答说完之前就能点（不然用户干等）
       pushAction: function (proposal) {
+        drain();
         parts.push({ type: 'action', kind: proposal.kind, payload: proposal });
         render();
       },
       pushPart: function (part) {
+        // 脚本块（`demo`）与题卡都走这里 —— 它们同样是"立刻"追加，
+        // 所以同样要先把吐字队列排干（这就是"脚本跑到文字后面"那一条）。
+        drain();
         parts.push(part);
         render();
       },
