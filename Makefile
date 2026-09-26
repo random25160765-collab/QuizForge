@@ -206,7 +206,19 @@ db-query:
 	@test -n "$(Q)" || { echo '需要 Q="一句 SQL"（只读）'; exit 1; }
 	@$(VENV)/bin/python tools/db_ops.py query "$(Q)"
 
-.PHONY: db-size db-counts db-query
+# 检索手感测试台：**打一句话，看回来什么、以及分是怎么来的**（只读）。
+# 三个数摊开：`余弦`（像不像的硬数）/ `标题亲密度` / `排序分`。
+#
+#   make search Q="zartbot GPU 架构演变史"
+#   make search Q="虚拟内存分页" LIMIT=10
+#   make search Q="causal mask" SLUG=helloalgozh     # 只在这份材料里找
+#   make search Q="怎么切分页表" DEPTH=出题            # 只搜那一个书架
+search:
+	@test -n "$(Q)" || { echo '需要 Q="一句话"'; exit 1; }
+	@$(VENV)/bin/python tools/search.py "$(Q)" $(if $(LIMIT),--limit $(LIMIT),) \
+		$(if $(SLUG),--slug $(SLUG),) $(if $(DEPTH),--depth $(DEPTH),)
+
+.PHONY: db-size db-counts db-query search
 
 # 起开发服务前**必构建前端**：前端是静态产物，不构建看到的就是上一次的样子 ——
 # 实测踩过（"开发端找不到笔记入口"，其实是产物还是旧的）。构建戳会打出来，
