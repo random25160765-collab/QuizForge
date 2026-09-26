@@ -2273,39 +2273,24 @@ body.is-colresize {
   stroke-width: 1.6;
 }
 
-/* **"你在这儿"**（用户："当我阅读对话树的时候，对话树界面要实时标记我现在在哪一个位置"）：
- * 读到哪一条，地图上就把那一个节点圈出来。它**不抢边框** —— 边框的颜色说的是"这一条用的模式"
- *（见下面那几条 `mode-*`），所以这里另画一圈（`.ctnode__here`，比框大 5px）、默认透明；
- * JS 只切 `.is-reading` 这个类（滚动时每帧最多算一次，重画整张 SVG 代价太大）。
- * 加一点"呼吸"：满屏节点里，一圈完全不动的线很容易被看漏。 */
+/* **"你在这儿"（节点那一圈）**：读到哪一条，地图上就把那个节点圈出来。
+ * 它**不抢边框** —— 边框的颜色说的是"这一条用的模式"（见上面那几条 `mode-*`），所以另画一圈
+ *（`.ctnode__here`，比框大 5px）、默认透明；JS 只切 `.is-reading`（见 chat.js 的 markReading）。
+ *
+ * 两处讲究（第一版就栽在这里，用户："那个强调标记太微弱"）：
+ *   * 颜色用 `--ok` 而不是 `--pri` —— 正在读的那条一定在**活动路径**上（`is-onpath`），
+ *     而那条路径本身就是 `--pri` 1.6px，同色再套一圈等于什么都没加；
+ *   * 醒目不靠眨眼：真正在"呼吸"的是它旁边那枚钉子（见 `.ctpin2--here`）。 */
 .ctnode__here {
   fill: none;
-  stroke: var(--pri);
-  stroke-width: 2;
+  stroke: var(--ok);
+  stroke-width: 2.5;
   opacity: 0;
   pointer-events: none;
 }
 
 .ctnode.is-reading .ctnode__here {
-  animation: cthere 2.4s ease-in-out infinite;
-}
-
-@keyframes cthere {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.3;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ctnode.is-reading .ctnode__here {
-    animation: none;
-    opacity: 1;
-  }
+  opacity: 1;
 }
 
 .ctnode.is-user .ctnode__box {
@@ -4698,6 +4683,87 @@ body.is-colresize .panes__host > .chat {
 
 .ctpin2--back .ctpin2__leg {
   border-top-color: var(--amber);
+}
+
+/* **"你在这儿"**那枚钉子（见 chat.js 的 herePin）：与书签/回溯**同一族的钉子**，换个颜色、
+ * 换一句名字 —— 用户要的"按照回溯标记的那个风格"就是这个意思：不是画个圈，是插一枚钉子。
+ * 绿色在这张地图上是空着的（`--pri` 书签 / `--amber` 回溯 / `--blue` 模式 / `--bad` 出错）。 */
+.ctpin2--here {
+  cursor: default; /* 它不是"点一下去那儿"：你就在那儿 */
+}
+
+.ctpin2--here .ctpin2__badge {
+  background: var(--ok);
+  color: var(--bg);
+  animation: cthere 2.4s ease-in-out infinite;
+}
+
+.ctpin2--here .ctpin2__leg {
+  border-top-color: var(--ok);
+}
+
+.ctpin2--here .ctpin2__kind {
+  color: color-mix(in srgb, var(--ok) 78%, var(--fg3));
+}
+
+/* 钉帽里那颗点：一眼知道"这是所在的位置"，不是一个可点的记号 */
+.ctpin2__pulse {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+/* 呼吸的是**钉帽外面那圈光晕**，不是尺寸：一直在缩放的东西在满屏节点里更晃眼，
+ * 而这里要的是"看得见"，不是"一直在动"。 */
+@keyframes cthere {
+  0%,
+  100% {
+    box-shadow:
+      0 1px 4px color-mix(in srgb, #000 45%, transparent),
+      0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent);
+  }
+
+  70% {
+    box-shadow:
+      0 1px 4px color-mix(in srgb, #000 45%, transparent),
+      0 0 0 9px transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ctpin2--here .ctpin2__badge {
+    animation: none;
+    box-shadow:
+      0 1px 4px color-mix(in srgb, #000 45%, transparent),
+      0 0 0 4px color-mix(in srgb, var(--ok) 30%, transparent);
+  }
+}
+
+/* 缩小时**别的**钉子都收（名字收起来、钉帽变小，见下面 is-tight / is-small 那两条）——
+ * 这一枚**不收**：它要说的话就是那三个字，而且它旁边没有别的名字会跟它挤。
+ * 选择器多带一个类，所以写在前面照样压得过后面那两条。 */
+.chattree__pins.is-tight .ctpin2--here .ctpin2__label {
+  opacity: 1;
+  transform: none;
+}
+
+.chattree__pins.is-small .ctpin2--here .ctpin2__badge {
+  width: 20px;
+  height: 20px;
+  border-width: 2px;
+}
+
+.chattree__pins.is-small .ctpin2--here .ctpin2__leg {
+  border-left-width: 4px;
+  border-right-width: 4px;
+  border-top-width: 7px;
+}
+
+/* 地图左下角那行图例里也摆一枚（这颗绿点） */
+.chattree__legendpin.is-here {
+  background: var(--ok);
 }
 
 .ctpin2:hover .ctpin2__badge,

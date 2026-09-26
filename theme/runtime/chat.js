@@ -3655,7 +3655,34 @@
           layer.appendChild(treePin(place, node, slot));
         });
     });
+    // **"你在这儿"**：与上面那两种**同一族的钉子**（用户："那个强调标记太微弱 —— 按照回溯标记
+    // 的那个风格设计"）。位置由 `markReading` 按"正文读到哪一条"写进来，这里只造壳子。
+    herePinEl = herePin();
+    layer.appendChild(herePinEl);
     return layer;
+  }
+
+  /** "你在这儿"那枚钉子。与 `treePin` 同一套骨架（徽章 + 尖头 + **常驻**的名字），
+   * 只是不点不动 —— 点它没有"去那儿"可言，你就在那儿。
+   *
+   * 颜色用 `--ok`（绿）：这张地图上 `--pri` 是书签、`--amber` 是回溯点、`--blue` 是模式色、
+   * `--bad` 是出错，绿色空着 —— 一眼分得开。 */
+  function herePin() {
+    var pin = h('button.ctpin2.ctpin2--here', {
+      type: 'button',
+      tabindex: '-1',
+      title: '你正在读这里',
+      'aria-label': '你正在读这里',
+      // `slot: 0` —— 不参与"同一地点上几枚钉子竖着码"（见 placeSlot / PIN_STEP）。
+      // **别写成 -1**：`applyTreeView` 会把它算成"抬起来一格"的反面，钉子被推下去 26px
+      //（实测：钉尖正好落在节点顶边下方 26px 处）。
+      dataset: { slot: '0' },
+    });
+    pin.appendChild(h('span.ctpin2__badge', null, h('i.ctpin2__pulse')));
+    pin.appendChild(h('span.ctpin2__leg'));
+    pin.appendChild(h('span.ctpin2__label', null, h('span.ctpin2__kind', { text: '你在这里' })));
+    pin.hidden = true; // 还没量到读到哪一条之前不露头（markReading 会给它坐标）
+    return pin;
   }
 
   /** 一枚图钉：锚在节点左上角、尖头指过去，脑袋旁边挂名字。 */
@@ -3731,6 +3758,9 @@
       h('span.chattree__legendtext', { text: '书签 · 永久（' + marks + '）' }),
       h('i.chattree__legendpin.is-back', null, h('span.ctpin2__n', { text: '1' })),
       h('span.chattree__legendtext', { text: '回溯 · 快速跳转（' + backs + '/5）' }),
+      // 地图上第三枚钉子：不是地点，是"你读到哪儿了"（见 markReading / herePin）
+      h('i.chattree__legendpin.is-here', null, h('i.ctpin2__pulse')),
+      h('span.chattree__legendtext', { text: '你在这儿 · 正文读到哪一条' }),
       h('span.chattree__legendtext.is-dim', { text: '右键图钉可写描述' })
     );
   }
@@ -6022,6 +6052,7 @@
    */
   var lastReadMid = '';
   var readMarkTimer = 0;
+  var herePinEl = null; //: 地图上"你在这儿"那枚钉子（见 treePinsLayer / moveHerePin）
 
   /** 把"你在这儿"挪到当前读到的那一条上（地图没开就什么都不做）。 */
   function markReading() {
@@ -6037,9 +6068,35 @@
     Array.prototype.forEach.call(treeEl.querySelectorAll('.ctnode.is-reading'), function (one) {
       one.classList.remove('is-reading');
     });
-    if (!mid) return;
-    var node = treeEl.querySelector('.ctnode[data-node="' + (window.CSS && CSS.escape ? CSS.escape(mid) : mid) + '"]');
+    var node = mid
+      ? treeEl.querySelector('.ctnode[data-node="' + (window.CSS && CSS.escape ? CSS.escape(mid) : mid) + '"]')
+      : null;
     if (node) node.classList.add('is-reading');
+    moveHerePin(node);
+  }
+
+  /** 把"你在这儿"那枚钉子挪到某个节点上（`node` 为空 = 没得标 → 收起来）。
+   *
+   * 锚点与地点图钉**同一处**（`node.x + 6` / `node.y - h/2`）—— 那一对数就写在节点自己的
+   * `transform` 上（见 `drawTree`），读它比重新算一遍版式更便宜也更稳（缩放、拖动都改不动它）。
+   * 坐标 → 屏幕坐标一律交给 `applyTreeView`：那是**唯一**的换算处，别再写第二遍。
+   */
+  function moveHerePin(node) {
+    if (!herePinEl) return;
+    var m = node ? /translate\(([-\d.]+),([-\d.]+)\)/.exec(node.getAttribute('transform') || '') : null;
+    if (!m) {
+      herePinEl.hidden = true;
+      return;
+    }
+    herePinEl.hidden = false;
+    herePinEl.dataset.ax = String(Number(m[1]) + 6);
+    herePinEl.dataset.ay = String(m[2]);
+    // 播放（走一遍这张图）时图钉默认只露"轮到的那几枚" —— 这一枚要一直在
+    herePinEl.classList.add('is-shown');
+    // **认准地图那张 svg**（`.chattree__svg`）：工具栏里的图标也是 svg，写成 `querySelector('svg')`
+    // 就会抓到它们 —— 那样 `applyTreeView` 找不到图钉层、原样返回，钉子就停在左上角了（实测踩过）。
+    var svg = treeEl.querySelector('.chattree__svg');
+    if (svg) applyTreeView(svg);
   }
 
   /** 滚动时每帧最多算一次（滚一下要量几十行 rect，别在 scroll 事件里直接干）。 */
