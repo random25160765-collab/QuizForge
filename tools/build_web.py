@@ -268,11 +268,29 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     for directory in (out_dir, assets, runtime_out, fonts_out):
         directory.mkdir(parents=True, exist_ok=True)
 
-    # 先清掉上一轮写下的页面：页面是**顶层 html**，删掉一个模板（比如随"去账号"
-    # 一起删的 login.html）之后，旧产物会留在 out_dir 里继续被访问到 ——
-    # 实测踩过：`/login.html` 还能打开，而后端已经没有登录这回事了。
-    for stale in out_dir.glob("*.html"):
-        stale.unlink()
+    # 先记下上一轮写下的页面 —— 注意**别先删**。
+    #
+    # 从前这里是"上来就把 out_dir 里所有 *.html 删掉，再一个个写"。意图是对的（页面是**顶层
+    # html**，模板删了之后旧产物不该留在那儿继续能打开 —— 实测踩过：`/login.html` 还能打开，
+    # 而后端已经没有登录这回事了），但"先全删"这个做法在**构建被打断**时会留下一批**空文件**：
+    # 写页面是 `open(w) -> 截断 -> write`，若这一刻被下一次改动（`make web-watch`）打断，
+    # 页面上就只剩 0 字节。2026-09-26 实测：9 个页面同时变 0 字节，浏览器打开是**完全空白、
+    # 而且控制台一句报错都没有** —— 最难查的那一种（用户当时只说了"重新加载一下"）。
+    #
+    # 现在改成：**先写新的，写完再清掉这一轮没写的**（见下面 `stale_before` 的收尾）。
+    stale_before = {p.name for p in out_dir.glob("*.html")}
+
+    def _write_page(path, text):
+        """原子地写一页：先写 `.tmp`，再 `replace` 覆盖。
+
+        除原子性之外还有一道闸：**渲染结果为空就直接报错** —— 空页面绝不该悄悄发出去
+        （那比构建失败难查得多：服务端 200、控制台无错、页面一片空白）。"""
+        text = str(text)
+        if not text.strip():
+            raise RuntimeError("拒绝写入空页面：" + path.name)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
 
     # ---------------------------------------------------------- KaTeX
     katex_css_raw = _read(VENDOR_KATEX / "katex.css")
@@ -474,8 +492,15 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
         assert "</head>" in html, "shell 模板里没有 </head>，注入点没了"
         html = html.replace("</head>", f'<meta name="qf-build" content="{page_digest}">\n</head>', 1)
         page_stamps[page] = page_digest
-        (out_dir / f"{page}.html").write_text(html, encoding="utf-8")
+        _write_page(out_dir / f"{page}.html", html)
         pages_written.append(page)
+
+    # 这一轮**没写**的旧页面到这里才清（模板被删、页面改名）—— 顺序反过来（先写后清）
+    # 之后，构建即使被打断，也只会"少一点新内容"，绝不会少页面、更不会留空页面。
+    written_names = {page + ".html" for page in pages_written}
+    for name in sorted(stale_before - written_names):
+        if name.endswith(".html"):
+            (out_dir / name).unlink(missing_ok=True)
 
     # -------------------------------------------------- 独立页
     # 启动页要在"什么都还没准备好"的时候就能显示，所以它**不走 shell**、
