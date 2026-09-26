@@ -1820,38 +1820,47 @@
     return '';
   }
 
-  /** 开一次**系统取色器**，选到颜色后回调（`#rrggbb`）。给高亮的"自定义颜色"用。
+  /** 高亮的**色板** —— 它长在菜单里，就挨着"高亮这一段"那一项。
    *
-   * 用原生 `<input type=color>` 就够，不自己画色板 —— 颜色空间、色盲辅助那些浏览器已经做对了。
-   * 它必须由**一次用户手势**触发，所以调用它的地方只能是"点了菜单里那一项"（`run`），
-   * 不能是页面载入或快捷键的默认分支。用户按取消时 `change` 不触发 → 什么都不做。 */
-  function pickColor(done) {
+   * 上一版把 `<input type=color>` 藏在 `left:-9999px` 上再 `showPicker()`：系统的取色弹层
+   * 锚在那个**屏幕外**的元素上，于是出现在**窗口左上角**（用户："自定义颜色的色板出现在左上角，
+   * 不是菜单旁边"）—— 锚点这种事不该靠调坐标去凑：把取色器**放进菜单里**就没有了，
+   * 原生弹层贴着它自己，位置自然对；常用的几色顺手摆成一排，点一下就走。
+   *
+   * 选定之后**记住**（`QF.store.setHlTone`）：之后的高亮全部跟随（用户："选定一个颜色之后，
+   * 之后的高亮颜色全部跟随"）。 */
+  var HL_TONES = ['#ffd400', '#7ed957', '#69c0ff', '#ff9ac1', '#c9b6ff', '#ffb26b'];
+
+  function hlSwatches(current, done) {
+    var row = document.createElement('div');
+    row.className = 'chattree__swatchrow';
+    var cap = document.createElement('span');
+    cap.className = 'chattree__swatchcap';
+    cap.textContent = '高亮颜色';
+    row.appendChild(cap);
+    HL_TONES.forEach(function (tone) {
+      var dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'chattree__swatch';
+      dot.style.background = tone;
+      dot.title = tone;
+      if (tone === current) dot.classList.add('is-on');
+      dot.addEventListener('click', function () {
+        done(tone);
+      });
+      row.appendChild(dot);
+    });
+    // 自定义：原生取色器就摆在色板这一行的末尾 —— 弹层贴着它，不会跑到别处去
     var input = document.createElement('input');
     input.type = 'color';
-    input.value = '#ffd400'; // 默认落在"荧光笔黄"上，与现在的高亮同色系
-    input.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px';
-    document.body.appendChild(input);
-    var cleanup = function () {
-      if (input.parentNode) input.parentNode.removeChild(input);
-    };
+    input.className = 'chattree__swatchinput';
+    input.title = '自定义颜色…';
+    input.value = /^#[0-9a-f]{6}$/i.test(String(current || '')) ? current : '#ffd400';
     input.addEventListener('change', function () {
-      var v = String(input.value || '');
-      cleanup();
-      done(v);
+      done(input.value);
     });
-    // 取消时通常伴随一次 blur：等一拍再收，免得把接着到来的 change 打断
-    input.addEventListener('blur', function () {
-      window.setTimeout(cleanup, 300);
-    });
-    if (input.showPicker) {
-      try {
-        input.showPicker();
-        return;
-      } catch (err) {
-        /* 有些浏览器不给非手势调用 → 退回 click */
-      }
-    }
-    input.click();
+    row.appendChild(input);
+    return row;
   }
 
   /* ------------------------------------------------------------------ 旁批
@@ -2284,25 +2293,25 @@
     });
     // 缺的那几种摆出来（目标 = 这一段）
     if (!has.hl) {
+      // 现在会用哪个色：上次选过的那个（没选过就是样式里的琥珀色）
+      var hlNow = QF.store.hlTone ? QF.store.hlTone() : '';
       items.push({
         icon: 'marker',
+        swatch: safeMarkColor(hlNow) || 'var(--amber)',
         label: '高亮这一段',
         hint: '⌘⇧H',
         run: function () {
-          applyMark('hl', target);
+          applyMark('hl', target); // 不带色 → 跟随记住的那个
         },
       });
-      /* **自定义颜色**（用户："高亮给它支持自定义颜色"）：开系统取色器。
-       * 用原生 `<input type=color>`，不自己造色板 —— 颜色空间、色盲辅助这些浏览器已经做对了。
-       * 它必须由一次用户手势触发，而"点了这一项"就是那次手势。 */
+      /* 色板就在菜单里（见 `hlSwatches`）。选一次就**记住**，之后的高亮全部跟随 ——
+       * 所以这里不必再分"用默认"和"自定义"两项：色板里两种都有（六个常用色 + 原生取色器）。 */
       items.push({
-        icon: 'marker',
-        label: '高亮 · 自定义颜色…',
-        run: function () {
-          pickColor(function (tone) {
-            applyMark('hl', target, tone);
-          });
-        },
+        node: hlSwatches(hlNow, function (tone) {
+          if (QF.store.setHlTone) QF.store.setHlTone(tone);
+          closeChatMenu();
+          applyMark('hl', target, tone);
+        }),
       });
     }
     if (!has.strike) {
@@ -2412,11 +2421,16 @@
 
   /** 钉一条标记。右键菜单与快捷键**共用这一条路**（两处各写一份，迟早只改一处）。 */
   function applyMark(kind, pick, tone) {
+    /* 高亮没指定颜色时**跟随上次选的那个**（用户："选定一个颜色之后，之后的高亮颜色全部跟随"）。
+     * 判据只留这一处 —— 于是快捷键 ⌘⇧H 与菜单里那一项都不必各自记这件事。
+     * 下划线不跟随：它每次都从菜单里明确选（红/蓝/黑），⌘⇧U 落在"黑"。 */
+    var color = tone || '';
+    if (!color && kind === 'hl' && QF.store.hlTone) color = QF.store.hlTone();
     if (
       !addMarkTracked({
         kind: kind,
         // 颜色（可选）：下划线是 `red`/`blue`/`black`，高亮是自定义的 `#rrggbb`
-        color: tone || '',
+        color: color,
         cid: pick.cid,
         mid: pick.mid,
         quote: pick.quote,
