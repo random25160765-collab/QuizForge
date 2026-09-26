@@ -162,6 +162,11 @@ def ingest_one(path: Path, subject: str, base: Path | None = None) -> Path:
         figures_all,
     )
     info["tokens"] = sum(s["tokens"] for s in slices)
+    # 汇总行要用的两栏在这里补齐：`save_slices` 的返回里没有它们 —— 少了就在**写完库之后**
+    # 抛 KeyError（现象是"每份都报错，可库里的行都进去了"，最容易误判成写失败）。
+    info["lines"] = len(lines)
+    info["figures"] = len(figures_all)
+    info["slices"] = len(slices)
     return info
 
 

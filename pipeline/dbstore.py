@@ -233,8 +233,16 @@ def save_slices(subject: str, meta: dict, slices: list[dict], figures: list[dict
     with _engine().begin() as conn:
         mid = conn.execute(
             text(
-                "INSERT INTO materials (slug, subject, title, source_path, sha256, lines, updated_at)"
-                " VALUES (:slug, :subject, :title, :source_path, :sha256, :lines, CURRENT_TIMESTAMP)"
+                # **`depth` 必须显式给**：模型里那个 `default="检索"` 是 SQLAlchemy 的
+                # Python 侧默认值，只管 ORM 的 INSERT；这里是**裸 SQL**，不给就撞上
+                # `NOT NULL constraint failed: materials.depth` —— 现象是"任何经流水线
+                # 入库的新材料都进不去"，而报错落在数据库层，看不出是谁漏了。
+                #
+                # 冲突时**不覆盖 depth**：一份材料若已经被人工/流程提去'出题'档，重跑一次归一
+                # 不该把它降回'检索'（`db.py` 那张回填表记的正是这条事故：depth 一栏刚加上时
+                # 全部材料被默认值降级，表现是 `search_material` 突然什么都搜不到，还不报错）。
+                "INSERT INTO materials (slug, subject, title, source_path, sha256, lines, depth, updated_at)"
+                " VALUES (:slug, :subject, :title, :source_path, :sha256, :lines, :depth, CURRENT_TIMESTAMP)"
                 " ON CONFLICT (slug) DO UPDATE SET subject = EXCLUDED.subject,"
                 " title = EXCLUDED.title, source_path = EXCLUDED.source_path,"
                 " sha256 = EXCLUDED.sha256, lines = EXCLUDED.lines, updated_at = CURRENT_TIMESTAMP"
@@ -247,6 +255,7 @@ def save_slices(subject: str, meta: dict, slices: list[dict], figures: list[dict
                 "source_path": str(meta.get("source_path") or ""),
                 "sha256": str(meta.get("sha256") or ""),
                 "lines": int(meta.get("lines") or 0),
+                "depth": str(meta.get("depth") or "检索"),  # 新材料默认进**检索**档
             },
         ).scalar_one()
 
