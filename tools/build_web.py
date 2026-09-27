@@ -65,6 +65,9 @@ THEME_DEMO_KIT = ROOT / "theme" / "demo-kit"
 # 代码排版：真等宽字体（进 assets/fonts/）+ highlight.js（进 assets/）
 VENDOR_MONO = ROOT / "vendor" / "mono"
 VENDOR_HLJS = ROOT / "vendor" / "hljs"
+# mermaid：正文 ```mermaid 与沙箱 `QFKit.Mermaid` 的画图引擎（单文件 3.3MB，
+# 页面**不预加载**，第一次真要画时才由前端去取 —— 见 runtime/mermaid.js）
+VENDOR_MERMAID = ROOT / "vendor" / "mermaid"
 
 # 运行时脚本按依赖顺序加载；**新增脚本要登记在这里**，顺序错会引用到未定义的模块
 RUNTIME_ORDER = [
@@ -74,6 +77,7 @@ RUNTIME_ORDER = [
     "data.js",
     "md.js",
     "latex.js",         # 正文里的 LaTeX 图：交给离线 TikZJax（vendor/tikzjax）编成 SVG
+    "mermaid.js",       # 正文里的 ```mermaid 图（流程图/时序图这类）：毫秒级，不占 TeX 引擎
     "highlight.js",
     "engine.js",
     "store.js",
@@ -373,6 +377,19 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
                 shutil.copy2(src, kit_out / src.name)
                 kit_count += 1
 
+    # ------------------------------------------------------------ mermaid
+    # 正文 ```mermaid 与沙箱 `QFKit.Mermaid` 的画图引擎。**不是 preload**：
+    # 页面与沙箱都在第一次真要画时才去取它（3.3MB，见 runtime/mermaid.js）。
+    # 可选：没同步过（`make vendor`）就跳过，那边会把源码原样摆出来并说明。
+    mm_count = 0
+    if VENDOR_MERMAID.is_dir():
+        mm_out = assets / "mermaid"
+        mm_out.mkdir(parents=True, exist_ok=True)
+        for src in sorted(VENDOR_MERMAID.iterdir()):
+            if src.is_file() and src.name != "SOURCE.md":
+                shutil.copy2(src, mm_out / src.name)
+                mm_count += 1
+
     # ------------------------------------------------------ 应用样式
     (assets / "app.css").write_text(
         _assemble.concat_css([THEME_DIR / name for name in APP_CSS]), encoding="utf-8"
@@ -568,6 +585,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
             else " · 不含 Pyodide（运行时首启取进本机缓存，见 app/heavy_deps.py）"
         )
         + (f" · 演示套件 {kit_count} 个文件" if kit_count else "")
+        + (f" · mermaid {mm_count} 个文件（懒加载，页面不预取）" if mm_count else "")
         + f" · 构建戳 {build_stamp['stamp']}"
         + f" -> {out_dir}"
     )

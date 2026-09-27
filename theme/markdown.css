@@ -373,3 +373,47 @@ html[data-theme='light'] {
 .diagram-wrap.is-failed {
   color: var(--bad);
 }
+
+/* 正文里的 mermaid 图（见 runtime/mermaid.js：`graph TD` 这类**毫秒级**画出来的 SVG）。
+ * 与 `.diagram-wrap` 是并排的两条路（那条走真 TeX 引擎，每张 2.2 秒起），外观要一致：
+ * 居中、窄屏不压变形、失败时**把源码摆出来**而不是一句"失败了"。 */
+.merfig {
+  margin: 0.9em 0;
+  display: flex;
+  justify-content: center;
+}
+
+.merfig > svg {
+  display: block;
+  /* 与 `.diagram__svg > svg` 同一条规矩：按它自己的尺寸显示，上限才是栏宽 ——
+     `width:100%` 会把小图拉成一整栏。 */
+  max-width: 100%;
+  height: auto;
+}
+
+.merfig.is-loading,
+.merfig.is-failed {
+  display: block;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  color: var(--fg3);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+.merfig.is-failed .merfig__why {
+  color: var(--bad);
+}
+
+.merfig.is-failed .merfig__src {
+  margin: 8px 0 0;
+  padding: 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg2);
+  white-space: pre-wrap;
+  background: none;
+  border: 0;
+}
