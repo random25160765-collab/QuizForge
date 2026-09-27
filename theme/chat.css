@@ -1652,16 +1652,27 @@ body.is-colresize {
 
 /* ---------------------------------------------------------------- 演示沙箱 */
 
-/* 消息里只有一张卡片 */
+/* 消息里只有一张卡片。
+   卡片里是**上下两行**：标题那一行，以及跑出来的输出那一行。
+   从前这里是 `display: flex` 的单行，三块（标题、按钮、输出）全是它的行内兄弟 ——
+   于是输出被挤到标题右边一小条，看着像"跑到沙箱外面"（2026-09-27 用户报障）。
+   说明：用 flex-column + gap 而非 margin，是为了让"有没有输出"都不留悬空间距。 */
 .chatdemo__card {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-left: 2px solid var(--pri);
   border-radius: var(--r-md);
   background: var(--bg2);
+}
+
+/* 头一行：标题 + 打开按钮 */
+.chatdemo__cardrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .chatdemo__cardmain {
@@ -1822,7 +1833,7 @@ body.is-colresize {
 /* 消息里直接显示沙箱输出：不必点开面板才知道它跑成什么样。
    （它同时是回填给服务端的那一份 —— 下一轮模型也能读到。） */
 .chatdemo__inline {
-  margin-top: 8px;
+  /* 上间距由卡片的 flex gap 给（见 `.chatdemo__card`），这里不再自带 —— 免得两处叠加 */
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -5471,4 +5482,17 @@ body.is-colresize .panes__host > .chat {
   margin-top: 4px;
   color: var(--fg3);
   font-size: 11px;
+}
+
+/* 演示的**离屏运行位**（见 chat.js 的 `demoRunner`）：看不见，但必须是**真尺寸**。
+ * 用"移出视野"而不是 `display:none` —— 隐藏元素量出来是 0，WebGL 也拿不到真正的
+ * 绘制缓冲，截图就是黑的（与 latex.js 那个工作台 iframe 同一个手法、同一个理由）。 */
+.chatdemo__runner {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 960px;
+  height: 600px;
+  border: 0;
+  pointer-events: none;
 }
