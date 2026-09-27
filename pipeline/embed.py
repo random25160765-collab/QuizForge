@@ -255,27 +255,64 @@ def _close_run(db, *, status: str, note: str = "", written: int = 0) -> None:  #
         db.rollback()
 
 
-def _other_embed_running() -> str:
-    """还有别的 `pipeline.embed` 在跑吗？返回它的 pid（没有就是空串）。
+def _other_embed_running(material: str = "") -> str:
+    """还有**别的** `pipeline.embed` 在算**同一本材料**吗？返回它的 pid（没有就是空串）。
 
-    **为什么要有这道闸**（2026-09-26 实测踩过）：两个 embed 同时跑会抢同一批切片 ——
-    一个刚把某片的向量删掉、另一个正往里插，于是报出来的是
+    ## 这道闸要防的到底是什么
+
+    **不是**"机器上有别的 embed 在跑"，而是"两个进程写同一批切片"：一个刚把某片的向量
+    删掉、另一个正往里插，于是报出来的是
 
         INSERT INTO slice_embeddings … 上一个看不懂的约束错
 
-    而**真正的原因（两个进程在算同一批片）在报错里一个字都没提**，现场只剩一个
-    卡住不动、`make watch` 里数字不涨的进程。判活走 `/proc` 而**不查跑单账本**：
-    手工起的进程本来就不在账本里（面板上那句"旧版/手工起的进程"就是它）。
+    而**真正的原因（两个进程在算同一批片）在报错里一个字都没提**（2026-09-26 实测）。
+
+    ## 判据为什么是"同一本材料"
+
+    原先这里一问"还有没有在跑的"，**任何**第二条就被拒 —— 而调度器（`ops drive`）
+    本来就是按材料分车道的（每条车道一本），全局判据于是把**合法**并发也拦了：
+    当时的现场是"车道一启动就自杀、队列空着结束、`make watch` 说没有进程却还差几百窗"
+    （2026-09-27）。有人给它加过调度器豁免，但豁免又把**真事故**放行了 ——
+    我自己手起一条 `--material cardelli`，正好和调度器那条一起算同一本（同一天）。
+    所以现在直接照**语义**判：`--material` 相同才拦；不同材料各算各的，天然不冲突。
+
+    `material` 为空 = 这一次要**整库扫**（没给 `--material`），它会碰到库里每一本，
+    因此与**任何**在跑的 embed 冲突 —— 那种跑法本来就该独占。
+
+    判活走 `/proc` 而**不查跑单账本**：手工起的进程本来就不在账本里（面板上那句
+    "旧版/手工起的进程"就是它），而这道闸正是要拦住手工起的那种。
     """
     me = os.getpid()
+    want = str(material or "").strip()
     for entry in Path("/proc").iterdir():
         if not entry.name.isdigit() or int(entry.name) == me:
             continue
         try:
-            cmdline = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+            argv = [
+                one.decode("utf-8", "replace")
+                for one in (entry / "cmdline").read_bytes().split(b"\0")
+                if one
+            ]
         except OSError:
             continue
-        if "pipeline.embed" in cmdline and "python" in cmdline:
+        # **按参数逐个比，不要整串搜**（2026-09-27 实测踩过）：整串搜会把**调用它的那个
+        # shell** 也算进来 —— `sh -c "api/.venv/bin/python -m pipeline.embed …"` 的命令
+        # 行里这几个词一个不少，于是 embed 一启动就报"已经有一个在跑"并退出，而它报的
+        # pid 其实是**它自己的父 shell**（实测连报两次，`/proc/<pid>` 一查正是本次命令）。
+        # 从 `make`、脚本、或任何 `sh -c` 里调它都必然撞上 —— 而"重建向量"正是要能被
+        # 这样调起来的（见 `.codebuddy/skills/` 里那条入库流程）。
+        # 真正的那个进程长这样：`['…/python', '-m', 'pipeline.embed', …]` ——
+        # `pipeline.embed` 是**独立的一个参数**；父 shell 那一整串在它这里是**一个**参数。
+        if not argv or "python" not in os.path.basename(argv[0]):
+            continue
+        if "pipeline.embed" not in argv[1:]:
+            continue
+        theirs = ""
+        if "--material" in argv:
+            at = argv.index("--material")
+            if at + 1 < len(argv):
+                theirs = argv[at + 1].strip()
+        if not want or not theirs or want == theirs:
             return entry.name
     return ""
 
@@ -286,12 +323,16 @@ def _run(args) -> int:  # noqa: ANN001
         print(("  ✓ " if ok else "  ✗ ") + detail)
         return 0 if ok else 1
 
-    other = _other_embed_running()
+    # **只在"同一本材料"上互斥**（判据的来龙去脉见 `_other_embed_running`）：不同材料各算
+    # 各的，调度器的多车道因此天然合法；而"同一本被两个进程同时算"——那才是真事故——照拦。
+    other = _other_embed_running(args.material)
     if other:
+        who = args.material or "整库"
         print(
-            f"已经有一个 embed 在跑（pid {other}）—— 两个进程算同一批切片会互相插队，\n"
+            f"已经有一个 embed 在算「{who}」（pid {other}）—— 两个进程写同一批切片会互相插队，\n"
             f"  报出来的是 `INSERT INTO slice_embeddings` 上一个看不懂的约束错。\n"
-            f"  等它跑完；或者确认它已经死了再重来：kill {other}"
+            f"  等它跑完；或者确认它已经死了再重来：kill {other}\n"
+            f"  （要同时算**别的**材料：那条命令给它自己的 `--material` —— 不同材料不互斥。）"
         )
         return 2
 
