@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -559,6 +560,24 @@ def stream_completion(
     body["model"] = conf["model"]
     body["messages"] = messages
     body["stream"] = True
+    # 这一次请求里带了几张图 —— **"截图有没有到模型眼前"这个问题，答案只在这里**。
+    # 实测踩过：页面那头明明把图报上来了（零件里存着），而模型却说"我这边看不到图"，
+    # 于是两边都很确定自己在说真话。数一下最省事。
+    try:
+        shots = sum(
+            1
+            for one in messages
+            for part in (one.get("content") or [])
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        )
+        logging.getLogger("quizforge").info(
+            "[gateway] 这一次请求：%d 条消息 · 带图 %d 张 · 模型 %s",
+            len(messages),
+            shots,
+            conf["model"],
+        )
+    except Exception:  # noqa: BLE001 —— 记账失败不该影响这一次请求
+        pass
     if tools:
         body["tools"] = tools
         body.setdefault("tool_choice", "auto")
