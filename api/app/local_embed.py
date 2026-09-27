@@ -591,6 +591,25 @@ def describe() -> str:
     )
 
 
+def warm() -> bool:
+    """把这一层**贵的东西**在后台先做掉：加载 ONNX 会话，再编一次查询向量。
+
+    为什么值得：那一步要读 1.1GB 的模型、建会话、初始化 CUDA 上下文 —— 实测
+    **冷启动 4.7 秒**（2026-09-27），而它落在**用户第一次检索**里（检索本来是
+    0.1 秒级的操作，那一下看上去就像卡住了）。预热之后第一次也是 0.01 秒级。
+
+    幂等、不抛：失败不该影响任何事（真要用的时候照样自己加载，只是慢一次）。
+    模型还没下到本机就直接返回 False —— 预热**不负责下载**（那是 `ensure` 的事）。
+    """
+    try:
+        if not is_ready():
+            return False
+        embed(["预热"], kind="query")
+        return True
+    except Exception:  # noqa: BLE001 —— 预热失败不是错，只是没热上
+        return False
+
+
 def clear() -> None:
     """删掉缓存（**给测试与排障用**；界面不暴露）。"""
     global _session, _tokenizer
