@@ -179,7 +179,12 @@ def infer(
         "model": conf["model"],
         "messages": build_messages(item, head_text),
         "temperature": 0,
-        "max_tokens": 500,
+        # **留够**：元数据是一小段 JSON，但"长标题 + 12 个作者 + 主题"能把它顶到 500 以上 ——
+        # 实测（2026-09-27）一批 40 条里有 2 条正是被**截断**在半个 JSON 上（原文长这样：
+        # `{"title": "CUTLASS Tutorial: Writing GEMM Kernels Using Tensor…` 然后没了），
+        # 报出来的却是"模型没有给出 JSON"，看着像上游的错、其实是我们掐的。
+        # 上限本身不花钱（只按真正生成的 token 计费），所以给足 1200。
+        "max_tokens": 1200,
         "stream": False,
     }
     if conf.get("jsonMode"):
@@ -216,16 +221,33 @@ def infer(
                 time.sleep(RETRY_WAIT_S * (attempt + 1))
                 continue
             raise MetaFailed(last)
+
+        # **200 也要看内容**（2026-09-27 实测）：上游在并发下会回一个**空回复** ——
+        # 实测 6 路并发，6 条里 4 条 `content` 为空，而 HTTP 状态、JSON 外壳全都正常。
+        # 原先这两步解析写在重试循环**外面**，于是这种"空"当场抛错、一次都不重试：
+        # 表现就是"点一次失败、再点一次就好"的那种最烦人的状态（用户原话：
+        # "元数据为什么会抽不出来？"）。空回复与 429 同类 —— **同一条重发一次多半就好**
+        #（重试次数与等待仍由上面的 `RETRIES` / `RETRY_WAIT_S` 定，不额外加码）。
+        try:
+            data = response.json()
+        except ValueError as exc:
+            last = "模型的响应不是 JSON：" + response.text[:120]
+            if attempt < RETRIES:
+                time.sleep(RETRY_WAIT_S * (attempt + 1))
+                continue
+            raise MetaFailed(last) from exc
+
+        choices = data.get("choices") or [{}]
+        content = ((choices[0].get("message") or {}).get("content")) or ""
+        try:
+            meta = parse_reply(content)
+        except MetaFailed as exc:
+            last = exc.message
+            if attempt < RETRIES:
+                time.sleep(RETRY_WAIT_S * (attempt + 1))
+                continue
+            raise
         break
-
-    try:
-        data = response.json()
-    except ValueError as exc:
-        raise MetaFailed("模型的响应不是 JSON：" + response.text[:120]) from exc
-
-    choices = data.get("choices") or [{}]
-    content = ((choices[0].get("message") or {}).get("content")) or ""
-    meta = parse_reply(content)
     if not meta.get("title"):
         # 抽不出正文的条目（扫描件 / 乱码 / 只有页眉）走这里：模型按提示词如实留空。
         # 这时**不抛错**，用调用方给的"按文件名起的标题"兜住 —— 否则这几条会被

@@ -20,7 +20,14 @@ description: 把一份**新材料**（PDF / 书 / 网页）入库到 quizforge �
 | 行坐标 | 没有 | **有**（切片 + 行区间） |
 | 谁读它 | `attach_material`（按 citekey） | `search_material` / `search_library` / `read_material` |
 
-锚是 **citekey**（`app.library.citekey_for`，A/B 共用同一规则）与 **sha256**。
+锚本该是 **citekey**（`app.library.citekey_for`，A/B 共用同一规则）+ **sha256** —— 但
+**实测它会错开**（2026-09-27）：`normalize` 定键时传的是**空元数据**
+（`library.citekey_for({}, fallback=str(cleaned))`），只能走到最后那级兜底
+`doc-<sha1(fallback)[:8]>`；而 A 侧扫描时用的 fallback 是**另一串字符串** → 同一个文件
+得到两个键。实测：`2308.09445v2.pdf` 在 A 是 `doc-00b2d3d6`、在 B 是 `doc-ff46e6e2`。
+
+**入库后以 B（材料 / 检索层）那个键为准**（`search_library` / `read_material` 按它查，
+`ops drive --materials` 也用它）。别以为"同名就是同一个锚"。
 
 ## 五步链（每步都有判据，别跳）
 
