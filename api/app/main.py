@@ -167,6 +167,16 @@ def create_app() -> FastAPI:
             logger.info("[工具] 预取没起来：%s", exc)
         if heavy_deps.start_prefetch(log=logger.info):
             logger.info("重型运行时不在本机，已在后台开始取（跑 Python 那一项就绪后可用）")
+        # **检索那一层也热起来**：冷启动要读 1.1GB 模型、建 ONNX 会话、初始化 CUDA
+        # 上下文 —— 实测 **4.7 秒**（2026-09-27），而它落在**用户第一次检索**里
+        # （检索本来是 0.1 秒级的操作，那一下会让人以为"卡住了"）。
+        # 后台做掉，第一次检索就是 0.01 秒级。不挡启动、失败不影响任何事。
+        try:
+            from . import local_embed  # noqa: PLC0415
+
+            threading.Thread(target=local_embed.warm, name="embed-warm", daemon=True).start()
+        except Exception as exc:  # noqa: BLE001 - 预热失败不该拦住启动
+            logger.info("[检索] 预热没起来：%s", exc)
 
     return app
 
