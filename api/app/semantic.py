@@ -34,10 +34,21 @@
 
 from __future__ import annotations
 
+import collections
 import math
 import struct
 
-from sqlalchemy import func, select
+from sqlalchemy import LargeBinary, cast, func, select
+
+#: `_window_index` 的**轻量替身**：它只需要这几个字段。
+#:
+#: 为什么不用 ORM 对象：那一步实测要构造 22 万个实例（0.67 s）并解码一堆用不上的
+#: JSON 列（**14.9 万次 `json.loads`，0.36 s**，2026-09-27 的 cProfile）—— 而它每次
+#: 检索都要走一遍。换成"只取这几列 + 命名元组"，调用方照旧 `window.id` / `material.slug`
+#: 地读，接口没变、开销少一大截。
+_Window = collections.namedtuple("_Window", "id start_line end_line")
+_Slice = collections.namedtuple("_Slice", "id start_line end_line summary slice_id")
+_Material = collections.namedtuple("_Material", "slug title")
 
 from . import materials
 from .models import Material, MaterialSlice, SliceEmbedding
@@ -156,8 +167,26 @@ def search(db, query_vec, *, limit: int = 8, slug: str = "", depth: str = "") ->
     if not query_vec:
         return []
     want = len(query_vec)
+    # **只取列，而且 `vec` 取的是原始字节**（`cast` 成 `LargeBinary`，绕过那个自定义类型）。
+    # 从前这里是 `select(SliceEmbedding, …)`：ORM 把每行的 4096 字节解码成 Python 列表
+    #（3.6 万行 ≈ 148MB 的列表对象），而 `_cosines` 要的本来就是**字节**
+    #（它内部是 `np.frombuffer(b"".join(blobs))`）。白白解码一遍，纯属浪费 ——
+    # 2026-09-27 实测：这是这条路上最后一块大头。
+    # 行的下标含义（下面全用它，省一次 ORM 构造）：
+    #   0 窗口 id · 1 起始行 · 2 结束行 · 3 维度 · 4 向量字节
+    #   5 切片 id · 6 段标题 · 7 材料 slug · 8 材料标题
     stmt = (
-        select(SliceEmbedding, MaterialSlice, Material)
+        select(
+            SliceEmbedding.id,
+            SliceEmbedding.start_line,
+            SliceEmbedding.end_line,
+            SliceEmbedding.dim,
+            cast(SliceEmbedding.vec, LargeBinary),
+            MaterialSlice.id,
+            MaterialSlice.summary,
+            Material.slug,
+            Material.title,
+        )
         .join(MaterialSlice, MaterialSlice.id == SliceEmbedding.slice_id)
         .join(Material, Material.id == MaterialSlice.material_id)
     )
@@ -167,33 +196,30 @@ def search(db, query_vec, *, limit: int = 8, slug: str = "", depth: str = "") ->
         stmt = stmt.where(Material.depth == depth)
 
     rows = [
-        (window, slice_row, material)
-        for window, slice_row, material in db.execute(stmt).all()
+        row
+        for row in db.execute(stmt).all()
         # 换过模型：维度对不上就跳过。这不是错误 —— `state()` 会把"有几种维度"
         # 报出来，谁该重算一目了然。
-        if not window.dim or window.dim == want
+        if not row[3] or row[3] == want
     ]
     if not rows:
         return []
-    scores = _cosines(query_vec, [window.vec for window, _s, _m in rows])
-    scored = [
-        (score, material.slug, window.start_line, window, slice_row, material)
-        for score, (window, slice_row, material) in zip(scores, rows)
-    ]
+    scores = _cosines(query_vec, [row[4] for row in rows])
+    scored = [(score, row[7], row[1], row[0], row) for score, row in zip(scores, rows)]
     # 同分也要有确定顺序（可复现）：slug → 起始行 → 窗口 id
-    scored.sort(key=lambda row: (-row[0], row[1], row[2], row[3].id))
+    scored.sort(key=lambda one: (-one[0], one[1], one[2], one[3]))
     return [
         {
-            "window": window.id,
-            "slice": slice_row.id,
-            "material": material.slug,
-            "title": material.title,
-            "startLine": window.start_line,
-            "endLine": window.end_line,
-            "summary": slice_row.summary,
+            "window": row[0],
+            "slice": row[5],
+            "material": row[7],
+            "title": row[8],
+            "startLine": row[1],
+            "endLine": row[2],
+            "summary": row[6],
             "score": round(score, 6),
         }
-        for score, _slug, _start, window, slice_row, material in scored[: max(1, int(limit))]
+        for score, _slug, _start, _wid, row in scored[: max(1, int(limit))]
     ]
 
 
@@ -233,8 +259,23 @@ def _window_index(db, slug: str = "", depth: str = "") -> tuple[dict, dict, dict
     还没跑 embed 就是这种状态），而段标题（`summary`）对模型判断"这段讲什么"
     仍然有用 —— 只按窗口找会让那个字段凭空消失。
     """
+    # **只取要用的那几列**（不给 ORM 对象、也不碰 `vec` 与那些 JSON 列）。
+    # `vec` 每个 4096 字节，全库 3.6 万行就是 148MB —— 早年这里是 `select(SliceEmbedding, …)`，
+    # ORM 逐行把它解码成 Python 列表，光这一步实测要 **14.6 秒**（2026-09-27），
+    # 而这里**一个向量都用不上**（向量打分那条路自己按需查 blob，见 `search`）。
     stmt = (
-        select(SliceEmbedding, MaterialSlice, Material)
+        select(
+            SliceEmbedding.id,
+            SliceEmbedding.start_line,
+            SliceEmbedding.end_line,
+            MaterialSlice.id,
+            MaterialSlice.start_line,
+            MaterialSlice.end_line,
+            MaterialSlice.summary,
+            MaterialSlice.slice_id,
+            Material.slug,
+            Material.title,
+        )
         .join(MaterialSlice, MaterialSlice.id == SliceEmbedding.slice_id)
         .join(Material, Material.id == MaterialSlice.material_id)
         .order_by(Material.slug, SliceEmbedding.start_line)
@@ -245,14 +286,25 @@ def _window_index(db, slug: str = "", depth: str = "") -> tuple[dict, dict, dict
         stmt = stmt.where(Material.depth == depth)
     by_id: dict = {}
     windows: dict = {}
-    for window, slice_row, material in db.execute(stmt).all():
+    for row in db.execute(stmt).all():
+        window = _Window(row[0], row[1], row[2])
+        slice_row = _Slice(row[3], row[4], row[5], row[6], row[7])
+        material = _Material(row[8], row[9])
         by_id[window.id] = (window, slice_row, material)
         windows.setdefault(material.slug, []).append(
             (window.start_line, window.end_line, window.id)
         )
 
     slice_stmt = (
-        select(MaterialSlice, Material)
+        select(
+            MaterialSlice.id,
+            MaterialSlice.start_line,
+            MaterialSlice.end_line,
+            MaterialSlice.summary,
+            MaterialSlice.slice_id,
+            Material.slug,
+            Material.title,
+        )
         .join(Material, Material.id == MaterialSlice.material_id)
         .order_by(Material.slug, MaterialSlice.start_line)
     )
@@ -262,7 +314,9 @@ def _window_index(db, slug: str = "", depth: str = "") -> tuple[dict, dict, dict
         slice_stmt = slice_stmt.where(Material.depth == depth)
     slices: dict = {}
     slice_by_id: dict = {}
-    for slice_row, material in db.execute(slice_stmt).all():
+    for row in db.execute(slice_stmt).all():
+        slice_row = _Slice(row[0], row[1], row[2], row[3], row[4])
+        material = _Material(row[5], row[6])
         slices.setdefault(material.slug, []).append(
             (slice_row.start_line, slice_row.end_line, slice_row.id)
         )
