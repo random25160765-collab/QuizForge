@@ -1821,7 +1821,20 @@ def attach_run(
             and part.get("type") == "demo"
             and str(part.get("runId") or "") == run_id
         ):
-            part = dict(part, run={"ok": body.get("ok") is not False, "text": text})
+            part = dict(
+                part,
+                run={
+                    "ok": body.get("ok") is not False,
+                    "text": text,
+                    # **图要跟着一起存**：这条上报带着 matplotlib 那种图（base64）回来，
+                    # 上面放行给 `runs.deliver` 的那份也带着 —— 而存回消息这一份从前只留了
+                    # `ok`/`text`，于是**刷新之后图就没了**（沙箱起来后
+                    # `test_the_sandbox_output_comes_back_by_itself` 抓到的正是这个：
+                    # `KeyError: 'images'`；沙箱没起来时它 skip，所以一直没露头）。
+                    "images": body.get("images") or [],
+                    "ms": int(body.get("ms") or 0),
+                },
+            )
             hit = True
         parts.append(part)
     if not hit:
