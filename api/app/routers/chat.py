@@ -173,7 +173,13 @@ def sandbox_shell() -> dict:
 VOICE = (
     "**所有输出一律用中文**，直接讲清机制与因果，"
     "必要时用 Markdown 与 LaTeX。"
-    "**公式与图走两条完全不同的路 —— 这里最容易错**。"
+    # 2026-09-27：用户贴出证据 —— 模型写了"读完了（27712 字全文，两段都到了）"，
+    # 而那一轮**一个工具都没调**（库里那条消息的 parts 里只有 text，没有 tool_call）。
+    # 另一条更常见：正文流式先吐"我把这篇读全了"，工具调用**排在它后面**，
+    # 读起来就是"先宣布结论、再去读"。这类完成式声称最难被用户发现，所以点名禁掉。
+    "**不许用完成式宣称你读过 / 看过 / 查过**（\"我读完了\"\"全文两段都到了\"\"我已经确认过\"）："
+    "只有**这一轮**的工具结果已经在手上时才能这么说。没读就直说\"我还没读\"；"
+    "要读就**先调工具、再说话** —— 顺序反了（先宣布、再去读）会让人以为你在编。"
     "**公式**（含矩阵、方程组、分段函数、多行对齐：`pmatrix`/`bmatrix`/`vmatrix`/`matrix`/"
     "`cases`/`aligned`/`array`，以及 `\\cdots`/`\\vdots`/`\\ddots`/`\\substack`/`\\overbrace`）"
     "直接写在正文的 `$$…$$` 里，由 **KaTeX** 排 —— **立刻**出来，不排队也不编译。"
@@ -967,7 +973,15 @@ def _history(db: DbSession, messages: list[Message], *, vision: bool = False, mo
         ]
         for output in runs:
             if output:
-                text = (text + "\n\n〔沙箱输出〕\n" + msgparts.clip(output, HISTORY_RUN_CHARS)).strip()
+                clipped = msgparts.clip(output, HISTORY_RUN_CHARS)
+                # 与工具输出同一条规矩（见下面那段）：沙箱输出回放时也被夹紧，
+                # 夹了就说清"这是回放、要全文请重跑"，别让残段被当成"跑完的全文"。
+                if len(output) > HISTORY_RUN_CHARS:
+                    clipped += (
+                        "\n（这是**回放**：上面只带了前 %d 字。要全部，请**重新跑一次**。）"
+                        % HISTORY_RUN_CHARS
+                    )
+                text = (text + "\n\n〔沙箱输出〕\n" + clipped).strip()
 
         if not calls:
             if text:
@@ -1001,7 +1015,22 @@ def _history(db: DbSession, messages: list[Message], *, vision: bool = False, mo
             # 回放时把工具输出**夹紧**：它会被每一轮重新带上，4000 字一次的历史
             # 会让第二轮就撞上超时（实测：整份题卡 + 掌握度列表 → 91 秒）。
             # 模型真要那些内容，它会再调一次工具 —— 那比一直背着便宜。
-            output = msgparts.clip(str(part.get("output") or ""), HISTORY_TOOL_CHARS)
+            raw = str(part.get("output") or "")
+            output = msgparts.clip(raw, HISTORY_TOOL_CHARS)
+            # **夹了就要说出来**（2026-09-27 实测）：模型**看不见"被夹过"这件事**，
+            # 于是它把回放里的残段当成"读过的全文"。现场：它先说"前面几轮我只读了
+            # 开头"（在它当时的上下文里这句是**真的** —— 那篇 27,712 字的笔记，回放
+            # 里只剩 700 字），接着拿旧回执宣布"读完了（27712 字全文，两段都到了）"，
+            # 而那一轮**一次工具都没调**。让残是**显式的**：它就知道该重读一次，
+            # 而不是以为自己读过（同一条消息里也说了"不许用完成式宣称"）。
+            if output and len(raw) > HISTORY_TOOL_CHARS:
+                # 注意 `clip` 自己已经带了"（已截断，原文共 N 字）"——**事实层面不缺**，
+                # 缺的是**动作**：模型读到"已截断"照样会宣布"读完了"（实测）。所以这里
+                # 补的是那句它该做的事，不重复字数。
+                output += (
+                    "\n（这是**回放**：上面只带了前 %d 字。要后面的内容，请**重新调用这个"
+                    "工具**读一次 —— 不要当成已经读过全文。）" % HISTORY_TOOL_CHARS
+                )
             out.append(
                 {
                     "role": "tool",
