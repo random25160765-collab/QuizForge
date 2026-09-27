@@ -423,6 +423,8 @@ def run(  # noqa: ANN001
     nudged = False
     #: "图没编出来、让它重来"用过几次（见 `_verify_figures`，上限 FIGURE_RETRIES）
     fig_retries = 0
+    #: 这一轮要**把图给模型看**（下面那段说明：这种轮次不能声明 tools）
+    pictures = False
 
     for _turn in range(max_turns):
         chunks: list[str] = []
@@ -481,14 +483,21 @@ def run(  # noqa: ANN001
                     messages.append({"role": "user", "content": final_nudge})
                 # 发之前先把**旧图**剥掉（沙箱那张 base64 只给模型看一次，见 _strip_images）
                 _strip_images(messages)
+                # **要"看图"的这一轮不能带 tools**（2026-09-27 实测，同一张纯红图、同一份
+                # 配置）：干净两条时模型答"橙红色" ✓；把对话换成应用真实形状（带 tool 消息）
+                # 仍然 ✓；而**一旦这一轮声明了 tools，它看到的就成了"一块白的/几乎是空白"** ✗。
+                # 而应用里那张截图几乎总是在带工具的轮次里发出去（只有最后一轮不带）——
+                # 所以"截图回传给模型"这件事此前**从未真正生效过**：模型说"我这边看不到图"
+                # 是实情，不是推脱。
+                # 代价说清楚：这一轮它不能调工具，只能说话 —— 那正是我们要的（先看，再说）。
+                turn_tools = None
+                if not pictures and allow_tools and _turn < max_turns - 1:
+                    turn_tools = _specs_without(tools.specs(mounts, allow), drop)
+                pictures = False
                 for kind, value in gateway.stream_completion(
                     conf,
                     messages,
-                    tools=(
-                        _specs_without(tools.specs(mounts, allow), drop)
-                        if (allow_tools and _turn < max_turns - 1)
-                        else None
-                    ),
+                    tools=turn_tools,
                     # 思考开关（见 `gateway.thinking_params`）：**显式**写，两个方向
                     # 都不依赖上游默认。谁要思考谁传 `thinking=True` —— 现在只有主对话
                     # （由输入框那颗「深度思考」药丸决定，默认开）。子代理与大题批改
@@ -698,6 +707,7 @@ def run(  # noqa: ANN001
             # 留一次"，下一轮再发时就换成一句"这里原本有一张图"（base64 重放太贵）。
             images = (outcome or {}).get("images") or []
             if images and gateway.model_reads_images(str(conf.get("model") or "")):
+                pictures = True
                 messages.append(
                     {
                         "role": "user",
@@ -710,7 +720,8 @@ def run(  # noqa: ANN001
                                 "type": "text",
                                 "text": (
                                     "（上面那次运行的图在下面 —— 你看得到就照着说，"
-                                    "看不到就直说看不到。）"
+                                    "看不到就直说看不到。**这一轮工具暂时收走**："
+                                    "先照着你看到的这张图说话，别急着再调工具。）"
                                 ),
                             },
                             *[
