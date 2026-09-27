@@ -259,6 +259,22 @@ def save_slices(subject: str, meta: dict, slices: list[dict], figures: list[dict
             },
         ).scalar_one()
 
+        # **先删派生向量与图，再删切片**（2026-09-27 实测踩过）：`slice_embeddings.slice_id`
+        # 是外键，重跑一本**已经算过向量**的材料时，`DELETE FROM material_slices` 会直接撞
+        # `FOREIGN KEY constraint failed` —— 报出来的是数据库行话，看不出"你得先清向量"，
+        # 而现场表现是"归一成功、入库失败"，很容易被当成数据坏了。
+        # 向量与图都是**派生产物**（`embed.py` / `ingest` 随时可重建），跟着切片一起删才对：
+        # 删掉之后这本就是"待算"，下次 `drive` 连它一起补。
+        # **不碰 `point_sources`**：那是出题账本的地基（`models.py` 里写着"整个流水线的地基"），
+        # 重跑切片不该动它 —— 真撞上它（出题层材料被重跑）就该**报错停下**，而不是悄悄改出处。
+        for table in ("slice_embeddings", "material_figures"):
+            conn.execute(
+                text(
+                    f"DELETE FROM {table} WHERE slice_id IN"  # noqa: S608 —— 表名是上面写死的两个
+                    " (SELECT id FROM material_slices WHERE material_id = :mid)"
+                ),
+                {"mid": mid},
+            )
         conn.execute(text("DELETE FROM material_slices WHERE material_id = :mid"), {"mid": mid})
         for item in slices:
             lines = (item.get("loc") or {}).get("lines") or [0, 0]

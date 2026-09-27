@@ -289,30 +289,49 @@ def _lanes(
     来回重算（那是最坏的一种"活着但在打架"）。
     """
     cpu_lanes, cpu_why = _plan_slots(requested, res)
-    lanes: list[tuple[str, dict]] = []
-    for _ in range(cpu_lanes):
-        lanes.append(("cpu", dict(QF_EMBED_ONNX=onnx) if onnx else {}))
-    why = cpu_why
-    if gpu.get("ok"):
+    gpu_env = {"QF_ORT_PROVIDER": "CUDAExecutionProvider"}
+    if onnx:
+        gpu_env["QF_EMBED_ONNX"] = onnx
+    gpu_ok = bool(gpu.get("ok"))
+    gpu_why = ""
+    if gpu_ok:
         if gpu["mem_free_mb"] < GPU_MEM_FLOOR_MB:
-            why += " · GPU 不开：显存只剩 %.0fMB（要留 %dMB）" % (
+            gpu_ok = False
+            gpu_why = " · GPU 不开：显存只剩 %.0fMB（要留 %dMB）" % (
                 gpu["mem_free_mb"],
                 GPU_MEM_FLOOR_MB,
             )
         elif gpu["util"] > 80:
-            why += " · GPU 不开：卡已被占（利用率 %.0f%%）" % gpu["util"]
-        else:
-            env = {"QF_ORT_PROVIDER": "CUDAExecutionProvider"}
-            if onnx:
-                env["QF_EMBED_ONNX"] = onnx
-            lanes.append(("gpu", env))
-            why += " · GPU 加一条（显存余 %.0fMB，利用率 %.0f%%）" % (
-                gpu["mem_free_mb"],
-                gpu["util"],
-            )
+            gpu_ok = False
+            gpu_why = " · GPU 不开：卡已被占（利用率 %.0f%%）" % gpu["util"]
     else:
-        why += " · GPU 不可用（%s）" % str(gpu.get("why") or "未知")
-    return lanes, why
+        gpu_why = " · GPU 不可用（%s）" % str(gpu.get("why") or "未知")
+
+    # **有 GPU 就默认只走 GPU**（2026-09-27 用户原话："有GPU默认让他走GPU啊！"）。
+    #
+    # 为什么要改掉"若干 CPU 车道 + 一条 GPU 车道"：那条路有两个实测的坑 ——
+    #   * **顺序**：车道列表从前是 CPU 在前，而一条车道**一次只吃一本材料** ——
+    #     队列里只有两本材料时，两条 CPU 车道把活全领走，**GPU 那条永远排不上**
+    #     （日志里只有两行"起跑 …［cpu 车道］"，GPU 一动没动）；
+    #   * **显存**：显卡只有一块，第二条 CUDA 会话不会更快、只会互相挤爆
+    #     （实测三条 CUDA 会话当场 `FAIL` 退出，队列"空着结束"）。
+    #
+    # 所以默认就是**一条 GPU 车道**：实测 26 窗/秒，而 CPU 车道约 1.2 窗/秒 ——
+    # 慢一个数量级，只在**没有可用 GPU** 时才顶上（见下）。
+    if gpu_ok:
+        return [("gpu", gpu_env)], cpu_why + gpu_why + " · 有 GPU：只开一条 GPU 车道（%.0f 窗/秒级）" % 26.0
+
+    lanes: list[tuple[str, dict]] = []
+    for _ in range(cpu_lanes):
+        # **必须显式指定 CPU**（2026-09-27 实测踩过）：`local_embed._providers()` 是
+        # "有 CUDA 就用 CUDA"，不给这个变量，**标着 cpu 的车道其实每条都在开 CUDA 会话** ——
+        # 计划里的 `cpu,cpu,gpu` 实际是三条 CUDA 会话，显存直接爆掉。
+        # 走到这里已经**没有可用 GPU** 了，这条车道的**意思**就是"占 CPU"。
+        env = {"QF_ORT_PROVIDER": "CPUExecutionProvider"}
+        if onnx:
+            env["QF_EMBED_ONNX"] = onnx
+        lanes.append(("cpu", env))
+    return lanes, cpu_why + gpu_why
 
 
 def _gpu() -> dict:
@@ -645,7 +664,19 @@ def drive(
         res = _resources()
         gpu = _gpu()
         lanes, why = _lanes(slots, res, gpu, onnx=onnx)
-        signature = ",".join(label for label, _env in lanes)
+        # 车道标签带上**真实设备**：今天翻过一次车 —— 计划写着 `cpu,cpu,gpu`，实际三条都是
+        # CUDA（"cpu" 车道没设 provider，`local_embed._providers()` 有 CUDA 就挑 CUDA）。
+        # 现在每条车道的设备是**显式**定死的，这里也把它印出来，屏幕上就没有第二种解释。
+        signature = ",".join(
+            "%s(%s)"
+            % (
+                label,
+                "CUDA"
+                if "CUDA" in str((env or {}).get("QF_ORT_PROVIDER") or "")
+                else ("CPU" if (env or {}).get("QF_ORT_PROVIDER") else "默认"),
+            )
+            for label, env in lanes
+        )
         if signature != last_plan:
             print(
                 "  %s 车道：%s —— %s"
@@ -728,7 +759,12 @@ def drive(
         time.sleep(5)
 
     # **结束时复验**：这正是以前缺的那一步 —— 退出码 0 不等于算完。
+    #
+    # 2026-09-27 补上最后半句：**对账不平就退出码非零**。原先这里把差额打印出来、
+    # 然后 `return 0` —— 于是"跑完了"被当成"干完了"，而屏幕上明明写着缺 283 窗 ✗，
+    # 谁都不会去重跑（同时 `make watch` 显示"没有 embed 进程" —— 两头都没错，也没人动）。
     print("跑完了，复验：", flush=True)
+    missing = 0
     db = get_session_factory()()
     try:
         for one in audit(db, exact=True, material=""):
@@ -744,11 +780,20 @@ def drive(
                     ),
                     flush=True,
                 )
+                missing += int(one["windows_missing"] or 0)
         data = overview(db, slots=slots)
         print("  合计还差 %d 窗" % data["windows_missing"], flush=True)
+        if missing:
+            print(
+                "  **没干完**（这些材料还差 %d 窗）—— 再跑一次同一条命令就会接着算（对账"
+                "认得「半片」）。退出码 3 就是为了让脚本 / 看板能发现这件事。" % missing,
+                flush=True,
+            )
+        else:
+            print("  **对账平了**：这些材料一窗不缺。", flush=True)
     finally:
         db.close()
-    return 0
+    return 3 if missing else 0
 
 
 def bench(*, texts: int = 24, batch: int = 8) -> int:
