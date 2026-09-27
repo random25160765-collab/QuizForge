@@ -1483,7 +1483,7 @@ def _demo_theme(db: Any) -> str:  # noqa: ANN001
     return "light" if str(conf.get("theme") or "").strip().lower() == "light" else "dark"
 
 
-def _demo_page(page: str, title: str, theme: str = "dark") -> str:
+def _demo_page(page: str, title: str, theme: str = "dark", run_id: str = "") -> str:
     """把模型给的 HTML 变成**带套件**的一页。
 
     ## 为什么由服务端注入，而不是让模型自己引
@@ -1517,6 +1517,24 @@ def _demo_page(page: str, title: str, theme: str = "dark") -> str:
             flags=re.I,
         )
     head = [
+        # **桥**（必须在套件之前）：把这次运行的 `runId` 交给套件，并把页面报错攒起来。
+        # 从前演示**没有任何回传** —— 零件不带 runId、页面也没有桥，于是模型写的着色器
+        # 它自己一次都没见过（用户："到我看见画面为止"）。这段就是那条线的一头。
+        "<script>"
+        "window.__QF_RUN__=" + json.dumps(run_id) + ";"
+        "window.__QF_ERRORS__=[];"
+        "window.addEventListener('error',function(e){window.__QF_ERRORS__.push("
+        "String((e&&e.message)||e)+(e&&e.lineno?(' @'+e.lineno+':'+e.colno):''));});"
+        "window.addEventListener('unhandledrejection',function(e){window.__QF_ERRORS__.push("
+        "'未处理的 promise 拒绝：'+String((e&&e.reason&&e.reason.message)||(e&&e.reason)||''));});"
+        "var __qfErr=console.error;console.error=function(){"
+        "window.__QF_ERRORS__.push(Array.prototype.map.call(arguments,String).join(' '));"
+        "return __qfErr.apply(console,arguments);};"
+        # 套件里那些**懒加载**的资源（如今是 mermaid，3.3MB）要自己拼绝对地址：
+        # 沙箱是 `srcdoc`，相对路径解析不了。宿主会把这段里的 `__ORIGIN__`
+        # 换成真地址（见 `theme/runtime/chat.js` 的 `withCsp`）。
+        "window.__QF_ORIGIN__='__ORIGIN__';"
+        "</script>",
         # 公式：与正文**同一份** KaTeX（模型偶尔要在演示里写数学）。
         # 路径与 kit 一样带 `__ORIGIN__`：沙箱里相对路径解析不了。
         '<link rel="stylesheet" href="' + DEMO_ASSET_DIR + 'katex.css">',
@@ -1540,6 +1558,7 @@ def _demo_page(page: str, title: str, theme: str = "dark") -> str:
             flags=re.I,
         )
     return (
+        # `attr` 以前在这条路上**漏掉了**（没写 `<html>` 的那份会退回默认主题，白底上糊黑的）
         '<!doctype html>\n<html lang="zh"' + attr + '>\n<head>\n<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         "<title>" + html.escape(title) + "</title>\n" + block + "\n</head>\n<body>\n"
@@ -1573,6 +1592,14 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
     * `QFKit.scales({width, height, xDomain, yDomain})` + `QFKit.useAxis(ref, {scales})`
       —— **坐标轴与数据共用同一组比例尺**（手写坐标轴十次九次是歪的）
     * `QFKit.colors` —— 色板（`series` 是给多条序列用的）
+    * `QFKit.Shader` —— **直接在 GPU 上算**（GLSL 片元着色器；场、波、3D / raymarching 都行）：
+      `<QFKit.Shader frag={…} />`，或命令式 `const sh = QFKit.Shader(宿主节点, { frag })`
+      再拿 `sh.setUniform('uSep', 0.3)` 驱动自定义 uniform。**版本号不用背**（顶点着色器
+      会跟着你片元的版本自动配平）；时间与分辨率按语义自动喂（`u_time`/`u_t`/`uTime`、
+      `u_resolution`/`u_res`/`uRes`…，回执里会告诉你实际绑上了哪些）。
+      **不想用它也完全可以**：页面里任何 `<canvas>` 都会一起截图回传，手写裸 WebGL 一路
+      写下来同样认 —— 只有一处要记得：context 上开 `preserveDrawingBuffer: true`，
+      否则帧画完缓冲就被清掉，截回来是黑的。
 
     ## 骨架（照它写，别从空白页开始）
 
@@ -1601,6 +1628,10 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
       别把一切押在网络上 —— 加载失败时要还能看出个大概。
     * 拿不到网页本身的东西：沙箱不带 `allow-same-origin`，没有 cookie、
       没有 localStorage、也碰不到宿主页面的 DOM —— 数据请自己在页面里带上。
+    * **这一轮会等它跑完，画面会截图回传给你**（连同页面报错与 GLSL 编译错误）。
+      拿到图再说话：哪里不对就改，别自己说"应该出来了"。
+    * 想在中途报一句（比如"这是第 120 帧的状态"）就调 `QFKit.report({ text })` ——
+      它会带着**当时的画面**一起回来；不调也有一份自动的（首帧之后）。
     """
     page = str(args.get("html") or "").strip()
     title = str(args.get("title") or "").strip() or "演示"
@@ -1628,7 +1659,24 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
                 "TikZ / pgfplots / tikz-cd / circuitikz 的图请**直接写在正文里**："
                 "用 `$$` 包起来（`$$\\begin{tikzpicture}…\\end{tikzpicture}$$`），"
                 "正文里的图由**真的 TeX 引擎**编译，一张消息里可以放好几张。"
-                "演示里真要画图就用 d3 / SVG / Canvas 自己画。"
+                "演示里要画**流程图 / 框图 / 时序图**这类\"方框加箭头\"，用 `QFKit.Mermaid`"
+                "（源码即图，毫秒级）；其余真要手画的才用 d3 / SVG / Canvas。"
+            )
+        }
+
+    # **three.js 也拦**（与上面 TikZ 那条同一个理由：这件事模型很容易做错，而且错得
+    # "看着像演示、其实讲的是别的东西"）。用户的原话："threejs 我感觉有时候不好用
+    # （llm 会滥用），直接 glsl 编程更好。" three.js 给的是场景图 / 材质 / 相机，机制演示
+    # 用不上 —— 而"每个像素各自算一遍"那类机制**在 GLSL 里最清楚**。拦下来 + 给出路，
+    # 比在提示词里再求一遍可靠（TikZ 那条就是这么定的规矩）。
+    if re.search(r"three(\.min|\.module)?\.js|three@|unpkg\.com/three", page, re.I):
+        return {
+            "error": (
+                "这份 html 在引 three.js，而演示里**不要 three.js**：它给的是场景图与材质，"
+                "你要讲的机制（并行度、访存、波、场、插值）**直接写 GLSL** 更清楚、也短得多 —— "
+                "套件里有 `QFKit.Shader`（`<QFKit.Shader frag={…} />`）—— **版本号不用背**，"
+                "顶点着色器会跟着片元的版本自动配平；页面上手写的 `<canvas>` 也一样认。"
+                "库与样式一律由服务端注入，**不要引任何外部脚本**。"
             )
         }
 
@@ -1640,13 +1688,23 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
             "所以库里得自己引 —— 建议直接用 d3 这类 https CDN。",
         }
 
+    run_id = uuid.uuid4().hex[:12]
     return {
         "demo": {
             "title": title[:80],
-            "html": _demo_page(page, title, _demo_theme(db)),
+            "html": _demo_page(page, title, _demo_theme(db), run_id=run_id),
+            # **runId 是这条回路的钥匙**：页面那头 `QFKit.report` 按它认领
+            #（宿主那条 `qfRun` 回填路 → `/chat/runs/{id}`），库里也按它把 run 存进这个零件。
+            "runId": run_id,
         },
+        # `await_run`：让 agent 循环**停下来等**这次演示跑完（与 `run_python` 同一个会合点）。
+        # 演示画在页面里，"它到底画成什么样"只有页面知道 —— 不等，模型手里就只剩一句
+        # "应该出来了"（而那正是从前的样子）。等它，画面才会随回执回到模型眼前。
+        "await_run": True,
         "note": "演示已挂在这条消息上（他那边是个沙箱 iframe，套件已自动注入）。"
-        "**不要**把同一份 HTML 再贴进正文 —— 正文里说清它在演示什么、看哪里就行。",
+        "**不要**把同一份 HTML 再贴进正文 —— 正文里说清它在演示什么、看哪里就行。"
+        "这一轮会**等它跑完**：画面会**截图回传给你看**（页面报错与 GLSL 编译错误一起回来）。"
+        "所以别急着下结论 —— 拿到图再说话，哪里不对就照实改。",
     }
 
 
@@ -3342,8 +3400,13 @@ REGISTRY = {
         "里的 matplotlib（`plt.plot(...)` 一行就出图，还能直接写中文标题与轴标签）。"
         "**TikZ 与 pgfplots 更不要放这里** —— 演示里的公式是 **KaTeX** 排的，它**不认 TikZ**："
         "`\\begin{tikzpicture}` / `axis` / `tikzcd` / `circuitikz` 放进去只会显示成源码或报错"
-        "（这个工具会**当场拒掉**）。那类图一律写在**正文的 `$$`** 里，它们由真 TeX 引擎编。"
-        "演示里真要画图，用 d3 / SVG / Canvas 自己画。"
+        "（这个工具会**当场拒掉**）。真数学图（坐标轴、几何作图、电路）一律写在**正文的 `$$`** 里，"
+        "它们由真 TeX 引擎编。"
+        # 2026-09-27：用户"现在沙箱什么图都给 tex 引擎画，慢的要死。给它加一个 mermaid 图，
+        # 没必要用 tex 的图走 mermaid" —— 方框加箭头那类有了**毫秒级**的路（`QFKit.Mermaid`），
+        # 这里的指路也要跟着换：从前只说"自己用 d3 / SVG 画"，于是流程图也得手摆。
+        "**流程图 / 框图 / 时序图 / 状态图这类\"方框加箭头\"，用 `QFKit.Mermaid`**（写法见下面），"
+        "别自己拿 d3 摆方块，也别拿 TikZ 绕。其余真要手画的（自定义图形、路径动画）才用 d3 / SVG。"
         "**不要**用它讲定义、结论或代码逐行解释；要跑 Python 用 run_python。**除非**用户就是"
         "想看它动起来（数据怎么流、状态怎么变）。\n"
         "**沙箱里已经备好一套前端套件，由服务端自动注入 —— 你不要写任何 `<script src>`，"
@@ -3363,6 +3426,11 @@ REGISTRY = {
         "* `QFKit.Math` / `QFKit.tex` —— **公式**（KaTeX 已备好，与正文同一份）："
         "`<QFKit.Math tex=\"x^2+y^2\" />`（`inline` 传 true 随文字走）；"
         "要在别处用就 `QFKit.tex('…')` 拿 HTML，塞进 `dangerouslySetInnerHTML`。\n"
+        "* `QFKit.Mermaid` —— **流程图 / 框图 / 结构图 / 时序图 / 状态图 / 类图 / ER 图**就用它"
+        "（源码即图，**毫秒级**；比手摆 d3 方块省事得多）："
+        "`<QFKit.Mermaid code={\"graph TD\\n A[取数]-->B[算]-->C[画]\"} />`，"
+        "命令式 `QFKit.Mermaid(host.current, { code: 'graph TD\\n A-->B' })` 也认。"
+        "节点里写**纯文字**（它不排 LaTeX）。真坐标图仍然用 `QFKit.Plot`。\n"
         "**动画节奏 —— 每拍多少毫秒由你判断**：一拍一拍的东西用 "
         "`QFKit.useStepper(每拍毫秒)`（离散、整数步；连续插值才用 useTicker）。"
         "先数清这个演示一共演几拍，再让整段落在 **3–10 秒**：20 个数冒泡 ≈ 200 拍，"

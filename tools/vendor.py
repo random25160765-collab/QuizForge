@@ -121,6 +121,20 @@ DEMO_KIT_SOURCES = {
     "tailwind.js": "https://cdn.tailwindcss.com/3.4.17",
 }
 
+# ---------------------------------------------------------------- mermaid
+#
+# 正文里 ```mermaid 的流程图/时序图/状态图，以及沙箱里的 `QFKit.Mermaid`，都由它画。
+# **单文件 3.3MB**，所以页面与沙箱都不预加载：第一次真要画时前端才去取
+#（`theme/runtime/mermaid.js` 的 `ensure`；沙箱那份在 `theme/demo-kit/qf-kit.js`）。
+#
+# 版本钉在 v10.9.1 的 UMD 单文件：v11 起是 ESM（`<script src>` 载不进来），
+# 而且按图类型动态分块 —— 那两样都会毁掉"离线一个文件"这件事。实测 v10 这份
+# 画 `graph TD` 与 `sequenceDiagram` **两张一共 65 毫秒**（真 TeX 引擎每张 2.2 秒起）。
+VENDOR_MERMAID = ROOT / "vendor" / "mermaid"
+MERMAID_FILES = {
+    "mermaid.min.js": "https://unpkg.com/mermaid@10.9.1/dist/mermaid.min.js",
+}
+
 # ---------------------------------------------------------------- 代码排版
 #
 # 见 `sync_frontend`：一份真等宽字体 + 一个真正的高亮器。
@@ -440,6 +454,54 @@ def sync_demo_kit(force: bool = False) -> int:
     return 0
 
 
+def sync_mermaid(force: bool = False) -> int:
+    """把 **mermaid** 同步到 vendor/mermaid/。
+
+    它管两处：正文里 ```mermaid 围栏（`theme/runtime/mermaid.js`），以及沙箱演示里的
+    `QFKit.Mermaid`（`theme/demo-kit/qf-kit.js`）。两边都**懒加载** —— 那份单文件
+    3.3MB，多数页面根本不画图，不该让所有人先背下来。
+
+    与演示套件同样对待：**可选**、失败只警告。缺了它那条路会"把源码原样摆出来并说明
+    没装引擎"，不是致命错误（见 `theme/runtime/mermaid.js` 的 `fill`）。
+    """
+    missing = [name for name in MERMAID_FILES if not (VENDOR_MERMAID / name).is_file()]
+    if not missing and not force:
+        print(f"[INFO] mermaid 已就绪，跳过：{_rel(VENDOR_MERMAID)}")
+        return 0
+
+    VENDOR_MERMAID.mkdir(parents=True, exist_ok=True)
+    for name, url in MERMAID_FILES.items():
+        if (VENDOR_MERMAID / name).is_file() and not force:
+            continue
+        print(f"[INFO] 取 {name} …（约 3.3MB，只此一次）")
+        try:
+            _download(url, VENDOR_MERMAID / name)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[WARN] 取 {name} 失败：{exc}", file=sys.stderr)
+            print(
+                "       正文里的 ```mermaid 图会退化成「原样显示源码」。"
+                "要离线可用，请把 mermaid.min.js 放进 vendor/mermaid/。",
+                file=sys.stderr,
+            )
+            return 1
+
+    total = sum((VENDOR_MERMAID / name).stat().st_size for name in MERMAID_FILES)
+    lines = "\n".join(f"- {name}: {url}" for name, url in MERMAID_FILES.items())
+    (VENDOR_MERMAID / "SOURCE.md").write_text(
+        "# vendored mermaid\n\n"
+        f"- source: unpkg（版本见下表）\n"
+        f"- files: {len(MERMAID_FILES)}（{total // 1024}KB）\n"
+        f"- synced_at: {_dt.datetime.now().isoformat(timespec='seconds')}\n\n"
+        f"{lines}\n\n"
+        "由 `tools/vendor.py` 生成，请勿手工修改。\n"
+        "用途：正文里 ```mermaid 的流程图/时序图，与沙箱演示里的 `QFKit.Mermaid`。\n"
+        "**必须是 UMD 单文件**（v11 起是 ESM + 动态分块，`<script src>` 那条路走不通）。\n",
+        encoding="utf-8",
+    )
+    print(f"[INFO] 已同步 mermaid：{len(MERMAID_FILES)} 个文件 -> {_rel(VENDOR_MERMAID)}")
+    return 0
+
+
 def sync_frontend(force: bool = False) -> int:
     """同步**代码排版**要用的两样：真字体与真正的语法高亮。
 
@@ -486,6 +548,7 @@ def sync(force: bool = False) -> int:
     code = sync_katex(force=force)
     sync_pyodide(force=force)
     sync_demo_kit(force=force)
+    sync_mermaid(force=force)
     sync_frontend(force=force)
     return code
 
@@ -580,6 +643,13 @@ def check() -> int:
         print(f"[INFO] Pyodide 未就绪（缺 {len(missing)} 个文件）—— 跑 `make vendor` 取一份")
     else:
         print(f"[INFO] Pyodide 就绪：{_rel(VENDOR_PYODIDE)}")
+
+    # mermaid 同样只报告（正文 ```mermaid 的图；缺了就退化成"原样显示源码"）
+    missing_mm = [name for name in MERMAID_FILES if not (VENDOR_MERMAID / name).is_file()]
+    if missing_mm:
+        print("[INFO] mermaid 未就绪 —— 跑 `make vendor` 取一份（那之前 ```mermaid 只显示源码）")
+    else:
+        print(f"[INFO] mermaid 就绪：{_rel(VENDOR_MERMAID)}")
 
     return 0 if ok else 1
 

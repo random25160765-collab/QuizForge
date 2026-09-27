@@ -343,3 +343,67 @@ body {
 .qf-mono {
   font-family: var(--qf-mono);
 }
+
+/* ------------------------------------------------------------ 着色器 */
+/* 见 qf-kit.js 的 `Shader`：一块铺满容器的画布 + 编不过时把 GLSL 原话打出来。
+ * 用 `aspect-ratio` 给个默认形状（16:10），模型要别的比例就传 height。 */
+.qf-shader {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0b0f14;
+}
+.qf-shader__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.qf-shader__err {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  font-family: var(--qf-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  color: #ffd7d7;
+  background: rgba(120, 20, 20, 0.86);
+}
+
+/* mermaid 图（`QFKit.Mermaid`）：流程图/框图/时序图这类"方框加箭头"。
+   与正文那条（`theme/markdown.css` 的 `.merfig`）同一份长相 —— 居中、按自己的
+   尺寸显示（不是 width:100%，那会把小图拉成一整栏）、画不出来时**把源码摆出来**。 */
+.qf-mermaid {
+  margin: 10px 0;
+  display: flex;
+  justify-content: center;
+}
+.qf-mermaid > svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.qf-mermaid.is-bad {
+  display: block;
+  padding: 12px 14px;
+  border: 1px dashed var(--qf-line, #3a3a3a);
+  border-radius: 8px;
+  color: var(--qf-dim, #8a8a8a);
+  font-size: 12.5px;
+}
+.qf-mermaid.is-bad .qf-mermaid__why {
+  color: var(--qf-bad, #f87171);
+}
+.qf-mermaid.is-bad .qf-mermaid__src {
+  margin: 8px 0 0;
+  padding: 0;
+  overflow: auto;
+  font-family: var(--qf-mono, ui-monospace, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  color: var(--qf-fg, #e8e8e8);
+}

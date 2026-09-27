@@ -214,6 +214,12 @@
       var item = store[Number(index)];
       if (!item) return '';
       if (kind === 'C') {
+        // ```mermaid 走 mermaid，**不送 TeX 引擎**：流程图 / 时序图 / 状态图这类
+        // "方框加箭头"用它是毫秒级（实测两张 65ms），而 TikZ 每张 2.2 秒起、还常编不过。
+        // 判据只看围栏语言、不猜内容：模型写 ```mermaid 就是它明说的意思。
+        if (item.lang === 'mermaid' && QF.mermaid) {
+          return QF.mermaid.slot(item.code);
+        }
         var lang = item.lang || 'text';
         var label = lang === 'text' ? '' : lang;
         var codeHtml = QF.highlight
@@ -544,14 +550,25 @@
     //（它们是异步换上去的占位符），而走 KaTeX 的公式是**同步**的，能缓存。
     // 从前这里写的是"只要有 `\begin{` 就不缓存" —— 于是连一条全是矩阵的消息也进不了缓存
     //（那些矩阵现在由 KaTeX 排，秒出、稳定，没有任何理由不缓存）。
+    // 含 **mermaid** 图的正文同样不缓存：mermaid 的图也是**异步**画上去的，
+    // 缓存存的是渲染那一刻的 innerHTML —— 那份快照里往往还是"正在画图…"的占位。
+    // （这条规矩与 TeX 那条同因；实测卡住的就是缓存命中那条路，见 `fill` 的注释。）
+    var hasMermaid = /(^|\n)[ \t]*```+[ \t]*mermaid\b/.test(source);
     var cacheable =
-      (!options || !options.macros) && !(window.QF && QF.latex && QF.latex.kind(source));
+      (!options || !options.macros) &&
+      !(window.QF && QF.latex && QF.latex.kind(source)) &&
+      !hasMermaid;
 
     if (cacheable) {
       var hit = cachedHtml(source);
       if (hit !== null) {
         var cached = h('div.md');
         cached.innerHTML = hit;
+        // **命中缓存也要把图补上**：缓存里可能存着没画完的占位（比如那份快照是在
+        // 图还没画上时抓的）。`fill` 对没有占位的节点是零成本，所以放这里没有代价 ——
+        // 而少了这一句，占位就会**永久**停在"正在画图…"。
+        if (QF.latex && QF.latex.fill) QF.latex.fill(cached);
+        if (QF.mermaid && QF.mermaid.fill) QF.mermaid.fill(cached);
         return cached;
       }
     }
@@ -568,6 +585,9 @@
     // 一句解释里出现了同样的字样，判断"改过没"的守卫把这一步跳过了（实测踩过：
     // 页面里占位一直停在"正在编译"，工位 iframe 压根没建）。
     if (QF.latex && QF.latex.fill) QF.latex.fill(el);
+    // mermaid 那条也一样（```mermaid 的图）：占位在这儿换掉。它与 TeX 那条**同时**
+    // 被调用，互不干扰 —— 一段正文里可能既有 TeX 图又有 mermaid 图。
+    if (QF.mermaid && QF.mermaid.fill) QF.mermaid.fill(el);
 
     if (cacheable && el.children.length) putCache(source, el.innerHTML);
     return el;

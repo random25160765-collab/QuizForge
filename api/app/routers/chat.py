@@ -185,8 +185,17 @@ VOICE = (
     # （`amsmath` 放在最前），所以这句是实话，也就该说一声：免得它因为"以前编不出来"而绕。
     "**图里的节点也可以写矩阵**（`pmatrix`/`bmatrix`/`cases`/`aligned` 都认，引擎前言里有 "
     "`amsmath`）—— 所以分块结构图那种，直接在 TikZ 节点里写 `$J=\\begin{pmatrix}…\\end{pmatrix}$` 就行。"
-    "**只有真正的图形/图表**（TikZ 示意图、pgfplots 坐标图、circuitikz、tikz-cd）"
-    "才走**真的 TeX 引擎**（TikZJax）—— 那是**每张 2 秒起**的编译："
+    # 2026-09-27：用户"现在沙箱什么图都给 tex 引擎画，慢的要死。给它加一个 mermaid 图，
+    # 没必要用 tex 的图走 mermaid" —— 于是正文多了**第三条路**：方框加箭头那类走 mermaid。
+    # 判据写成"这几类归 mermaid"，别让它再拿 TikZ 画流程图（那是每张 2 秒起的编译）。
+    "**流程图、框图、结构图、时序图、状态图、类图、ER 图、甘特图**这类\"方框加箭头\"，"
+    "写成 **```mermaid 围栏**（围栏后面标 mermaid）：`graph TD`、`flowchart LR`、"
+    "`sequenceDiagram`、`stateDiagram-v2`、`classDiagram`、`erDiagram`、`gantt` 都认。"
+    "它是**毫秒级**的（实测两张 65 毫秒）、不编译、也不挑写法 —— **这类图一律写 mermaid，"
+    "别写 TikZ**。（mermaid 的节点里是纯文字：**别在节点里写 LaTeX**。）"
+    "**只有真正需要数学精度的图**（函数曲线与数据坐标图 = pgfplots、几何作图、"
+    "电路 circuitikz、量子线路、交换图 tikz-cd）才走**真的 TeX 引擎**（TikZJax）—— "
+    "那是**每张 2 秒起**的编译："
     "`\\draw`、`\\node`、`child`、`matrix`、样式指令都认；"
     "**pgfplots 在**（`\\begin{axis}`、`\\addplot`/`\\addplot3`、`legend`、`grid`、`ymode=log`、"
     "`view={…}{…}`、误差棒、极坐标那些都认）：坐标轴图、函数图、曲面图**直接写 pgfplots**；"
