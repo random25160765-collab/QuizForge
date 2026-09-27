@@ -7058,22 +7058,31 @@
     // 回退判据：`kind` 是后加的字段，库里那些**旧消息**没带它 —— 但 python 那份的
     // html 是 Pyodide 运行壳，认这个就能让旧消息也立刻换成长相（不必等它重跑）。
     if (part.kind === 'python' || /pyodide/i.test(part.html || '')) return pythonRun(part);
+    // 离屏跑一次（见 `demoRunner`）：它跑完会 `postMessage` 回来，那一头是模型的画面。
+    var runner = demoRunner(part);
     return h(
       'div.chatdemo__card',
       null,
+      // 头一行单独包一层（`.chatdemo__cardrow`）：卡片本身是**上下两行**的列，
+      // 输出那一块要落在这一行的**下面**。从前三块都直接挂在卡片的行 flex 上，
+      // 输出就被挤到标题右边一小条 —— 看着像"沙箱输出跑到了沙箱外面"（2026-09-27）。
       h(
-        'div.chatdemo__cardmain',
+        'div.chatdemo__cardrow',
         null,
-        h('div.chatdemo__cardtitle', { text: part.title || '演示' }),
-        h('div.chatdemo__cardnote', { text: '在右侧面板里打开' })
+        h(
+          'div.chatdemo__cardmain',
+          null,
+          h('div.chatdemo__cardtitle', { text: part.title || '演示' }),
+          h('div.chatdemo__cardnote', { text: '在右侧面板里打开' })
+        ),
+        h('button.btn.btn--ghost.chatdemo__open', {
+          type: 'button',
+          text: '打开演示',
+          onClick: function () {
+            openDemo(part);
+          },
+        })
       ),
-      h('button.btn.btn--ghost.chatdemo__open', {
-        type: 'button',
-        text: '打开演示',
-        onClick: function () {
-          openDemo(part);
-        },
-      }),
       // 跑出来的输出直接摆在这儿 —— 不必点开面板才知道它跑成什么样。
       // 它同时也是回填给服务端的那一份（见 message 监听里的回填）。
       // 判据同 `pythonRun`：有 run 就摆（哪怕 `text` 是空的 —— 演示常常只画图、
@@ -7099,6 +7108,44 @@
    */
   var demoRuns = {};
   var demoRunEl = null;
+
+  /**
+   * 「离屏跑一次」的演示 iframe（runId → 元素）。收到回执就摘掉。
+   *
+   * 为什么要有它：演示的 iframe 原先**只在面板打开时才存在**（`openDemo` → `renderDemoPanel`）
+   * —— 面板没开就没人跑，模型因此永远收不到回执、也就永远看不见自己写的那张画面
+   *（用户的原话："到我看见画面为止"）。这里给它一个**看不见但真尺寸**的运行位。
+   *
+   * 尺寸是关键：用 `display:none` 或 1×1 的话，WebGL 拿不到真正的绘制缓冲，
+   * 截图回来是一片黑 —— 所以走 `latex.js` 那个工作台同一招：移出视野（`left:-10000px`），
+   * 元素照常布局、照常渲染。
+   */
+  var demoRunners = {};
+
+  function demoRunner(part) {
+    if (!part || !part.runId || part.run) return null;
+    if (demoRunners[part.runId]) return demoRunners[part.runId];
+    var el = h('iframe.chatdemo__runner', {
+      sandbox: 'allow-scripts',
+      referrerpolicy: 'no-referrer',
+      title: part.title || '演示',
+      srcdoc: withCsp(part.html || ''),
+    });
+    demoRunners[part.runId] = el;
+    // 保险：30 秒还没回执就自己收掉 —— 卡住的演示不该留一个跑不停的 iframe 在页面上。
+    window.setTimeout(function () {
+      if (demoRunners[part.runId] === el) demoRunners[part.runId] = null;
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, 30000);
+    return el;
+  }
+
+  function dropDemoRunner(runId) {
+    var el = demoRunners[runId];
+    if (!el) return;
+    demoRunners[runId] = null;
+    if (el.parentNode) el.parentNode.removeChild(el);
+  }
 
   function demoRunOf(runId) {
     return runId ? demoRuns[runId] || null : null;
@@ -7152,6 +7199,8 @@
       images: data.images || [],
     };
     demoRuns[data.qfRun] = run;
+    // 回执到了：那个离屏运行位可以收了（它已经跑完，留着只是白占一个 WebGL 上下文）
+    dropDemoRunner(data.qfRun);
 
     if (state.demo && state.demo.runId === data.qfRun) {
       state.demo.run = run;
