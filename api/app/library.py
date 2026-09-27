@@ -1311,7 +1311,12 @@ def entry_for(item: Item, meta_dir: Path, text_dir: Path, meta: dict[str, Any] |
     )
 
 
-def text_only_entries(text_dir: Path, *, skip: set[str]) -> list[Entry]:
+def text_only_entries(
+    text_dir: Path,
+    *,
+    skip: set[str],
+    frozen: dict[str, dict[str, Any]] | None = None,
+) -> list[Entry]:
     """**只有正文的条目**：正文在 `.text/` 里，资料库根目录下却没有它对应的文件。
 
     为什么需要它：网站抓下来的页与抽出来的书是**直接进 `.text/`** 的（原文件在
@@ -1351,6 +1356,19 @@ def text_only_entries(text_dir: Path, *, skip: set[str]) -> list[Entry]:
             continue
         merged = dict(meta)
         merged.setdefault("citekey", key)
+        # **把冻结过的那份元数据并进来**（2026-09-27 实测踩过）：上面读到的 `meta` 只是
+        # **正文旁注**（`judge_text` 的键：`at` / `chars` / `state` …），而标题、作者、
+        # `origin`、尤其是 **`metaRev`** 都在 `data/library/{citekey}.yaml` 里。
+        # 只读旁注的后果是**这一条永远像"没判过"**：`metaRev` 读不到 →
+        # `library_meta.looks_unjudged()` 恒为真 → 每点一次「用模型重判」就把同一批
+        # 重判一遍、再写一遍 yaml（实测：连跑 8 轮，轮轮都是同一批 40 条，
+        # `remaining` 永远是 32 —— 而盘上那些 yaml 里 `metaRev` 明明早就是 2 了）。
+        # 落盘的元数据是**权威**，旁注只是正文质量信息，这里以 yaml 为准覆盖。
+        known = (frozen or {}).get(key)
+        has_meta = isinstance(known, dict) and bool(known)
+        if has_meta:
+            merged.update(known)
+            merged["citekey"] = key
         out.append(
             Entry(
                 item=Item(
@@ -1364,6 +1382,7 @@ def text_only_entries(text_dir: Path, *, skip: set[str]) -> list[Entry]:
                 assets=[],
                 text_state=text_state(base, key),
                 text_only=True,
+                frozen=has_meta,
             )
         )
     return out
@@ -1387,7 +1406,15 @@ def entries(roots: list[Path], meta_dir: Path, text_dir: Path) -> list[Entry]:
 
     # 再补上**只有正文的那种**（网站页、抽出来的书）：原文件在库外，`scan` 扫不到它们。
     # 键已被真文件占掉的一律跳过（见 `text_only_entries`）。
-    out.extend(text_only_entries(text_dir, skip={entry.citekey for entry in out}))
+    out.extend(
+        text_only_entries(
+            text_dir,
+            skip={entry.citekey for entry in out},
+            # 冻结元数据表（按引用键）—— 正文-only 的条目也要认它，否则它们的 `metaRev`
+            # 永远读不到、每一轮都被当成"没判过"重判一遍（见那边函数里的说明）。
+            frozen=by_key,
+        )
+    )
 
     # **冻结过的键先占位**：它是"有主"的，不能被后来的条目挤掉。
     # 踩过：一份手册的键先被旁边的中文版占了，于是它每轮都被改名一次 ——
