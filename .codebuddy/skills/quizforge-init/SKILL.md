@@ -71,7 +71,8 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 | 面对一本书 / 一套手册 / 几百篇论文批量出题 | `references/pipeline.md` |
 | 拿不准某个设计取舍该往哪边倒 | `docs/THESIS.md`（业务立论——所有取舍的根据） |
 | 改 UI | 先看 `docs/STATUS.md` 的 UI 约定；再改 `theme/`（UI 无 skill，规则写在代码注释里） |
-| 后端 / 同步 / 入库 | 直接读 `api/app/`（无 skill） |
+| 后端 / 同步 | 直接读 `api/app/`（无 skill） |
+| **新材料入库**（一份 PDF / 书 / 网页进资料库与检索层） | **`quizforge-ingest`**（归一 → 切片 → 向量化（GPU）→ 对账抽验；这条链的坑都在里面） |
 | **跑流水线 / 补缺口 / 查为什么没进度** | **`quizforge-pipeline`**（状态机、常用命令、卡住怎么办 ✗ —— 先读它再动手 ✔） |
 
 ## 常用命令

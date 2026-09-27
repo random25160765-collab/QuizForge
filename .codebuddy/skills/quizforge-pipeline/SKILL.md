@@ -53,7 +53,7 @@ make drive ARGS="--dry-run"                  # 只看它要做什么
 | 失败题归宿 | `python -m pipeline.rework --apply`（重出 or 退役） |
 | 救回"只差一点"的题 | `python -m pipeline.fix --limit 8 --apply --recheck` |
 | 队列/账本 | `python -m pipeline.status` |
-| 材切片入库（新材料第一步） | `python -m pipeline.ingest <file-or-dir> --subject tt-metal` |
+| **新材料入库**（PDF / 书 / 网页） | **`quizforge-ingest`** —— 那是**另一条链**（归一 → 切片 → 向量化 → 对账），本手册只管**题目**流水线 |
 | 知识空间同步（历史 maps 用） | `python -m pipeline.dbsync` |
 | 考纲增删改（库为正） | `python -m app.cli.topics tree / add / rename / move / retire / export`（在 `api/` 下） |
 | 校验构建 | `make check` · `make test` · `make api-test` |

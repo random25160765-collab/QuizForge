@@ -15,6 +15,7 @@
 | `quizforge-pipeline` | 跑流水线的运行手册：权威在数据库、状态机怎么转、常用命令、卡住怎么判断 |
 | `quizforge-author` | 题目**格式契约**：字段、五种题型的正文小节、LaTeX 与代码块写法、校验命令 |
 | `quizforge-handmade` | **人工手写单题**的接入：agent 不写题面，只做格式合规、元数据补全、把关系边写成可解析的句式、校验与入库 |
+| `quizforge-ingest` | **新材料入库**那条链：`normalize`（不截断）→ `ingest`（切片）→ `ops drive`（向量化，走 GPU）→ 对账与检索抽验；以及这条链上实测踩过的坑 |
 
 ## 四个层契约在 `pipeline/prompts/layers/`
 
