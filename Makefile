@@ -220,6 +220,24 @@ search:
 
 .PHONY: db-size db-counts db-query search
 
+# ---------------------------------------------------------------------- 代码量
+# 仓库里**自己写的代码**有多少行。只读，随时可跑；不需要 venv（只用标准库，
+# 所以走 $(PYTHON) 而不是 $(CHECK_PYTHON)）。
+#
+# 为什么固化成命令：这个数以前是现场敲 `find | xargs wc -l`，而口径每次都不一样 ——
+# `vendor/` 算不算、`api/web` 这个构建产物算不算、注释与空行算不算。于是同一个问题
+# 每次得到不同的答案，结论留不下来。口径现在钉在 tools/loc.py 里，并且每次跑都打出来。
+#
+#   make loc                          按语言
+#   make loc ARGS=--by-dir            按目录（默认两层：theme/runtime、api/app…）
+#   make loc ARGS="--path api --depth 1"
+#   make loc ARGS=--all               连配置（json / yaml / toml / ini）一起数
+#   make loc ARGS=--json              给程序读
+loc:
+	@$(PYTHON) tools/loc.py $(ARGS)
+
+.PHONY: loc
+
 # 起开发服务前**必构建前端**：前端是静态产物，不构建看到的就是上一次的样子 ——
 # 实测踩过（"开发端找不到笔记入口"，其实是产物还是旧的）。构建戳会打出来，
 # 和 exe 上的对一下就知道是不是同一份（见 `make dist-check`）。
@@ -510,4 +528,4 @@ help:
 	@echo "  构建发布    make web（前端 → api/web/）· make package / dist-linux（单文件）"
 	@echo "  数据快照    make db-restore（快照 → data/quizforge.db，解压即用）"
 	@echo "              make db-snapshot（库里 → 快照，提交它）· 另见 bank-export / bank-import"
-	@echo "  其它        make env-init（生成 .env）· make skills-link · make help"
+	@echo "  其它        make env-init（生成 .env）· make skills-link · make loc（代码量）· make help"
