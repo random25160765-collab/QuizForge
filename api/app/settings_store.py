@@ -36,6 +36,34 @@ def load(db: Any) -> dict:
     return dict(data) if isinstance(data, dict) else {}
 
 
+def marks_of(conf: dict, cid: Any) -> dict:
+    """某条会话里的**痕迹**：`{"notes": [...], "places": [...]}`（可含老的 `stations`）。
+
+    痕迹就是用户自己划下的那些笔（前端的 `QF.store`，住在设置的 `notes` / `places`
+    两个键里，见 `theme/runtime/store.js` 的 `addMark` / `addPlace`）：
+    `notes` = 高亮 / 删除线 / 下划线 / **批注**，`places` = **书签** / 回溯。
+
+    为什么要有这一层：痕迹与设置同住一行 JSON，但**每条自己带 `cid`** —— 取的时候
+    必须按会话过滤，否则导出的分享页会把**别的对话**的圈点也画上来（渲染只按 `mid`
+    找，见 `store.js` 的 `marksOf`；`mid` 是消息 id，跨会话不会撞，但把别条对话的
+    记号塞进一个"发给别人"的文件里仍然是不对的）。
+
+    **口径只此一处**：导出网页（`routers/chat.py`）与"他自己留下过什么记号"
+    （`recursion.py`）都从这里取，谁也别自己写一遍 filter。
+    """
+    key = str(cid)
+    data = conf if isinstance(conf, dict) else {}
+    out: dict = {}
+    for name in ("notes", "places", "stations"):
+        rows = data.get(name)
+        if not isinstance(rows, list):
+            continue
+        hit = [one for one in rows if isinstance(one, dict) and str(one.get("cid") or "") == key]
+        if hit:
+            out[name] = hit
+    return out
+
+
 def put(db: Any, **changes: Any) -> dict:
     """改几个键。`None` = 删掉这个键（"没配过"与"配成空"是两件事，见 mounts）。"""
     found = row(db, create=True)
@@ -50,4 +78,4 @@ def put(db: Any, **changes: Any) -> dict:
     return data
 
 
-__all__ = ["load", "put", "row"]
+__all__ = ["load", "marks_of", "put", "row"]

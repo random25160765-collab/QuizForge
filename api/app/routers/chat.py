@@ -55,7 +55,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
@@ -66,6 +66,7 @@ from .. import attachments as attach
 from .. import parts as msgparts
 from .. import mounts
 from .. import runs
+from .. import settings_store
 from .. import websearch
 from ..config import get_settings
 from ..db import as_json
@@ -173,13 +174,6 @@ def sandbox_shell() -> dict:
 VOICE = (
     "**所有输出一律用中文**，直接讲清机制与因果，"
     "必要时用 Markdown 与 LaTeX。"
-    # 2026-09-27：用户贴出证据 —— 模型写了"读完了（27712 字全文，两段都到了）"，
-    # 而那一轮**一个工具都没调**（库里那条消息的 parts 里只有 text，没有 tool_call）。
-    # 另一条更常见：正文流式先吐"我把这篇读全了"，工具调用**排在它后面**，
-    # 读起来就是"先宣布结论、再去读"。这类完成式声称最难被用户发现，所以点名禁掉。
-    "**不许用完成式宣称你读过 / 看过 / 查过**（\"我读完了\"\"全文两段都到了\"\"我已经确认过\"）："
-    "只有**这一轮**的工具结果已经在手上时才能这么说。没读就直说\"我还没读\"；"
-    "要读就**先调工具、再说话** —— 顺序反了（先宣布、再去读）会让人以为你在编。"
     "**公式**（含矩阵、方程组、分段函数、多行对齐：`pmatrix`/`bmatrix`/`vmatrix`/`matrix`/"
     "`cases`/`aligned`/`array`，以及 `\\cdots`/`\\vdots`/`\\ddots`/`\\substack`/`\\overbrace`）"
     "直接写在正文的 `$$…$$` 里，由 **KaTeX** 排 —— **立刻**出来，不排队也不编译。"
@@ -303,7 +297,19 @@ TOOL_DISCIPLINE = (
     # 长工具链派给子代理（详细说明在 `run_subagent` 的工具描述里）：
     # 这是"怎么用工具"的一条纪律，与上面几条同一层。
     "**要串行跑很多次查询时，派给子代理**（`run_subagent`）：它在自己的上下文里"
-    "试查询词、换说法、逐段找原文，你这边只收到一份结果 —— 也比你自己一步步调省得多。"
+    "试查询词、换说法、逐段找原文，你这边只收到一份结果 —— 也比你自己一步步调省得多。\n"
+    # 下面这一条是 2026-09-28 **从 `VOICE` 挪过来的**：它讲的是"没有工具就别声称读过"，
+    # 摆在所有模式共用的 `VOICE` 里，极简模式也会读到 —— 那等于又告诉它"你是有工具的"
+    #（`test_prompt.py::test_minimal_knows_nothing` 正是钉这一条：极简不该提工具纪律）。
+    # 挪到这里之后，它只在**真的挂了工具**时才进提示词。
+    #
+    # 2026-09-27：用户贴出证据 —— 模型写了"读完了（27712 字全文，两段都到了）"，
+    # 而那一轮**一个工具都没调**（库里那条消息的 parts 里只有 text，没有 tool_call）。
+    # 另一条更常见：正文流式先吐"我把这篇读全了"，工具调用**排在它后面**，
+    # 读起来就是"先宣布结论、再去读"。这类完成式声称最难被用户发现，所以点名禁掉。
+    "**不许用完成式宣称你读过 / 看过 / 查过**（\"我读完了\"\"全文两段都到了\"\"我已经确认过\"）："
+    "只有**这一轮**的工具结果已经在手上时才能这么说。没读就直说\"我还没读\"；"
+    "要读就**先调工具、再说话** —— 顺序反了（先宣布、再去读）会让人以为你在编。"
 )
 
 # 极简：没有任何工具，连"这个应用是干什么的"都不告诉它 —— 否则它就会猜。
@@ -778,14 +784,64 @@ def _chain(db: DbSession, node: Message | None) -> list[Message]:  # noqa: ANN00
     return chain
 
 
-def _active_path(db: DbSession, conv: Conversation) -> list[Message]:  # noqa: ANN001
-    """当前分支 = 最新那条消息所在的链。"""
-    node = db.scalar(
-        select(Message)
-        .where(Message.conversation_id == conv.id)
-        .order_by(Message.id.desc())
-        .limit(1)
-    )
+def _anchor_node(db: DbSession, conv: Conversation) -> Message | None:  # noqa: ANN001
+    """他**上次读到哪条消息**（前端 `QF.store.readAnchor` 存下来的 `settings.chatRead`）。
+
+    为什么要读它：界面上的"当前分支"有一部分是**内存里的选择**（前端 `state.picks`），
+    每打开一次会话都从头算 —— 于是他在某一支上读、划线、写批注，下一次（重开、导出）
+    却按"最新那一支"渲染，那一支往往是后来某次重答 / 编辑派生出来的，**上面没有他的笔**。
+    用户连着两次报障"导出的网页里没有我的批注和书签"，根子就在这里。
+
+    取不到、或那条不属于这条会话，就返回 `None`（调用方退回"最新那一支"）。
+    """
+    try:
+        conf = settings_store.load(db) or {}
+        one = (conf.get("chatRead") or {}).get(str(conv.id)) or {}
+    except (AttributeError, KeyError):
+        return None
+    # **优先 `last`**：它是"存的时候这条对话最新那条消息"，也就是他**当时那条分支的末端** ——
+    # 从它往下走能拿到整条分支。`mid` 只是"视口最上面那条"（只到它为止的前缀），
+    # 而他划的记号多半在那之后的下文里，所以 `last` 才是对的锚点。
+    for key in ("last", "mid"):
+        want = str(one.get(key) or "")
+        if not want:
+            continue
+        try:
+            found = db.get(Message, int(want))
+        except (TypeError, ValueError):
+            found = None
+        if found is not None and found.conversation_id == conv.id:
+            return found
+    return None
+
+
+def _active_path(db: DbSession, conv: Conversation, leaf: str = "") -> list[Message]:  # noqa: ANN001
+    """当前分支：给了 `leaf` 取**那条**所在的链，否则取**他读到的**那条，再不然取最新的。
+
+    为什么需要能指定：界面上的"当前分支"有一部分是**内存里的选择**
+    （前端 `state.picks`，见 chat.js 的 `activePath` / `revealMessage`）——
+    他切到某条较早的分支上读、在那儿划了一堆记号，而"最新那条"可能是**另一条**。
+    导出（md 的"当前分支"、html 分享页的默认分支）若不接受这个参数，就只会给出
+    "最新那一支"，于是**他自己看得见的痕迹在导出里一条都没有**
+    （2026-09-28 用户报障："导出的网页还是没有任何标签和批注"）。
+    """
+    node = None
+    if leaf:
+        try:
+            want = db.get(Message, int(leaf))
+        except (TypeError, ValueError):
+            want = None
+        # 只认**这条会话里**的消息：别条会话的 id 传进来就退回默认行为 ——
+        # 否则导出会变成"把另一条对话的分支当成这条的"。
+        if want is not None and want.conversation_id == conv.id:
+            node = want
+    if node is None:
+        node = db.scalar(
+            select(Message)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.id.desc())
+            .limit(1)
+        )
     return _chain(db, node)
 
 
@@ -1517,8 +1573,14 @@ def _markdown_of(conv: Conversation, messages: list[Message]) -> str:
 def export_conversation(
     cid: uuid.UUID,
     db: DbSession,
+    request: Request,          # 只为了取"装配这份文件的应用地址"（演示要用，见下面的 origin）
     format: str = Query(
         "md", description="md（给人读，当前分支）/ json（给机器读，全树）/ html（单页分享）"
+    ),
+    leaf: str = Query(
+        "",
+        description="显示哪一支：分支**末端消息 id**（前端 `leafId()` 给的）。"
+        "空 = 跟着最新那一支。",
     ),
 ) -> PlainTextResponse:
     """导出一次对话。
@@ -1528,6 +1590,10 @@ def export_conversation(
     所以它是"轨迹"的完整备份，而不只是"看过的那些字"；
     `html` 是**发给别人**的那一种：一个自带数据的网页，对话正文那棵对话树都在，
     对方双击就能看，不需要装任何东西（见 `app/share.py`）。
+
+    `leaf`（可选）决定"当前分支"是哪一条：界面上的分支选择有一部分是**内存里的**
+    （前端 `state.picks`），服务端只知道"最新那一支"。他若切到较早的分支上读、
+    在那儿划了记号，不传这个参数就会导出**另一条**分支（见 `_active_path`）。
     """
     conv = _own_conversation(db, cid)
     all_messages = _messages_of(db, conv)
@@ -1541,7 +1607,21 @@ def export_conversation(
         try:
             page, _stats = share.build_single_page(
                 get_settings().web_dir,
-                share.payload_of(conv, [_message_out(m) for m in all_messages]),
+                share.payload_of(
+                    conv,
+                    [_message_out(m) for m in all_messages],
+                    # **把他自己的痕迹一起装进去**：圈点勾画 / 批注 / 删除线 / 下划线
+                    #（`notes`）与书签 / 回溯（`places`）。它们住在"设置"那一行 JSON 里，
+                    # 而分享页按设计没有 boot.js（不拉 `/progress`）—— 不随数据带过去，
+                    # 导出的网页里就一个圈点、一条批注、一枚书签都没有
+                    #（2026-09-28 用户报障）。过滤口径见 `settings_store.marks_of`。
+                    marks=settings_store.marks_of(settings_store.load(db), conv.id),
+                    # 显示他当时读的那一支（前端的 `state.picks` 服务端看不见）
+                    leaf=leaf or None,
+                    # 演示要用的"应用地址"：分享页在 `file://` 里没有源，
+                    # 拿不到 React / d3 / Babel / QFKit（见 `shareOrigin`）
+                    origin=str(request.base_url),
+                ),
             )
         except (FileNotFoundError, share.ShareBuildError) as err:
             raise HTTPException(status_code=500, detail="分享页没装配出来：%s" % err) from err
@@ -1571,7 +1651,8 @@ def export_conversation(
             headers={"Content-Disposition": f'attachment; filename="chat-{str(conv.id)[:8]}.json"'},
         )
 
-    branch = _active_path(db, conv)
+    # md 那份也认 `leaf`：它画的本来就是"当前分支"，而"当前"该跟着**他当时读的那一支**
+    branch = _active_path(db, conv, leaf)
     return PlainTextResponse(
         _markdown_of(conv, branch),
         media_type="text/markdown; charset=utf-8",

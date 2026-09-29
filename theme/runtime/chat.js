@@ -5844,26 +5844,48 @@
    * 命中可能落在**任何一条分支**上（包括已经被"重新回答"顶下去的那条）——
    * 不这么做的话，搜到了却看不见，用户只会觉得搜索坏了。
    */
-  function revealMessage(messageId) {
+  //: 分享页带进来的"请显示这一支"（分支末端消息 id，见 `share.js` 与 `app/share.py`）。
+  //: 消息还没到时先记下，等正文落地那一步再消费（见取数回来那一段的 `pendingReveal`）。
+  var pendingReveal = '';
+
+  /** 沿父链把每一层的"选择"都设成这条链 —— 于是当前分支必然经过它。
+   *
+   * 拆出来是因为有**两个**使用时机：用户主动跳（点节点 / 点图钉 / 搜索命中，见
+   * `revealMessage`），以及分享页刚打开、消息还没到（`pendingReveal`）。
+   */
+  function pickChainTo(messageId) {
     var byId = {};
     state.messages.forEach(function (m) {
-      byId[m.id] = m;
+      byId[String(m.id)] = m;
     });
 
     var chain = [];
-    var node = byId[messageId];
+    var node = byId[String(messageId)];
     for (var guard = 0; node && guard < 500; guard++) {
       chain.unshift(node);
-      node = node.parentId ? byId[node.parentId] : null;
+      node = node.parentId ? byId[String(node.parentId)] : null;
     }
+    if (!chain.length) return false;
 
     // 每一层都设成"要走这条链"：**包括根那一条** —— 目标是根上的消息时
     // （比如在对话树里点一条第一问），按"往下走"的写法会一次都不执行，
     // 于是点了没反应。写成"给每个节点设它父节点那一层的选择"就没有这个洞。
     state.picks = {};
-    chain.forEach(function (node) {
-      state.picks[keyOf(node.parentId)] = node.id;
+    chain.forEach(function (one) {
+      state.picks[keyOf(one.parentId)] = one.id;
     });
+    return true;
+  }
+
+  function revealMessage(messageId) {
+    // 消息还没到（分享页刚打开的那一拍）：**先记下**，等正文落地再走这条路。
+    // 从前这里直接往下走：`byId` 是空的、`paintThread()` 把空线程画一遍，
+    // 这次请求就等于丢了 —— 页面上永远停在"最新那一支"（2026-09-28）。
+    if (!state.messages.length) {
+      pendingReveal = String(messageId);
+      return;
+    }
+    if (!pickChainTo(messageId)) return;
     paintThread();
 
     var row = threadEl ? threadEl.querySelector('[data-id="' + messageId + '"]') : null;
@@ -6281,7 +6303,23 @@
       return;
     }
     ui.clear(threadEl);
-    activePath().forEach(function (m) {
+    // **分享页（`mode === 'share'`）按时间把全部消息铺开**，不只画一条分支。
+    //
+    // 为什么：那份文件是给人**存档 / 传阅**看的（用户要的就是"整棵对话树一起导出"），
+    // 而它没有"切分支"这个习惯动作 —— 只画当前那一支的话，他在**别条分支**上留下的
+    // 圈点勾画 / 批注 / 书签 / 演示就一条都看不见。用户连着三次报障（2026-09-28、29）：
+    // "导出的网页里没有我的批注和书签"、"demo 还是啥都看不到" —— 根子都是这一条。
+    // 代价是：被"重新回答"顶下去的旧答案会一起出现 —— 存档本来就该把它们留着。
+    // 在线页面**一字不变**：那边仍旧只画当前分支（切分支是它的日常动作）。
+    var shareAll = !!(QF.config && QF.config.mode === 'share');
+    var rowsToPaint = shareAll ? state.messages.slice() : activePath();
+    if (shareAll) {
+      // 库里就是"先来后到"：按 id 排等于按时间排，分叉自然相邻
+      rowsToPaint.sort(function (a, b) {
+        return Number(a.id) - Number(b.id);
+      });
+    }
+    rowsToPaint.forEach(function (m) {
       threadEl.appendChild(messageRow(m));
     });
     // 旁批的位置与连线要**等这些行都进了 DOM** 才算得准：`messageRow` 里那次 paintMarks
@@ -6299,7 +6337,15 @@
      * 后面再没人去接 —— 现象就是"回来停在窗口最上面"。
      */
     var sameConv = !!state.current && String(state.current) === paintedCid;
-    if (keepScroll) refreshJump();
+    if (shareAll) {
+      // 分享页**从头读起**（`shareAll` 见上面那段）。
+      //
+      // 它是存档、不是"接着上次读到的地方"（那是本机的事），更要紧的是：他划的记号、
+      // 旁批、演示散布在**整棵树**里，而页面现在会把这些消息全铺出来（几百条）。
+      // 一进来就跳到底，他只会看见最后一句，然后说"啥都没看到" —— 2026-09-29 实测
+      // 就是这么回事（文件本身全画得出来，量 DOM 是 207 条 / 231 个标记 / 15 张旁批）。
+      goTop();
+    } else if (keepScroll) refreshJump();
     else if (enteringNow && sameConv) consumeAnchor();
     else if (enteringNow) entering = true; // 这一拍正文还没换过来：留给下一轮
     // **兜底**：这一轮不是"进会话"，可这条会话**一次都还没恢复过**（见 restoreNow）。
@@ -6709,6 +6755,29 @@
   // 都得能用）。仍然关着的是 frame/object —— 演示不该再套娃。
   // 真正挡住"碰到我们"的那一道是 iframe 的 `sandbox`（**不带** allow-same-origin），
   // 不是 CSP：CSP 管的是它能往外拿什么，sandbox 管的是它能不能碰我们。
+
+  /**
+   * 演示文档该去**哪个源**取它的运行时（React / d3 / Babel / QFKit / Pyodide …）。
+   *
+   * 在线页面里就是自己的源。**分享页不是**：它是 `file://` 打开的一份文件，
+   * `location.origin` 在那里的字符串是 `"null"` —— 于是 `__ORIGIN__/assets/…` 会变成
+   * `null/assets/…`，演示的依赖**一个都加载不到**：画面空白、也跑不起来
+   *（2026-09-29 用户报障："导出的对话里，所有的 demo 都看不到也无法运行"）。
+   *
+   * 所以分享页由服务端把"装配这份文件的那个应用地址"随数据带进来
+   *（`app/share.py` 的 `payload_of` → `share.js` 写进 `QF.config.shareOrigin`），
+   * 这里优先用它。**取不到**（比如命令行导出的产物没带）就仍旧用当前源 ——
+   * 在线行为因此一字不变。
+   *
+   * 顺带说清它的边界：那只在**应用可达**时成立（本机开着、或同一台机器上双击）。
+   * 分享页终究不可能自包含演示运行时 —— 全套 4.1MB（Babel 一个就 2.9MB），
+   * 44 个 demo 各带一份就是 180MB。发到别的机器上，演示静态摆着、靠已存的输出说话。
+   */
+  function shareOrigin() {
+    var baked = QF.config && QF.config.shareOrigin;
+    return String(baked || '').replace(/\/+$/, '') || location.origin;
+  }
+
   /**
    * 沙箱页面的 CSP。
    *
@@ -6721,7 +6790,7 @@
    * 而那**不再**是跑 Python 的前提 —— 运行时是本机那一份。
    */
   function demoCsp() {
-    var origin = location.origin;
+    var origin = shareOrigin();
     return (
       "default-src 'none'; " +
       "script-src 'unsafe-inline' 'unsafe-eval' blob: " +
@@ -6756,7 +6825,7 @@
    * 本地 Python 运行时就落在 `/assets/pyodide/`，所以这一步是它能不能加载的前提。
    */
   function withCsp(html) {
-    html = String(html || '').split('__ORIGIN__').join(location.origin);
+    html = String(html || '').split('__ORIGIN__').join(shareOrigin());
     var meta = '<meta http-equiv="Content-Security-Policy" content="' + demoCsp() + '">';
     if (/<head[^>]*>/i.test(html)) {
       return html.replace(/<head[^>]*>/i, function (found) {
@@ -7094,7 +7163,12 @@
             h('div.chatdemo__inlinelabel', {
               text: part.run.ok === false ? '沙箱报错（已回填给模型）' : '沙箱输出（已回填给模型）',
             }),
-            h('pre.chatdemo__inlinepre', { text: part.run.text || '（没有输出）' })
+            h('pre.chatdemo__inlinepre', { text: part.run.text || '（没有输出）' }),
+            // **把跑出来的图也摆上**：那是模型当时看到的画面（运行壳收回来存在 `run.images`）。
+            // 从前这里只摆文字 —— 于是"应用不在场"时（分享页发到另一台机器、或本机应用没开），
+            // 一条**只画图、不打印**的演示就什么都看不见（2026-09-29 用户报障：
+            // "导出的对话里，所有的 demo 都看不到也无法运行"）。
+            figsNode(part.run.images)
           )
         : null
     );
@@ -7277,6 +7351,9 @@
       )
     );
     demoRunEl.appendChild(h('pre.chatdemo__runtxt', { text: run.text || '（没有输出）' }));
+    // 面板里也把图摆上（同卡片那条理由：只画图的演示，光有文字等于没有）
+    var demoFigs = figsNode(run.images);
+    if (demoFigs) demoRunEl.appendChild(demoFigs);
   }
 
   /* ---- 沙箱面板的展开 / 收起动效 ----------------------------------- */
@@ -7365,7 +7442,10 @@
       title: part.title || '演示',
       html: String(part.html || ''),
       runId: String(part.runId || ''),
-      run: demoRunOf(part.runId) || null,
+      // 有本次会话里跑出来的就用它；否则**用随零件存下来的那份**（`part.run`）——
+      // 分享页、刷新之后 `demoRuns` 都是空的，不认存下来的那份，面板一开只会写
+      // "沙箱还在跑…"，而那份输出（与截图）其实一直躺在零件里（见 `figsNode`）。
+      run: demoRunOf(part.runId) || part.run || null,
     };
     renderDemoPanel();
   }
@@ -10301,7 +10381,29 @@
         // 这批消息属于哪条会话：`state.current` 是"点下去就改"的，而正文要等这一句 —— 两者
         // 之间那一缝里画的还是上一条的行（见 paintThread 里的 `paintedCid`）。
         state.messagesCid = id;
-        state.picks = {}; // 默认跟最新那一支
+        // 默认跟最新那一支；分享页若带了"请显示这一支"（`leaf`，见 share.js 与
+        // `app/share.py`），就沿着它把每一层的选择设好 —— 接下来那次 `paintThread()`
+        // 画出来的就是**作者当时读的那条分支**（他划的记号也就在那一支上）。
+        state.picks = {};
+        if (pendingReveal) {
+          var wantLeaf = pendingReveal;
+          pendingReveal = '';
+          pickChainTo(wantLeaf);
+        } else {
+          // **接着上次读到的地方。** 为什么必须在这里也做一遍：界面显示的"当前分支"
+          // 有一部分是**内存里的选择**（`state.picks`），每打开一次会话都从头算 ——
+          // 于是他在 A 支上读、划线、写批注，下次打开却落在"最新那一支"（常常是后来
+          // 某次重答/编辑派生出来的），正文里看不到任何自己划过的痕迹。用户连着两次
+          // 报障"导出的网页里没有我的批注和书签" —— 根子在这里，导出只是照着重画一遍。
+          //
+          // `readAnchor` 是他机器上记的"上次停在哪条消息"（见 store.js 的 setReadAnchor）。
+          // 取不到、或那条不在这次取回来的树里，`pickChainTo` 会返回 false 而不动手 —— 这时
+          // 仍旧按老规矩"跟最新那一支"。
+          // 优先 `last`（"记的时候这条对话最新那条消息"= 他**当时那条分支的末端**）：
+          // 从它往下走能拿到整条分支；`mid` 只是"视口最上面那条"，链到它为止。
+          var anchorHere = QF.store.readAnchor ? QF.store.readAnchor(id) : null;
+          if (anchorHere) pickChainTo(anchorHere.last || anchorHere.mid);
+        }
         state.replacing = null; // 换会话了，上一轮"被顶掉的那条"与这里无关
         state.treeFolded = {}; // 收起状态也是按会话算的，换个对话就不该还收着
         resetTreeView(); // 换了会话就是另一张图，下次打开重新适配
@@ -10418,6 +10520,28 @@
    *
    * 不做"正在打包"那套：实测 158 条消息装配 **37ms**，塞一个转圈只会闪一下。
    */
+  /** "我现在看的是哪一支"：当前分支的**末端消息 id**。
+   *
+   * 为什么导出必须带上它：页面显示哪一支，有一部分是**内存里的选择**
+   *（`state.picks`，见 `activePath`）—— 它不落盘、服务端也看不见。于是每一份在
+   * 服务端装配出来的导出（分享页、md）都只能按"最新那一支"走；而他若切到较早的分支上
+   * 读过（划记号的往往正是那一条），导出出来的就是**另一条** —— 看着就像
+   * "我的批注和书签一条都不在里面"（2026-09-28 用户报障）。
+   */
+  function leafId() {
+    var path = activePath();
+    return path.length ? String(path[path.length - 1].id) : '';
+  }
+
+  /** 导出的地址（**完整路径，含 `/api`**）：带上 `leaf`，让服务端按**他看的那一支**装配
+   *（见 `leafId`）。给 `download()` 那一类直接用（它不做前缀拼接）。
+   */
+  function exportUrl(cid, format) {
+    var url = '/api/chat/conversations/' + cid + '/export?format=' + format;
+    var leaf = leafId();
+    return leaf ? url + '&leaf=' + encodeURIComponent(leaf) : url;
+  }
+
   function onShare() {
     var conv = currentConv();
     if (!conv) return;
@@ -10426,7 +10550,11 @@
       return;
     }
     var name = 'chat-' + String(conv.id).slice(0, 8) + '.html';
-    fetch(QF.api.base + '/chat/conversations/' + conv.id + '/export?format=html', {
+    // **不要在这里再拼 `QF.api.base`**：`exportUrl` 给的是完整路径（`/api/chat/…`），
+    // 而 `QF.api.base` 本身就是 `/api` —— 拼一次就成了 `/api/api/chat/…`，
+    // 服务端只会回一个 `404 {"detail":"Not Found"}`（2026-09-29 实测：分享按钮
+    // 报"没能生成分享页：Not Found"就是这么来的）。
+    fetch(exportUrl(conv.id, 'html'), {
       credentials: 'same-origin',
     })
       .then(function (res) {
@@ -10555,7 +10683,7 @@
           {
             type: 'button',
             onClick: function () {
-              download('/api/chat/conversations/' + conv.id + '/export?format=md');
+              download(exportUrl(conv.id, 'md'));
             },
           },
           'Markdown（当前分支，给人读）'
@@ -10575,7 +10703,7 @@
           {
             type: 'button',
             onClick: function () {
-              download('/api/chat/conversations/' + conv.id + '/export?format=html');
+              download(exportUrl(conv.id, 'html'));
             },
           },
           'HTML（单页分享，能直接发出去）'
@@ -10784,7 +10912,10 @@
     window.setTimeout(shellWarm, 2500);
   }
 
-  var chat = { boot: boot, booted: false, mount: mount };
+  // `reveal` 挂出来是给**分享页**用的：它带着"请显示这一支"（`leaf`）进来，
+  // 而 `boot()` 是异步取数据 —— 消息还没到时 `reveal` 会先记下，等正文落地再走
+  //（见 `pendingReveal` 与 `pickChainTo`）。
+  var chat = { boot: boot, booted: false, mount: mount, reveal: revealMessage };
   QF.chat = chat;
   /**
    * 壳的账本（`bootMs` = 环境准备总时长）。挂出来是为了让"预热省了多少"能量，

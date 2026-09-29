@@ -218,10 +218,32 @@ def _inline(page: str, share_js: str, payload: str, web_dir: Path) -> tuple[str,
     return out[:cut] + tail + out[cut:], stats
 
 
-def payload_of(conv, messages: list) -> dict:  # noqa: ANN001
+def payload_of(  # noqa: ANN001
+    conv,
+    messages: list,
+    marks: dict | None = None,
+    leaf: str | None = None,
+    origin: str | None = None,
+) -> dict:
     """给前端的形状与 `GET /chat/conversations/{id}` **一模一样** ——
-    这样 `chat.js` 那一边一行都不用改（它本来就在等这个形状）。"""
-    return {
+    这样 `chat.js` 那一边一行都不用改（它本来就在等这个形状）。
+
+    `marks`（可选）：这条会话里用户留下的**痕迹** —— 圈点勾画 / 批注 / 删除线 /
+    下划线（`notes`）与书签 / 回溯（`places`），由 `settings_store.marks_of` 按会话
+    过滤好。**为什么必须随数据一起装进去**：在线页靠 `boot.js` 拉
+    `GET /api/progress` 把设置灌进 `QF.store`，而分享页按设计**没有 boot.js**
+    （见 `_inline`：它会让页面先拉题库、空库直接停在"还没有题目"那一屏）——
+    于是从前的分享页里，用户自己划过的每一笔都看不见（2026-09-28 用户报障：
+    "导出的对话网页里面，没有我的圈点勾画/批注/书签"）。
+
+    `leaf`（可选）：**他当时在读的那条分支的末端消息 id**（前端 `leafId()`）。
+    页面该显示哪一支本来有一部分是内存里的选择（`state.picks`）—— 分享页是新开的
+    一份、`picks` 是空的，只按"最新那一支"渲染；而他若切到较早的分支上读过，
+    那一支才是他划过记号的那条。带上它，分享页就能显示同一支（见 chat.js `reveal`）。
+
+    两个键为 `None`（默认）时**完全不出现** —— 老调用点的产物一字不变。
+    """
+    out = {
         "conversation": {
             "id": str(conv.id),
             "title": conv.title or "",
@@ -231,6 +253,16 @@ def payload_of(conv, messages: list) -> dict:  # noqa: ANN001
         },
         "messages": messages,
     }
+    if marks:
+        out["settings"] = marks
+    if leaf:
+        out["leaf"] = str(leaf)
+    if origin:
+        # 装配这份文件的那个**应用地址**（`http://127.0.0.1:8100` 这种）。分享页拿它当
+        # "演示的运行时去哪儿取"（见 chat.js 的 `shareOrigin`）：`file://` 里的
+        # `location.origin` 是字符串 `"null"`，直接用它会让每个 demo 的依赖都加载失败。
+        out["origin"] = str(origin).rstrip("/")
+    return out
 
 
 def build_single_page(web_dir: Path, payload: dict) -> tuple[str, dict]:
