@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "api"))
 
-from app import share  # noqa: E402
+from app import settings_store, share  # noqa: E402
 from app.db import get_session_factory  # noqa: E402
 from app.models import Conversation  # noqa: E402
 from app.routers.chat import _message_out, _messages_of  # noqa: E402
@@ -45,7 +45,16 @@ def main(argv: list[str] | None = None) -> int:
 
         messages = [_message_out(m) for m in _messages_of(db, conv)]
         try:
-            html, stats = share.build_single_page(WEB, share.payload_of(conv, messages))
+            html, stats = share.build_single_page(
+                WEB,
+                # 与界面上的导出**同一条路**：痕迹（圈点勾画 / 批注 / 书签）一起装进去，
+                # 过滤口径见 `settings_store.marks_of`。
+                share.payload_of(
+                    conv,
+                    messages,
+                    marks=settings_store.marks_of(settings_store.load(db), conv.id),
+                ),
+            )
         except (FileNotFoundError, share.ShareBuildError) as err:
             print("✗ %s" % err, file=sys.stderr)
             return 2

@@ -555,6 +555,24 @@
     return got;
   }
 
+  /** **只读页面**（分享页）用：把"本机那份设置"整个忘掉，好让载荷里那份能落地。
+   *
+   * 为什么必须有它：`hydrateSettings` 会护住"本机有还没推上去的设置改动"而**整份不灌**
+   *（`settingsRev() > theirsRev || pending` 就早退）—— 这在活页面里是对的，但分享页是
+   * **只读产物**、本机那份与它无关。要命的是 `file://` 这**一个 origin 是所有导出页共用的**：
+   * 上一次打开分享页、关掉它的时候，页面会存一次阅读位置（`saveReadAnchor` → 写设置），
+   * 于是 `settingsDirty` 一直躺在那里 —— 从那一刻起**每次**打开导出页都早退，批注栏与
+   * 书签抽屉**全空**，而对话树照常画（它只靠消息数据）。看上去就像"我的批注和书签没被导出"。
+   *（2026-09-29 用户报障，已实测复现：预置 `settingsDirty='1'` → 面板 0 条；清掉 → 15 条。）
+   */
+  function forgetLocalSettings() {
+    settingsCache = null;
+    rawRemove(K.settings);
+    rawRemove(K.settingsDirty);
+    rawSet(K.settingsRev, '0');
+    return true;
+  }
+
   /** 按日期合并两份每日统计：逐字段取较大值（time 与 topics 都要） */
   function mergeDayBucket(mine, theirs) {
     if (!mine) return theirs;
@@ -1290,6 +1308,7 @@
     clearSettingsDirty: clearSettingsDirty,
     noteSettingsPush: noteSettingsPush,
     resetSettings: resetSettings,
+    forgetLocalSettings: forgetLocalSettings,
     pinnedTopics: function () {
       var list = settings().pinnedTopics;
       return Array.isArray(list) ? list.slice() : [];
