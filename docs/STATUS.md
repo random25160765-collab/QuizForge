@@ -3,7 +3,7 @@
 > **唯一易变的状态落点。** 稳定的约定在 `.codebuddy/skills/`，这里只放会变的东西。
 > 开工先读它，收工更新它。
 >
-> 最后更新：2026-09-23
+> 最后更新：2026-09-30
 
 ## 一、形态（一句话）
 
@@ -24,10 +24,18 @@
 |---|---|---|
 | 对话内核 | `api/app/routers/chat.py` | 会话与消息（**树**：再生成=分叉）、SSE 流、零件装配、引用去重；**铺垫在落库时打 `process` 标记**（界面折成可展开的「过程」，刷新也不散） |
 | 工具循环 | `api/app/agent_loop.py` | 多轮工具调用、上下文预算、**最后一轮不给工具**（逼收口作答）、协议泄漏兜底 |
-| 工具集 | `api/app/tools.py` | **23 个**（六组 + 一个元能力）：笔记 4 · 资料 3 · 图谱 3 · 出题 8 · 沙箱 2 · 联网 2 · 元能力 `run_subagent`。分组是唯一出处，界面开关与提示词都读它（`mounts.py` / `GROUP_PROMPTS`） |
+| 工具集 | `api/app/tools.py` | **31 个**（七组 + 一个元能力）：笔记 5 · 资料 5 · 图谱 3 · 出题 8 · 沙箱 2 · 联网 3 · 对话树 4 · 元能力 `run_subagent`。分组是唯一出处，界面开关与提示词都读它（`mounts.py` / `GROUP_PROMPTS`） |
 | 联网搜索 | `api/app/websearch.py` | **默认免密钥**（必应的 RSS 输出，零配置可用）；填了密钥可切博查 / Tavily / Serper。`read_web_page` 抓正文（启发式抽取），**本机与内网地址一律拒**（见该模块的 `_guard_url`） |
 | 大题批改 | `api/app/routers/problem.py` | 独立子代理批改（看不到聊天记录）；批完**回写一条 assistant 消息进对话** —— 主 agent 下一轮才看得见「他做过这道大题、批成什么样」 |
 | 我的题单 | `api/app/routers/mybank.py` · `my_questions` | 自己出的题**另开一张表**：公共 `questions` 挂着覆盖率对账、图谱的 `question_concepts`、流水线状态机（draft→verified→published），混进去会污染统计、让流水线管它、而且**删不掉** |
+| 分享 / 导出 | `api/app/share.py` · `theme/runtime/share.js` · `tools/share.py` | 把一条会话装配成**自包含的单页**（`file://` 双击即用、只读）：`payload_of` 带 `marks`（他的痕迹）、`leaf`（他读的那一支）、`origin`（演示去取运行时用的地址），`_inline` 把资源内联并丢掉 `boot.js`；渲染器与在线页**同一份源码**（`share.js` 只在分享页里被内联）。命令行 `make share CID=…` |
+| 渲染渠道 | `theme/runtime/latex.js` · `theme/runtime/mermaid.js` · `theme/runtime/md.js` | 三条路各管一族：**KaTeX**（秒出，矩阵 / `cases` / `aligned` 都在这一路）、**真 TeX 引擎**（TikZJax，坐标图 / 几何 / 电路，每张秒级起）、**mermaid**（毫秒级，流程图那类）。分档判据在 `latex.kind()` 与「围栏标 mermaid」上 |
+| 沙箱与演示 | `api/app/tools.py`（`run_python` / `render_demo`）· `theme/demo-kit/` · `tools/vendor.py` | `run_python` 在浏览器里跑 CPython（Pyodide，**常驻壳**，样板不让模型手写）；`render_demo` 出一页能动的演示（TikZ 当场拒，方框加箭头指向 `QFKit.Mermaid`）；`QFKit` 由服务端注入，模型不写 `<script src>`。运行时的取源都在 `vendor/`（`make vendor`） |
+| 对话树 | `api/app/tools.py`（`trees` 组，4 个）· `docs/对话树.md` | 只读四件：有哪些会话 · 在**所有对话正文**里搜字 · 读一棵树的形状 · 按 id 取消息原文。形状与「为什么这么回放」写在那份文档里 |
+| 资料流水线 | `pipeline/` · `make add` / `images` / `ops` / `watch` / `gpu-*` | 归一（`normalize.py`，不截断）→ 切片（`ingest.py`）→ 向量化（`ops.py` 调度，车道记芯片）→ 材料里的图也进检索（`images.py`）；运维仪表盘 `make ops`。链路手册是 `quizforge-ingest` |
+| 检索与向量 | `api/app/semantic.py` · `api/app/materials.py` · `docs/检索与向量化.md` | 两个书架（`search_material` 出题层 / `search_library` 检索层）加一路字面检索；向量存 SQLite BLOB，融合用 RRF。性能上刻意只取要用的列（别再让 ORM 构造几十万实例、解码十几万次 JSON） |
+| 构建与取源 | `tools/build_web.py` · `tools/vendor.py` · `vendor/` | 前端产物落 `api/web/`（入口 `make web`，要自包含用 `make web-full`）；第三方前端库**全部入库**在 `vendor/`（katex · mermaid · tikzjax · pyodide · demo-kit · cjk · mono · hljs · cm6），版本与取源钉在 `tools/vendor.py` |
+| 小工具 | `tools/loc.py`（`make loc`）· `tools/beta-serve.sh` | 代码量口径钉死在工具里（`make loc` 一次说清排除哪些目录）；内测版的幂等启动器，**它自己说的话也进日志** |
 | 无账号 | `api/app/deps.py` | **连"用户"这个概念都没有**。登录面（注册 / 登录 / 会话 / CSRF）2026-09-18 删掉；`users` 表与 10 张表的 `user_id` 外键 2026-09-22 一并拆除 —— `deps.py` 现在只剩 `DbSession`。护栏在 `test_route_contract.py`：那批守卫不许挂回来 |
 | 图谱体检 | `pipeline/graph_build.py check` · `make graph-check` | 硬不变量（无环 / 同向不双向 / 同一对既前置又组成 / 考纲挂靠）+ 进度尺（`unrooted`）；破了退出码非零，可直接当闸门 |
 | 判边 | `make graph-relate`（配对）· `make graph-relate-centric`（**以概念为中心**） | 后者是主力：一次问一个概念 + 同材料候选，问过就记 `centric_at`；实测 337 个概念 → 471 条边 |
@@ -79,7 +87,7 @@
 `/api/bank` 给出 1623 道题、浏览器里前端内存中 1624 条（含 1 道我的题单）。
 只改了 `theme/` 时 `make web` 后刷新即可，不用重启。
 
-测试：`make api-test`（后端 **433 项**，跑在临时 SQLite 文件上，**不需要数据库服务**）·
+测试：`make api-test`（后端 **492 项**，跑在临时 SQLite 文件上，**不需要数据库服务**）·
 `make test`（题库校验 + 前端 3170 断言 + `node --check` 语法门禁）。
 
 **Postgres 与 Docker 已彻底清出这条链**（2026-09-22）：`docker-compose.yml` 与
@@ -274,38 +282,23 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
     并不是一回事，已改成与实现一致、并把坑标出来。
     要根治得让"**资料根**"成为一个配置项（多根早就支持了，缺的是"根在哪"这件事
     进配置，而不是从路径里猜一段）。
-13. **CI 的 `make api-test` 长期红**（2026-09-23 实测，**不是哪次改动带坏的**）——
-    最近 5 次 run 全红，其中一次**只改了 `docs/STATUS.md`**。job 级看只有一个 job、一个
-    step 红：「题库校验 + 前端自测 → `make api-test`」（另一条「干净克隆 → 照 README
-    跑起来」是绿的）。根因：**几条用例把「本机有没有那份 144M Pyodide 缓存」当成了前提** ——
-    `heavy_deps.base_url()` 是 `"__ORIGIN__/assets/pyodide/" if is_ready() else None`
-    （`heavy_deps.py:241-248`）。本地 `data/cache/pyodide` 有 28 个文件，所以它恒为真；
-    干净检出上没有缓存，而 `vendor/` 里只有 `vendor/pyodide/` 目录、**没有入口
-    `vendor/pyodide.js`**（`_copy_from_vendor` 必然返回 False），于是 `base_url()` 返 `None`
-    → `run_python` 走「运行时还没到位」那条早返回 → 用例拿不到 `demo`，断言挂。
-    复现：`QF_DATA_DIR=$(mktemp -d) make api-test`（数据目录指到空目录 = 模拟干净机器）。
-    修法已经有了、躺在工作区**没提交**：`api/tests/conftest.py` 的 `_runtime_always_ready`
-    夹具把 `tools.pyodide_base` 钉成真地址（**只钉这一处**，`heavy_deps.is_ready()` 本身不动，
-    它自己的用例显式传目录进去）。热缓存下那几条全绿、干净前提下才现形 ——
-    所以「只红一部分」是**竞态**，不是稳定现象。
-14. **沙箱跑出来的图没跟着存进零件**（2026-09-23 实测，是 bug）——
-    `chat.py:1598` 回填那次运行时只写了 `ok` 与 `text`，**把 `images` 丢了**。而同一次
-    上报的另一条路 `deliver_run`（`chat.py:1541`）带着 `images`，`runs.py:92` 的注释也
-    明说这些 base64 **只往库里存**（零件上的 `run.images`）。blame 定位到引入者：
-    `a47c377`（2026-09-20）给 `runs.py` 和那条新的 `/runs/{run_id}` 都加了图，
-    **漏了更老的 `attach_run`**。用户可见后果：**刷新之后图没了**。
-    证据：干净前提下跑完整套是 `1 failed, 474 passed`，唯一红的就是
-    `test_chat.py::test_the_sandbox_output_comes_back_by_itself` → `KeyError: 'images'`；
-    **用正常本地缓存单跑同一条一样红**，所以不是环境问题。要拿到 job 日志得仓库 admin
-    权限（未认证是 403），下面这些结论全是在本机复现出来的。
-    ⚠️ 它现在**被第 13 条挡着**：没有那个夹具时 `run_python` 早返回、没有 `demo`，
-    该用例会走 `test_chat.py:1100-1107` 的 `pytest.skip` 防护 —— 所以**只修第 13 条，
-    CI 会换一个理由继续红**，两条一起才绿。
-    待拍板：`runs._clean_images`（限 3 张 / 单张 200 万字符）是私有的（不在 `runs.__all__`
-    里），存库这处要么把它提成公开的、要么复用 `deliver` 洗过的那份。
 
 **已了结（原先列在这儿，实测已不成立）：**
 
+- ~~CI 的 `make api-test` 长期红~~（2026-09-30 **已修**，提交 `c23dcf1`）——
+  红的只有一条：`test_run_python_hands_the_code_to_the_resident_shell`，报
+  `KeyError: 'demo'`。真因是 `run_python` 在运行时未就绪时**按设计早返回**
+  （`tools.py` 里 `pyodide_base() is None` 那一段：只回一句"运行时还没到位"，
+  回执里没有 `demo`），而这几条要验的是**服务端代管的样板**（常驻壳、预载、
+  回传接线），跟本机有没有那份 76M 无关。它还带一层**竞态**：第一条用例的
+  `start_prefetch()` 会在后台把 `vendor/pyodide/` 拷进缓存，拷完第二条就过 ——
+  所以同一次运行里一条红一条绿（本机把数据目录指到空目录复现时是两条都红）。
+  现在这三条用例钉住 `tools.pyodide_base`（`heavy_deps.is_ready()` 自己的用例不动，
+  它显式传目录验存在性）；CI 条件（全新 `QF_DATA_DIR`）下全量退出码 0。
+- ~~沙箱跑出来的图没跟着存进零件~~（2026-09-27 **已修**，提交 `9e25eeb`）——
+  `attach_run` 回填那次运行时只写了 `ok` 与 `text`，把 `images` 漏了，于是**刷新之后图没了**
+  （`deliver_run` 那条路一直带着图）。现在两条路都写 `images`（`api/app/routers/chat.py`），
+  零件上的 `run.images` 刷新后还在。
 - ~~五个 skill 里写死的本机路径~~（2026-09-22 **已修**）—— 当时 5 个 skill 里写着
   一条 `cd <开发机上的某个绝对路径>`，而那个目录**在本机也不存在**（仓库不在那儿），
   照 skill 走的 agent 第一条命令就失败。现在一律改成
@@ -457,10 +450,14 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
   而真实语料上这是决定性的 —— e5-small 即使配了窗口化中文问句**仍返回前言**。
   代价 542MB（vs 112.8MB），已确认可接受。**它的 8192 token 卖点在 CPU 上不实用**：
   注意力是 O(seq²)，8192 配 padding 一次要 22GB（实测直接 OOM），实际能用 1024。
-  ④ **固定走 CPU，不用 GPU**：本机有 RTX 5060，但**GPU 比 CPU 还慢**
-  （每片 57ms vs 45ms）—— 这个 int8 模型的算子没有 CUDA 核，ORT 每一层来回搬张量
-  （实测 24 层 × 4 处 = 336 个 Memcpy），搬的比算的多。另外 `onnxruntime-gpu` 是 235MB
-  （CPU 版 10 倍）且要用户机器有匹配的 cuDNN，对"双击即用"不划算。
+  ④ ~~固定走 CPU，不用 GPU~~ → **2026-09-27 起有卡就走 GPU（fp16）**。
+  当时那个判断对 **int8** 模型是成立的（每片 57ms vs 45ms —— 那些算子没有 CUDA 核，
+  ORT 每层来回搬张量，实测 24 层 × 4 处 = 336 个 Memcpy，搬的比算的多）；换成
+  **fp16 + CUDAExecutionProvider** 之后反过来了，于是改成：`make gpu-setup`
+  （`scripts/gpu-setup.sh`）装依赖并写本机配置 `config/embed.local.json`
+  （`model_fp16.onnx` + `CUDAExecutionProvider`；fp16 模型 1.1G，清单带 sha256），
+  `make gpu-check` 验环境、`make gpu-fp16` 顺带取模型；流水线的车道会记下
+  「这一片用的哪块芯片」（提交 `66e96be`）。没卡就不写那份配置，仍走 CPU。
   落地时踩到一个真 bug：`is_ready()` 被**每次检索**调用，而它逐个文件算 sha256 ——
   601MB 一次 350ms（查询 367ms 里 350ms 花在这儿，真计算只要 14ms）。
   改成**下载时严格校验、之后查"存在 + 大小"**，延迟回到 80~123ms。

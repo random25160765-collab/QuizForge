@@ -33,17 +33,25 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 | `tools/` | `check.py` 校验 · `build_web.py` 构建前端（入口）· `assemble.py` 外壳装配 · `question_parser.py` 解析 · `topics.py` 考纲解析 · `new_question.py` 脚手架 · `db_snapshot.py` 快照存取 |
 | `theme/` | 前端运行时：`app.css` + `runtime/*.js`；改完要 `make web`（新增脚本还要登记进 `build_web.py` 的 `RUNTIME_ORDER`）|
 | `api/` | FastAPI 后端：题库导入、进度增量同步、AI 转发（用本机设置里那份密钥）|
+| `api/app/` | FastAPI 后端：对话内核与工具（`tools.py`）· 资料与检索（`materials.py` / `semantic.py`）· 分享装配（`share.py`）· 设置存储（`settings_store.py`）|
+| `pipeline/` | **出题与资料流水线包**：归一 `normalize.py` · 切片 `ingest.py` · 向量 `embed.py` · 调度与账本 `ops.py` · 材料里的图 `images.py` · 状态机 `drive.py` / `dispatch.py` / `promote.py` / `rework.py` · 覆盖 `coverage.py` · 四层契约 `prompts/layers/` |
+| `build/` | 打包与分发：`package.py`（PyInstaller）· `dist_win.py` · `launcher.py` · 冒烟 `smoke_*.py` · 清单 `pyodide-manifest.json` / `embed-manifest.json` |
+| `vendor/` | 第三方前端库**全部入库**（katex · mermaid · tikzjax · pyodide · demo-kit · cjk · mono · hljs · cm6）；版本与取源钉在 `tools/vendor.py`（`make vendor`）|
+| `scripts/` | 机器相关的脚本：`gpu-setup.sh`（GPU 依赖与本机 `config/embed.local.json`）|
+| `config/` | 本机配置：`ai.local.json`（密钥，不进版本库）· `embed.local.json`（有卡则 fp16 + CUDA）|
+| `skills/` | **仓库根这个 `skills/`** 是对话里可选的「答题风格」skill 本体（`api/app/skills.py` 读它）；**与 `.codebuddy/skills/` 不是一回事** |
+| `theme/demo-kit/` | 沙箱演示的前端套件：`qf-kit.js` / `qf-kit.css`（`QFKit`：配色令牌、布局、动画钩子、`QFKit.Mermaid`）|
+| `tools/texlab/` · `tools/checks/` | 图表编译的回归套件（`make cases`）与界面冒烟脚本（`make ui-check`）|
 | `.codebuddy/skills/` | 出题 skill（本仓自包含，跟着仓库走） |
-| `docs/` | `STATUS.md`（当前状态）· `THESIS.md`（**业务立论**：为什么这么设计）· `DESIGN.md`（设计说明）· 截图 |
-| `draft/` | 人写的手写题与草稿（与机器生成的 `maps/` 分开） |
-| `maps/` | 机器生成的切片索引、覆盖矩阵与暂存区（可重建） |
+| `docs/` | `STATUS.md`（当前状态，**会变的东西只放这儿**）· `THESIS.md`（**业务立论**）· `DESIGN.md`（设计说明）· `分发工作流.md` · `对话树.md` · `检索与向量化.md` · `笔记模块设计.md` / `笔记功能对照.md` · `TUTORIAL.md` · 截图 |
+| `draft/` | 人写的手写题与草稿（与机器生成的产物分开；`maps/` 那个中间态目录已退场）|
 | `reference/` | **仓库外**的只读软链：手册、论文、教科书（指向哪由本机决定，不进版本库）|
-| `Codebase/` | **仓库外**的只读软链：QEMU 书稿、CUTLASS、Tenstorrent ISA（同上）|
 
 ## 铁律（违反会出事）
 
-1. **材料只读。** `reference/` 与 `Codebase/` 都在 `.gitignore` 里；进 git 的只能是题目。
-2. **库是权威，其余都是投影。** `api/web/`（构建产物）、`bank.json`（导出）都是投影，**不要手改**；
+1. **材料只读。** `reference/`（仓库外的只读软链：手册、论文、教科书）在 `.gitignore` 里；
+   进 git 的只能是题目。
+2. **库是权威，其余都是投影。** `api/web/`（构建产物）与任何题库导出都是投影，**不要手改**；
    改题目改库，然后重新物化构建。
 3. **改完题必须** `make check` 到 **0 error**（它先把库物化到临时目录再校验）。
    契约里写明：只有 `[OK] ... 全部通过` 才算完成；`make test` 再补一层前端自测。
@@ -73,7 +81,14 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 | 改 UI | 先看 `docs/STATUS.md` 的 UI 约定；再改 `theme/`（UI 无 skill，规则写在代码注释里） |
 | 后端 / 同步 | 直接读 `api/app/`（无 skill） |
 | **新材料入库**（一份 PDF / 书 / 网页进资料库与检索层） | **`quizforge-ingest`**（归一 → 切片 → 向量化（GPU）→ 对账抽验；这条链的坑都在里面） |
-| **跑流水线 / 补缺口 / 查为什么没进度** | **`quizforge-pipeline`**（状态机、常用命令、卡住怎么办 ✗ —— 先读它再动手 ✔） |
+| **跑流水线 / 补缺口 / 查为什么没进度** | **`quizforge-pipeline`**（状态机、常用命令、卡住怎么办 —— 先读它再动手） |
+| **改导出 / 分享页**（单页 HTML、痕迹、演示） | `api/app/share.py` + `theme/runtime/share.js` + `api/app/routers/chat.py` 的导出接口；命令行 `make share`。**渲染器只有一份源码**（在线那份），分享页继承它 |
+| **对话树 / 复盘 / 为什么这么回放** | `docs/对话树.md`（形状、四件只读工具、回放口径） |
+| **检索 / 向量 / 融合** | `docs/检索与向量化.md` |
+| **笔记模块**（界面与后端） | `docs/笔记模块设计.md` · `docs/笔记功能对照.md` |
+| **沙箱演示怎么画图**（`run_python` / `render_demo` / `QFKit`） | `theme/demo-kit/` + `api/app/tools.py` 里这两个工具的规格段（它们对模型说的话就在那儿） |
+| **渲染渠道分档**（mermaid / TeX / KaTeX 各管什么） | `theme/runtime/mermaid.js` · `theme/runtime/latex.js`（`kind()`） |
+| **打包分发 / 内测包** | `docs/分发工作流.md` + `build/` |
 
 ## 常用命令
 
@@ -91,6 +106,24 @@ make new TOPIC=<主题> TYPE=<题型>   # 生成一道新题骨架（另加 --ti
 
 # 题库入库（先看影响面，不写库）
 cd api && .venv/bin/python -m app.cli.import_bank --dry-run
+```
+
+## 还会用到的命令（按需，不必全记）
+
+```bash
+make share CID=<uuid>   # 把一条会话打成能发出去的**单页**（产物 chat-<id8>.html，双击即用）
+make loc                # 代码量：口径钉在 tools/loc.py 里，排除 vendor/ 与 api/web/ 等
+make search Q=<词>      # 检索手感测试台（两个书架都打）
+make add                # 收新资料：抽正文 → 切片 → 向量化（GPU）
+make images             # 材料里的图 OCR / 读图进检索
+make ops / watch        # 资料运维仪表盘 / 边跑边看
+make gpu-check / gpu-setup / gpu-fp16   # 向量走 GPU 的环境与 fp16 模型
+make db-snapshot        # 存一份库快照（与 db-restore 成对；另有 db-size / db-counts / db-query）
+make notes-import       # 导入笔记库
+make vendor             # 从源同步第三方前端库（katex / mermaid / tikzjax / pyodide …）
+make embed / intake     # 只跑向量化 / 只跑入库
+make web-full           # 前端产物连 Pyodide 一起拷（离线自包含用）
+make cases              # 图表编译回归
 ```
 
 ## 开工检查清单
