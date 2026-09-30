@@ -352,7 +352,29 @@ def test_proposal_for_an_unknown_question_says_so(client, db_session, imported_b
 # ------------------------------------------------------------------ 跑 Python
 
 
-def test_run_python_hands_the_code_to_the_resident_shell(client, db_session) -> None:  # noqa: ANN001
+@pytest.fixture()
+def _runtime_ready(monkeypatch) -> None:  # noqa: ANN001
+    """让「跑 Python」这几条**不依赖本机有没有那份 76M 运行时**。
+
+    `run_python` 在运行时还没到位时会**按设计早返回**（只回一句"运行时还没到位"，
+    回执里没有 `demo`，见 `tools.py` 里 `pyodide_base() is None` 那一段）—— 而这几条
+    要验的是另一件事：**服务端代管的样板**（常驻壳、预载、回传接线）对不对。
+
+    开发机上 `data/cache/pyodide/` 有一份，所以它们恒绿；CI 每次都是干净机器，缓存不在，
+    于是红。更要命的是它红不红还取决于**时序**：第一条用例里的 `start_prefetch()` 会在
+    后台把 `vendor/pyodide/` 拷进缓存，拷完第二条就过 —— 同一次运行里一条过一条红
+    （2026-09-29 CI 实测：`1 failed, 489 passed`，红的正是
+    `test_run_python_hands_the_code_to_the_resident_shell`；本机空数据目录下则是两条都红）。
+
+    钉的是**最窄的一处**：`tools.pyodide_base`。`heavy_deps.is_ready()` 本身不动 ——
+    它自己的用例显式传目录进去验存在性（见 `test_heavy_deps.py`）。
+    """
+    monkeypatch.setattr(tools, "pyodide_base", lambda: "__ORIGIN__/assets/pyodide/")
+
+
+def test_run_python_hands_the_code_to_the_resident_shell(
+    client, db_session, _runtime_ready
+) -> None:  # noqa: ANN001
     """模型只交 Python，样板（加载运行时、接 stdout、回传）由服务端负责 ——
     而且现在这份样板在**常驻运行壳**里（`tools.shell_page()`），零件只带 runId。
 
@@ -375,9 +397,10 @@ def test_run_python_hands_the_code_to_the_resident_shell(client, db_session) -> 
 
     # 壳里该有的东西：运行时地址（本机那份优先）、预载、就绪信号、按 runId 执行
     shell = tools.shell_page()
-    base = tools.pyodide_base()
-    if base:
-        assert base in shell
+    # 运行时地址必须在壳里（`__ORIGIN__` 那个占位符要换掉）。夹具钉了地址，所以这里
+    # 不再看"本机有没有那份缓存"—— 从前写成 `if base:` 时，干净机器上这半条断言
+    # 其实**从没执行过**，而它正是"地址替换"这件事唯一的验收点。
+    assert tools.pyodide_base() in shell
     assert "loadPyodide" in shell and "loadPackage" in shell
     assert "runPythonAsync" in shell, "真执行"
     assert "qfCode" in shell, "收宿主派来的脚本"
@@ -399,7 +422,7 @@ def test_run_python_hands_the_code_to_the_resident_shell(client, db_session) -> 
     assert {"numpy", "scipy", "pandas", "matplotlib"} <= set(tools.PRELOAD_PACKAGES)
 
 
-def test_run_python_page_reports_its_output_back(client, db_session) -> None:  # noqa: ANN001
+def test_run_python_page_reports_its_output_back(client, db_session, _runtime_ready) -> None:  # noqa: ANN001
     """沙箱输出要能回到宿主 —— 模型看不见面板，不回传它就只能编。
 
     实测的编法：它声称 numpy/scipy 可用，而面板上写着 `No module named 'numpy'`。
@@ -422,7 +445,9 @@ def test_run_python_page_reports_its_output_back(client, db_session) -> None:  #
     assert shell.count("send({") >= 3, "就绪、成功、失败三条都要回传"
 
 
-def test_run_python_loads_the_fixed_subset_and_refuses_others(client, db_session) -> None:  # noqa: ANN001
+def test_run_python_loads_the_fixed_subset_and_refuses_others(
+    client, db_session, _runtime_ready
+) -> None:  # noqa: ANN001
     """沙箱只支持一个写在代码里的子集（numpy / scipy），而且**默认就装好**。
 
     原先要模型自己在 `packages` 里点名 —— 它一旦忘了（或点了名字单外的），
