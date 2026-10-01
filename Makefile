@@ -41,7 +41,8 @@ CHECK_PYTHON = $(VENV)/bin/python
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
         env-init db-snapshot db-restore \
-        bank-export bank-import graph graph-check graph-relate graph-relate-centric \
+        bank-export bank-import user-export user-import user-show \
+        graph graph-check graph-relate graph-relate-centric \
         graph-export share skills-link embed intake \
         coverage coverage-gaps drive help cases
 
@@ -411,6 +412,27 @@ bank-export:
 
 bank-import:
 	@$(VENV)/bin/python -m pipeline.bankfile import --path $(CURDIR)/bank.json
+
+# ------------------------------------------------- 用户数据包（库 + 文件 ↔ 一个包）
+# 与题库那条路**成对**，但方向相反：
+#   题库包 = 出题机产出、可选导入（上面那条）；用户包 = 自己长出来的、随身带走。
+# 换机器一条路：拷源码 → 构建 → `make user-import`（要题目再 `make bank-import`）。
+#
+# 哪张表属于谁、哪些东西不带（向量 168MB / 资料库正文 .text 251MB / 缓存）、
+# 为什么 —— 都在 `api/app/datapack.py` 的 `BOUNDARY` 与包里那份 manifest 的
+# `excluded` 段里；`make user-show` 可以直接看一个包里有什么。
+USER_PACK ?= $(CURDIR)/quizforge-user.qfpack
+
+user-export:
+	@(cd api && .venv/bin/python -m app.cli.pack export --out $(USER_PACK) $(ARGS))
+
+user-show:
+	@(cd api && .venv/bin/python -m app.cli.pack show --in $(USER_PACK))
+
+# 本机已经有用户数据时它会拒绝 —— 那是提醒你先 `make user-export` 留一份；
+# 确认要覆盖：make user-import ARGS=--force
+user-import:
+	@(cd api && .venv/bin/python -m app.cli.pack import --in $(USER_PACK) $(ARGS))
 
 # ---------------------------------------------------------------- 知识图谱
 # merge 把 981 个点归并成概念（幂等，可反复跑）；edges 派共现边；

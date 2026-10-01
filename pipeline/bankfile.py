@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -71,12 +72,23 @@ def export_bundle(out: Path, statuses: tuple[str, ...] | None = None) -> dict:
             row[0]: row[1]
             for row in conn.execute(text("SELECT key, content FROM meta_documents"))
         }
+        # 这一次装的是哪一份题库（应用自己认的那个指纹）。
+        # **用户数据要拿它对账**：用户的进度是按题目 id 记的，换了一份题库就对不上号，
+        # 所以用户包会把它抄下来（`api/app/datapack.py` 的 `_bank_fingerprint`），
+        # 而这儿的包里必须带着 —— 否则新机器导完题库也不知道自己是哪一份。
+        version = conn.execute(
+            text(
+                "SELECT content_hash, question_count, topic_count FROM bank_versions"
+                " WHERE is_current = 1 ORDER BY id DESC LIMIT 1"
+            )
+        ).fetchone()
 
     for question in questions:
         question["retired_at"] = None
     bundle = {
         "version": VERSION,
         "exportedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "contentHash": (version[0] if version else "") or "",
         "topics": topics,
         "documents": documents,
         "questions": questions,
@@ -85,6 +97,65 @@ def export_bundle(out: Path, statuses: tuple[str, ...] | None = None) -> dict:
     # default=str：主题行里带着 datetime（retired_at 之类），直接 dumps 会炸
     out.write_text(json.dumps(bundle, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     return {"topics": len(topics), "questions": len(questions), "bytes": out.stat().st_size}
+
+
+#: 考纲树一行（列名与 `export_bundle` 的 SELECT 一一对应）。
+#: `desc` 是 SQL 保留字，裸 SQL 里必须加引号 —— 与导出那边同一个坑。
+_TOPIC_UPSERT = (
+    'INSERT INTO topics (key, name, group_key, order_index, color, "desc", depth, parent_key,'
+    " path, path_names, children, descendants, is_leaf, retired_at)"
+    " VALUES (:key, :name, :group_key, :order_index, :color, :desc, :depth, :parent_key,"
+    " :path, :path_names, :children, :descendants, :is_leaf, :retired_at)"
+    ' ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, group_key = EXCLUDED.group_key,'
+    " order_index = EXCLUDED.order_index, color = EXCLUDED.color,"
+    ' "desc" = EXCLUDED."desc", depth = EXCLUDED.depth, parent_key = EXCLUDED.parent_key,'
+    " path = EXCLUDED.path, path_names = EXCLUDED.path_names,"
+    " children = EXCLUDED.children, descendants = EXCLUDED.descendants,"
+    " is_leaf = EXCLUDED.is_leaf, retired_at = EXCLUDED.retired_at,"
+    " updated_at = CURRENT_TIMESTAMP"
+)
+
+
+def _mark_version(conn, bundle: dict, *, questions: int, topics: int) -> str:
+    """把「当前装的是哪一份题库」写进 `bank_versions`，返回用的指纹。
+
+    **从前这里一行都不写**：导出有指纹、导入不落地，于是导入一份题库包之后，
+    应用自己还认为装的是上一次那一份。实测：库里躺着 1623 道题，而 `is_current`
+    那行还写着 9-16 号那次的 109 题 —— 用户数据包靠这个指纹跟题库对账
+    （`api/app/datapack.py` 的 `_bank_fingerprint`），账是旧的那条路就是错的。
+
+    指纹优先用包里带的（**导出端算的才算数** —— 那才是"同一份内容"的判据）；
+    老包没带就按包内容现算一个（确定性：同一份包在哪台机器都得到同一个值）。
+    """
+    content_hash = str(bundle.get("contentHash") or "")
+    if not content_hash:
+        blob = json.dumps(
+            {
+                "questions": sorted(str(q.get("id")) for q in bundle.get("questions") or []),
+                "topics": sorted(str(t.get("key")) for t in bundle.get("topics") or []),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        content_hash = hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    conn.execute(text("UPDATE bank_versions SET is_current = 0 WHERE is_current = 1"))
+    conn.execute(
+        text(
+            "INSERT INTO bank_versions (content_hash, question_count, topic_count, stats, is_current)"
+            " VALUES (:h, :q, :t, :s, 1)"
+            " ON CONFLICT (content_hash) DO UPDATE SET is_current = 1,"
+            " question_count = EXCLUDED.question_count, topic_count = EXCLUDED.topic_count"
+        ),
+        {
+            "h": content_hash,
+            "q": questions,
+            "t": topics,
+            "s": json.dumps(bundle.get("stats") or {}, ensure_ascii=False),
+        },
+    )
+    return content_hash
 
 
 def import_bundle(path: Path) -> dict:
@@ -97,6 +168,13 @@ def import_bundle(path: Path) -> dict:
 
     added = updated = 0
     with get_engine().begin() as conn:
+        # ① 考纲树。**这里从前一行都不写** —— 导出写了 `topics`，导入却只写题目与
+        #    `meta_documents`，返回码还照样报"topics: N"，看上去一切正常。
+        #    实际后果：导入一份题库包会**静默丢掉整棵考纲树**（界面上的层级与分组全空）。
+        topics = bundle.get("topics") or []
+        for topic in topics:
+            conn.execute(text(_TOPIC_UPSERT), topic)
+
         known = {row[0] for row in conn.execute(text("SELECT id FROM questions"))}
         for question in bundle.get("questions") or []:
             exists = question["id"] in known
@@ -128,7 +206,20 @@ def import_bundle(path: Path) -> dict:
                 ),
                 {"k": key, "c": content},
             )
-    return {"added": added, "updated": updated, "topics": len(bundle.get("topics") or [])}
+
+        # ② 版本行 —— 不写它，应用就不知道自己刚装的是哪一份（见 `_mark_version`）。
+        content_hash = _mark_version(
+            conn,
+            bundle,
+            questions=len(bundle.get("questions") or []),
+            topics=len(topics),
+        )
+    return {
+        "added": added,
+        "updated": updated,
+        "topics": len(topics),
+        "contentHash": content_hash,
+    }
 
 
 def strip_front_matter(markdown: str | None) -> str:

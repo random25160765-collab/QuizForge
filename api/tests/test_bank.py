@@ -238,3 +238,58 @@ def _with_error(result):  # noqa: ANN001, ANN202
 
     diag = Diagnostic("ERROR", Path("questions/broken.md"), 1, "示例校验错误")
     return replace(result, diagnostics=list(result.diagnostics) + [diag])
+
+
+def test_bundle_import_writes_the_syllabus_tree_back(engine, imported_bank, tmp_path) -> None:  # noqa: ANN001
+    """题库包一进一出：**考纲树必须跟着走**，版本行也必须落地。
+
+    从前 `import_bundle` 只写题目与 `meta_documents`，`topics` 一行都不写 ——
+    导出写了、导入丢了，而返回码照样报 `"topics": N`，看上去一切正常。
+    后果是"导入一份题库包"静默丢掉整棵考纲树（界面上的学科层级与分组全空）。
+
+    形状取最小：删掉**一个**主题，导一份包回来看它是否回来 —— 用例结束时库里的
+    内容与原来一致，不会影响同一个会话里别的用例。
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    from sqlalchemy import delete
+
+    ROOT = _Path(__file__).resolve().parents[2]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+
+    from pipeline.bankfile import export_bundle, import_bundle  # noqa: PLC0415
+
+    out = tmp_path / "bank.json"
+    export_bundle(out)
+    bundle = json.loads(out.read_text(encoding="utf-8"))
+
+    assert bundle.get("topics"), "导出里必须有考纲树"
+    assert bundle.get("contentHash"), "包里必须带题库指纹 —— 用户数据包靠它对账"
+
+    key = bundle["topics"][0]["key"]
+    factory = get_session_factory()
+
+    session = factory()
+    try:
+        session.execute(delete(Topic).where(Topic.key == key))
+        session.commit()
+        assert session.get(Topic, key) is None, "先确认这个主题真的没了"
+    finally:
+        session.close()
+
+    report = import_bundle(out)
+
+    session = factory()
+    try:
+        assert report["topics"] == len(bundle["topics"])
+        assert session.get(Topic, key) is not None, "导入必须把考纲树写回来"
+        version = session.scalars(
+            select(BankVersion).where(BankVersion.is_current.is_(True))
+        ).first()
+        assert version is not None and version.content_hash == bundle["contentHash"], (
+            "导完必须把「当前装的是哪一份题库」写下来 —— 不写，应用自己还认为装的是上一次那份"
+        )
+    finally:
+        session.close()
