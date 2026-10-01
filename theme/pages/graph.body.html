@@ -97,7 +97,15 @@
       <div class="graph-panel__edges" id="graph-panel-edges"></div>
     </aside>
 
-    <div class="bootstate graph-boot" id="graph-boot">
+    <!--
+      慢启动兜底，**默认 `hidden`** —— 常态下这一屏不出现（与 `boot.js` 的
+      `LOADING_AFTER_MS` 同一条纪律，理由见 `quiz.body.html`）。
+      它盖住整块舞台（`graph.css` 里 `background: var(--bg)` + `inset: 0`），
+      所以只要它在那里，第一帧就不是这一页自己的样子。
+      真的慢（首次冷启动要取 2.4MB、再跑一遍 1554 点 / 13541 边的布局）时
+      由 `graph.js` 的 `boot()` 在 400ms 后把它露出来。
+    -->
+    <div class="bootstate graph-boot" id="graph-boot" hidden>
       <div class="bootstate__icon"><span class="bootstate__spinner"></span></div>
       <h1 class="bootstate__title">正在载入图谱…</h1>
       <p class="bootstate__text">从服务端读取概念与关系</p>

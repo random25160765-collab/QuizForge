@@ -17,6 +17,7 @@
   var qv = QF.qview;
   var sm2 = QF.sm2;
   var ai = QF.ai;
+  var qzPane = ui.qzPane;
 
   var rootEl = null;
 
@@ -324,15 +325,8 @@
   function viewHome() {
     var stats = store.stats();
     var overview = sm2.overview(store.records(), store.allIds());
-    var page = h('div.page');
+    var grid = h('div.qz.qz--home');
 
-    page.appendChild(todayStrip(stats, overview));
-
-    // 原先这儿还有三张卡（练习 / 组卷 / 复习）—— 与顶栏那排是同一件事的两种画法，
-    // 用户的原话是"根本没必要，因为顶部已经有一组完全相同的按钮了"。删掉。
-    // 这一页留下的价值是**看**：今日数字、热力图、主题掌握度，它们都在统计里。
-
-    page.appendChild(h('div.section__title', null, h('span', { text: '刷题记录' }), h('span', { class: 'section__note', text: '最近 18 周' })));
     // 按主题筛选热力图（GitHub 的贡献图也能按仓库筛）
     // 按主题筛热力图时要把**子孙主题**一起算上（data.js 已经为每个节点备好了
     // key + descendants 的清单）。此前只传了主题键本身，而题目标签挂在子主题上，
@@ -340,76 +334,95 @@
     var heatSeries = state.heatTopic
       ? store.daySeries(126, (D.subtree && D.subtree(state.heatTopic)) || [state.heatTopic])
       : stats.heatmap;
-    page.appendChild(
+
+    // 左栏是"看数字"：今日一行 → 热力图（＋右侧同期统计）。
+    // 原先这三块各占满一屏宽，热力图与它的统计被两端对齐拉开到 1300px 之外。
+    grid.appendChild(
+      qzPane({
+        name: 'record',
+        title: '刷题记录',
+        note: '最近 18 周',
+        pad: true,
+        body: [
+          todayStrip(stats, overview),
+          heatTopicRow(),
+          h(
+            'div.heatwrap',
+            null,
+            h('div', null, heatmap(heatSeries), heatmapLegend()),
+            heatSideStats(heatSeries)
+          ),
+        ],
+      })
+    );
+
+    var side = h('div');
+    side.appendChild(topicGrid(stats));
+    var rec = stats.recommended || {};
+    if (rec.weakestTopic || rec.wrongCount) side.appendChild(suggestBlock(rec));
+
+    grid.appendChild(
+      // 只保留「右键置顶」这个不明显的操作，点击卡片是显然的，不必写出来
+      qzPane({ name: 'topics', title: '主题', note: '右键置顶', pad: true, body: side })
+    );
+
+    return grid;
+  }
+
+  /** 「需要巩固」那一块：一句话 + 两个动作，落在一栏里 */
+  function suggestBlock(rec) {
+    var weakest = D.topicMap[rec.weakestTopic] || {};
+    var box = h('div.qz__block', { style: { marginTop: '16px' } });
+    box.appendChild(
       h(
-        'div.card.panel',
+        'div.qz__blocktitle',
         null,
-        heatTopicRow(),
-        h(
-          'div.heatwrap',
-          null,
-          h('div', null, heatmap(heatSeries), heatmapLegend()),
-          heatSideStats(heatSeries)
-        )
+        h('span', { html: ui.icon('target', 14) }),
+        h('span', { text: '需要巩固' })
       )
     );
-
-    page.appendChild(
-      // 只保留「右键置顶」这个不明显的操作，点击卡片是显然的，不必写出来
-      h('div.section__title', null, h('span', { text: '主题' }), h('span', { class: 'section__note', text: '右键置顶' }))
+    box.appendChild(
+      h(
+        'div.statline',
+        { style: { padding: '0 0 10px' } },
+        h('span', {
+          text: rec.weakestTopic
+            ? '正确率最低：' + (weakest.name || rec.weakestTopic)
+            : '有 ' + rec.wrongCount + ' 道题需要巩固',
+        }),
+        rec.weakestTopic && rec.weakestRate != null
+          ? h('span', { style: { flex: '1 1 auto' } })
+          : null,
+        rec.weakestTopic && rec.weakestRate != null
+          ? h('b', { text: ui.pct(rec.weakestRate * 100, 100) })
+          : null
+      )
     );
-    page.appendChild(topicGrid(stats));
-
-    var rec = stats.recommended || {};
-    if (rec.weakestTopic || rec.wrongCount) {
-      var weakest = D.topicMap[rec.weakestTopic] || {};
-      var row = h('div.card.panel', { style: { marginTop: '22px' } });
-      row.appendChild(
-        h(
-          'div.statline',
-          { style: { padding: '0 0 10px' } },
-          h('span', { html: ui.icon('target', 15) }),
-          h(
-            'span',
-            {
-              text: rec.weakestTopic
-                ? '正确率最低的主题是「' + (weakest.name || rec.weakestTopic) + '」'
-                : '有 ' + rec.wrongCount + ' 道题需要巩固'
-            }
-          ),
-          rec.weakestTopic && rec.weakestRate != null
-            ? h('b', { text: ui.pct(rec.weakestRate * 100, 100) })
-            : null
-        )
-      );
-      row.appendChild(
-        h(
-          'div.btnrow',
-          null,
-          rec.weakestTopic
-            ? h('button.btn.btn--primary.btn--sm', {
-                type: 'button',
-                onClick: function () {
-                  state.filters = { topics: [rec.weakestTopic], status: [], starred: false, types: [], difficulty: [], keyword: '' };
-                  state.session = null;
-                  go('practice');
-                },
-              }, h('span', { text: '强化这个主题' }))
-            : null,
-          rec.wrongCount
-            ? h('button.btn.btn--sm', {
-                type: 'button',
-                onClick: function () {
-                  startPractice({ scope: 'wrong' });
-                },
-              }, h('span', { text: '只做错题（' + rec.wrongCount + '）' }))
-            : null
-        )
-      );
-      page.appendChild(row);
-    }
-
-    return page;
+    box.appendChild(
+      h(
+        'div.btnrow',
+        null,
+        rec.weakestTopic
+          ? h('button.btn.btn--primary.btn--sm', {
+              type: 'button',
+              onClick: function () {
+                state.filters = { topics: [rec.weakestTopic], status: [], starred: false, types: [], difficulty: [], keyword: '' };
+                state.session = null;
+                go('practice');
+              },
+            }, h('span', { text: '强化这个主题' }))
+          : null,
+        rec.wrongCount
+          ? h('button.btn.btn--sm', {
+              type: 'button',
+              onClick: function () {
+                startPractice({ scope: 'wrong' });
+              },
+            }, h('span', { text: '只做错题（' + rec.wrongCount + '）' }))
+          : null
+      )
+    );
+    return box;
   }
 
   /** 今日一行摘要：当天战况 + 连续天数 + 待复习 */
@@ -730,37 +743,68 @@
    * 以前两者同屏：一边做题一边挂着筛选条，点「随机」会当场重建会话丢掉进度，
    * 改了筛选条件题目却不变，谁也说不清当前这题的集合到底是哪一批。
    */
+  /* 练习这一屏是**窗格**（一屏不滚、每栏自己滚），所以不用 `.page` ——
+     那一层会带内距、也会让整页滚起来，两样都和窗格打架。 */
   function viewPractice() {
-    var page = h('div.page');
-    if (state.picking || !state.session || !state.session.ids.length) return viewPicker(page);
-    return viewPracticeSession(page);
+    if (state.picking || !state.session || !state.session.ids.length) return viewPicker();
+    return viewPracticeSession();
   }
 
   /* ------------------------------------------------------------ 选题态 */
 
-  function viewPicker(page) {
+  /** 一屏三栏：筛选 · 题库 · 选题篮。 */
+  function viewPicker() {
     var ids = filteredIds();
+    var basket = basketIds().length;
+    var grid = h('div.qz.qz--pick');
 
-    var grid = h('div.exam-grid');
-    var main = h('div');
-    main.appendChild(buildPickerPanel());
-
-    if (!ids.length) {
-      main.appendChild(
-        emptyState('search', '没有符合条件的题目', '放宽主题、题型或难度筛选，或清空关键词。', [
-          { label: '清除筛选', onClick: function () { resetFilters(); render(); } },
-        ])
-      );
-    } else {
-      main.appendChild(buildBrowseList(ids));
-    }
-
-    grid.appendChild(main);
     grid.appendChild(
-      h('div.exam-aside', null, buildBasketPanel(), buildResumePanel())
+      qzPane({
+        name: 'filters',
+        title: '筛选范围',
+        pad: true,
+        actions: [
+          h('button.btn.btn--sm.btn--ghost', {
+            type: 'button',
+            onClick: function () { resetFilters(); render(); },
+          }, h('span', { text: '清空' })),
+        ],
+        body: buildPickerPanel(),
+      })
     );
-    page.appendChild(grid);
-    return page;
+
+    grid.appendChild(
+      qzPane({
+        name: 'bank',
+        title: '题库',
+        note: ids.length ? '共 ' + ids.length + ' 题' : '没有符合条件的题目',
+        actions: ids.length
+          ? [
+              h('button.btn.btn--sm.btn--ghost', {
+                type: 'button',
+                onClick: function () { setBasket(ids); },
+              }, h('span', { text: '全部加入选题篮' })),
+            ]
+          : [],
+        body: ids.length
+          ? buildBrowseList(ids)
+          : emptyState('search', '没有符合条件的题目', '放宽主题、题型或难度筛选，或清空关键词。', [
+              { label: '清除筛选', onClick: function () { resetFilters(); render(); } },
+            ]),
+      })
+    );
+
+    grid.appendChild(
+      qzPane({
+        name: 'basket',
+        title: '选题篮',
+        note: basket ? basket + ' 题' : '空',
+        pad: true,
+        body: [buildResumePanel(), buildBasketPanel()],
+      })
+    );
+
+    return grid;
   }
 
   /** 改选题篮：写回 localStorage 并重渲染 */
@@ -782,8 +826,8 @@
     var done = Object.keys(s.results).length;
     if (done >= s.ids.length) return null;
 
-    var box = h('div.card.panel');
-    box.appendChild(h('div.panel__head', null, h('h2.panel__title', { text: '未完成' })));
+    var box = h('div.qz__block');
+    box.appendChild(h('div.qz__blocktitle', null, h('span', { text: '未完成的练习' })));
     box.appendChild(
       h(
         'div.statline',
@@ -816,24 +860,16 @@
     return box;
   }
 
-  /** 选题篮：攒好的题，够了再一次性开始练习 */
+  /** 选题篮：攒好的题，够了再一次性开始练习。标题与计数在窗格头上。 */
   function buildBasketPanel() {
     var ids = basketIds();
-    var box = h('div.card.panel');
-    box.appendChild(
-      h(
-        'div.panel__head',
-        null,
-        h('h2.panel__title', { text: '选题篮' }),
-        h('span.badge.badge--mono', { text: ids.length + ' 题' })
-      )
-    );
+    var box = h('div');
 
     if (!ids.length) {
       box.appendChild(
         h('p.form__note', {
           style: { margin: '0' },
-          text: '在左侧题库里「加入选题篮」，或一次「全部加入」，攒够了再开始。',
+          text: '在题库里给题目「加入选题篮」，或一次「全部加入」，攒够了再开始。',
         })
       );
       return box;
@@ -890,22 +926,7 @@
    * 只是因为想看一眼题面，体验很突兀。
    */
   function buildBrowseList(ids) {
-    var box = h('div.card.panel');
-    box.appendChild(
-      h(
-        'div.panel__head',
-        null,
-        h('h2.panel__title', { text: '题库' }),
-        h('span.badge.badge--mono', { text: '共 ' + ids.length + ' 题' }),
-        h('span', { style: { flex: '1 1 auto' } }),
-        h('button.btn.btn--sm.btn--ghost', {
-          type: 'button',
-          onClick: function () {
-            setBasket(ids);
-          },
-        }, h('span', { text: '全部加入选题篮' }))
-      )
-    );
+    var box = h('div');
 
     var shown = Math.min(ids.length, state.browseLimit);
     for (var i = 0; i < shown; i += 1) {
@@ -1089,7 +1110,7 @@
     slot.appendChild(wrap);
   }
 
-  function viewPracticeSession(page) {
+  function viewPracticeSession() {
     var s = state.session;
     var q = currentQuestion();
     if (!q) {
@@ -1145,11 +1166,32 @@
       afterAnswer: afterAnswer,
     });
 
-    var grid = h('div.exam-grid');
-    grid.appendChild(h('div', null, card));
-    grid.appendChild(h('div.exam-aside', null, buildQNav(), buildSessionSummary()));
-    page.appendChild(grid);
-    return page;
+    // 一屏三栏：题号 · 题卡 · 本次练习。
+    // 做题时眼睛只在中间那条，但"还剩几道、错了几道"始终留在余光里 —— 这正是
+    // 把题号与成绩并排摆在两边、而不是推到屏幕外的理由。
+    var answered = Object.keys(s.results).length;
+    var grid = h('div.qz.qz--solve');
+    grid.appendChild(
+      qzPane({ name: 'nav', title: '题号', sub: buildQNavLegend(), pad: true, body: buildQNav() })
+    );
+    grid.appendChild(
+      qzPane({
+        name: 'q',
+        title: '第 ' + (s.index + 1) + ' / ' + s.ids.length + ' 题',
+        headExtra: h('div.qz__bar', null, ui.progressBar(answered / Math.max(1, s.ids.length))),
+        body: card,
+      })
+    );
+    grid.appendChild(
+      qzPane({
+        name: 'summary',
+        title: '本次练习',
+        note: s.label,
+        pad: true,
+        body: buildSessionSummary(),
+      })
+    );
+    return grid;
   }
 
   function shortActions(q, result) {
@@ -1269,8 +1311,7 @@
 
   function buildQNav() {
     var s = state.session;
-    var box = h('div.card.panel');
-    box.appendChild(h('div.panel__head', null, h('h2.panel__title', { text: '题号' })));
+    var box = h('div');
     var nav = h('div.qnav');
     s.ids.forEach(function (id, index) {
       var result = s.results[id];
@@ -1294,19 +1335,75 @@
     return box;
   }
 
+  /**
+   * 本次练习里答错的题：点一下跳到那一道。
+   *
+   * 题号那一栏在"一次上百题"的会话里其实是**不可导航的**（格子多到滚不完），
+   * 而刷题时真正要回看的只有错的那几道 —— 所以把它们按题号列在成绩栏里。
+   */
+  function buildSessionWrongs() {
+    var s = state.session;
+    var wrongIds = s.ids.filter(function (id) {
+      var r = s.results[id];
+      return r && !r.correct;
+    });
+    if (!wrongIds.length) return null;
+
+    var box = h('div.qz__block', { style: { marginTop: '18px' } });
+    box.appendChild(
+      h(
+        'div.qz__blocktitle',
+        null,
+        h('span', { text: '本次错题' }),
+        h('span.spacer'),
+        h('span.qz__note', { text: wrongIds.length + ' 题' })
+      )
+    );
+    var list = h('div.qz__wrongs');
+    wrongIds.forEach(function (id) {
+      var q = question(id);
+      var index = s.ids.indexOf(id);
+      list.appendChild(
+        h(
+          'button.qz__wrongrow',
+          {
+            type: 'button',
+            title: id,
+            class: index === s.index ? 'is-current' : '',
+            onClick: function () {
+              s.index = index;
+              render();
+            },
+          },
+          h('span.qz__wrongn', { text: String(index + 1) }),
+          h('span.qz__wrongtext', { text: q ? md.plain(q.stem, 60) : id })
+        )
+      );
+    });
+    box.appendChild(list);
+    return box;
+  }
+
+  /** 题号图例：颜色是有含义的，得说清哪一格是什么 */
+  function buildQNavLegend() {
+    function item(cls, label) {
+      return h('span', null, h('i', { class: cls }), h('span', { text: label }));
+    }
+    return h(
+      'div.qz__legend',
+      null,
+      item('is-current', '当前'),
+      item('', '未答'),
+      item('is-right', '答对'),
+      item('is-wrong', '答错')
+    );
+  }
+
   function buildSessionSummary() {
     var s = state.session;
     var answered = Object.keys(s.results).length;
     var correct = sessionCorrect();
-    var box = h('div.card.panel');
-    box.appendChild(
-      h(
-        'div.panel__head',
-        null,
-        h('h2.panel__title', { text: '本次练习' }),
-        h('span.badge', { text: s.label })
-      )
-    );
+    var box = h('div');
     box.appendChild(progressRow('作答进度', answered / Math.max(1, s.ids.length), answered + ' / ' + s.ids.length));
     box.appendChild(
       progressRow('正确率', answered ? correct / answered : 0, answered ? ui.pct(correct, answered) : '—', 'ok')
@@ -1314,6 +1411,8 @@
     box.appendChild(
       h('div.statline', null, h('span', { text: '用时' }), h('b', { text: ui.fmtDuration(Date.now() - s.started) }))
     );
+    var wrongs = buildSessionWrongs();
+    if (wrongs) box.appendChild(wrongs);
     box.appendChild(
       h(
         'div.btnrow',
@@ -1360,21 +1459,8 @@
 
   /** 选题面板：筛选条件 + 快捷范围。只在选题态出现，任何时候都不会与题目卡片同屏。 */
   function buildPickerPanel() {
-    var panel = h('div.card.panel', { style: { marginBottom: '14px' } });
-    panel.appendChild(
-      h(
-        'div.panel__head',
-        null,
-        h('h2.panel__title', { text: '筛选范围' }),
-        h('button.btn.btn--sm.btn--ghost', {
-          type: 'button',
-          onClick: function () {
-            resetFilters();
-            render();
-          },
-        }, h('span', { text: '清空' }))
-      )
-    );
+    // 标题与「清空」在窗格头上（见 viewPicker），这里只出筛选条件本身
+    var panel = h('div');
 
     // 题源：公共题库 / 我的题单 / 都要。
     // 它不是"哪些题合适"，而是"从哪一批里挑" —— 所以比筛选条件更靠前。
@@ -2132,25 +2218,21 @@
   }
 
   function viewPaperConfig() {
-    var page = h('div.page');
-    page.appendChild(
-      h(
-        'div.page__head',
-        null,
-        h('h1.page__title', { text: '组卷' })
-      )
-    );
+    var grid = h('div.qz.qz--paper');
+    var panel = h('div');
 
+    // 有一份没做完的试卷：摆在设置上面 —— 它是这一屏最该先看到的那个决定
     var draft = store.getPaper();
     if (draft && draft.expiresAt && draft.expiresAt > Date.now()) {
-      page.appendChild(
+      panel.appendChild(
         h(
-          'div.card.panel',
+          'div.qz__block',
           { style: { marginBottom: '16px' } },
           h(
-            'div.panel__head',
+            'div.qz__blocktitle',
             null,
-            h('h2.panel__title', { text: '有一份未完成的试卷' }),
+            h('span', { text: '有一份未完成的试卷' }),
+            h('span.spacer'),
             h('button.btn.btn--sm', {
               type: 'button',
               onClick: function () {
@@ -2178,8 +2260,6 @@
       );
     }
 
-    var panel = h('div.card.panel');
-    panel.appendChild(h('div.panel__head', null, h('h2.panel__title', { text: '试卷设置' })));
     panel.appendChild(buildTopicSelector(configAccessor(paperConfig, 'topics')));
     // 题源：与练习页同一个判据（`state.qsource` + `QF.data.myIds`），
     // 组卷的题库池在 `paperPool()` 里按它分层。题单为空时不加这一行。
@@ -2227,21 +2307,25 @@
       )
     );
 
-    var preview = buildPaperPreview();
-    panel.appendChild(h('div', { style: { marginTop: '18px' } }, preview));
-    panel.appendChild(
-      h(
-        'div.btnrow',
-        { style: { marginTop: '18px' } },
-        h('button.btn.btn--primary.btn--lg', {
-          type: 'button',
-          onClick: function () { buildExam(); },
-        }, h('span', { html: ui.icon('play', 16) }), h('span', { text: '生成试卷并开始' }))
-      )
+    // 右栏 = 这一卷长什么样 + 开考那一按。抽出来的分布随左边的设置实时变，
+    // 所以它得跟设置并排；隔着半屏看一个会变的分布没有意义。
+    grid.appendChild(qzPane({ name: 'form', title: '试卷设置', pad: true, body: panel }));
+    grid.appendChild(
+      qzPane({
+        name: 'summary',
+        title: '本次试卷',
+        pad: true,
+        body: buildPaperPreview(),
+        foot: [
+          h('button.btn.btn--primary.btn--lg', {
+            type: 'button',
+            style: { width: '100%', justifyContent: 'center' },
+            onClick: function () { buildExam(); },
+          }, h('span', { html: ui.icon('play', 16) }), h('span', { text: '生成试卷并开始' })),
+        ],
+      })
     );
-
-    page.appendChild(panel);
-    return page;
+    return grid;
   }
 
   function paperPool() {
@@ -2387,7 +2471,7 @@
       if (clock) {
         clock.textContent = ui.fmtDuration(remain);
         clock.className =
-          'timerbar__clock' + (remain <= 30000 ? ' is-danger' : remain <= 120000 ? ' is-warn' : '');
+          'qz__clock' + (remain <= 30000 ? ' is-danger' : remain <= 120000 ? ' is-warn' : '');
       }
     }, 500);
   }
@@ -2415,37 +2499,26 @@
 
   function viewExam() {
     var exam = state.exam;
-    var page = h('div.page');
+    var grid = h('div.qz.qz--exam');
     var remain = Math.max(0, exam.expiresAt - Date.now());
-    var clock = h('span.timerbar__clock', {
+    // 计时从"横跨全屏的一条"挪进右栏：考试时最该盯的就是这块表，
+    // 它和自己的题量、时限摆在一处才成一组（且不必再横着占掉一整条）。
+    var clock = h('span.qz__clock', {
       id: 'exam-clock',
       class: remain <= 30000 ? 'is-danger' : remain <= 120000 ? 'is-warn' : '',
       text: ui.fmtDuration(remain),
     });
-    page.appendChild(
-      h(
-        'div.timerbar',
-        null,
-        h('span', { html: ui.icon('clock', 18) }),
-        clock,
-        h('span.badge.badge--mono', { text: exam.ids.length + ' 题' }),
-        h('span.badge', { text: '已答 ' + examAnswered() + ' / ' + exam.ids.length }),
-        h('span.spacer'),
-        h('button.btn.btn--ghost.btn--sm', {
-          type: 'button',
-          onClick: function () { quitExam(); },
-        }, h('span', { text: '退出' })),
-        h('button.btn.btn--primary', {
-          type: 'button',
-          onClick: function () { submitExam(); },
-        }, h('span', { html: ui.icon('check', 15) }), h('span', { text: '交卷' }))
-      )
-    );
 
     var q = question(exam.ids[exam.index]);
     if (!q) {
-      page.appendChild(emptyState('warn', '题目不存在', '试卷数据可能已损坏，请重新组卷。'));
-      return page;
+      grid.appendChild(
+        qzPane({
+          title: '考试',
+          pad: true,
+          body: emptyState('warn', '题目不存在', '试卷数据可能已损坏，请重新组卷。'),
+        })
+      );
+      return grid;
     }
     var response = exam.responses[q.id];
     var flagged = !!exam.flags[q.id];
@@ -2491,9 +2564,6 @@
       ),
     });
 
-    var aside = h('div.exam-aside');
-    var navBox = h('div.card.panel');
-    navBox.appendChild(h('div.panel__head', null, h('h2.panel__title', { text: '答题卡' })));
     var nav = h('div.qnav');
     exam.ids.forEach(function (id, index) {
       var item = question(id);
@@ -2512,33 +2582,68 @@
         })
       );
     });
-    navBox.appendChild(nav);
-    navBox.appendChild(
-      h(
-        'div.btnrow',
-        { style: { marginTop: '14px' } },
-        h('button.btn.btn--sm', {
-          type: 'button',
-          onClick: function () {
-            var next = exam.ids.findIndex(function (id) {
-              return eng.isResponseEmpty(question(id), exam.responses[id]);
-            });
-            if (next === -1) ui.toast('所有题目都已作答', 'ok');
-            else {
-              exam.index = next;
-              render();
-            }
-          },
-        }, h('span', { text: '跳到第一道未答题' }))
-      )
+    // 一屏三栏：答题卡 · 题卡 · 本场考试（计时）。
+    // 答题卡与做题态的「题号」同一位置 —— 同一件事（我在第几题）在两屏里不该换地方。
+    grid.appendChild(
+      qzPane({
+        name: 'sheet',
+        title: '答题卡',
+        pad: true,
+        body: nav,
+        foot: [
+          h('button.btn.btn--sm', {
+            type: 'button',
+            style: { width: '100%', justifyContent: 'center' },
+            onClick: function () {
+              var next = exam.ids.findIndex(function (id) {
+                return eng.isResponseEmpty(question(id), exam.responses[id]);
+              });
+              if (next === -1) ui.toast('所有题目都已作答', 'ok');
+              else {
+                exam.index = next;
+                render();
+              }
+            },
+          }, h('span', { text: '跳到第一道未答题' })),
+        ],
+      })
     );
-    aside.appendChild(navBox);
 
-    var grid = h('div.exam-grid');
-    grid.appendChild(h('div', null, card));
-    grid.appendChild(aside);
-    page.appendChild(grid);
-    return page;
+    grid.appendChild(
+      qzPane({
+        name: 'q',
+        title: '第 ' + (exam.index + 1) + ' / ' + exam.ids.length + ' 题',
+        headExtra: h('div.qz__bar', null, ui.progressBar(examAnswered() / Math.max(1, exam.ids.length))),
+        body: card,
+      })
+    );
+
+    var info = h('div');
+    info.appendChild(h('div.qz__clockrow', null, h('span', { html: ui.icon('clock', 17) }), clock));
+    info.appendChild(
+      h('div.statline', null,
+        h('span', { text: '本卷题量' }),
+        h('span', { style: { flex: '1 1 auto' } }),
+        h('b', { text: exam.ids.length + ' 题' }))
+    );
+    info.appendChild(
+      h('div.statline', null,
+        h('span', { text: '时限' }),
+        h('span', { style: { flex: '1 1 auto' } }),
+        h('b', { text: exam.minutes + ' 分钟' }))
+    );
+    info.appendChild(
+      h('div.statline', null,
+        h('span', { text: '已答' }),
+        h('span', { style: { flex: '1 1 auto' } }),
+        h('b', { text: examAnswered() + ' / ' + exam.ids.length }))
+    );
+    info.appendChild(
+      h('p.form__note', { style: { marginTop: '12px' }, text: '时间到会自动交卷。标记过的题在答题卡同一条上看得见，交卷前记得回头过一遍。' })
+    );
+    grid.appendChild(qzPane({ name: 'info', title: '本场考试', pad: true, body: info }));
+
+    return grid;
   }
 
   function persistExam() {
@@ -2773,23 +2878,17 @@
   /* ========================================================== 复习模式 */
 
   function viewReview() {
-    var page = h('div.page');
     var overview = sm2.overview(store.records(), store.allIds());
 
-    page.appendChild(
-      h(
-        'div.page__head',
-        null,
-        h('h1.page__title', { text: '复习' })
-      )
-    );
+    if (state.review) return viewReviewSession();
 
-    if (state.review) return viewReviewSession(page);
+    var grid = h('div.qz.qz--review');
 
-    page.appendChild(
+    var left = h('div');
+    left.appendChild(
       h(
         'div.statgrid',
-        null,
+        { style: { marginTop: '0' } },
         statcard('今日到期', String(overview.dueToday), '题', overview.dueToday ? '建议今天完成' : '暂无到期', overview.dueToday ? 'amber' : ''),
         statcard('未来 7 天', String(overview.week), '题', '提前预习也可以'),
         statcard('在学题目', String(overview.learning), '题', '已排入复习计划'),
@@ -2797,42 +2896,7 @@
       )
     );
 
-    var dueIds = store.dueIds();
-    page.appendChild(
-      h(
-        'div.card.panel',
-        { style: { marginTop: '20px' } },
-        h('div.panel__head', null, h('h2.panel__title', { text: dueIds.length ? '开始复习' : '暂时没有到期的题目' })),
-        h('p.form__note', {
-          text: dueIds.length
-            ? '将按到期时间从早到晚依次推送 ' + dueIds.length + ' 道题。'
-            : '可以去练习模式新增一些题目，系统会自动把它们排入复习计划。',
-        }),
-        h(
-          'div.btnrow',
-          { style: { marginTop: '14px' } },
-          h('button.btn.btn--primary.btn--lg', {
-            type: 'button',
-            disabled: !dueIds.length,
-            onClick: startReview,
-          }, h('span', { html: ui.icon('refresh', 16) }), h('span', { text: '开始复习' + (dueIds.length ? '（' + dueIds.length + ' 题）' : '') })),
-          h('button.btn', {
-            type: 'button',
-            onClick: function () {
-              var recent = store.wrongIds().slice(0, 20);
-              if (!recent.length) {
-                ui.toast('还没有错题可以复习', 'warn');
-                return;
-              }
-              startPractice({ scope: 'ids', ids: recent, label: '错题强化' });
-            },
-          }, h('span', { html: ui.icon('close', 15) }), h('span', { text: '用错题热身' }))
-        )
-      )
-    );
-
     // 复习日历（未来 14 天）
-    page.appendChild(h('div.section__title', { text: '近期复习负载' }));
     var buckets = new Array(14).fill(0);
     var now = Date.now();
     Object.keys(store.records()).forEach(function (id) {
@@ -2843,7 +2907,7 @@
       if (delta < 0) buckets[0] += 1;
     });
     var maxCount = Math.max.apply(null, buckets.concat([1]));
-    var chart = h('div', { style: { display: 'grid', gap: '6px', gridTemplateColumns: 'repeat(14, 1fr)', alignItems: 'end', height: '130px' } });
+    var chart = h('div', { style: { display: 'grid', gap: '6px', gridTemplateColumns: 'repeat(14, 1fr)', alignItems: 'end', height: '150px' } });
     buckets.forEach(function (count, index) {
       var ratio = count / maxCount;
       chart.appendChild(
@@ -2870,9 +2934,66 @@
         )
       );
     });
-    page.appendChild(h('div.card.panel', null, chart));
+    left.appendChild(
+      h('div.qz__blocktitle', { style: { marginTop: '22px' } }, h('span', { text: '未来 14 天' }))
+    );
+    left.appendChild(
+      h('p.form__note', { style: { margin: '0 0 10px' }, text: '每根柱子是一天要复习几道题 —— 今天的用琥珀色标出来。' })
+    );
+    left.appendChild(chart);
+    grid.appendChild(qzPane({ name: 'load', title: '复习负载', pad: true, body: left }));
 
-    return page;
+    var dueIds = store.dueIds();
+    var action = h('div');
+    action.appendChild(
+      h('p.form__note', {
+        style: { marginTop: '0' },
+        text: dueIds.length
+          ? '将按到期时间从早到晚依次推送 ' + dueIds.length + ' 道题。'
+          : '可以去练习模式新增一些题目，系统会自动把它们排入复习计划。',
+      })
+    );
+    action.appendChild(
+      h(
+        'div.btnrow',
+        { style: { marginTop: '14px' } },
+        h('button.btn.btn--primary.btn--lg', {
+          type: 'button',
+          disabled: !dueIds.length,
+          onClick: startReview,
+        }, h('span', { html: ui.icon('refresh', 16) }), h('span', { text: '开始复习' + (dueIds.length ? '（' + dueIds.length + ' 题）' : '') })),
+        h('button.btn', {
+          type: 'button',
+          onClick: function () {
+            var recent = store.wrongIds().slice(0, 20);
+            if (!recent.length) {
+              ui.toast('还没有错题可以复习', 'warn');
+              return;
+            }
+            startPractice({ scope: 'ids', ids: recent, label: '错题强化' });
+          },
+        }, h('span', { html: ui.icon('close', 15) }), h('span', { text: '用错题热身' }))
+      )
+    );
+    action.appendChild(
+      h(
+        'div.qz__block',
+        { style: { marginTop: '18px' } },
+        h('div.qz__blocktitle', null, h('span', { text: '复习节奏' })),
+        h('p.form__note', { style: { margin: '0 0 8px' }, text: '只推送到期的题；没到期的不出现。' }),
+        h('p.form__note', { style: { margin: '0' }, text: '每张卡片自评四档（重来 / 困难 / 一般 / 简单）决定下次什么时候再见它。' })
+      )
+    );
+    grid.appendChild(
+      qzPane({
+        name: 'action',
+        title: dueIds.length ? '开始复习' : '暂时没有到期的题目',
+        pad: true,
+        body: action,
+      })
+    );
+
+    return grid;
   }
 
   function startReview() {
@@ -2885,7 +3006,7 @@
     render();
   }
 
-  function viewReviewSession(page) {
+  function viewReviewSession() {
     var rev = state.review;
     var q = question(rev.ids[rev.index]);
 
@@ -2900,31 +3021,34 @@
     }
 
     if (rev.index >= rev.ids.length) {
-      page.appendChild(
+      var doneBody = h('div');
+      doneBody.appendChild(
+        h('p.form__note', {
+          style: { marginTop: '0' },
+          text: '共复习 ' + rev.done + ' 道题。复习记录已经保存，下次到期时会自动出现。',
+        })
+      );
+      doneBody.appendChild(
         h(
-          'div.card.panel',
-          null,
-          h('h2.panel__title', { text: '本轮复习完成' }),
-          h('p.form__note', { text: '共复习 ' + rev.done + ' 道题。复习记录已经保存，下次到期时会自动出现。' }),
-          h(
-            'div.btnrow',
-            { style: { marginTop: '14px' } },
-            h('button.btn.btn--primary', {
-              type: 'button',
-              onClick: function () {
-                state.review = null;
-                go('home');
-              },
-            }, h('span', { text: '回到工作台' })),
-            h('button.btn', {
-              type: 'button',
-              disabled: !store.dueIds().length,
-              onClick: startReview,
-            }, h('span', { text: '继续复习下一批' }))
-          )
+          'div.btnrow',
+          { style: { marginTop: '14px' } },
+          h('button.btn.btn--primary', {
+            type: 'button',
+            onClick: function () {
+              state.review = null;
+              go('home');
+            },
+          }, h('span', { text: '回到工作台' })),
+          h('button.btn', {
+            type: 'button',
+            disabled: !store.dueIds().length,
+            onClick: startReview,
+          }, h('span', { text: '继续复习下一批' }))
         )
       );
-      return page;
+      var doneGrid = h('div.qz.qz--review');
+      doneGrid.appendChild(qzPane({ name: 'done', title: '本轮复习完成', pad: true, body: doneBody }));
+      return doneGrid;
     }
 
     var rec = store.record(q.id);
@@ -2972,8 +3096,10 @@
     }
     card.appendChild(inner);
     stage.appendChild(card);
-    page.appendChild(stage);
 
+    // 翻面之后，四档自评钉在题卡栏的底部：它是对这张卡片的回答，
+    // 跟着卡片走，而不是另起一张卡飘在下面。
+    var gradeFoot = null;
     if (rev.flipped) {
       var bar = h(
         'div.gradebar',
@@ -3008,25 +3134,69 @@
           );
         })
       );
-      page.appendChild(
+      gradeFoot = [
         h(
-          'div.card.panel',
-          { style: { marginTop: '18px' } },
-          h('div.section__title', { style: { marginBottom: '4px' } }, h('span', { text: '这道题你答得怎么样？' })),
+          'div',
+          { style: { width: '100%' } },
+          h('div.qz__blocktitle', null, h('span', { text: '这道题你答得怎么样？' })),
           bar,
           h(
             'div.btnrow',
-            { style: { marginTop: '14px' } },
+            { style: { marginTop: '12px' } },
             h('span.sb__hint', null, h('kbd', { text: '1' }), h('span', { text: '重来' })),
             h('span.sb__hint', null, h('kbd', { text: '2' }), h('span', { text: '困难' })),
             h('span.sb__hint', null, h('kbd', { text: '3' }), h('span', { text: '一般' })),
             h('span.sb__hint', null, h('kbd', { text: '4' }), h('span', { text: '简单' }))
           )
-        )
-      );
+        ),
+      ];
     }
 
-    return page;
+    var grid = h('div.qz.qz--review');
+    grid.appendChild(
+      qzPane({
+        name: 'card',
+        title: '第 ' + (rev.index + 1) + ' / ' + rev.ids.length + ' 题',
+        body: stage,
+        foot: gradeFoot,
+      })
+    );
+
+    var side = h('div');
+    side.appendChild(
+      progressRow('本轮进度', rev.index / Math.max(1, rev.ids.length), rev.index + ' / ' + rev.ids.length)
+    );
+    side.appendChild(
+      h('div.statline', null,
+        h('span', { text: '已复习' }),
+        h('span', { style: { flex: '1 1 auto' } }),
+        h('b', { text: String(rev.done) }))
+    );
+    var counts = [0, 0, 0, 0];
+    var grades = rev.grades || {};
+    Object.keys(grades).forEach(function (id) {
+      var g = grades[id];
+      if (g >= 0 && g < counts.length) counts[g] += 1;
+    });
+    side.appendChild(
+      h(
+        'div.qz__block',
+        { style: { marginTop: '18px' } },
+        h('div.qz__blocktitle', null, h('span', { text: '本轮自评分布' })),
+        sm2.grades.map(function (grade, index) {
+          return h(
+            'div.statline',
+            null,
+            h('span', { text: grade.label }),
+            h('span', { style: { flex: '1 1 auto' } }),
+            h('b', { text: String(counts[index]) })
+          );
+        })
+      )
+    );
+    grid.appendChild(qzPane({ name: 'side', title: '本次复习', pad: true, body: side }));
+
+    return grid;
   }
 
   /* ========================================================== 空状态 */

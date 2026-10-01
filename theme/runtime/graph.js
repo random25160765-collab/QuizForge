@@ -56,6 +56,11 @@
     grip: document.getElementById('graph-hud-grip'),
   };
 
+  /*: 「正在载入图谱…」什么时候才出现（毫秒）。
+   *  与 `boot.js` 的 `LOADING_AFTER_MS` 取同一个数 —— 这两页的启动体验该是一回事，
+   *  一处改了另一处不该装作没看见。 */
+  var LOADING_AFTER_MS = 400;
+
   var SEMANTIC = ['requires', 'part_of', 'contrast_with', 'implements'];
   var EDGE_LABEL = {
     requires: '前置', part_of: '组成', contrast_with: '易混', implements: '实现',
@@ -1042,7 +1047,18 @@
       var bar = document.querySelector('.topbar');
       if (bar) new ResizeObserver(resize).observe(bar);
     }
+    /* 慢启动兜底 —— 与 `boot.js` 的 `LOADING_AFTER_MS` 同一条纪律：
+     * 常态下那屏"正在载入图谱…"**不该出现**（用户："把那个正在载入的页面删掉，
+     * 换成平滑过渡"）。首帧就是这一页自己的样子（画布 + 设置面板 + 顶栏），
+     * 数据回来直接画上去；只有真的慢（首次冷启动要取 2.4MB、再跑一遍
+     * 1554 点 / 13541 边的布局）才把它露出来 —— 那时候用户需要知道在等什么。 */
+    var slow = window.setTimeout(function () {
+      if (el.boot) el.boot.hidden = false;
+    }, LOADING_AFTER_MS);
+
     loadData().then(function (d) {
+      window.clearTimeout(slow);
+      // 兜底已经露出来的话，这里顺手收回去（数据到了就不该再盖着）
       if (el.boot) el.boot.hidden = true;
       if (!d || !d.nodes || !d.nodes.length) {
         el.count.textContent = '没有图谱数据';

@@ -483,6 +483,8 @@ body[data-page='graph'] .view {
   position: absolute;
   inset: 0;
   background: var(--bg);
+  /* 它是块不透明的遮布：真慢的时候（400ms 之后）才露出来，别让它"啪"地糊上来 */
+  animation: qf-page-in 180ms var(--ease, ease-out) backwards;
 }
 
 .graph-boot[hidden] {

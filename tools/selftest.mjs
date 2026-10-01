@@ -101,6 +101,11 @@ globalThis.document = {
   execCommand() { return true; },
   body: new Node_('body'),
 };
+/* window 级监听：真浏览器一定有 `window.addEventListener`（`ui.js` 用它挂
+   `pageswap` / `pagereveal`，把"刷新也做整页过渡"那一次掐掉）。
+   这里 `window` 就是 globalThis，所以补一个空实现 —— 与下面几行补
+   `localStorage` / `requestAnimationFrame` 是同一件事：桩要把运行时用到的接口凑齐。 */
+globalThis.addEventListener = () => {};
 globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
 globalThis.setTimeout = setTimeout;
 globalThis.clearTimeout = clearTimeout;

@@ -782,13 +782,24 @@
     }, BUILD_POLL_MS);
   }
 
-  /** 骨架 → 内容 的那一次交接，让新画出来的东西**淡进来**。
+  /** 骨架 → 内容 的那一次交接。
    *
    *  用户的原话："在五个主页面之间转来转去的时候，有了一点过渡感，但是渲染的时候
    *  还是会闪一下。"—— 那"一下"就是这里：顶栏/活动栏是静态的，页面正文先是
-   *  `bootstate` 骨架（HTML 里就有的），等鉴权与数据回来之后被整块换掉，
-   *  于是画面"啪"地变一次。跨页那半截（离开淡出）已经在 `ui.js` 里做了，
-   *  这一半是**进来之后**的。
+   *  `bootstate` 骨架（HTML 里就有的），等鉴权与数据回来之后被整块换掉。
+   *
+   *  **这次交接只能有一套动画**，两套一起上就是"整屏白闪一下"：
+   *  启动时 `app.js` 的 `render()` 第一次进来会走 `ui.viewSwap`（同文档过渡，
+   *  浏览器把骨架屏留成快照、内容在它上面淡入 —— 底下**一直有东西**，不露底色），
+   *  而这里又给 `#app-root` 加一条从 `opacity: 0` 淡进来的动画。后者的底是
+   *  **页面底色**（加这个类的时候骨架屏已经不在 `#app-root` 里了），于是它演起来
+   *  就是白屏一闪。更糟的是两者错开：过渡 250ms 先演完（内容已经清清楚楚），
+   *  淡入这时才开始 —— 实测 `#app-root` 的透明度在启动后 **334ms 掉到 31%** 再爬回。
+   *  用户那句"任何页面刷新都会导致画面闪烁一下"、"图谱/错题本到其他页面切换会闪"
+   *  都是它（只有这两个方向差别最大：深色画布/长列表撞上白底）。
+   *
+   *  所以：**有同文档过渡就让它一个人做完**，`qf-painted` 留给没有那套 API
+   *  （或系统关掉了动效）的场合当兜底 —— 那种情况下没有过渡，淡入仍然是好的。
    *
    *  只做**一次**（`done` 守卫）：页面自己后续的重画（换笔记、翻页）不该跟着闪 ——
    *  那些是"局部换内容"，闪一下反而像卡顿。
@@ -804,6 +815,7 @@
       if (box.querySelector('.bootstate')) return;      // 还停在骨架上：再等
       if (!box.childElementCount) return;                // 空的：再等
       done = true;
+      if (QF.ui && QF.ui.usedViewTransition && QF.ui.usedViewTransition()) return;
       box.classList.add('qf-painted');
       window.setTimeout(function () {
         box.classList.remove('qf-painted');
@@ -813,11 +825,13 @@
     check();
   }
 
-  /* 注：**页面之间的过渡不在这里** —— 它在 `ui.js` 的 `leaveWithFade`
-   *（点站内链接 → `body[data-leaving]` 淡出 120ms → 跳转，新页由 `.view` 自己淡入）。
+  /* 注：**页面之间的过渡不在这里** —— 主力是浏览器自己的跨文档 View Transitions
+   *（入场券内联在 `theme/shell.html` 的 `<head>`，拦截逻辑在 `ui.js` 的
+   * `leaveWithFade`）。只有测不到那条 at-rule 的浏览器才退回"自己淡出 120ms →
+   * 跳 → 新页淡入"那两半。
    * 我一度在这儿又写了一套（`.is-leaving` + `qf-page-in`），结果是死代码：
    * `ui.js` 那份先 `preventDefault`，我的判断 `if (ev.defaultPrevented) return` 直接放行。
-   * 已经删掉；"切换不够丝滑"的真因是**首帧被同步脚本推迟**，见 `build_web.py`
+   * 已经删掉；"切换不够丝滑"的另一半真因是**首帧被同步脚本推迟**，见 `build_web.py`
    * 的 `_script_tag`（全都加了 `defer`）。 */
 
   QF.shell = {
