@@ -380,6 +380,13 @@ body[data-sb='on'] .lib {
 /* ---- 中：条目详情 ---- */
 
 .lib__main {
+  /* `flex: 1` 不能少：它是这一列里唯一该吃剩余高度的那一格。
+   * 少这一行时它按内容长高，而查看器里的 iframe 是 `height: 100%` ——
+   * 父高 auto 则百分比失效，iframe 退回**默认 150px**，
+   * 看到的就是「PDF 只显示上面一小条，下面一大片空」（实测：中栏 228.5px、
+   * iframe 156.5px，而列高 720px）。旧样式用 `min-height: 70vh` 给 iframe
+   * 兜过底，抽成共用查看器时兜底没了才暴露出来 —— 缺的其实是这里。 */
+  flex: 1;
   min-height: 0;
   overflow: auto;
   background: var(--bg);
