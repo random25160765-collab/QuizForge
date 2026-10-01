@@ -132,25 +132,20 @@ def _isolate_user_data(engine) -> Iterator[None]:  # noqa: ANN001
 
     清的是用户自己的数据；题库与知识空间（`questions` / `concepts` / …）不动 ——
     那些是会话级的 `imported_bank` 灌进来的，用例之间本来就该共享。
+
+    **这份名单不再写在这里**：原先这里手写着 9 张表，而它已经漂过一次 ——
+    `conversation_folders` 没在里面，那个表于是在用例之间不清（谁先跑谁留下分组）。
+    现在从 `app.datapack.USER_TABLES` 取 —— 那是"哪张表属于用户"的唯一事实来源，
+    与数据包、导出导入共用同一份声明。
     """
     from sqlalchemy import text
 
+    from app.datapack import USER_TABLES
     from app.db import get_engine
 
-    tables = (
-        "attachments",
-        "messages",
-        "conversations",
-        "records",
-        "attempts",
-        "days",
-        "app_settings",
-        "ai_usage",
-        "my_questions",
-    )
     with get_engine().begin() as conn:
-        for table in tables:
-            conn.execute(text(f"DELETE FROM {table}"))
+        for table in USER_TABLES:
+            conn.execute(text(f'DELETE FROM "{table}"'))
     yield
 
 
