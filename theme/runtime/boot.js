@@ -226,8 +226,54 @@
     });
   }
 
+  /*: 「正在载入…」什么时候才出现（毫秒）。
+   *
+   * 本地这套读一次是 90–290ms（大头是 `/api/bank` 那 3.7MB；带 `If-None-Match`
+   * 重取只要 4ms / 0 字节，但 JSON.parse + 装进题库仍要一百多毫秒）。所以：
+   * **常态下这一屏根本不该出现** —— 用户要的是"换成平滑过渡"，不是换一张更好看的卡。
+   * 超过这个数才请出来：那时候是真慢（首次导入题库、服务刚起来），
+   * 而"什么都没有"比"知道在等什么"更糟。
+   */
+  var LOADING_AFTER_MS = 400;
+
+  /** 这一页首帧要highlight哪一段导航（`QF.shell.mount` 的 `view`）。
+   *
+   *  外壳是**异步数据之前**就挂出来的（见下面 `mountShellEarly`），所以这里得先用
+   *  一个与数据无关的值把顶栏立起来，等页面自己的启动流程跑完再用真值重挂一次。
+   *  刷题页四个视图会从 hash 里读（`#/review` 直接进复习时就别先亮"个人中心"）；
+   *  对话/笔记/资料/工作台没有这一段，返回空串 —— `renderNav` 见到空值会把整条收掉。
+   */
+  function earlyView() {
+    if (page === 'wrongbook') return 'wrongbook';
+    if (page === 'graph') return 'graph';
+    if (page === 'quiz') {
+      var m = /^#\/(home|practice|paper|review)\b/.exec(window.location.hash || '');
+      return m ? m[1] : 'home';
+    }
+    return '';
+  }
+
+  /** 首帧先把外壳（顶栏 + 活动栏）立起来。
+   *
+   *  这是**图谱页一直以来的做法**（`graph.js` 的 `boot`：先 `wireShell()` 再加载数据），
+   *  它也是唯一一个从没有骨架屏的页面 —— 用户从来没说过它"不协调"。
+   *  没有这一步，新文档的第一帧只有一片底色，于是只能靠一屏加载卡撑着；
+   *  有了它，第一帧就是这一页自己的样子，数据回来只是往里面填内容。
+   */
+  function mountShellEarly() {
+    try {
+      if (QF.shell && QF.shell.mount) QF.shell.mount({ view: earlyView() });
+    } catch (err) {
+      /* 外壳挂不上不该连累数据加载：页面自己后面还会再挂一次 */
+      try { window.console.warn('[qf] 首帧外壳挂载失败：', err); } catch (e) {}
+    }
+  }
+
   function start() {
     var tries = 0;
+
+    // 先立样子，再去取数据（顺序就是这一条的全部意思）
+    mountShellEarly();
 
     function showFailure(err) {
       // `api.js` 给**真正的网络失败**标的记号是 `status === 0`（请求压根没拿到响应）。
@@ -264,12 +310,22 @@
     }
 
     function run() {
-      showState({
-        title: '正在载入…',
-        message: tries ? '服务还没应答，正在再试（第 ' + (tries + 1) + ' 次）…' : '读取题库与进度',
-      });
+      /* 常态下**不画**"正在载入…"：首帧已经是外壳本身（`mountShellEarly`），
+         数据回来直接把内容填进去，中间不该再夹一屏"另外的样子"。
+         真的慢（`LOADING_AFTER_MS`）才把它请出来 —— 重试那几次也走这里，
+         好让人看到"正在再试（第 N 次）"。 */
+      var slow = window.setTimeout(function () {
+        showState({
+          title: '正在载入…',
+          message: tries ? '服务还没应答，正在再试（第 ' + (tries + 1) + ' 次）…' : '读取题库与进度',
+        });
+      }, LOADING_AFTER_MS);
+      var done = function () {
+        window.clearTimeout(slow);   // 数据已经到了：那一屏压根不用出现
+      };
       startAttempt()
         .then(function (ready) {
+          done();
           if (!ready) return; // 题库空之类：界面已经说清了，再试没有意义
           startPage();
         })

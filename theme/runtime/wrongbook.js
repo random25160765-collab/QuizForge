@@ -16,6 +16,7 @@
   var store = QF.store;
   var eng = QF.engine;
   var qv = QF.qview;
+  var qzPane = ui.qzPane;
 
   var rootEl = null;
 
@@ -79,7 +80,23 @@
     ui.clear(rootEl);
     try {
       renderNav();
-      rootEl.appendChild(buildHeader());
+
+      var ids = currentIds();
+      // 刚完成重做的题目会立刻从错题本移出。此时要保留在详情里，否则用户看不到
+      // 结果对比；只有「切换筛选导致当前题不在结果集」或「从未选中」才重新选。
+      var keepJustRedone = !!view.redoResult && !!view.selected;
+      if (!view.selected || (!keepJustRedone && ids.indexOf(view.selected) === -1)) {
+        view.selected = ids.length ? ids[0] : null;
+        view.redoResult = null;
+        view.redoResponse = null;
+      }
+
+      // 一屏两栏：错题列表 · 题目详情。筛选从"横着占一条"改为**立在列表那一栏里** ——
+      // 它筛的正是下面那一列，摆在同一条竖线上才对得上。
+      var grid = h('div.qz.qz--wrong');
+      grid.appendChild(buildFilters(ids));
+      grid.appendChild(buildDetailPane(ids));
+      rootEl.appendChild(grid);
     } catch (err) {
       rootEl.appendChild(
         h(
@@ -111,25 +128,7 @@
       );
       return;
     }
-
-    var ids = currentIds();
-    // 刚完成重做的题目会立刻从错题本移出。此时要保留在详情里，否则用户看不到
-    // 结果对比；只有「切换筛选导致当前题不在结果集」或「从未选中」才重新选。
-    var keepJustRedone = !!view.redoResult && !!view.selected;
-    if (!view.selected || (!keepJustRedone && ids.indexOf(view.selected) === -1)) {
-      view.selected = ids.length ? ids[0] : null;
-      view.redoResult = null;
-      view.redoResponse = null;
-    }
-    if (!view.selected) {
-      rootEl.appendChild(buildEmpty());
-    } else {
-      var grid = h('div.wb');
-      grid.appendChild(buildList(ids));
-      grid.appendChild(buildDetail(view.selected));
-      rootEl.appendChild(grid);
-    }
-    renderStatusbar(ids);
+    renderStatusbar(currentIds());
   }
 
   function renderNav() {
@@ -139,22 +138,11 @@
     QF.shell.mount({ view: 'wrongbook' });
   }
 
-  function buildHeader() {
+  /** 左栏：搜索 · 主题 · 排序（钉住）+ 错题列表 + 底部三个批量动作 */
+  function buildFilters(ids) {
     var all = store.wrongIds({ includeMastered: true });
     var active = store.wrongIds();
     var mastered = all.length - active.length;
-
-    var page = h('div.page');
-    page.appendChild(
-      h(
-        'div.page__head',
-        null,
-        h('h1.page__title', { text: '错题本' }),
-        h('p.page__sub', {
-          text: active.length + ' 道待巩固 · ' + mastered + ' 道已订正',
-        })
-      )
-    );
 
     var bar = h('div.filterbar');
     bar.appendChild(chip('全部主题', view.topics.length === 0, function () {
@@ -224,8 +212,7 @@
       )
     );
 
-    page.appendChild(bar);
-
+    // 搜索摆在筛选的第一行：它是这一栏用得最勤的那一个
     var bar2 = h('div.filterbar');
     bar2.appendChild(
       h(
@@ -243,49 +230,66 @@
         })
       )
     );
-    bar2.appendChild(h('span.filterbar__spacer'));
-    bar2.appendChild(
-      h(
-        'button.btn.btn--primary',
-        {
+
+    return qzPane({
+      name: 'list',
+      title: '错题',
+      note: active.length + ' 道待巩固 · ' + mastered + ' 道已订正',
+      sub: h('div', null, bar2, bar),
+      // 空态只在右边那一栏说一次（同一个意思说两遍就是噪音）
+      body: ids.length
+        ? buildList(ids)
+        : h('p.form__note', { style: { padding: '0 16px' }, text: '当前筛选下没有错题。' }),
+      foot: [
+        h('button.btn.btn--primary.btn--sm', {
           type: 'button',
+          style: { flex: '1 1 auto', justifyContent: 'center' },
           onClick: function () {
-            var ids = currentIds();
-            if (!ids.length) {
+            var list = currentIds();
+            if (!list.length) {
               ui.toast('当前没有可重刷的错题', 'warn');
               return;
             }
-            store.setJump({ ids: ids, label: '错题本重刷' });
+            store.setJump({ ids: list, label: '错题本重刷' });
             window.location.href = 'quiz.html';
           },
-        },
-        h('span', { html: ui.icon('play', 15) }),
-        h('span', { text: '一键重刷当前列表' })
-      )
-    );
-    bar2.appendChild(
-      h(
-        'button.btn',
-        {
+        }, h('span', { html: ui.icon('play', 14) }), h('span', { text: '重刷这 ' + ids.length + ' 题' })),
+        h('button.btn.btn--sm', {
           type: 'button',
-          onClick: function () {
-            exportMarkdown();
-          },
-        },
-        h('span', { html: ui.icon('download', 15) }),
-        h('span', { text: '导出 Markdown' })
-      )
-    );
-    bar2.appendChild(
-      h(
-        'button.btn',
-        { type: 'button', onClick: function () { window.print(); } },
-        h('span', { html: ui.icon('print', 15) }),
-        h('span', { text: '打印' })
-      )
-    );
-    page.appendChild(bar2);
-    return page;
+          title: '导出 Markdown',
+          'aria-label': '导出 Markdown',
+          onClick: function () { exportMarkdown(); },
+        }, h('span', { html: ui.icon('download', 14) })),
+        h('button.btn.btn--sm', {
+          type: 'button',
+          title: '打印',
+          'aria-label': '打印',
+          onClick: function () { window.print(); },
+        }, h('span', { html: ui.icon('print', 14) })),
+      ],
+    });
+  }
+
+  /** 右栏：题目详情（题干 + 重做 + 结果对比） */
+  function buildDetailPane(ids) {
+    var q = view.selected ? D.get(view.selected) : null;
+    return qzPane({
+      name: 'detail',
+      title: q ? D.topicName(q.topic) + ' · ' + ui.typeLabel(q.type) : '题目',
+      note: view.selected || '',
+      actions: q
+        ? [
+            h('button.btn.btn--sm.btn--ghost', {
+              type: 'button',
+              title: '把这道题放进工作台的窗格里（与资料、笔记摆在一起）',
+              onClick: function () {
+                QF.panes.openResource('question', { question: q }, q.id);
+              },
+            }, h('span', { html: ui.icon('target', 14) }), h('span', { text: '在工作台里打开' })),
+          ]
+        : [],
+      body: view.selected ? buildDetail(view.selected) : buildEmpty(),
+    });
   }
 
   function chip(label, on, onClick, color) {
@@ -302,18 +306,7 @@
   }
 
   function buildList(ids) {
-    var aside = h('div.wb__aside');
-    var box = h('div.card.panel', { style: { display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '100%' } });
-    box.appendChild(
-      h(
-        'div.panel__head',
-        { style: { marginBottom: '0' } },
-        h('h2.panel__title', { text: '错题列表' }),
-        h('span.badge.badge--mono', { text: ids.length + ' 题' })
-      )
-    );
-
-    var list = h('div.wb__list');
+    var list = h('div.qz__list');
     ids.forEach(function (id) {
       var q = D.get(id);
       if (!q) return;
@@ -347,9 +340,7 @@
         )
       );
     });
-    box.appendChild(list);
-    aside.appendChild(box);
-    return aside;
+    return list;
   }
 
   function buildDetail(id) {
@@ -362,18 +353,8 @@
     var rec = store.record(id) || {};
     var result = view.redoResult;
 
-    // 「在工作台里打开」：窗格那一套能装题目（复用同一张卡片），所以从这儿给个入口 ——
-    // 答错一道题之后，接着就想把它和资料、笔记摆在一起看，而不是来回切页面。
-    detail.appendChild(
-      h('div.wb__tools', null,
-        h('button.btn.btn--sm', {
-          type: 'button',
-          title: '把这道题放进工作台的窗格里（与资料、笔记摆在一起）',
-          onClick: function () {
-            QF.panes.openResource('question', { question: q }, q.id);
-          },
-        }, h('span', { html: ui.icon('target', 14) }), h('span', { text: '在工作台里打开' })))
-    );
+    // 「在工作台里打开」那颗按钮搬到了这一栏的标题行上（见 buildDetailPane）——
+    // 它是对"这一栏在装什么"的操作，不该挤在内容的第一行里。
 
     // 大题：只读展示每一问的作答与批改结果，重做请到刷题应用里进行
     if (q.type === 'problem') {

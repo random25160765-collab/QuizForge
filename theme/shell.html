@@ -21,6 +21,23 @@
     document.documentElement.dataset.theme = theme;
   })();
 </script>
+<!--
+  跨文档 View Transitions 的**入场券**，必须内联在 `<head>` 里。
+  页与页之间那一次是真正的交叉淡出：浏览器把旧页面留成快照，新页面在它上面
+  淡入，中间不露出空白 —— 这是"切换要丝滑、不闪屏"唯一可靠的做法（自己写
+  淡出会造出约 120ms 的空舞台；实测过）。
+
+  两条实测教训（都别走回头路）：
+  * 放进外链 `app.css` 会输在一场竞速上 —— 四条同源跳转只有两条吃到过渡，
+    其余报 "ViewTransition opt-in disabled"。内联就没这问题。
+  * 想让"只有换页才过渡"的想法落空：在点击处理器里临时插这条 at-rule **不算数**
+    （浏览器在导航开始时读的是已算好的样式，插完同一个任务里就跳，读不到）。
+    所以它是**常驻**的，而"刷新不要过渡"改成在过渡建立之后把它掐掉
+    （见 `ui.js` 里 `pageswap` / `pagereveal` 那两个 handler）。
+-->
+
+<style>@view-transition { navigation: auto }</style>
+
 <!--@INJECT:BASE@-->
 <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon-256.png">

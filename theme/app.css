@@ -330,43 +330,49 @@ body[data-sb='on'] .view {
 }
 .view--narrow { max-width: calc(var(--content-max) + 2 * var(--shell-pad)); }
 
-/* 切页（工作台 ⇄ 练习 ⇄ 组卷 ⇄ 复习，以及启动时从首屏骨架交接到内容）
-   交给 View Transitions（见 ui.viewSwap）：浏览器把**旧画面留成快照垫在底下**，
-   新画面在它上面淡入 —— 全程底下都有东西，所以不会露出背景色。
-   自己写「淡入」是不行的：那要求画面先变淡，深色主题下那一瞬就是闪一下黑。 */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: 0.22s;
-  animation-timing-function: var(--ease);
-}
-/* **跨文档那条（`@view-transition { navigation: auto }`）已经撤掉**，原因是一次
-   实测出来的漏：在笔记页"打开过一篇笔记 + 等几秒"之后再点活动栏换页，浏览器会把
-   跨页那次过渡拒掉并报 "ViewTransition opt-in disabled"（同一文档里用没用过
-   `startViewTransition` 都不是判据 —— 对照实验做过：别的页等多久都不报、
-   笔记页不打开笔记也不报）。用户的要求是"每次都能正常平滑过渡，不要留漏洞"，
-   所以页面之间改成**确定性的两半**，不依赖那个 opt-in：
-
-     * 离开：点站内链接时给 `body` 加 `data-leaving`，这一页的内容淡出（见下），
-       120ms 后真的跳（`ui.js` 里那段）；
-     * 进来：新页面加载完，内容淡入（下面那条 animation）。
-
-   外壳（活动栏、顶栏）**不参与** —— 它们在每页都一样，跟着淡反而像整页闪。
-   页内切换（`ui.viewSwap`）仍然走 View Transitions：那是同文档的，稳定。 */
-body[data-leaving='1'] .view {
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.view {
-  /* `backwards` 而不是 `both`：`both` 会把动画最后一帧的 opacity **一直按住**，
-     于是 `body[data-leaving='1'] .view { opacity: 0 }` 根本压不过它 ——
-     淡出那半截就没了（实测点完之后 70ms 量到 opacity 还是 1）。
-     `backwards` 只负责"动画开始前用 from 那一帧"，跑完就还回层叠里的值。 */
-  animation: qf-page-in 190ms var(--ease, ease-out) backwards;
-}
+/* ---- 切页的过渡 ----
+ *
+ * **页内**切视图（个人中心 ⇄ 练习 ⇄ 组卷 ⇄ 复习）走 `ui.viewSwap` 的同文档
+ * View Transitions：浏览器把旧画面留成快照垫在底下，新画面在它上面淡入 ——
+ * 全程底下都有东西，所以不会露出背景色。自己写「淡入」是不行的：那要求画面
+ * 先变淡，深色主题下那一瞬就是闪一下黑。
+ *
+ * **页面之间**（跨文档）走同一套机制，那一次是真正的交叉淡出：浏览器把旧页面
+ * 留成快照，新页面在它上面淡入，中间不会露出空白。它那条
+ * `@view-transition { navigation: auto }` 内联在 `theme/shell.html` 的 `<head>`
+ * （为什么不能放这里、为什么不能按次申请，都写在那一处与 `ui.js` 的注释里）。
+ *
+ * **`.view` 自己不再有"到达淡入"** —— 这一条是踩出来的：曾经它有一条
+ * `animation: qf-page-in`，又用 `html:active-view-transition .view { animation: none }`
+ * 在过渡期间把它压住（不然新页面会被拍成空快照）。可过渡一结束伪类就掉了，
+ * 那条被压住的动画**这时才开始**：画面已经画好，又被从 opacity 0 淡了一遍 ——
+ * 实测到达后 ~420ms 处 `view` 的透明度从 100 掉到 **0** 再爬回来，看着就是
+ * "切换/刷新闪一下"。会中途启停的动画本来就不该挂在常驻节点上。
+ * 到达这件事现在只由 View Transitions 负责；没有它的浏览器就是直接换页（硬切、
+ * 无空白、也无闪）。骨架 → 内容的那半截淡入仍然保留（见 `.qf-painted`）。
+ */
+/* **这一对 `root` 伪元素就不要动**（所以下面没有它们的规则）。
+ *
+ * 试过两条，都更糟 —— 别再试：
+ *   * `::view-transition-old(root) { animation: none }`（想让旧页不动、新页单向压上来）：
+ *     在 Chrome 里那等于"这一层的动画已经结束"，**整层直接不画** —— 旧页没了、
+ *     新页还没上来，230–437ms 是一整段空屏（实测 5kB 的纯底色帧）。
+ *   * 给它一条停在 `opacity: 1` 的动画（`vt-hold`）也一样糟：`root` 是**所有**过渡
+ *     共用的选择器，应用自己那套同文档过渡（`ui.viewSwap`：骨架屏 ⇄ 内容）也被套住，
+ *     旧快照被钉在屏幕上不走。实测整屏糊成一片白（顶栏只剩约 15% 不透明度）。
+ *
+ * 浏览器默认的对称淡出（旧页淡出、新页淡入）本身没问题：那是"旧页快照 × 新页首帧"
+ * 的正常混合，没有空屏。真正难看的白闪在**新文档自己**那半截 —— 见
+ * `theme/runtime/shell.js` 的 `revealFirstPaint`，那里才是病根。
+ */
 
 /* 骨架 → 内容 的那一次交接（`shell.js` 的 `revealFirstPaint` 加上这个类）。
- * 复用下面同一套 keyframes：进来是"从底色淡进来"，不是从透明黑。 */
+ * 复用下面同一套 keyframes：进来是"从底色淡进来"，不是从透明黑。
+ * 这个类由脚本**显式加上**（不是靠伪类中途匹配），所以动画一定从头跑，不会晚到。
+ *
+ * **只在没有同文档过渡时才会被加上**：有 `startViewTransition` 的浏览器走
+ * `ui.viewSwap`（骨架屏留在快照里当底，内容在它上面淡入），两套一起上就是白闪 ——
+ * 判据与实测数据在 `shell.js` 的 `revealFirstPaint`。 */
 #app-root.qf-painted {
   animation: qf-page-in 200ms var(--ease, ease-out) backwards;
 }
@@ -382,8 +388,8 @@ body[data-leaving='1'] .view {
   ::view-transition-old(root),
   ::view-transition-new(root) { animation: none; }
 
-  .view { animation: none; }
-  body[data-leaving='1'] .view { opacity: 1; }
+  .view,
+  #app-root.qf-painted { animation: none; }
 }
 
 .page__head { margin-bottom: 22px; }
@@ -1227,32 +1233,10 @@ kbd {
 .compose-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 12px; color: var(--fg2); }
 .compose-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 3px; margin-right: 6px; background: var(--seg, var(--pri)); }
 
-.timerbar {
-  position: sticky; top: var(--topbar-h); z-index: 40;
-  display: flex; align-items: center; gap: 14px;
-  padding: 10px 16px;
-  margin-bottom: 18px;
-  border-radius: 13px;
-  border: 1px solid var(--line);
-  background: var(--bg-glass);
-  backdrop-filter: blur(14px);
-}
-.timerbar__clock { font-family: var(--font-mono); font-size: 22px; font-weight: 600; letter-spacing: 0.03em; }
-.timerbar__clock.is-warn { color: var(--amber); }
-.timerbar__clock.is-danger { color: var(--bad); animation: qf-pulse 1.4s ease-in-out infinite; }
 @keyframes qf-pulse { 50% { opacity: 0.45; } }
-.timerbar .spacer { flex: 1 1 auto; }
 
-.exam-grid { display: grid; gap: 22px; grid-template-columns: minmax(0, 1fr) 250px; }
-.exam-aside {
-  position: sticky;
-  top: calc(var(--topbar-h) + 74px);
-  align-self: start;
-  /* 侧栏里堆叠了「题号」与「本次练习」两张卡，必须给出间距，
-     否则两张卡会直接贴在一起（.exam-grid 的 gap 只作用于网格列之间） */
-  display: grid;
-  gap: 14px;
-}
+/* 计时与题卡 / 题号的栅格**不在这里** —— 练习中心那一族改成了一屏窗格，
+   见下面「练习中心（quiz 模块）」一节（含计时的 `.qz__clock`）。 */
 
 .report__hero {
   display: flex; flex-wrap: wrap; align-items: center; gap: 28px;
@@ -1335,9 +1319,6 @@ kbd {
 
 /* ================================================================ 错题本 */
 
-.wb { display: grid; gap: 20px; grid-template-columns: 340px minmax(0, 1fr); align-items: start; }
-.wb__aside { position: sticky; top: calc(var(--topbar-h) + 18px); max-height: calc(100vh - var(--topbar-h) - 60px); display: flex; flex-direction: column; gap: 12px; }
-.wb__list { overflow-y: auto; display: grid; gap: 8px; padding-right: 4px; flex: 1; }
 .wb__item {
   display: grid; gap: 6px;
   padding: 11px 13px;
@@ -1543,19 +1524,298 @@ html[data-theme='light'] .modal-root { background: color-mix(in srgb, #0F1A24 42
   background: color-mix(in srgb, var(--bg3) 45%, transparent);
 }
 
-/* ============================================================== 响应式 */
+/* ====================================================== 练习中心（quiz 模块）
+ *
+ * 这一族的页面（个人中心 / 练习 / 组卷 / 复习 / 错题本）原先套的是「阅读列」：
+ * `.view { max-width: 1280px }` 配一堆圆角悬浮卡。宽屏上内容只占左边一段，
+ * 右边空出一条死白 —— 1920 视口实测 `.view` 宽 1280、右边缘 x=1326，右侧空 594px。
+ *
+ * 改成**一屏窗格**：不再是"一篇文章往下排"，而是并排几栏，每栏自己滚，栏与栏
+ * 之间一条 1px 细线，每栏顶上有自己的标题行。这不是"别的模块这么做所以照抄" ——
+ * 刷题这件事本来就是**选 · 做 · 看**三件事同时在手边：题号要在、题面要在、
+ * 这一局的成绩也要在。一屏之内来回扫视，比把其中一样推到屏幕外再滚回来强。
+ *
+ * 两条纪律：
+ *   1. **窗格本身就是那层框**，所以栏里的题卡不再自带描边/投影/圆角
+ *      （见 `.qz__body .qcard`）—— 卡外套卡是"脏"的来源。
+ *   2. 栏内是**列表**：一条目一条 1px 分隔线，不摆一排小圆角卡。
+ */
 
-@media (max-width: 1180px) {
-  .exam-grid { grid-template-columns: minmax(0, 1fr) 210px; }
-  .wb { grid-template-columns: 290px minmax(0, 1fr); }
+body[data-page='quiz'] .view,
+body[data-page='wrongbook'] .view {
+  /* 取消阅读列的宽度上限，内距全部归零：这一族是**一屏窗格**（栏自己滚、贴边），
+     只有报告那种文档屏用 `.page` 带自己的内距。
+     这一条同时**盖掉** `body[data-sb='on'] .view` 的 padding-bottom —— 状态栏
+     让位那件事交给 `.qz` 的高度与 `.page` 的 padding 各算一次，不叠两层。
+
+     改成 flex 列是必需的：窗格得**正好**一屏。用 `calc(100vh - var(--topbar-h))`
+     算的话就是"设计值 vs 真实值" —— 顶栏实际 61px、令牌写的是 58px（那条进度线
+     也占高度），差 3px 就多出一根滚动条。交给 flex 之后高度是量出来的，不是算出来的。 */
+  display: flex;
+  flex-direction: column;
+  max-width: none;
+  margin: 0;
+  padding: 0;
 }
 
+/* 高度链的中间那一层：`.view` 是 flex 列，`#app-root` 也得跟上 —— 否则 `.qz`
+   的 flex 是对着一个普通块算的，窗格会按内容长到 12490px（实测）。 */
+body[data-page='quiz'] #app-root,
+body[data-page='wrongbook'] #app-root {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 文档页（报告那一屏）的内距。状态栏是按需出现的，别把没显示的那条也减掉 */
+body[data-page='quiz'] .page { padding: 24px var(--shell-pad) 40px; }
+body[data-sb='on'][data-page='quiz'] .page {
+  padding-bottom: calc(var(--statusbar-h) + 40px);
+}
+
+/* 首屏骨架与内容同高：载入屏居中，换成内容时不会先跳到左上角 */
+body[data-page='quiz'] .bootstate,
+body[data-page='wrongbook'] .bootstate { flex: 1 1 auto; min-height: 0; }
+
+/* 状态栏的对齐值是按**居中的阅读列**算出来的（`--shell-gutter` 里那个
+   `(100% - 1280px)/2`）。这一族既已铺满，状态栏就该贴回同一条左基线 ——
+   实测改动前练习作答态的进度文字比内容右移了 274px。 */
+body[data-page='quiz'],
+body[data-page='wrongbook'] { --shell-gutter: var(--shell-pad); }
+
+/* ---- 窗格骨架 ---- */
+
+.qz {
+  display: grid;
+  align-items: stretch;
+  /* 正好占满 `.view` 里剩下的那一格（顶栏与状态栏占多少，量出来就是多少） */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.qz__pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.qz__pane + .qz__pane { border-left: 1px solid var(--line); }
+
+.qz__head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.qz__title { font-size: 13px; font-weight: 600; color: var(--fg2); white-space: nowrap; }
+.qz__note { font-size: 11.5px; color: var(--fg3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.qz__head .spacer { flex: 1 1 auto; }
+
+.qz__body { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.qz__body--pad { padding: 14px 16px 20px; }
+
+.qz__foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+.qz__foot .spacer { flex: 1 1 auto; }
+
+/* 栏里的题卡：窗格已经是那层框了，卡不再自带一层 */
+.qz__body .qcard {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  padding: 24px 26px 48px;
+}
+
+/* 栏里的小块（未完成的练习之类）：有色块、无投影 —— 它不是浮在页面上的卡 */
+.qz__block {
+  padding: 13px 15px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--bg2);
+}
+.qz__blocktitle {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px; font-weight: 600; color: var(--fg2);
+}
+.qz__blocktitle .spacer { flex: 1 1 auto; }
+
+/* ---- 各页的栏宽 ----
+ *
+ * 侧栏用 clamp 而不是死宽：一屏并排的价值在 1280~1920 这一段，窄了按比例收，
+ * 收到下限（clamp 的下限）仍并不下时，由下面的媒体查询退回文档流。
+ */
+.qz--home { grid-template-columns: minmax(0, 1fr) clamp(300px, 24vw, 380px); }
+.qz--pick { grid-template-columns: clamp(280px, 22vw, 320px) minmax(0, 1fr) clamp(280px, 22vw, 320px); }
+.qz--solve { grid-template-columns: clamp(260px, 20vw, 300px) minmax(0, 1fr) clamp(300px, 24vw, 380px); }
+.qz--exam { grid-template-columns: clamp(260px, 20vw, 300px) minmax(0, 1fr) clamp(280px, 22vw, 320px); }
+.qz--paper { grid-template-columns: minmax(0, 1fr) clamp(300px, 24vw, 380px); }
+.qz--review { grid-template-columns: minmax(0, 1fr) clamp(300px, 24vw, 380px); }
+.qz--wrong { grid-template-columns: clamp(280px, 24vw, 340px) minmax(0, 1fr); }
+
+/* 题库那一栏是**列表**：`.browsecard` 本来就是"一条目一条分隔线"，
+   这里把它撑到栏宽、补上左右内距，并让第一条不画线 */
+.qz__pane--bank .browsecard { padding-left: 20px; padding-right: 20px; }
+.qz__pane--bank .browsecard:first-of-type { border-top: 0; }
+
+/* ---- 作答态：题号 · 题卡 · 本次练习 ---- */
+
+/* 题卡栏顶上的进度条：比别处的细，它只回答"走到哪了" */
+.qz__bar { flex: 1 1 auto; min-width: 60px; }
+.qz__bar .progress { height: 4px; }
+
+/* 标题行下面钉住的一条（题号栏的图例）：跟着滚就没用了 */
+.qz__sub {
+  flex: none;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.qz__legend {
+  display: flex; flex-wrap: wrap; gap: 6px 14px;
+  font-size: 11.5px; color: var(--fg3);
+}
+.qz__legend span { display: inline-flex; align-items: center; gap: 6px; }
+.qz__legend i {
+  width: 10px; height: 10px; border-radius: 3px;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+}
+.qz__legend i.is-current { border-color: var(--pri); background: color-mix(in srgb, var(--pri) 16%, transparent); }
+.qz__legend i.is-right { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.qz__legend i.is-wrong { border-color: color-mix(in srgb, var(--bad) 45%, transparent); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+
+/* ---- 本次练习栏里的错题清单：一屏之内就能回到错的那道，
+        不必去题号海里捞（题号一栏上千格时它根本不是导航） ---- */
+
+.qz__wrongs { display: grid; gap: 1px; margin: 0 -6px; }
+.qz__wrongrow {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 6px;
+  border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--fg2);
+  font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.qz__wrongrow:hover { background: color-mix(in srgb, var(--bad) 11%, transparent); color: var(--fg); }
+.qz__wrongrow.is-current { background: color-mix(in srgb, var(--pri) 11%, transparent); color: var(--fg); }
+.qz__wrongn {
+  flex: none; width: 28px; text-align: right;
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--bad);
+}
+.qz__wrongtext { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 热力图那一格：热力图靠左、右侧统计贴右。不这么写，两端对齐的
+   `space-between` 会把「正确率」这个标签和它的数值拉开到 1300px 之外。 */
+.heat__side { flex: 0 1 380px; margin-left: auto; }
+
+/* ---- 考试栏顶上的计时 ---- */
+
+.qz__clockrow { display: flex; align-items: center; gap: 10px; margin: 2px 0 12px; color: var(--fg3); }
+.qz__clock {
+  font-family: var(--font-mono);
+  font-size: 30px; font-weight: 600; line-height: 1.1;
+  letter-spacing: 0.02em;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.qz__clock.is-warn { color: var(--amber); }
+.qz__clock.is-danger { color: var(--bad); animation: qf-pulse 1.4s ease-in-out infinite; }
+
+/* ---- 复习会话：翻转卡在栏里居中。
+        用 `margin: auto` 而不是 place-items —— 卡片比栏高时前者不会裁掉顶部 ---- */
+
+.qz__pane--card > .qz__body { display: flex; padding: 22px; }
+.qz__pane--card .review-stage { margin: auto; width: 100%; min-height: 0; }
+
+/* ---- 标题行下面那条：几行筛选之间各带 16px 下外边距叠起来太散 ---- */
+
+.qz__sub .filterbar { margin-bottom: 8px; }
+.qz__sub .filterbar:last-child { margin-bottom: 0; }
+.qz__sub .searchbox { flex: 1 1 auto; }
+
+/* ---- 错题本列表：一条目一条分隔线（不再是"一排小圆角卡"） ---- */
+
+body[data-page='wrongbook'] .qz__pane--list .wb__item {
+  border: 0;
+  border-radius: 0;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 16px;
+  background: transparent;
+}
+body[data-page='wrongbook'] .qz__pane--list .wb__item:hover { background: var(--bg3); }
+body[data-page='wrongbook'] .qz__pane--list .wb__item.is-active {
+  background: color-mix(in srgb, var(--pri) 9%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--pri) 42%, var(--line));
+}
+
+/* ---- 窄档：一屏并不下这么多栏了，退回文档流（栏上下叠、整页滚） ---- */
+
+@media (max-width: 1080px) {
+  body[data-page='quiz'] .view,
+  body[data-page='wrongbook'] .view { overflow: auto; }
+
+  .qz {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+  }
+  /* 栏从"并排的一格"退回"上下的一节"：分隔线由左右改成上下 */
+  .qz .qz__pane {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  /* 最上面那一节不画线（它上面就是顶栏） */
+  .qz--home > .qz__pane--record,
+  .qz--pick > .qz__pane--filters,
+  .qz--solve > .qz__pane--q,
+  .qz--exam > .qz__pane--q,
+  .qz--paper > .qz__pane--form,
+  .qz--review > .qz__pane--load,
+  .qz--review > .qz__pane--card,
+  .qz--wrong > .qz__pane--list { border-top: 0; }
+
+  /* 先后改按"窄档里哪一样先用得上"排：题库那一列可能很长，
+     不能把选题篮夹在它后面；做题时也不该先看到一整片题号。 */
+  .qz--pick > .qz__pane--filters { order: 1; }
+  .qz--pick > .qz__pane--basket { order: 2; }
+  .qz--pick > .qz__pane--bank { order: 3; }
+  .qz--solve > .qz__pane--q,
+  .qz--exam > .qz__pane--q { order: 1; }
+  .qz--solve > .qz__pane--nav,
+  .qz--exam > .qz__pane--sheet { order: 2; }
+  .qz--solve > .qz__pane--summary,
+  .qz--exam > .qz__pane--info { order: 3; }
+
+  .qz__body { overflow: visible; }
+  .qz__head { height: 40px; }
+}
+
+/* 状态栏是 fixed 的：底部得让出它的高度，否则最后一行控件被压在它底下 */
+body[data-sb='on'][data-page='quiz'] .view,
+body[data-sb='on'][data-page='wrongbook'] .view {
+  padding-bottom: var(--statusbar-h);
+}
+
+/* 错题本详情里的题干：窗格里也要有个行长上限（表格 / 选项仍铺满） */
+.qz__body .qcard__stem > .md { max-width: 76ch; }
+
+/* ============================================================== 响应式 */
+
 @media (max-width: 900px) {
-  .exam-grid { grid-template-columns: minmax(0, 1fr); }
-  .exam-aside { position: static; }
-  .wb { grid-template-columns: minmax(0, 1fr); }
-  .wb__aside { position: static; max-height: none; }
-  .wb__list { max-height: 320px; }
   .brand-text { display: none; }
 }
 
@@ -1576,17 +1836,14 @@ html[data-theme='light'] .modal-root { background: color-mix(in srgb, #0F1A24 42
 
 /* ============================================================ 错题本性能 */
 
-/* 错题本侧栏是 sticky 的：卡片的 backdrop-filter 会在滚动时逐帧重新采样
-   背后的整片区域，是掉帧的常见来源。这里的背景本来就是近实色，模糊带来的
-   视觉差异几乎为零，直接关掉。题目详情面板同理（它通常很长）。 */
-body[data-page='wrongbook'] .wb__aside .card,
-body[data-page='wrongbook'] .wb__detail .qcard,
-body[data-page='wrongbook'] .wb__aside .panel {
-  backdrop-filter: none;
-  background: var(--bg2);
-}
-body[data-page='wrongbook'] .wb__item,
-body[data-page='wrongbook'] .part {
+/* 错题本详情那一栏通常很长：卡片的 backdrop-filter 会在滚动时逐帧重新采样
+   背后的整片区域，是掉帧的常见来源，模糊带来的视觉差异几乎为零，直接关掉。
+   （这里不再改底色 —— 窗格里的题卡已经被摊平成透明，见「练习中心」那一节。） */
+body[data-page='wrongbook'] .qz__pane--detail .card,
+body[data-page='wrongbook'] .qz__pane--detail .qcard,
+body[data-page='wrongbook'] .qz__pane--detail .panel,
+body[data-page='wrongbook'] .qz__pane--list .wb__item,
+body[data-page='wrongbook'] .qz__pane--detail .part {
   backdrop-filter: none;
 }
 
@@ -1600,8 +1857,6 @@ body[data-page='wrongbook'] .part {
 .topiccard,
 .modal__card,
 .part,
-.timerbar,
-.exam-aside .card,
 .reportrow,
 .wb__item,
 .airesult,
@@ -1641,17 +1896,22 @@ body[data-page='wrongbook'] .part {
     color: #000;
     font-size: 11pt;
   }
-  .topbar, .statusbar, .toast-root, .modal-root, .btnrow, .filterbar, .wb__aside, .modegrid, .timerbar {
+  .topbar, .statusbar, .toast-root, .modal-root, .btnrow, .filterbar, .modegrid, .qz__foot {
     display: none !important;
   }
   .view { max-width: none; padding: 0; }
+  /* 打印时窗格一律上下叠：纸面上没有"一屏并排"这回事 */
+  .qz { display: block; }
+  .qz__pane { display: block; }
+  .qz__pane + .qz__pane { border-left: 0; border-top: 1px solid var(--line); }
+  .qz__body,
+  .qz__sub { overflow: visible; }
   .card, .qcard, .report__hero, .topicrate, .wb__detail, .flipcard__face {
     border-color: #BBB;
     background: #FFF !important;
     box-shadow: none;
     backdrop-filter: none;
   }
-  .wb { grid-template-columns: 1fr; }
   .md { color: #000; }
   .verdict, .explain, .airesult { break-inside: avoid; }
   .printonly { display: block !important; }

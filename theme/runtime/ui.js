@@ -88,11 +88,20 @@
    *
    * 不支持该 API 的浏览器直接同步替换：没有动画，但同样不会闪。
    */
+  /*: 这一次文档里**真的**起过同文档过渡吗？—— `shell.js` 的 `revealFirstPaint`
+   *  拿它决定"骨架 → 内容"那一半要不要自己再淡一次。见那边的注释。 */
+  var usedVT = false;
+
+  function usedViewTransition() {
+    return usedVT;
+  }
+
   function viewSwap(swap) {
     if (typeof document.startViewTransition !== 'function') {
       swap();
       return;
     }
+    usedVT = true;
     document.startViewTransition(swap);
   }
 
@@ -749,11 +758,15 @@
    * 何时不用：自动发生的重画（自动保存后重画状态栏、流式吐字、窗口尺寸变化）——
    * 那些一秒好几次，加了就是一直在闪。
    *
-   * 做法是 CSS 淡出 → 换 → 淡入（110ms 一下），**刻意不用 View Transitions**：
-   * 实测同一个文档里只要用过一次 `startViewTransition`，跨页那次（app.css 里
-   * `@view-transition { navigation: auto }`，项目里早就有的那套）就会被拒，
-   * 并在控制台留一条 "ViewTransition opt-in disabled"。跨页那套覆盖面更大，
-   * 所以让路的是这一套。
+   * 做法是 CSS 淡出 → 换 → 淡入（110ms 一下），**不用 `viewSwap`**：
+   * 那条会把**整个 root** 拍成快照，而这里换的常常只是页面里的一块
+   *（笔记页只换正文、左边树不动），快照整页反而把不该动的东西也一起淡。
+   *
+   * （2026-09-30 更正：这里原来记着"同一个文档里用过一次 `startViewTransition`，
+   *  跨页那次就会被拒并报 `ViewTransition opt-in disabled`"。今天重测**不成立** ——
+   *  启动时 `render()` 就会调一次 `viewSwap`（同文档），随后跨页那次的过渡照样跑
+   *  （`pagereveal` 里拿得到 `viewTransition`）。当时观察到的大概是别的东西。
+   *  留着这段是提醒：那条结论只对"当年那台机器"成立，不要再拿它当依据。）
    *
    * `host` 是要淡的那一块（默认整页内容 `#app-root`）。像笔记页那种"只换正文、
    * 左边树别动"，就把主区传进来。系统里关掉了动效的**直接换** —— 这只是顺滑，
@@ -798,57 +811,101 @@
 
   /* ---------------------------------------------------------- 页面之间的过渡
    *
-   * 点站内链接：先给 `body` 加 `data-leaving`（CSS 把内容淡出，120ms），再真的跳；
-   * 新页面那边 `.view` 自己淡入（app.css）。两半加起来 ~300ms，连贯且**每次都在**。
+   * 页与页之间那一次交给浏览器：`shell.html` 的 `<head>` 里内联着
+   * `@view-transition { navigation: auto }`，所以站内跳转是**真正的交叉淡出** ——
+   * 浏览器把旧页面留成快照，新页面在它上面淡入，中间不会露出空白。
    *
-   * 为什么不用跨文档 View Transitions（原先就是这么做的）：实测它会漏 ——
-   * 在笔记页打开过一篇笔记、等几秒再点活动栏换页，浏览器拒掉那次过渡并报
-   * "ViewTransition opt-in disabled"；也试过"先 preventDefault、等上一个过渡收尾
-   * 再跳"，更糟：程序化跳转丢掉用户激活，跨页照样被拒。用户那句"平滑过渡是
-   * UI 设计的工程纪律，你没做全"说的就是这个漏。所以换成不依赖 opt-in 的做法。
+   * 这一页**自己不再拦点击、不再自己淡出**。自己写那半截（"淡出 120ms → 跳"）
+   * 试过，代价是那 120ms 里旧页面已经透明、新页面还没开始画：实测"点击 → 新页首帧"
+   * 图谱→练习 249ms、错题本→练习 214ms，其中 120ms 就是这段自造的空舞台。
+   * 链接该不该拦（外链 / 新窗口 / 下载 / ⌘+点）本来就是浏览器自己判得准。
    *
-   * 拦的条件很保守：同源、普通左键、无修饰键、不是新窗口、不是下载、不是页内锚点。
-   * 其它一律不碰（外链、右键新标签、⌘+点……）。
+   * JS 在这里只剩一件事：**把不该整页淡的那种导航掐掉**。两条：
+   *   * `pageswap`（旧文档，跳之前）：落点还是**同一个页面**（只改 hash、以及
+   *     同一个地址的再次导航）—— 整页淡一次没有意义。这条**验过**：
+   *     同一个地址的点击，过渡确实被掐掉（`reveal` 拿到的是 null）。
+   *   * `pagereveal`（新文档，首帧之前）：这一次导航是 `reload`。
+   *     判据硬（`performance.navigation.type`），但**掐不掐得掉要看浏览器** ——
+   *     这台机器上的 Chromium 实测**无效**（无条件 `skipTransition()` 之后过渡照样跑）。
+   *     留着是因为它只在刷新时触发、掐不掉也无害，别的地方可能认账。
+   *     `pageswap` 那条只在"浏览器真的建立了过渡"时才触发；用户按 F5 那条路径
+   *     自动化里复现不出来（Playwright 的 `reload()` 是程序化导航，压根不 opt-in），
+   *     所以刷新这条只能算尽力，不能算验过。
+   *
+   * 为什么"按次申请"（默认不声明、跳之前临时插 at-rule）不做：**浏览器不认**。
+   * 它读这条规则是在导航开始时从"已算好的样式"里取的，而插 `<style>` 只是把样式
+   * 标脏 —— 同一个任务里紧接着跳，读到的还是旧的那份（实测四次换页一次都没过渡）。
    */
-  function leaveWithFade(href) {
-    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduce) {
-      location.assign(href);
-      return;
+
+  function skipTransition(ev) {
+    try {
+      ev.viewTransition.skipTransition();
+    } catch (err) {
+      /* 已经收尾的过渡会抛：忽略即可 —— 它本来就不该再跑 */
     }
-    document.body.dataset.leaving = '1';
-    window.setTimeout(function () {
-      location.assign(href);
-    }, 120);
   }
 
-  document.addEventListener(
-    'click',
-    function (ev) {
-      if (ev.defaultPrevented || ev.button !== 0) return;
-      if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
-      if (!ev.target || !ev.target.closest) return;
-      var link = ev.target.closest('a[href]');
-      if (!link || link.target || link.hasAttribute('download')) return;
-      if (link.origin !== location.origin) return;
-      var href = link.getAttribute('href') || '';
-      if (!href || href.charAt(0) === '#') return;
-      if (link.getAttribute('href') === location.pathname + location.search) return;
-      ev.preventDefault();
-      leaveWithFade(link.href);
-    },
-    true
-  );
+  window.addEventListener('pageswap', function (ev) {
+    if (!ev.viewTransition) return;
+    var entry = ev.activation && ev.activation.entry;
+    if (!entry || !entry.url) return;
+    try {
+      if (new URL(entry.url).pathname === location.pathname) skipTransition(ev);
+    } catch (err) {
+      /* URL 解析不了就不管：宁可不掐，也别掐错 */
+    }
+  });
+
+  window.addEventListener('pagereveal', function (ev) {
+    if (!ev.viewTransition) return;
+    var nav = window.performance && performance.getEntriesByType
+      ? performance.getEntriesByType('navigation')[0]
+      : null;
+    if (nav && nav.type === 'reload') skipTransition(ev);
+  });
+
+  /**
+   * 搭一格窗格：标题行（标题 + 说明 + 右侧动作）+ 钉住的一条（可选）+ 自己滚的主体
+   * +（可选）钉住的底栏。
+   *
+   * 练习中心那一族（刷题 / 组卷 / 复习 / 错题本）共用这一套骨架 —— 页面只负责
+   * "摆哪几栏、每栏装什么"，栏的标题高度、内距、分隔线因此不可能各栏长得不一样。
+   * 放在 ui 里是因为 wrongbook.js 与 app.js 是两个文件，骨架只能有一份。
+   */
+  function qzPane(opts) {
+    var pane = h('div.qz__pane' + (opts.name ? '.qz__pane--' + opts.name : ''));
+    var head = h('div.qz__head', null, h('span.qz__title', { text: opts.title }));
+    if (opts.note) head.appendChild(h('span.qz__note', { text: opts.note }));
+    if (opts.headExtra) head.appendChild(opts.headExtra);
+    var actions = (opts.actions || []).filter(Boolean);
+    if (actions.length) {
+      head.appendChild(h('span.spacer'));
+      actions.forEach(function (node) { head.appendChild(node); });
+    }
+    pane.appendChild(head);
+    // 钉在标题行下面的一条：也跟着滚就没用了（图例正是"看不到才需要"的东西）
+    if (opts.sub) pane.appendChild(h('div.qz__sub', null, opts.sub));
+
+    var body = h('div.qz__body' + (opts.pad ? '.qz__body--pad' : ''));
+    (Array.isArray(opts.body) ? opts.body : [opts.body]).forEach(function (node) {
+      if (node) body.appendChild(node);
+    });
+    pane.appendChild(body);
+    if (opts.foot) pane.appendChild(h('div.qz__foot', null, opts.foot));
+    return pane;
+  }
 
   QF.ui = {
     /* 图标路径的唯一出口：chat.js 的 `iconNode` 与弹出菜单都查这里 */
     iconPath: function (name) {
       return ICONS[name] || '';
     },
+    qzPane: qzPane,
     swap: swap,
     h: h,
     clear: clear,
     viewSwap: viewSwap,
+    usedViewTransition: usedViewTransition,
     calibrateInkShift: calibrateInkShift,
     esc: esc,
     clamp: clamp,
