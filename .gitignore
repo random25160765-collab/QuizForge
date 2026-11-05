@@ -5,11 +5,14 @@ config/ai.local.json
 # 由 `scripts/gpu-setup.sh` 写；见 `local_embed.local_config()`。
 config/embed.local.json
 
-# 带向量的那份数据快照 —— **本机自己留**，不进 git。
-# 向量是派生物（`make embed` 能重建），而且 float32 的 blob 走 zlib 只压到 1.08 倍：
-# 进了版本库就几乎按原始大小增长，历史里还删不掉。要提交的是不含向量的
-# `db/quizforge.db.gz`（见 tools/db_snapshot.py 的文件头）。
+# 数据快照的明文两份都**本机自己留**，不进 git：
+#  * db/quizforge.db.gz           不含向量 —— 加密成 .enc 后提交那份（见 tools/db_snapshot.py 文件头）
+#  * db/*.with-vectors.gz         含向量 —— float32 的 blob 走 zlib 只压 1.08 倍，进了版本库
+#    就几乎按原始大小增长，历史里还删不掉。向量是派生物，`make embed` 能重建。
+db/quizforge.db.gz
 db/*.with-vectors.gz
+# 快照口令：只该在机器之间手动复制，绝不进 git（口令进了仓库，加密就是白做）
+config/snapshot.key
 # 本机跑服务时读的环境变量（端口、用量上限等，用 make env-init 生成）
 /.env
 api/.env

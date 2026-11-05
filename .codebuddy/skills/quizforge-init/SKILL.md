@@ -29,7 +29,7 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 | 路径 | 是什么 |
 |---|---|
 | `data/quizforge.db` | **权威在库**：题库 / 考纲 / 知识空间 / 材料都在这个 SQLite 文件里，仓库里**没有**题目的文件形态 |
-| `db/quizforge.db.gz` | 库的快照（**就是库本身**，不是导出版本）；`make db-snapshot` 存、`make db-restore` 解压即用 |
+| `db/quizforge.db.gz.enc` | 库的快照（**就是库本身**，口令密文）；`make db-snapshot` 存、`make db-restore` 解密解压即用。明文 `db/quizforge.db.gz` 只在本机（gitignore）。口令在 `config/snapshot.key`（`make snapshot-key` 生成，两台机器同一份，绝不进 git）|
 | `tools/` | `check.py` 校验 · `build_web.py` 构建前端（入口）· `assemble.py` 外壳装配 · `question_parser.py` 解析 · `topics.py` 考纲解析 · `new_question.py` 脚手架 · `db_snapshot.py` 快照存取 |
 | `theme/` | 前端运行时：`app.css` + `runtime/*.js`；改完要 `make web`（新增脚本还要登记进 `build_web.py` 的 `RUNTIME_ORDER`）|
 | `api/` | FastAPI 后端：题库导入、进度增量同步、AI 转发（用本机设置里那份密钥）|
