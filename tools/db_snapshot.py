@@ -15,20 +15,28 @@
 仓库里不再有任何需要 Docker 或 Postgres 的路径。`migrate_to_local.py` 保留着 ——
 它是**一次性搬运**的工具（历史数据还在 Postgres 里的那种场合），日常用不到。
 
-## 两条命令
+## 几条命令
 
-    python3 tools/db_snapshot.py save --out db/quizforge.db.gz   # 库 → 快照
-    python3 tools/db_snapshot.py load --path db/quizforge.db.gz  # 快照 → 库（--force 覆盖）
-    python3 tools/db_snapshot.py load --path … --target /tmp/x.db  # 换个落点（自检用）
+    python3 tools/db_snapshot.py save --out db/quizforge.db.gz       # 库 → 明文快照
+    python3 tools/db_snapshot.py encrypt --in db/quizforge.db.gz --out db/quizforge.db.gz.enc
+    python3 tools/db_snapshot.py load --path db/quizforge.db.gz.enc  # 密文快照 → 库（--force 覆盖）
+    python3 tools/db_snapshot.py genkey                              # 生成 config/snapshot.key
+    python3 tools/db_snapshot.py load --path … --target /tmp/x.db    # 换个落点（自检用）
 
-## 快照分两份：一份进 git，一份本机自己留
+## 快照分三份：一份密文进 git，两份明文本机留
 
-2026-09-26 起，`save` 一次写**两个文件**：
+2026-11-06 起，进 git 的只有**口令加密**的那份：
 
-* `db/quizforge.db.gz` —— **进 git**，**不含向量**。题、考纲、图谱、材料正文
-  （正文是"坐标的唯一来源"，删不得）都在里面，几十 MB 级别。
+* `db/quizforge.db.gz` —— 明文，**本机留**（已 gitignore），不含向量。题、考纲、
+  图谱、材料正文（正文是"坐标的唯一来源"，删不得）都在里面，几十 MB 级别。
+* `db/quizforge.db.gz.enc` —— 上面那份用口令加密后的产物，**进 git**。
+  公开仓库里只有密文：没有口令文件的机器 clone 下来也打不开。
 * `db/quizforge.db.with-vectors.gz` —— **本机留**（已 gitignore），含向量。
   换机器时带上它，不必重算；不带也行，`make embed` 重建。
+
+口令只有一个，三处来源（按顺序）：环境变量 `QUIZFORGE_SNAPSHOT_PASSPHRASE`、
+`config/snapshot.key`、终端里现敲。生成口令走 `make snapshot-key` —— 一台机器
+生成一次，把 `config/snapshot.key` 复制到每一台要同步的机器（它被 gitignore）。
 
 为什么这么分：向量占全库的 **82.9%**（实测 159.7 / 192.6 MB），而它**是派生物** ——
 `make embed` 随时能从正文重算出来（GPU 约 10 分钟）。更要紧的是它**压不动**：
@@ -51,17 +59,31 @@ float32 的向量 blob 走 zlib 只有 **1.08 倍**，而正文有 3.8 倍 —�
   "看着能跑、其实少了一半题"的库 —— 那种问题会在几天后以"某道题怎么不见了"
   的形式冒出来，届时已经查不清是哪一步坏的。校验两项：SQLite 的 `integrity_check`
   与 `foreign_key_check`（悬空引用是搬运/截断最典型的翻车方式）。
+
+* **进 git 的只能是密文**。2026-11-06 之前明文快照直接进公开仓库 —— 聊天记录
+  （`conversations` / `messages`）跟着 clone 就出去了，和 2026-09-17 那起密钥事故
+  同一个道理：那次抹了密钥、没管聊天。现在出口两道：`make db-snapshot` 落盘即
+  加密（`encrypt` 子命令），`tools/secret_scan.py` 兜底拦"明文快照被提交"。
+  历史里已经出去的那批明文快照，只能靠重写历史清掉（见仓库维护记录）。
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import gzip
 import json
+import os
+import secrets
 import shutil
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "data" / "quizforge.db"
@@ -161,6 +183,118 @@ def _drop_vectors(conn: sqlite3.Connection) -> int:
     return int(rows)
 
 
+# ---------------------------------------------------------------- 口令加密
+# 进公开仓库的是密文：没口令的机器 clone 下来也打不开。
+# 格式：magic(6) + salt(16) + nonce(12) + 密文||tag。AES-256-GCM 自带完整性 ——
+# 密文被改任何一位，解密都会失败，"打不开"之外还有"改不了"。
+
+_MAGIC = b"QFENC1"
+_SALT_BYTES = 16
+_NONCE_BYTES = 12
+_PASSPHRASE_ENV = "QUIZFORGE_SNAPSHOT_PASSPHRASE"
+
+
+def _derive_key(passphrase: str, salt: bytes) -> bytes:
+    """口令 → 32 字节密钥。scrypt 占 32 MiB 内存：拦"公开仓库被 clone"这个场景足够，
+    本机一次性调用几十毫秒，不觉得慢。"""
+    kdf = Scrypt(salt=salt, length=32, n=2**15, r=8, p=1)
+    return kdf.derive(passphrase.encode("utf-8"))
+
+
+def encrypt_file(src: Path, dst: Path, passphrase: str) -> None:
+    salt = secrets.token_bytes(_SALT_BYTES)
+    nonce = secrets.token_bytes(_NONCE_BYTES)
+    key = _derive_key(passphrase, salt)
+    ciphertext = AESGCM(key).encrypt(nonce, src.read_bytes(), None)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with open(dst, "wb") as handle:
+        handle.write(_MAGIC + salt + nonce + ciphertext)
+
+
+def decrypt_file(src: Path, dst: Path, passphrase: str) -> None:
+    """密文 → 明文。口令不对 / 文件被改，抛 ValueError（报的是中文人话）。"""
+    raw = src.read_bytes()
+    if not raw.startswith(_MAGIC) or len(raw) < len(_MAGIC) + _SALT_BYTES + _NONCE_BYTES + 16:
+        raise ValueError("这不是快照密文（文件头不认识）")
+    salt = raw[len(_MAGIC):len(_MAGIC) + _SALT_BYTES]
+    nonce = raw[len(_MAGIC) + _SALT_BYTES:len(_MAGIC) + _SALT_BYTES + _NONCE_BYTES]
+    ciphertext = raw[len(_MAGIC) + _SALT_BYTES + _NONCE_BYTES:]
+    try:
+        plain = AESGCM(_derive_key(passphrase, salt)).decrypt(nonce, ciphertext, None)
+    except InvalidTag:
+        raise ValueError("口令不对，或文件被人改过") from None
+    dst.write_bytes(plain)
+
+
+def _key_file() -> Path:
+    return ROOT / "config" / "snapshot.key"
+
+
+def _passphrase() -> str:
+    """口令的三个来源，按顺序：环境变量 → config/snapshot.key → 终端里现敲。
+
+    找不到就报错并退出：宁可不存不取，也不许拿错误的口令产出解不开的快照。
+    """
+    env = os.environ.get(_PASSPHRASE_ENV, "").strip()
+    if env:
+        return env
+    key_file = _key_file()
+    if key_file.is_file():
+        text = key_file.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    if sys.stdin.isatty():
+        return getpass.getpass("快照口令（两台机器必须用同一个）: ")
+    print(
+        "找不到口令。三个办法任选其一：\n"
+        f"  1. 环境变量 {_PASSPHRASE_ENV}=…\n"
+        f"  2. 把密钥文件放到 {key_file}（`make snapshot-key` 生成，复制到每台要同步的机器）\n"
+        "  3. 在终端里跑（会提示你现敲）",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+def genkey(key_file: Path | None = None) -> int:
+    """生成口令文件。内容**不打印**（口令不是给人看的）；已有则拒绝覆盖 ——
+    两台机器的口令一旦对不上，快照就再也解不开。"""
+    key_file = key_file or _key_file()
+    if key_file.exists():
+        print(f"口令文件已存在：{key_file}（不覆盖；把这个文件复制到别的机器即可）")
+        return 1
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    key_file.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
+    key_file.chmod(0o600)
+    print(f"口令已生成：{key_file}（内容不显示 —— 把这个文件复制到每一台要同步的机器）")
+    return 0
+
+
+def cmd_encrypt(src: Path, dst: Path) -> int:
+    if not src.is_file():
+        print(f"没有可加密的文件：{src}", file=sys.stderr)
+        return 1
+    try:
+        encrypt_file(src, dst, _passphrase())
+    except ValueError as err:
+        print(f"加密失败：{err}", file=sys.stderr)
+        return 1
+    print(f"已加密 {src} → {dst}（{dst.stat().st_size / 1024 / 1024:.2f} MB）")
+    return 0
+
+
+def cmd_decrypt(src: Path, dst: Path) -> int:
+    if not src.is_file():
+        print(f"没有可解密的文件：{src}", file=sys.stderr)
+        return 1
+    try:
+        decrypt_file(src, dst, _passphrase())
+    except ValueError as err:
+        print(f"解密失败：{err}", file=sys.stderr)
+        return 1
+    print(f"已解密 {src} → {dst}（{dst.stat().st_size / 1024 / 1024:.2f} MB）")
+    return 0
+
+
 def save(out: Path, db: Path = DEFAULT_DB, *, with_vectors: bool = True) -> int:
     if not db.is_file():
         print(f"没有库可存：{db} 不存在", file=sys.stderr)
@@ -211,7 +345,8 @@ def save(out: Path, db: Path = DEFAULT_DB, *, with_vectors: bool = True) -> int:
     return 0
 
 
-def load(path: Path, target: Path, force: bool = False, *, with_vectors: bool = True) -> int:
+def load(path: Path, target: Path, force: bool = False, *, with_vectors: bool = True,
+         label: Path | None = None) -> int:
     if not path.is_file():
         print(f"快照不存在：{path}", file=sys.stderr)
         return 1
@@ -239,7 +374,7 @@ def load(path: Path, target: Path, force: bool = False, *, with_vectors: bool = 
     problems = _verify(staging)
     if problems:
         staging.unlink(missing_ok=True)
-        print(f"快照没通过校验，已拒绝载入：{path}", file=sys.stderr)
+        print(f"快照没通过校验，已拒绝载入：{label or path}", file=sys.stderr)
         for item in problems:
             print(f"  ✗ {item}", file=sys.stderr)
         return 1
@@ -261,35 +396,81 @@ def load(path: Path, target: Path, force: bool = False, *, with_vectors: bool = 
         sidecar.unlink(missing_ok=True)  # 旧库的 WAL 不能留着和新库混在一起
     staging.replace(target)
 
-    print(f"已载入 {path} → {target}")
+    print(f"已载入 {label or path} → {target}")
     print(f"  {_summary(target)}")
     return 0
+
+
+def _load_maybe_encrypted(path: Path, target: Path, *, force: bool, with_vectors: bool) -> int:
+    """load 的入口。`.enc` 先解密成临时文件（用完即删）再走 load；明文 `.gz` 直接载入。
+
+    `.enc` 不存在时回退到同名明文 `.gz` —— 只该在迁移期出现：老机器按旧流程存的
+    明文快照，`make db-restore` 还能用。提交前必须换成密文（secret_scan 会拦）。
+    """
+    if path.suffix != ".enc":
+        return load(path, target, force, with_vectors=with_vectors)
+    if path.is_file():
+        fd, tmp_name = tempfile.mkstemp(prefix="quizforge-snapshot-", suffix=".db.gz")
+        os.close(fd)  # mkstemp 生成 0600；解密直接写它
+        tmp = Path(tmp_name)
+        try:
+            decrypt_file(path, tmp, _passphrase())
+        except ValueError as err:
+            tmp.unlink(missing_ok=True)
+            print(f"解密失败：{err}", file=sys.stderr)
+            return 1
+        try:
+            return load(tmp, target, force, with_vectors=with_vectors, label=path)
+        finally:
+            tmp.unlink(missing_ok=True)
+    legacy = path.with_suffix("")
+    if legacy.is_file():
+        print(f"没有密文快照 {path}，回退到明文快照 {legacy}（旧流程，提交前记得换成密文）")
+        return load(legacy, target, force, with_vectors=with_vectors)
+    print(f"快照不存在：{path}", file=sys.stderr)
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tools/db_snapshot.py",
-        description="数据快照的存取（快照 = SQLite 库本身，gzip 压缩）",
+        description="数据快照的存取（快照 = SQLite 库本身；进 git 的形态是口令密文）",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    save_parser = sub.add_parser("save", help="库 → 快照（抹密钥后落盘）")
+    save_parser = sub.add_parser("save", help="库 → 明文快照（抹密钥后落盘，本机留）")
     save_parser.add_argument("--out", default="db/quizforge.db.gz")
     save_parser.add_argument("--db", default=str(DEFAULT_DB), help="源库路径（默认 data/quizforge.db）")
     save_parser.add_argument("--no-vectors", action="store_true",
-                             help="不带向量（进 git 的那份；向量在目标机器上 make embed 重建）")
+                             help="不带向量（加密提交的那份；向量在目标机器上 make embed 重建）")
 
-    load_parser = sub.add_parser("load", help="快照 → 库（载入前校验）")
-    load_parser.add_argument("--path", default="db/quizforge.db.gz")
+    load_parser = sub.add_parser("load", help="快照 → 库（.enc 先解密；载入前校验）")
+    load_parser.add_argument("--path", default="db/quizforge.db.gz.enc")
     load_parser.add_argument("--target", default=str(DEFAULT_DB), help="落点（默认 data/quizforge.db）")
     load_parser.add_argument("--force", action="store_true", help="目标已存在也覆盖")
     load_parser.add_argument("--no-vectors", action="store_true", help="载入时剔掉向量（改主意想换一台重算）")
 
+    enc_parser = sub.add_parser("encrypt", help="明文快照 → 口令密文（进 git 的形态）")
+    enc_parser.add_argument("--in", dest="src", default="db/quizforge.db.gz")
+    enc_parser.add_argument("--out", default="db/quizforge.db.gz.enc")
+
+    dec_parser = sub.add_parser("decrypt", help="密文 → 明文（自检 / 迁移用）")
+    dec_parser.add_argument("--in", dest="src", required=True)
+    dec_parser.add_argument("--out", required=True)
+
+    sub.add_parser("genkey", help="生成 config/snapshot.key（一台机器一次，两台共用同一份）")
+
     args = parser.parse_args(argv)
     if args.cmd == "save":
         return save(Path(args.out), Path(args.db), with_vectors=not args.no_vectors)
-    return load(Path(args.path), Path(args.target), force=args.force,
-                with_vectors=not args.no_vectors)
+    if args.cmd == "encrypt":
+        return cmd_encrypt(Path(args.src), Path(args.out))
+    if args.cmd == "decrypt":
+        return cmd_decrypt(Path(args.src), Path(args.out))
+    if args.cmd == "genkey":
+        return genkey()
+    return _load_maybe_encrypted(Path(args.path), Path(args.target), force=args.force,
+                                 with_vectors=not args.no_vectors)
 
 
 if __name__ == "__main__":

@@ -24,6 +24,9 @@ pydantic-settings>=2.7
 # --- 认证 ---
 argon2-cffi>=23.1             # 密码哈希（argon2id）
 
+# --- 快照口令加密（tools/db_snapshot.py 的 encrypt/decrypt）---
+cryptography>=42              # scrypt + AES-GCM；进公开仓库的快照只有密文
+
 # --- 题库导入（复用 tools/ 下的解析器）---
 PyYAML>=6.0
 

@@ -105,4 +105,4 @@ print([(h['material'],h['startLine'],h['via']) for h in got['hits'][:3]])"
 
 * 一本材料算完的样子：`materials` 一行 + `material_slices` N 片 + `slice_embeddings`
   （每片至少一窗）→ `audit --exact` 报 `齐`。
-* 想要版本库里也有：`make db-snapshot`（快照是 **SQLite 库本身**，`db/quizforge.db.gz`）。
+* 想要版本库里也有：`make db-snapshot`（快照是 **SQLite 库本身**，口令加密成 `db/quizforge.db.gz.enc` 提交）。

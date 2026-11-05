@@ -43,20 +43,21 @@ make api-dev       # → http://127.0.0.1:8100
 
 ### 从快照恢复数据
 
-仓库里带着一份快照 `db/quizforge.db.gz` —— **就是 SQLite 库本身**，gzip 压缩。
-一条命令解压即用，不需要起任何服务：
+仓库里带着一份快照 `db/quizforge.db.gz.enc` —— **就是 SQLite 库本身**，gzip 压缩、
+口令加密。一条命令解密解压即用，不需要起任何服务：
 
 ```bash
-make db-restore            # db/quizforge.db.gz → data/quizforge.db
+make snapshot-key          # 生成口令 config/snapshot.key（一台机器一次，复制到每台要同步的机器）
+make db-restore            # db/quizforge.db.gz.enc → data/quizforge.db
 make db-restore ARGS=--force   # 覆盖已有的库（先删掉它再解压）
 ```
 
 载入前会校验（完整性 + 外键悬空），坏快照当场拒绝 —— 不会给你一份
 "看着能跑、其实少了一半题"的库。
 
-反向操作是 `make db-snapshot`：把库里的现状压回 `db/quizforge.db.gz`，
-**提交它** —— 这是"换台机器接着干"唯一的载体（快照落盘前会自动抹掉 AI 密钥，
-因为这个文件进的是公开仓库）。
+反向操作是 `make db-snapshot`：把库里的现状压回 `db/quizforge.db.gz`、加密成
+`.enc`，**提交那份密文** —— 这是"换台机器接着干"唯一的载体。公开仓库里只有密文
+（没有口令文件就解不开，聊天记录不会跟着 clone 出去）；快照落盘前还会自动抹掉 AI 密钥。
 
 > 历史数据还在 Postgres 里的那种场合，才用得上 `tools/migrate_to_local.py`
 > （逐表搬到 SQLite，含对账与账号收敛）。它是**一次性搬运**工具，日常用不到。
@@ -183,13 +184,15 @@ base  = acc × (0.55 + 0.45 × fresh) × (0.6 + 0.4 × ev)
 ### 快照与备份
 
 ```bash
-make db-snapshot    # 库里 → db/quizforge.db.gz（这是唯一进版本库的数据形态）
-make db-restore     # 从它恢复（解压即用）
+make snapshot-key   # 一次性：生成口令（复制到每台要同步的机器）
+make db-snapshot    # 库里 → db/quizforge.db.gz.enc（这是唯一进版本库的数据形态）
+make db-restore     # 从它恢复（解密解压即用）
 ```
 
-规矩是：**数据进版本库只走快照**。改了题、补了概念、跑完流水线，就 `make db-snapshot` 一次，
-把 `db/quizforge.db.gz` 一起提交 —— 换台机器 `make db-restore` 就能接着干。
-快照就是**库本身**（不是某种导出版本），落盘前会自动抹掉 AI 密钥（它进的是公开仓库）。
+规矩是：**数据进版本库只走快照，而且只走密文**。改了题、补了概念、跑完流水线，
+就 `make db-snapshot` 一次，把 `db/quizforge.db.gz.enc` 一起提交 —— 换台机器
+`make db-restore` 就能接着干。快照就是**库本身**（不是某种导出版本），落盘前会自动
+抹掉 AI 密钥、再整体口令加密（它进的是公开仓库）。
 
 库在本机时，备份它就是拷贝 `data/quizforge.db` 那一个文件。
 
@@ -313,7 +316,7 @@ make graph-export   # → graph.json（图谱页取不到接口时的降级快�
 ### 运维
 
 ```bash
-make db-snapshot    # 把快照更新进版本库（db/quizforge.db.gz）
+make db-snapshot    # 把快照更新进版本库（加密成 db/quizforge.db.gz.enc）
 make db-restore     # 从快照恢复（解压即用，ARGS=--force 覆盖）
 ```
 

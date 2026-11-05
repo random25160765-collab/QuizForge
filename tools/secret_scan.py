@@ -116,6 +116,12 @@ def scan_text(text: str) -> list[tuple[str, str, str]]:
 
 def scan_files(paths: list[str]) -> int:
     problems = 0
+    # 明文快照不许被跟踪：进 git 的必须是加密的 .enc（2026-11-06 起）。
+    # 聊天记录跟着明文快照进公开仓库，和密钥出去是同一类事故。
+    if "db/quizforge.db.gz" in paths:
+        print("[E] 明文快照 db/quizforge.db.gz 被 git 跟踪了 —— "
+              "该提交的是加密的 db/quizforge.db.gz.enc（make db-snapshot 会自动生成）")
+        problems += 1
     for name in paths:
         path = ROOT / name
         if not path.is_file():

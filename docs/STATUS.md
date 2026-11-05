@@ -55,7 +55,7 @@
 
 - **1623 现行**：published 1619 + verified 4，**草稿 0**（单一学科 tt-metal）
 - **权威在库，不在文件**：`questions/` 已不是仓库目录 —— `make check` / `make test`
-  现场把库物化到临时目录再校验；`db/quizforge.db.gz` 是库里唯一带进版本控制的副本
+  现场把库物化到临时目录再校验；`db/quizforge.db.gz.enc` 是库里唯一带进版本控制的副本（口令密文）
 - 层：识记 683 · 理解 740 · 应用 199 · **迁移 0**
 - 翼：基础 1398 · 应用 200 · 综合 24 · **创新 0**
 - **游离题 0**（没挂概念的现行题）：曾经 86 道 —— 不是手工补的，是 `graph_build merge` 里的
@@ -92,9 +92,9 @@
 
 **Postgres 与 Docker 已彻底清出这条链**（2026-09-22）：`docker-compose.yml` 与
 `db-up` / `db-down` / `db-restore` / `db-dump` / `db-backup` 五个目标全部删除，
-旧快照 `db/quizforge.sql.gz` 也已删。数据快照换成 **`db/quizforge.db.gz`（就是 SQLite
-库本身）**：`make db-restore` 解压即用，`make db-snapshot` 反向存回，存取都在
-`tools/db_snapshot.py`（落盘前抹密钥、载入前校验完整性 + 外键）。仓库里**不再有任何
+旧快照 `db/quizforge.sql.gz` 也已删。数据快照换成 **`db/quizforge.db.gz.enc`（SQLite
+库本身，口令加密）**：`make db-restore` 解密解压即用，`make db-snapshot` 反向存回，
+存取都在 `tools/db_snapshot.py`（落盘前抹密钥、整体加密，载入前校验完整性 + 外键）。仓库里**不再有任何
 需要 Docker 或 Postgres 的路径**。
 
 `tools/migrate_to_local.py` 保留着，但降级为**一次性搬运**工具（历史数据还在
@@ -313,8 +313,8 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
   版本库里唯一的数据副本是 `db/quizforge.sql.gz`（Postgres dump），恢复它要
   `make db-up && make db-restore && python tools/migrate_to_local.py` —— 依赖一台活的
   Postgres。于是新环境首启得到的是**空壳库**（`questions` / `topics` 都是 0 行）。
-  现在快照换成 **`db/quizforge.db.gz`（就是 SQLite 库本身）**，`make db-restore`
-  解压即用；Postgres 与 Docker 已从这条链上彻底清除（见 §五）。
+  现在快照换成 **`db/quizforge.db.gz.enc`（就是 SQLite 库本身，口令加密）**，`make db-restore`
+  解密解压即用；Postgres 与 Docker 已从这条链上彻底清除（见 §五）。
 - ~~86 道题没挂概念~~ —— 实测**游离题 0**。§三 那条 `link_questions` 回填已兑现，
   `make coverage` 现在拿「游离题为零」当硬断言盯着。
 - ~~根目录的 `bank.json` 与库不一致~~（2026-09-22 **已删**）—— 它是**最早测试期**留下的

@@ -13,11 +13,13 @@
 #   make graph-check    图谱体检（无环 / 能走到根 / 闭包不矛盾）
 #
 # 数据快照（**唯一进版本库的数据形态**，就是 SQLite 库本身）—— 分两份：
-#   make db-snapshot   一次写两个：
-#                        db/quizforge.db.gz               不含向量 → **提交它**
-#                        db/quizforge.db.with-vectors.gz  含向量   → 本机自己留（已 gitignore）
-#   make db-restore    db/quizforge.db.gz → data/quizforge.db（解压即用；向量靠 make embed 重建）
+#   make db-snapshot   一次写三个：
+#                        db/quizforge.db.gz               明文、不含向量 → 本机留（已 gitignore）
+#                        db/quizforge.db.gz.enc           口令加密       → **提交它**（公开仓库只有密文）
+#                        db/quizforge.db.with-vectors.gz  含向量         → 本机自己留（已 gitignore）
+#   make db-restore    db/quizforge.db.gz.enc → data/quizforge.db（先解密再解压；向量靠 make embed 重建）
 #                      要连向量一起搬：make db-restore ARGS="--path db/quizforge.db.with-vectors.gz"
+#   make snapshot-key  生成口令 config/snapshot.key（一台机器一次，复制到每台要同步的机器，绝不进 git）
 # ============================================================================
 
 PYTHON ?= python3
@@ -182,16 +184,24 @@ api-venv:
 DB_SNAPSHOT ?= db/quizforge.db.gz
 DB_VECTORS  ?= db/quizforge.db.with-vectors.gz
 
-# 库里 → 两份快照。用 SQLite 的 backup API 取一致性快照（有 WAL 也不会读到半写状态）。
+# 库里 → 三份。用 SQLite 的 backup API 取一致性快照（有 WAL 也不会读到半写状态）。
+# 明文两份本机留（gitignore）；进 git 的是第三份 —— 口令加密后的密文。
 db-snapshot:
 	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_SNAPSHOT) --no-vectors
 	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_VECTORS)
+	@$(VENV)/bin/python tools/db_snapshot.py encrypt --in $(DB_SNAPSHOT) --out $(DB_SNAPSHOT).enc
+
+# 生成快照口令。只该跑一次：之后把 config/snapshot.key 复制到每台要同步的机器
+#（它被 gitignore，绝不进仓库 —— 口令进了仓库，加密就是白做）。
+snapshot-key:
+	@$(VENV)/bin/python tools/db_snapshot.py genkey
 
 # 快照 → 库里（`--force` 覆盖已有的库）。这是**换新机器/首次上手**那条路。
+# 目标默认是加密快照：没有口令就解不开（三个来源见 tools/db_snapshot.py 的 _passphrase）。
 # 这份没有向量：`make embed` 补齐（GPU 约 10 分钟、CPU 一小时多）。
 # 要连向量一起搬：make db-restore ARGS="--path $(DB_VECTORS)"
 db-restore:
-	@$(VENV)/bin/python tools/db_snapshot.py load --path $(DB_SNAPSHOT) $(ARGS)
+	@$(VENV)/bin/python tools/db_snapshot.py load --path $(DB_SNAPSHOT).enc $(ARGS)
 
 # ---------------------------------------------------------------- 数据库运维（只读）
 # 这些以前是"每次开个 python -c 现场写"：库多大、哪个表占地方、某个 slug 在不在。
