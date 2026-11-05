@@ -25,7 +25,7 @@
 | 对话内核 | `api/app/routers/chat.py` | 会话与消息（**树**：再生成=分叉）、SSE 流、零件装配、引用去重；**铺垫在落库时打 `process` 标记**（界面折成可展开的「过程」，刷新也不散） |
 | 工具循环 | `api/app/agent_loop.py` | 多轮工具调用、上下文预算、**最后一轮不给工具**（逼收口作答）、协议泄漏兜底 |
 | 工具集 | `api/app/tools.py` | **31 个**（七组 + 一个元能力）：笔记 5 · 资料 5 · 图谱 3 · 出题 8 · 沙箱 2 · 联网 3 · 对话树 4 · 元能力 `run_subagent`。分组是唯一出处，界面开关与提示词都读它（`mounts.py` / `GROUP_PROMPTS`） |
-| 联网搜索 | `api/app/websearch.py` | **默认免密钥**（必应的 RSS 输出，零配置可用）；填了密钥可切博查 / Tavily / Serper。`read_web_page` 抓正文（启发式抽取），**本机与内网地址一律拒**（见该模块的 `_guard_url`） |
+| 联网搜索 | `api/app/websearch.py` | **要一把密钥**（免密钥那条必应 RSS 已删：它会回合法 XML 但内容无关，见模块 docstring）。默认 DeepSeek 搜索 —— 与模型 API 同一把 key、国内直连；可切博查 / Tavily / Serper。`read_web_page` 抓正文（启发式抽取），**本机与内网地址一律拒**（见该模块的 `_guard_url`） |
 | 大题批改 | `api/app/routers/problem.py` | 独立子代理批改（看不到聊天记录）；批完**回写一条 assistant 消息进对话** —— 主 agent 下一轮才看得见「他做过这道大题、批成什么样」 |
 | 我的题单 | `api/app/routers/mybank.py` · `my_questions` | 自己出的题**另开一张表**：公共 `questions` 挂着覆盖率对账、图谱的 `question_concepts`、流水线状态机（draft→verified→published），混进去会污染统计、让流水线管它、而且**删不掉** |
 | 分享 / 导出 | `api/app/share.py` · `theme/runtime/share.js` · `tools/share.py` | 把一条会话装配成**自包含的单页**（`file://` 双击即用、只读）：`payload_of` 带 `marks`（他的痕迹）、`leaf`（他读的那一支）、`origin`（演示去取运行时用的地址），`_inline` 把资源内联并丢掉 `boot.js`；渲染器与在线页**同一份源码**（`share.js` 只在分享页里被内联）。命令行 `make share CID=…` |

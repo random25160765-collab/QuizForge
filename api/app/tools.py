@@ -2882,7 +2882,7 @@ def search_papers(db, args, ctx=None) -> dict:  # noqa: ANN001
     if not query:
         return {"error": "要搜什么？`query` 是空的。"}
     try:
-        conf = websearch.resolve(db)
+        conf = websearch.scholar_conf(db)
         items = websearch.search_papers(conf, query, count=args.get("count"))
     except websearch.SearchError as exc:
         return {"error": str(exc)}

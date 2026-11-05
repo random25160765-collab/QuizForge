@@ -21,31 +21,27 @@
 **它一定在某些站点上抽不好** —— 所以抽出来的正文太短时明确交回一句"这一页可能是
 脚本渲染的，别当成页面没内容"，而不是给一片空白让模型以为原文本来就是空的。
 
-## 默认那条路**不要密钥**（必应的 RSS 输出）
+## 免密钥那条（必应的 RSS）**已经删了**
 
 第一版这里是"必须先去申请一把密钥"。用户一句话把它问回来了：
 
 > 为什么一定要配密钥呢？我们自己实现一个联网搜索的功能不可以吗？
 
-可行，而且对这套东西更对路 —— 它是**本地、单用户、量很小**的形态，
-"先去注册一个账号拿 key" 与"双击即用"是互相别扭的两件事。所以：
+于是挂上了必应的 RSS 输出（`?format=rss`，零配置可用）。它后来**坏了**，而且
+坏法是联网这一层最坏的那种：必应对绝大多数查询回一份**合法的 XML、内容是
+无关的**（搜"马云 创业"回"马"这个动物，搜"Andrew Carnegie autobiography"
+回"人人网恢复"—— 只有极高频的热词走缓存还有真结果）。XML 解析得动、有
+`item`、一切看着正常 —— **"看起来查过了"**，模型拿着"马"的结果继续编卡内基，
+比报错更糟。所以这一条删掉了。
 
-* **默认走必应**：它有一个老式的 RSS 输出（`?format=rss`），回的是一份
-  规规矩矩的 XML（`title` / `link` / `description` / `pubDate`），
-  **不用解析搜索结果页的 DOM** —— 那才是"自己实现搜索"最容易写坏的地方
-  （别人的页面结构一改，你的正则就悄悄失效）。中文查询也正常。
-* **收费那三家是升级，不是入场券**：博查 / Tavily / Serper 各自有额度、
-  有 SLA、摘要给得更长，量大或要稳定就填一把自己的密钥切过去。
+现在要一把密钥。代价与理由：
 
-代价要说清，别让人以为它和收费的等价：
-
-1. **一次最多 10 条**（RSS 输出的上限），要更多只能换关键词多搜几次；
-2. **它是"个人非商业用途"的口子**（必应自己在 `<copyright>` 里写明：
-   允许"出于个人的非商业用途在 RSS 聚合器中呈现"）。本项目正好是这个情形 ——
-   但**这不是一条可以拿去做产品的路**，要商用就得换成收费服务商。
-3. **量大了会被限流**，表现是回一页 HTML（同意页 / 验证码）而不是 XML。
-   这一条**专门判**：不是 XML 就明说"被挡了、换一家"，而不是表现成"没搜到"
-   —— 那两种情况的下一步动作完全不同。
+1. **DeepSeek 搜索是零注册成本的第一家**：它和模型 API（`api.deepseek.com`）
+   是**同一把 key、同一个平台**，国内直连，不用再注册一家服务商。
+   按次计费（$0.75 / 千次成功请求），个人用忽略不计。
+2. **博查 / Tavily / Serper 是备选**：各自有额度、有 SLA、摘要给得更长。
+3. **没配就明说**：`resolve` 会交回一条"去设置里选一家、填一把密钥"的错误，
+   而不是假装搜了。
 
 ## 学术文献走**另一条**索引（同样免密钥）
 
@@ -80,7 +76,8 @@
 问"现在怎么做 / 这个型号的参数"走 `web_search`。**
 
 密钥那份配置仍然认（`user_settings.data.search`，以及内测通道
-`config/ai.local.json` 里的 `search` 块）：填了就用你填的，没填就用免密钥那条。
+`config/ai.local.json` 里的 `search` 块）：填了就用你填的，没填就明说
+"去设置里选一家、填一把密钥"，而不是假装搜了。
 
 ## 第一条纪律：**不许卡住**
 
@@ -118,7 +115,6 @@ import re
 import socket
 import threading
 import time
-import xml.etree.ElementTree as ET
 from urllib.parse import ParseResult, urljoin, urlparse
 
 import httpx
@@ -126,12 +122,9 @@ import httpx
 #: 设置里那一块（`user_settings.data.search` / 内测配置里的 `search`）。
 KEY = "search"
 
-#: 没配任何东西时走哪家 —— **免密钥**那条（见模块 docstring：
-#: "零配置就能用"是刻意的，密钥是升级不是入场券）。
-DEFAULT_KIND = "bing"
-
-#: 必应那个 RSS 输出一次最多给几条。它**不认** `count` 参数，所以这是硬上限。
-BING_MAX_COUNT = 10
+#: 设置里没写 kind 时默认哪家。免密钥那条（必应的 RSS）已经删了 ——
+#: 现在默认是 DeepSeek（与模型同一把 key），见模块 docstring 第一节。
+DEFAULT_KIND = "deepseek"
 
 DEFAULT_COUNT = 6
 MAX_COUNT = 20
@@ -190,26 +183,22 @@ class SearchError(Exception):
 
 
 class SearchUnavailable(SearchError):
-    """这一项现在用不了（被关掉了、或者服务商不认识）。
+    """这一项现在用不了（被关掉了、服务商不认识、或者没配密钥）。
 
-    注意：**"没配密钥"不再是这一条的触发条件** —— 免密钥那条默认就在（见 `resolve`）。
-    这条消息其实也是**写给用户看**的：模型会照着念给他听。
+    免密钥那条默认（必应的 RSS）已经删了 —— "没配密钥"现在是这一条的
+    触发条件之一（见 `resolve`）。这条消息其实也是**写给用户看**的：
+    模型会照着念给他听。
     """
 
 
 # ------------------------------------------------------------------ 服务商
 #
 # 加一家就是加一条：`request` 造请求、`results` 解析回来的东西。别处都不用动。
-# 两家共用一套形状 —— JSON 的那些与免密钥那条（是 XML）走的都是同一条出口。
+# 各家共用一套形状：`request` 造请求、`results` 解析，走的是同一条出口。
 
 
 def _clip(text, limit: int = 160) -> str:  # noqa: ANN001
     return " ".join(str(text or "").split())[:limit]
-
-
-def _text_of(item, tag: str) -> str:  # noqa: ANN001
-    found = item.find(tag)
-    return (found.text or "").strip() if found is not None and found.text else ""
 
 
 def _json_body(reply) -> dict:  # noqa: ANN001
@@ -224,71 +213,7 @@ def _json_body(reply) -> dict:  # noqa: ANN001
     return data
 
 
-# -- 免密钥：必应 ---------------------------------------------------------
-#
-# 走它那个老式的 RSS 输出（`?format=rss`）。**这是刻意选的**：搜索结果页的 DOM
-# 是给浏览器看的，拿正则去啃它，人家改一次版式你就悄悄失效；RSS 是给机器读的
-# 一份固定 XML（`item` 里就 title / link / description / pubDate 四个字段）。
-# 这就是"自己实现一个搜索"里唯一值得做的那条路 —— 见模块 docstring 的取舍说明。
-
-
-def _bing_request(conf: dict, query: str, count: int) -> dict:
-    return {
-        "method": "GET",
-        "url": str(conf["endpoint"]),
-        # UA 用老实那个就行 —— 实测它不挑 UA（`curl/8.0` 也一样拿得到），
-        # 真正要紧的是**跟重定向**（见 `search`）：直接请求先吃一个 302。
-        "headers": {
-            "User-Agent": USER_AGENT,
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        },
-        "params": {"q": query, "format": "rss", "count": min(count, BING_MAX_COUNT)},
-    }
-
-
-def _bing_blocked(reply) -> SearchError:  # noqa: ANN001
-    """被挡了的统一说法。**必须与"这次真的没搜到"分开**：
-
-    前者要等一会儿或换一家服务商，后者只要换个搜索词 —— 都报"没搜到"，
-    用户会一直换词，而真正该做的那件事一次都没做。
-    """
-    return SearchError(
-        "必应没有回结果（回的是一页 HTML，通常是限流或要求验证）："
-        + _clip(reply.text, 120)
-        + "　等一下再试；或者去「设置 → 联网搜索」换一家（博查 / Tavily / Serper，要填一把密钥）。"
-    )
-
-
-def _bing_results(reply) -> list[dict]:  # noqa: ANN001
-    try:
-        root = ET.fromstring(reply.content)
-    except ET.ParseError as exc:
-        raise _bing_blocked(reply) from exc
-    # **还要看根元素**：一页 HTML 有时**恰好是合法 XML**（`<html><body>…</body></html>`
-    # 就解析得动，实测撞到过）—— 只按"解析失败"判，那一页会被当成"这次真的没搜到"。
-    # 根元素是 `rss` / `feed` 才是我们要的那份；那时**一个 item 都没有**才是真的没搜到。
-    if str(root.tag or "").split("}")[-1].lower() not in ("rss", "feed"):
-        raise _bing_blocked(reply)
-    out: list[dict] = []
-    for item in root.findall(".//item"):
-        url = _text_of(item, "link")
-        # 它偶尔把"再搜一次这个词"本身也当成一条结果（link 指回 bing 自己）。
-        # 那不是结果，交出去只会白占模型一次判断。
-        if not url or _host_of(url).endswith("bing.com"):
-            continue
-        out.append(
-            _result(
-                title=_text_of(item, "title"),
-                url=url,
-                snippet=_text_of(item, "description"),
-                site=_host_of(url),
-                date=_text_of(item, "pubDate"),
-            )
-        )
-    return out
-
-
-# -- 收费三家（填了密钥才走这些）------------------------------------------------
+# -- 几家服务商（都要密钥）----------------------------------------------------
 
 
 def _bocha_request(conf: dict, query: str, count: int) -> dict:
@@ -370,6 +295,56 @@ def _serper_results(reply) -> list[dict]:  # noqa: ANN001
         for one in (data.get("organic") or [])
         if isinstance(one, dict)
     ]
+
+
+# -- DeepSeek 搜索（自营搜索引擎，和模型同一把 key）--------------------------------
+#
+# 免密钥那条（必应的 RSS）已经不可靠了：高频热词走缓存还有真结果，其余查询
+# 掉进一条坏路径 —— 回一份**合法的 XML，但内容是无关的**（搜"马云 创业"回来
+# 的可能是"马"这个动物，英文查询回来的是雅虎香港）。这是最坏的一类失败：
+# "看起来查过了"。所以需要一家国内直连、行为稳定的服务商。
+#
+# DeepSeek 的 Search API 与模型 API 是**同一把 key、同一个平台**：不用再注册
+# 一家服务商。它把"给界面看的 snippet"与"给模型读的 summary（600–800 字）"
+# 分开给 —— 后者正是交回模型前要的那段。
+
+
+#: DeepSeek Search API 把查询长度钉在 1–128 个 Unicode 字符（超了回 400，不是截断）。
+DEEPSEEK_MAX_QUERY = 128
+
+
+def _deepseek_request(conf: dict, query: str, count: int) -> dict:
+    return {
+        "method": "POST",
+        "url": str(conf["endpoint"]),
+        "headers": {"Authorization": "Bearer " + conf["apiKey"], "Content-Type": "application/json"},
+        # `need_content` 不开：正文由 `read_web_page` 按需去读（搜 + 读是两条腿，
+        # 见模块 docstring）。要的是 `summary` 与操作符直通（site: / lang: / "短语"）。
+        "json": {"query": query[:DEEPSEEK_MAX_QUERY], "count": count, "need_content": False},
+    }
+
+
+def _deepseek_results(reply) -> list[dict]:  # noqa: ANN001
+    data = _json_body(reply)
+    out: list[dict] = []
+    for one in data.get("results") or []:
+        if not isinstance(one, dict):
+            continue
+        url = str(one.get("url") or "")
+        if not url:
+            continue
+        out.append(
+            _result(
+                title=one.get("title"),
+                url=url,
+                # 优先给模型读的那段长摘要；没有才退回给界面看的那段。
+                snippet=one.get("summary") or one.get("snippet"),
+                site=one.get("site_name"),
+                # RFC 3339（"2026-06-01T00:00:00+00:00"）→ 留日期那 10 个字符。
+                date=str(one.get("date") or "")[:10],
+            )
+        )
+    return out
 
 
 # -- 学术通道（OpenAlex，免密钥）--------------------------------------------------
@@ -493,19 +468,18 @@ DEFAULT_SCHOLAR = "openalex"
 
 #: 支持的服务商。**顺序就是界面下拉的顺序**，第一项是默认值。
 #:
-#: * `bing` 是**免密钥**那条（`keyless: True`）：零配置可用，是默认。
-#:   代价写在模块 docstring 里（一次最多 10 条、个人非商业用途、量大会被限流）。
-#: * 另外三家要一把自己的密钥，换来的是额度、稳定与更长的摘要。
-#:   博查国内可直连、中文语料好；Tavily 是"给模型用的搜索"；Serper 背后是 Google。
+#: * `deepseek` 排第一：与模型 API **同一把 key**（不用另注册）、国内直连、
+#:   自营引擎 —— 免密钥那条（必应的 RSS）删掉之后，它就是默认。
+#: * 其余三家各有额度、有 SLA：博查国内可直连、中文语料好；
+#:   Tavily 是"给模型用的搜索"；Serper 背后是 Google。
 #:
 #: 加一家 = 加一条 `request` + `results`，别处都不用动。
 PROVIDERS: dict[str, dict] = {
-    "bing": {
-        "label": "必应（免密钥）",
-        "endpoint": "https://www.bing.com/search",
-        "keyless": True,
-        "request": _bing_request,
-        "results": _bing_results,
+    "deepseek": {
+        "label": "DeepSeek 搜索",
+        "endpoint": "https://api.deepseek.com/v1/tools/search",
+        "request": _deepseek_request,
+        "results": _deepseek_results,
     },
     "bocha": {
         "label": "博查（Bocha）",
@@ -549,7 +523,8 @@ def _normalize(raw: dict, *, source: str) -> dict | None:
     """一处设置 → 一份能用的配置。
 
     **要密钥的那几家没有密钥就返回 `None`**（= 这次没配，让调用方往下找）；
-    免密钥那条（`keyless`）不填密钥也照样成立 —— 这正是"零配置可用"的落点。
+    标了 `keyless` 的不填密钥也照样成立 —— 学术通道的 OpenAlex 走的就是这个口子
+    （网页搜索这几家现在都要密钥，免密钥那条已经删了）。
     """
     kind = str(raw.get("kind") or DEFAULT_KIND).strip().lower()
     if kind not in PROVIDERS:
@@ -576,13 +551,11 @@ def resolve(db) -> dict:  # noqa: ANN001
 
     1. **用户自己填的**（`user_settings.data.search`，填了密钥就用他的）；
     2. **内测通道那份**（`config/ai.local.json` 的 `search`，只在 beta 通道）；
-    3. **免密钥那条**（必应）—— 所以"什么都没配"不等于"用不了"。
+    3. 都没有 → 报一条说清楚的错，让用户去配。
 
-    第 3 条是刻意的（见模块 docstring）：联网搜索**零配置就能用**，
-    密钥是升级不是入场券。用户的原话："为什么一定要配密钥呢？"
-
-    只有一种情况它真的"不可用"：用户在设置里**显式关掉了**这一项 ——
-    那时说清是关着的，别让人以为坏了。
+    没有"免密钥兜底"了：那条（必应的 RSS）删掉了 —— 它会回一份**合法的
+    XML、内容是无关的**（"看起来查过了"，比报错更糟，见模块 docstring 第一节）。
+    "什么都没配"现在是**明说"没配"**，而不是假装搜了。
     """
     from . import ai_gateway, settings_store  # 延迟导入：`ai_gateway` 会回调这边
 
@@ -590,7 +563,7 @@ def resolve(db) -> dict:  # noqa: ANN001
     if isinstance(mine, dict) and mine.get("enabled") is False:
         raise SearchUnavailable(
             "联网搜索你在设置里关掉了 —— 要用的话打开「设置 → 联网搜索」的那个开关，"
-            "它是免密钥就能走的（默认走必应）。"
+            "再选一家服务商、填一把密钥。"
         )
 
     for source, raw in (
@@ -603,15 +576,31 @@ def resolve(db) -> dict:  # noqa: ANN001
         if found:
             return found
 
-    # 什么都没配：走免密钥那条（`DEFAULT_KIND`）。
-    found = _normalize({"kind": DEFAULT_KIND}, source="keyless")
-    if found:
-        return found
-    # 只有把默认那家改成"要密钥的"才会走到这儿 —— 兜底报一条说得清的话
     raise SearchUnavailable(
-        "联网搜索没有可用的服务商：去「设置 → 联网搜索」选一个（免密钥的必应，"
-        "或者填一把博查 / Tavily / Serper 的密钥）。"
+        "联网搜索没有配服务商：去「设置 → 联网搜索」选一家、填一把密钥"
+        "（推荐 DeepSeek —— 与聊天同一把 key，不用另注册；"
+        "或博查 / Tavily / Serper）。"
     )
+
+
+def scholar_conf(db) -> dict:  # noqa: ANN001
+    """学术通道（OpenAlex，免密钥）的配置 —— **不依赖**网页搜索的服务商设置。
+
+    网页那几家都要密钥之后，`resolve` 在没配时会报错；那一报不该殃及这一路
+    （它自己免密钥）。它只从设置里借 `timeoutMs`（"不许卡住"是纪律，不是给
+    某一家的优待，见 `search_papers`）。
+    """
+    from . import settings_store  # 延迟导入：`ai_gateway` 会回调这边
+
+    raw = settings_store.load(db).get(KEY)
+    base = {
+        "count": DEFAULT_COUNT,
+        "timeoutMs": int(SEARCH_TIMEOUT_S * 1000),
+        "source": "scholar",
+    }
+    if isinstance(raw, dict):
+        base["timeoutMs"] = _clamp_int(raw.get("timeoutMs"), 3000, 60000, base["timeoutMs"])
+    return base
 
 
 def _provider_list() -> list[dict]:
@@ -728,6 +717,9 @@ def _http_hint(preset: dict, conf: dict, reply) -> str:  # noqa: ANN001
         )
     if code == 429:
         return "搜索服务限流了（HTTP 429）：等一会儿再搜，或者换一家服务商。" + tail
+    if code == 402:
+        # DeepSeek 这一路按次计费；余额不足是 402，与"密钥不对"（401）不是一回事。
+        return "搜索服务的账户余额不足（HTTP 402）—— 去服务商平台充值后再试。" + tail
     return "搜索服务返回 HTTP " + str(code) + "（" + conf["label"] + "）。" + tail
 
 
@@ -765,7 +757,7 @@ def _perform(preset: dict, conf: dict, text: str, ask: int) -> list[dict]:
                     timeout=timeout,
                 ) as response:
                     if response.status_code in _REDIRECT_CODES and _hop < MAX_REDIRECTS:
-                        # 免密钥那条（必应的 RSS）直接请求先吃一个 302 —— 得跟，
+                        # 有些服务商先回一个 302 再给结果 —— 得跟，
                         # 但每一跳都重新算一次剩下的预算，而不是各给一份。
                         location = response.headers.get("location")
                         if not location:
@@ -826,7 +818,7 @@ def search(
     """搜一次公开网页。各家的请求形状与返回格式都不一样，**出口只有这一种**。
 
     域名过滤是**本地筛**：各家的语法不同（写进 query 只有 Google 那一系认
-    `site:` —— 实测免密钥那条连 `site:` 都不认），所以统一在拿回来之后按 host 筛。
+    `site:`），所以统一在拿回来之后按 host 筛。
     代价是要多取几条再筛 —— 不然"只在这两个站里找"很容易被筛成空，
     看着像"这世上没有"。
 

@@ -42,6 +42,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     body: dict | str = {}
     content_type = "application/json"
+    status = 200
     received: dict = {}
 
     def _record(self) -> None:  # noqa: ANN001
@@ -63,7 +64,7 @@ class _Handler(BaseHTTPRequestHandler):
             if isinstance(type(self).body, dict)
             else str(type(self).body).encode("utf-8")
         )
-        self.send_response(200)
+        self.send_response(type(self).status)
         self.send_header("Content-Type", type(self).content_type)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
@@ -82,10 +83,12 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def _serve(body, content_type: str = "application/json"):  # noqa: ANN001
+def _serve(body, content_type: str = "application/json", status: int = 200):  # noqa: ANN001
     """起一个本机 HTTP 服务，yield (base_url, handler)。"""
     handler = type(
-        "_Case", (_Handler,), {"body": body, "content_type": content_type, "received": {}}
+        "_Case",
+        (_Handler,),
+        {"body": body, "content_type": content_type, "status": status, "received": {}},
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -163,6 +166,70 @@ def test_each_provider_has_its_own_request_shape():
     assert handler.received["json"]["max_results"] == 6
 
 
+def test_deepseek_request_shape_and_results():
+    """DeepSeek 家：与模型同一把 key（Bearer），`summary`（给模型读的）优先于
+    `snippet`（给界面看的），`site_name` 进 `site`，RFC 3339 日期只留日期部分。"""
+    body = {
+        "results": [
+            {
+                "rerank_score": 2.4,
+                "title": "一段标题",
+                "url": "https://example.com/p",
+                "snippet": "给界面看的那段",
+                "summary": "给模型读的那段",
+                "site_name": "示例站",
+                "date": "2026-06-01T00:00:00+00:00",
+                "authority": 3,
+            }
+        ]
+    }
+    with _serve(body) as (url, handler):
+        items = websearch.search(_conf(url, kind="deepseek"), "查询词")
+    assert items == [
+        {
+            "title": "一段标题",
+            "url": "https://example.com/p",
+            "snippet": "给模型读的那段",
+            "site": "示例站",
+            "date": "2026-06-01",
+        }
+    ]
+    assert handler.received["headers"]["authorization"] == "Bearer test-key"
+    assert handler.received["json"] == {"query": "查询词", "count": 6, "need_content": False}
+
+
+def test_deepseek_clamps_the_query_to_128_chars():
+    """它家把查询长度钉在 1–128 个字符（超了是 400，不是截断）—— 那就由这边截。"""
+    with _serve({"results": []}) as (url, handler):
+        websearch.search(_conf(url, kind="deepseek"), "字" * 200)
+    assert len(handler.received["json"]["query"]) == 128
+
+
+def test_deepseek_drops_junk_entries_not_the_whole_search():
+    """结果里混着缺 URL 的与非对象的条目时，跳过它们而不是整次失败。"""
+    body = {
+        "results": [
+            {"title": "没有 URL", "summary": "s"},
+            "不是对象",
+            {"title": "好的", "url": "https://ok.example/", "summary": "正文"},
+        ]
+    }
+    with _serve(body) as (url, _handler):
+        items = websearch.search(_conf(url, kind="deepseek"), "q")
+    assert [one["url"] for one in items] == ["https://ok.example/"]
+
+
+def test_402_says_balance_not_key():
+    """DeepSeek 这一路按次计费：余额不足是 402 —— 该说"去充值"，
+    不能套"密钥填错了"（401/403）那套话术。"""
+    with _serve({"error": {"message": "Insufficient Balance"}}, status=402) as (url, _h):
+        with pytest.raises(websearch.SearchError) as err:
+            websearch.search(_conf(url, kind="deepseek"), "q")
+    text = str(err.value)
+    assert "余额不足" in text
+    assert "充值" in text
+
+
 def test_a_business_error_is_not_an_empty_result():
     """博查把业务错误放在 200 的 body 里。不看它，"没额度"会表现成"一条都没搜到" ——
     那是最难查的一种坏法：用户以为网上没有，其实是密钥的事。"""
@@ -215,19 +282,24 @@ def _no_beta(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.setattr(ai_gateway, "beta_config", lambda: None)
 
 
-def test_keyless_is_the_default(db_session, monkeypatch):
-    """**零配置就能搜** —— 这是刻意的。
+def test_no_config_says_configure_it(db_session, monkeypatch):
+    """没配密钥现在**明说**"去配"。
 
-    用户的原话："为什么一定要配密钥呢？我们自己实现一个联网搜索的功能不可以吗？"
-    所以默认走免密钥那条（必应），密钥是升级不是入场券。
+    免密钥那条（必应的 RSS）删了 —— 它会回一份合法的 XML、内容是无关的
+    （"看起来查过了"，比报错更糟）。所以"什么都没配"不再是"能用"，
+    而是报一条指路的错，让用户去设置里选一家、填一把密钥。
     """
     _no_beta(monkeypatch)
-    conf = websearch.resolve(db_session)
-    assert conf["kind"] == "bing"
-    assert conf["source"] == "keyless"
-    assert conf["apiKey"] == ""
+    with pytest.raises(websearch.SearchUnavailable) as err:
+        websearch.resolve(db_session)
+    assert "没有配" in str(err.value)
     state = websearch.state(db_session)
-    assert state["ready"] is True and state["keyless"] is True
+    assert state["ready"] is False and "密钥" in state["message"]
+    # 没配的时候模型也拿得到理由（而不是一条空的失败）
+    ok, payload = tools.call(
+        db_session, "web_search", {"query": "x"}, {}, mounts={"web"}, allow=("read",)
+    )
+    assert ok is True and "没有配" in payload["error"]
 
 
 def test_switched_off_says_so(db_session, monkeypatch):
@@ -246,8 +318,8 @@ def test_switched_off_says_so(db_session, monkeypatch):
     assert ok is True and "关掉" in payload["error"]
 
 
-def test_a_key_still_wins_and_a_broken_choice_falls_back(db_session, monkeypatch):
-    """配了密钥（或内测通道给了）就按那个来；选了收费那家却没填密钥 → **回落**到免密钥那条。"""
+def test_a_key_still_wins_and_a_broken_choice_says_so(db_session, monkeypatch):
+    """配了密钥（或内测通道给了）就按那个来；选了要密钥的一家却没填 → 报错而不是假装能搜。"""
     from app import ai_gateway
 
     _no_beta(monkeypatch)
@@ -255,9 +327,11 @@ def test_a_key_still_wins_and_a_broken_choice_falls_back(db_session, monkeypatch
     conf = websearch.resolve(db_session)
     assert (conf["kind"], conf["source"], conf["apiKey"]) == ("bocha", "user", "k1")
 
-    # 选了要密钥的一家却没填 → 不是报错，是回落（用户没配就该能用）
+    # 选了要密钥的一家却没填 → 明说"没配"，而不是回落（免密钥那条已删）
     settings_store.put(db_session, search={"kind": "tavily"})
-    assert websearch.resolve(db_session)["kind"] == "bing"
+    with pytest.raises(websearch.SearchUnavailable) as err:
+        websearch.resolve(db_session)
+    assert "没有配" in str(err.value)
 
     settings_store.put(db_session, search=None)  # 清掉
     monkeypatch.setattr(
@@ -273,7 +347,7 @@ def test_the_state_never_returns_the_key(db_session, monkeypatch):
     settings_store.put(db_session, search={"kind": "bocha", "apiKey": _FAKE_KEY})
     state = websearch.state(db_session)
     assert state["ready"] is True and state["keyless"] is False
-    assert [one["kind"] for one in state["providers"]][0] == "bing", "下拉的第一个仍是默认那条"
+    assert [one["kind"] for one in state["providers"]][0] == "deepseek", "下拉的第一个是默认那条"
     assert _FAKE_KEY not in json.dumps(state)
 
 
@@ -293,63 +367,6 @@ def test_a_configured_key_goes_through_the_whole_chain(db_session, monkeypatch):
     assert ok is True
     assert payload["results"][0]["url"] == "https://example.com/x"
     assert "read_web_page" in payload["note"], "要提醒它：摘要只是索引"
-
-
-# ------------------------------------------------------------------ 免密钥那条
-
-
-def test_the_keyless_path_reads_bing_rss():
-    """免密钥那条走 `GET ?format=rss`，解析的是一份固定 XML —— **不是搜索结果页的 DOM**。
-
-    这就是"自己实现一个搜索"里唯一站得住的做法：人家的页面版式一改，啃 DOM 的正则
-    就悄悄失效；而 `item` 里那几个字段是给机器读的，稳得多。
-    """
-    xml = (
-        '<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel>'
-        "<item><title>结果一</title><link>https://example.com/a</link>"
-        "<description>摘要一</description><pubDate>周五, 18 9月 2026 00:02:00 GMT</pubDate></item>"
-        # 它偶尔把"再搜一次这个词"本身也当成一条结果（link 指回它自己）—— 那不是结果
-        "<item><title>再搜一次</title><link>http://www.bing.com/search?q=x</link>"
-        "<description></description></item>"
-        "<item><title>结果二</title><link>https://example.com/b</link>"
-        "<description>摘要二</description></item>"
-        "</channel></rss>"
-    )
-    with _serve(xml, content_type="text/xml; charset=utf-8") as (url, handler):
-        items = websearch.search(_conf(url, kind="bing", apiKey=""), "x")
-
-    assert [one["url"] for one in items] == ["https://example.com/a", "https://example.com/b"]
-    assert items[0]["title"] == "结果一"
-    assert items[0]["snippet"] == "摘要一"
-    assert items[0]["site"] == "example.com"
-    # 走的是 GET 那条路，并且**要了 RSS 输出**（否则拿回来的是一整页 DOM）
-    assert handler.received["path"].startswith("/search?")
-    assert "format=rss" in handler.received["path"], handler.received["path"]
-
-
-def test_a_blocked_keyless_response_is_not_an_empty_result():
-    """被限流时它回的是一页 HTML —— 必须与"没搜到"**分开说**。
-
-    都报"没搜到"的话，用户会一直换搜索词；真正该做的是等一会儿或者换一家。
-    """
-    with _serve("<html><body>请验证你是人类</body></html>", content_type="text/html") as (url, _h):
-        with pytest.raises(websearch.SearchError) as err:
-            websearch.search(_conf(url, kind="bing", apiKey=""), "x")
-    text = str(err.value)
-    assert "HTML" in text, text
-    assert "换一家" in text, "要给出下一步"
-
-
-def test_an_rss_without_items_is_genuinely_empty():
-    """根元素是 `rss`、里面一个 item 都没有 = **真的**没搜到：不报错，交回空列表。
-
-    与上一条配对：一个说"被挡了"，一个说"没有"。这两种情况的下一步动作不同，
-    所以判据落在**根元素**上，而不是"有没有 item" ——
-    一页 HTML 有时恰好是合法 XML（上一条就是这么来的）。
-    """
-    xml = '<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel></channel></rss>'
-    with _serve(xml, content_type="text/xml") as (url, _h):
-        assert websearch.search(_conf(url, kind="bing", apiKey=""), "x") == []
 
 
 # ------------------------------------------------------------------ 网页 → 文本
@@ -460,18 +477,17 @@ def test_the_agent_loop_declares_it_and_feeds_the_result_back(db_session, monkey
         + "".join("<p>正文段落 %d。</p>" % i for i in range(40))
         + "</article></body></html>"
     )
-    # 走**默认那条（免密钥）**：这才是用户实际会跑的路
-    found = (
-        '<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel>'
-        "<item><title>梯度下降</title><link>https://example.com/gd</link>"
-        "<description>一句摘要</description></item>"
-        "</channel></rss>"
-    )
-    with _serve(found, content_type="text/xml; charset=utf-8") as (search_url, _h1):
+    # 用户配了哪家就走哪家（这里是 DeepSeek 形状的假服务商）
+    found = {
+        "results": [
+            {"title": "梯度下降", "url": "https://example.com/gd", "summary": "一句摘要"}
+        ]
+    }
+    with _serve(found) as (search_url, _h1):
         with _serve(page, content_type="text/html; charset=utf-8") as (page_url, _h2):
             settings_store.put(
                 db_session,
-                search={"kind": "bing", "endpoint": search_url},  # 没有 apiKey
+                search={"kind": "deepseek", "apiKey": "k1", "endpoint": search_url},
             )
             # 假服务商就在本机，而那条闸专门挡本机 —— 它有自己的用例（见上），
             # 这里要验的是"循环接没接上"。
