@@ -51,6 +51,9 @@
   --bad: #F87171;
   --amber: #FBBF24;
   --blue: #60A5FA;
+  /* 赭红：滤镜药丸与它那份清单的指认色（用户："滤镜这个药丸换个颜色。换成赭红色吧。"）。
+   * 深浅两套各一份 —— 深色底上要够亮才看得清，浅色底上要够沉才压得住白。 */
+  --ochre: #CC6650;
 
   /* 三个模式的指认色**不在这里**：色号只有一处来源 —— 后端 `mounts.py` 的
    * `Mode.color`（设置里的 `mode_colors` 可覆盖），由 mounts.js 注入成
@@ -109,6 +112,7 @@ html[data-theme='light'] {
   --bad: #DC2626;
   --amber: #B45309;
   --blue: #2563EB;
+  --ochre: #9E4B33;
   --pri-3: #0E7C6B;
   /* 三个模式的指认色**不在这里**：色号只有一处来源 —— 后端 `mounts.py` 的
    * `Mode.color`（设置里的 `mode_colors` 可覆盖），由 mounts.js 注入成

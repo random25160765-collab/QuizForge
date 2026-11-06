@@ -76,10 +76,6 @@
   var demoEl = null;
   var clipInput = null;
   var pendingEl = null;
-  //: **引文**（"就这段追问"，见 paintQuote）：一次一段，跟着下一条消息走。
-  //: 与 `pendingEl` 那条不是一回事 —— 那条装的是**上传后的附件**（每项带 id，见 state.pending）。
-  var quoteEl = null;
-  var quoted = null;
   var pickEl = null; // 左栏头部那条批量操作条（多选时出现；见 renderPickBar）
 
   /** `/api/ai/usage` 的结果：走哪条通道、能不能用（决定提示怎么写） */
@@ -769,14 +765,15 @@
       // 书签抽屉的入口：**这张地图的地点清单**（用户："书签抽屉是要做的"）。
       // 它长在地图的工具栏上，不长在 chat 页 —— 那里是地图外面。
       (function () {
-        var marks = bookmarksOf(QF.store.places());
+        // 只数**本对话**的：书签按对话隔离（用户："每个对话的书签和批注要隔离"）。
+        var marks = bookmarksHere();
         return h(
           'button.chattree__btn.chattree__marksbtn' + (marksOpen ? '.is-on' : ''),
           {
             type: 'button',
             title: marks.length
-              ? '书签抽屉 · ' + marks.length + ' 个永久标记（含别的对话里的）'
-              : '书签抽屉（还没标过地方）',
+              ? '书签抽屉 · ' + marks.length + ' 个永久标记（这一段对话）'
+              : '书签抽屉（这一段对话还没标过）',
             'aria-expanded': marksOpen ? 'true' : 'false',
             onClick: toggleMarks,
           },
@@ -971,7 +968,7 @@
         chatMenuY = event.clientY;
         // **按当下重查一遍**：`message` 是建这一层时抓的快照，钉过之后它就过期了
         //（消息行尾那两枚图标踩过同一个坑，见 `placeButtons`）
-        openPlaceMenu(QF.store.placesOf(message.id), refreshPlaces, [
+        openPlaceMenu(placesOn(message.id), refreshPlaces, [
           { kind: 'mark', m: message },
           { kind: 'back', m: message },
         ]);
@@ -1763,13 +1760,24 @@
     return { start: at, end: at + picked.length };
   }
 
+  /** 这条消息上**本对话**的标记。
+   *
+   * 光按 `mid` 认不够：消息 id 会撞车（实测 857 在两条对话里都有），别处的批注会因此
+   * 画到这一段正文上 —— 用户要的是"每个对话的书签和批注要隔离"。 */
+  function marksOn(mid) {
+    var cid = String(state.current || '');
+    return (QF.store.marksOf ? QF.store.marksOf(mid) : []).filter(function (one) {
+      return String(one.cid || '') === cid;
+    });
+  }
+
   /** 把三种标记画到正文上，并把批注摆成**旁批**。
    *
    * 每次重画正文都要重来（重画会换掉 DOM，包好的 mark 自然也没了）。 */
   function paintMarks(bodyEl, m) {
     if (!bodyEl || !m || m.id == null || !QF.store.marksOf) return;
     var row = bodyEl.closest ? bodyEl.closest('.chatmsg') : null;
-    var marks = QF.store.marksOf(m.id);
+    var marks = marksOn(m.id);
     var host = bodyEl.querySelector('.chatmsg__parts');
     if (!marks.length || !host) {
       paintMargin(row, host, []);   // 标记被删光时把旁批那一栏收掉
@@ -1856,6 +1864,29 @@
     return '';
   }
 
+  /** 色点里那个**勾**用什么墨色 —— 与色点本身反着来才看得见。
+   *
+   * 红/蓝这类深色用白，浅色（高亮那几枚都是浅色）用深灰；`var(--fg)` 这种跟随主题的
+   * 色点用 `var(--bg)`（"黑"在深色主题下其实是亮色）。按相对亮度算，不靠猜。 */
+  function tickInk(color) {
+    var raw = String(color || '').trim();
+    if (!raw) return '#fff';
+    if (raw.indexOf('var(') === 0) return 'var(--bg)';
+    var hit = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(raw);
+    if (!hit) return '#fff';
+    var hex = hit[1];
+    if (hex.length === 3) {
+      hex = hex.charAt(0) + hex.charAt(0) + hex.charAt(1) + hex.charAt(1) + hex.charAt(2) + hex.charAt(2);
+    }
+    var n = parseInt(hex, 16);
+    var lin = function (v) {
+      v /= 255;
+      return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    };
+    var lum = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+    return lum > 0.45 ? '#1a1a1a' : '#fff';
+  }
+
   /** 高亮的**色板** —— 它长在菜单里，就挨着"高亮这一段"那一项。
    *
    * 上一版把 `<input type=color>` 藏在 `left:-9999px` 上再 `showPicker()`：系统的取色弹层
@@ -1863,9 +1894,17 @@
    * 不是菜单旁边"）—— 锚点这种事不该靠调坐标去凑：把取色器**放进菜单里**就没有了，
    * 原生弹层贴着它自己，位置自然对；常用的几色顺手摆成一排，点一下就走。
    *
-   * 选定之后**记住**（`QF.store.setHlTone`）：之后的高亮全部跟随（用户："选定一个颜色之后，
-   * 之后的高亮颜色全部跟随"）。 */
+   * 选中标记与下划线**同一套逻辑**（用户："高亮那个跟下划线要一个逻辑"）：当前那个打勾，
+   * 默认勾第一个；选定之后**记住**（`QF.store.setHlTone`），之后的高亮全部跟随
+   *（用户："选定一个颜色之后，之后的高亮颜色全部跟随"）。 */
   var HL_TONES = ['#ffd400', '#7ed957', '#69c0ff', '#ff9ac1', '#c9b6ff', '#ffb26b'];
+
+  /** 现在该用哪种高亮色：记住上次选的（`QF.store.hlTone`），没记过 = 第一个（黄）。
+   *  返回值一律经过 `safeMarkColor` —— 与标记落库时同一个判据，脏数据不会漏进来。 */
+  function hlToneNow() {
+    var saved = QF.store.hlTone ? QF.store.hlTone() : '';
+    return safeMarkColor(saved) || HL_TONES[0];
+  }
 
   function hlSwatches(current, done) {
     var row = document.createElement('div');
@@ -1880,7 +1919,13 @@
       dot.className = 'chattree__swatch';
       dot.style.background = tone;
       dot.title = tone;
-      if (tone === current) dot.classList.add('is-on');
+      dot.setAttribute('aria-label', tone);
+      dot.setAttribute('aria-pressed', tone === current ? 'true' : 'false');
+      if (tone === current) {
+        dot.classList.add('is-checked');
+        dot.style.color = tickInk(tone);
+        dot.innerHTML = ui.icon('check', 11);
+      }
       dot.addEventListener('click', function () {
         done(tone);
       });
@@ -1891,11 +1936,55 @@
     input.type = 'color';
     input.className = 'chattree__swatchinput';
     input.title = '自定义颜色…';
-    input.value = /^#[0-9a-f]{6}$/i.test(String(current || '')) ? current : '#ffd400';
+    input.value = /^#[0-9a-f]{6}$/i.test(String(current || '')) ? current : HL_TONES[0];
     input.addEventListener('change', function () {
       done(input.value);
     });
     row.appendChild(input);
+    return row;
+  }
+
+  /* 下划线的**三种颜色**（用户："下划线又三种颜色可选：红，蓝，黑"）。
+   * 与高亮那排色板同一个长相、同一个位置逻辑（都长在菜单里），选中标记也是**打勾**
+   *（用户："颜色选择的逻辑也是勾选逻辑，选中打勾"），默认勾第一个（红）——
+   *「加下划线」这一项落的也是它，⌘⇧U 同理。 */
+  var UL_TONES = [
+    { tone: 'red', name: '红' },
+    { tone: 'blue', name: '蓝' },
+    { tone: 'black', name: '黑' },
+  ];
+
+  /** 现在该用哪种下划线色：记住上次选的（`QF.store.ulTone`），没记过 = 第一个（红）。 */
+  function ulToneNow() {
+    var saved = QF.store.ulTone ? QF.store.ulTone() : '';
+    return MARK_TONES[saved] ? saved : UL_TONES[0].tone;
+  }
+
+  function ulSwatches(current, done) {
+    var row = document.createElement('div');
+    row.className = 'chattree__swatchrow';
+    var cap = document.createElement('span');
+    cap.className = 'chattree__swatchcap';
+    cap.textContent = '下划线颜色';
+    row.appendChild(cap);
+    UL_TONES.forEach(function (one) {
+      var dot = document.createElement('button');
+      dot.type = 'button';
+      dot.className = 'chattree__swatch';
+      dot.style.background = MARK_TONES[one.tone];
+      dot.title = one.name;
+      dot.setAttribute('aria-label', one.name);
+      dot.setAttribute('aria-pressed', one.tone === current ? 'true' : 'false');
+      if (one.tone === current) {
+        dot.classList.add('is-checked');
+        dot.style.color = tickInk(MARK_TONES[one.tone]);
+        dot.innerHTML = ui.icon('check', 11);
+      }
+      dot.addEventListener('click', function () {
+        done(one.tone);
+      });
+      row.appendChild(dot);
+    });
     return row;
   }
 
@@ -2134,9 +2223,11 @@
     if (marginFocus === 'draft') marginFocus = '';
   }
 
-  /** 这一行是不是正挂着那条草稿。 */
+  /** 这一行是不是正挂着那条草稿。**先认对话**：消息 id 会撞车，切了对话之后别把草稿
+   *  挂到另一条对话里恰好同号的那一行上。 */
   function draftOn(row) {
     if (!pendingMark || !row) return null;
+    if (String(pendingMark.cid || '') !== String(state.current || '')) return null;
     return String(pendingMark.mid) === String(row.dataset.id) ? pendingMark : null;
   }
 
@@ -2259,7 +2350,7 @@
       var host = row.querySelector('.chatmsg__parts');
       var box = row.querySelector('.chatmsg__margin');
       if (!host || !box) return;
-      var notes = notesOn(QF.store.marksOf(row.dataset.id));
+      var notes = notesOn(marksOn(row.dataset.id));
       var draft = draftOn(row);
       if (!notes.length && !draft) {
         row.classList.remove('has-margin');
@@ -2316,23 +2407,6 @@
         },
       });
     }
-    /* **就这段追问**（用户："我右键选一段，然后输入框不用复制直接问"）—— "先复制到输入框"那一步
-     * 是多余的：选中的那段话直接跟着问题走（见 `paintQuote` / `onSendClick`）。
-     * 只认**选中的一段**：点在已有标记上、而没有选区时这一条不出现 —— 那会儿他要的是改标记。 */
-    if (pick && pick.quote) {
-      items.push({
-        icon: 'bulb',
-        label: '就这段追问',
-        hint: '不用复制',
-        run: function () {
-          quoted = { text: pick.quote, mid: pick.mid };
-          paintQuote();
-          // **不弹提示**（用户："右键的时候右下角不要跳一个提示出来"）：反馈就是眼前那条引文
-          // 和已经在闪烁的光标 —— 再来一个右下角的小方块，纯粹是多余的动静。
-          if (inputEl) inputEl.focus();
-        },
-      });
-    }
     // 这一段上有的每一种，各给一条取消
     covered.forEach(function (row) {
       items.push({
@@ -2346,11 +2420,12 @@
     });
     // 缺的那几种摆出来（目标 = 这一段）
     if (!has.hl) {
-      // 现在会用哪个色：上次选过的那个（没选过就是样式里的琥珀色）
-      var hlNow = QF.store.hlTone ? QF.store.hlTone() : '';
+      /* 行首是**高亮图标**，不再是色点 —— 颜色信息已经在下面那排色板里了
+       *（用户："把行首的颜色改成对应的图标，颜色的信息现在在调色板里了"）。
+       * 现在会用哪个色：上次选过的那个（没选过 = 色板第一个，黄）。 */
+      var hlNow = hlToneNow();
       items.push({
         icon: 'marker',
-        swatch: safeMarkColor(hlNow) || 'var(--amber)',
         label: '高亮这一段',
         hint: '⌘⇧H',
         run: function () {
@@ -2378,23 +2453,26 @@
       });
     }
     /* **下划线的三种颜色**（用户："下划线又三种颜色可选：红，蓝，黑"）。
-     * 三项直接摆出来，不再单独给一条"无色"的：其中"黑"取的是正文色（`var(--fg)`），
-     * 看起来就是从前那条默认下划线 —— 而快捷键 ⌘⇧U 落的正是它，与菜单一致。 */
+     * 不再是三行"加下划线 · 红/蓝/黑"，而是与高亮一样的"一条动作 + 一排颜色"
+     *（用户："跟高亮一样变成颜色选择"）：颜色是**勾选**——当前那个打勾，默认第一个（红）。
+     * 选一次就**记住**（`QF.store.setUlTone`），之后的「加下划线」与 ⌘⇧U 都跟随它。
+     * 行首同样改回**图标**（`underline`），颜色只看下面那排色板。 */
     if (!has.underline) {
-      [
-        { tone: 'red', name: '红' },
-        { tone: 'blue', name: '蓝' },
-        { tone: 'black', name: '黑', hint: '⌘⇧U' },
-      ].forEach(function (one) {
-        items.push({
-          icon: 'underline',
-          swatch: MARK_TONES[one.tone],
-          label: '加下划线 · ' + one.name,
-          hint: one.hint || '',
-          run: function () {
-            applyMark('underline', target, one.tone);
-          },
-        });
+      var ulNow = ulToneNow();
+      items.push({
+        icon: 'underline',
+        label: '加下划线',
+        hint: '⌘⇧U',
+        run: function () {
+          applyMark('underline', target, ulNow);
+        },
+      });
+      items.push({
+        node: ulSwatches(ulNow, function (tone) {
+          if (QF.store.setUlTone) QF.store.setUlTone(tone);
+          closeChatMenu();
+          applyMark('underline', target, tone);
+        }),
       });
     }
     if (!has.note) {
@@ -2428,7 +2506,7 @@
   function coveringMarks(mid, start, end) {
     var seen = {};
     var list = [];
-    (QF.store.marksOf(mid) || []).forEach(function (one) {
+    marksOn(mid).forEach(function (one) {
       if (one.start > start || one.end < end) return;
       var kind = QF.store.markKind(one);
       if (seen[kind]) return;
@@ -2474,11 +2552,12 @@
 
   /** 钉一条标记。右键菜单与快捷键**共用这一条路**（两处各写一份，迟早只改一处）。 */
   function applyMark(kind, pick, tone) {
-    /* 高亮没指定颜色时**跟随上次选的那个**（用户："选定一个颜色之后，之后的高亮颜色全部跟随"）。
-     * 判据只留这一处 —— 于是快捷键 ⌘⇧H 与菜单里那一项都不必各自记这件事。
-     * 下划线不跟随：它每次都从菜单里明确选（红/蓝/黑），⌘⇧U 落在"黑"。 */
+    /* 颜色没指定时**跟随上次选的那个**（用户："选定一个颜色之后，之后的高亮颜色全部跟随"）：
+     * 高亮记在 `hlTone`，下划线记在 `ulTone`；都没选过 = 各自色板第一个（黄 / 红）。
+     * 判据只留这一处 —— 于是 ⌘⇧H / ⌘⇧U 与菜单里那两项都不必各自记这件事。 */
     var color = tone || '';
-    if (!color && kind === 'hl' && QF.store.hlTone) color = QF.store.hlTone();
+    if (!color && kind === 'hl') color = hlToneNow();
+    if (!color && kind === 'underline') color = ulToneNow();
     if (
       !addMarkTracked({
         kind: kind,
@@ -2536,8 +2615,8 @@
     if (!pick) return;
     ev.preventDefault();
     if (key === 'a') annotatePick(pick);
-    // ⌘⇧U 走"黑"那一种（= 正文色），与菜单里三项中的一项对齐；看起来和从前那条默认下划线一样
-    else if (key === 'u') applyMark('underline', pick, 'black');
+    // ⌘⇧U 跟随当前记住的下划线色（没选过 = 红，与菜单里第一项打勾的那个一致）
+    else if (key === 'u') applyMark('underline', pick);
     else applyMark(key === 'x' ? 'strike' : 'hl', pick);
   });
 
@@ -2643,8 +2722,8 @@
    *    （写描述 / 取消标记）—— 打一下不用打断，想写描述再写。
    *   * 一个回溯点都没有时**那条 rail 整条不出现**；书签不上 rail，它在地图上。
    *   * 回溯满 5 个：rail 抖一下（比一句 toast 更快让人知道"满在哪儿"）。
-   *   * 传送要有过程：点下去那颗点脉冲、落点闪一下（`revealMessage` 自带）；
-   *     跨对话时整条线程再轻沉一下 —— 一秒钟里换了一整屏内容，人得有个着落。
+   *   * 传送要有过程：点下去那颗点脉冲、落点闪一下（`revealMessage` 自带）。
+   *     传送只在本对话内 —— 书签与批注都按对话隔离（见 `gotoPlace`）。
    *   * 描述为空时一律显示**那一句的开头**（`quote`）—— 没写描述的也得认得出来。
    */
   var placesKey = '';
@@ -3282,11 +3361,13 @@
   /**
    * **本对话的**回溯点 —— 传送球只认它。
    *
-   * `QF.store.places()` 是**全库**：地图那一侧看全库是对的（书签抽屉的文案就写着"含别的
-   * 对话里的"），但传送球是"这个对话里趁手快跳"的东西，必须只看当前对话。用户报的 bug 正是
-   * 这里：切到另一个对话，球上的数量纹丝不动 —— 因为取的还是同一份全库列表
-   *（`renderStations` 的缓存键里甚至带着 `state.current`，说明"换对话该重画"这件事本来就想到了，
-   *  只是**取数**没跟着换）。
+   * `QF.store.places()` 是**全库**，但传送球是"这个对话里趁手快跳"的东西，必须只看当前
+   * 对话。用户报的 bug 正是这里：切到另一个对话，球上的数量纹丝不动 —— 因为取的还是同一份
+   * 全库列表（`renderStations` 的缓存键里甚至带着 `state.current`，说明"换对话该重画"这件事
+   * 本来就想到了，只是**取数**没跟着换）。
+   *
+   * 书签抽屉走的是同一条规矩（用户："每个对话的书签和批注要隔离"）：看 `bookmarksHere`，
+   * 不再列"含别的对话里的"。
    *
    * 没有 `cid` 的老记录一律不算（与后端 `recursion.py` 的算法一致：`str(one.get("cid")) == cid`）。
    */
@@ -3347,11 +3428,11 @@
     applyPortalPos();
   }
 
-  /** 扇子里的一枚：序号 + 那一句的开头（与树图钉上的编号是同一套）。 */
+  /** 扇子里的一枚：序号 + 那一句的开头（与树图钉上的编号是同一套）。
+   *  扇子里只有**本对话**的回溯点（`renderStations` 取的是 `backsHere`），不必再分"在别处"。 */
   function portalSlot(place, index) {
-    var here = String(place.cid || '') === String(state.current || '');
     var slot = h(
-      'button.chatportal__slot' + (here ? '.is-here' : '.is-away'),
+      'button.chatportal__slot.is-here',
       {
         type: 'button',
         dataset: { station: place.id },
@@ -3359,8 +3440,7 @@
         style: { animationDelay: Math.min(index, 6) * 34 + 'ms' },
         title:
           '回溯 ' + (index + 1) +
-          (here ? '（传送过去）' : '（在别的对话里，点一下传送）') +
-          '：' + placeLabel(place) +
+          '（传送过去）：' + placeLabel(place) +
           ' · 右键写描述',
         'aria-label': '传送：回溯 ' + (index + 1) + ' ' + placeLabel(place),
         onClick: function () {
@@ -3394,11 +3474,22 @@
     }, 380);
   }
 
+  /** 这条消息上**本对话**的地点标记。
+   *
+   * 与 `marksOn` 同一条理由：消息 id 会撞车，只按 `mid` 取会把别处对话的书签 / 回溯点
+   * 画到这一段上来（用户："每个对话的书签和批注要隔离"）。 */
+  function placesOn(mid) {
+    var cid = String(state.current || '');
+    return (QF.store.placesOf ? QF.store.placesOf(mid) : []).filter(function (one) {
+      return String(one.cid || '') === cid;
+    });
+  }
+
   /** 消息行尾那两枚图标的状态（打过标记的要亮着）。 */
   function paintPlaceIcons() {
     if (!threadEl) return;
     Array.prototype.forEach.call(threadEl.querySelectorAll('.chatmsg'), function (row) {
-      var places = QF.store.placesOf(row.dataset.id);
+      var places = placesOn(row.dataset.id);
       Array.prototype.forEach.call(row.querySelectorAll('.chaticon[data-place]'), function (btn) {
         var kind = btn.getAttribute('data-place');
         var on = places.some(function (one) {
@@ -3444,7 +3535,7 @@
 
   /** 消息行尾那两枚图标：旗（回溯）/ 丝带（书签）。 */
   function placeButtons(m) {
-    var places = QF.store.placesOf(m.id);
+    var places = placesOn(m.id);
     var mine = {};
     places.forEach(function (one) {
       mine[placeKind(one)] = one;
@@ -3468,7 +3559,7 @@
         event.stopPropagation();
         // **按当下重查一遍**：`one` 是建这一行时抓的快照，打过之后它就过期了
         //（症状：加完书签再右键，菜单里还是"加书签"）
-        var live = QF.store.placesOf(m.id).filter(function (each) {
+        var live = placesOn(m.id).filter(function (each) {
           return placeKind(each) === kind;
         })[0];
         var box = btn.getBoundingClientRect();
@@ -3484,7 +3575,7 @@
 
   /** 打 / 取消一个位置标记。 */
   function togglePlace(kind, m) {
-    var places = QF.store.placesOf(m.id);
+    var places = placesOn(m.id);
     var one = places.filter(function (each) {
       return placeKind(each) === kind;
     })[0];
@@ -3593,7 +3684,8 @@
     });
   }
 
-  /** 传送过去。 */
+  /** 传送过去。**只在本对话内** —— 书签与批注都按对话隔离（用户："每个对话的书签和
+   *  批注要隔离"）。别处的标记压根不会列到这儿来；真拿到一个别处的，也不跟着过去。 */
   function gotoPlace(place, dot) {
     if (dot) {
       dot.classList.add('is-go');
@@ -3602,20 +3694,11 @@
       }, 420);
     }
     var cid = String(place.cid || '');
-    var away = !!cid && cid !== String(state.current || '');
-    var land = function () {
-      revealMessage(place.mid);
-      if (away) arriveThread();
-    };
-    if (!away) {
-      land();
+    if (cid && cid !== String(state.current || '')) {
+      ui.toast('这个标记不属于当前对话', 'warn', 2800);
       return;
     }
-    openConversation(cid)
-      .then(land)
-      .catch(function () {
-        ui.toast('这个标记指向的对话找不到了', 'warn', 2800);
-      });
+    revealMessage(place.mid);
   }
 
   /* ------------------------------------------------------------ 地图上的图钉
@@ -3635,13 +3718,12 @@
    * 点一枚 = 去那个地点（与点节点同一条路）；右键 = 写描述 / 取消。
    */
 
-  /** 回溯点的**全局编号** —— 只给地图上那枚图钉用。
+  /** 回溯点的编号 —— 只给地图上那枚图钉用。
    *
-   * （从前这里写着"与传送球扇子里那几枚的号是同一个"，2026-09-26 起不再成立：
-   *  传送球只装**本对话**的回溯点、按本对话内的顺序编号；而地图是全局视角，
-   *  编号也就按全库排。两边的号**不该**一致。） */
+   * **按本对话排**：地图画的就是当前这条对话，传送球也只装本对话的回溯点 ——
+   * 两边的号自然该是同一个（书签与批注按对话隔离，见 `bookmarksHere`）。 */
   function backIndexOf(place) {
-    var all = backsOf(QF.store.places()).map(function (one) {
+    var all = backsHere().map(function (one) {
       return one.id;
     });
     var at = all.indexOf(place.id);
@@ -3651,6 +3733,17 @@
   function bookmarksOf(places) {
     return (places || []).filter(function (one) {
       return placeKind(one) === 'mark';
+    });
+  }
+
+  /** **本对话的**书签 —— 抽屉、工具栏与图例都只看它。
+   *
+   * 书签按对话隔离（用户："每个对话的书签和批注要隔离"）：别的对话里的书签不该在这里
+   * 列出来，更不该从这里传送过去。没有 `cid` 的老记录一律不算（与 `backsHere` 同一条）。 */
+  function bookmarksHere() {
+    var cid = String(state.current || '');
+    return bookmarksOf(QF.store.places()).filter(function (one) {
+      return String(one.cid || '') === cid;
     });
   }
 
@@ -3672,8 +3765,7 @@
   function treePinsLayer(model) {
     var layer = h('div.chattree__pins');
     model.nodes.forEach(function (node) {
-      QF.store
-        .placesOf(node.message.id)
+      placesOn(node.message.id)
         .slice()
         // 书签在**下**（贴着地点）、回溯在上：不按打的时间排，免得同一对钉子下次换个位置
         .sort(function (a, b) {
@@ -3776,8 +3868,8 @@
 
   /** 地图角落那一小块图例 —— "图钉是什么"这件事得能自己看懂。 */
   function treeLegend() {
-    var marks = bookmarksOf(QF.store.places()).length;
-    var backs = backsOf(QF.store.places()).length;
+    var marks = bookmarksHere().length;
+    var backs = backsHere().length;
     return h(
       'div.chattree__legend',
       null,
@@ -3801,21 +3893,9 @@
       .join('\n');
   }
 
-  /** 到了：整条线程轻轻沉一下（只在跨对话传送时用 —— 同一条对话里闪落点就够了）。 */
-  function arriveThread() {
-    if (!threadEl) return;
-    threadEl.classList.remove('is-arrive');
-    void threadEl.offsetHeight;   // 重排一次，连着传送两次动画也会重放
-    threadEl.classList.add('is-arrive');
-    setTimeout(function () {
-      threadEl.classList.remove('is-arrive');
-    }, 420);
-  }
-
-
   /* ------------------------------------------------------------ 书签抽屉
    *
-   * 装"永久标记"那一类的抽屉：按打的先后**倒序**列出全部书签（跨对话），点一条就传送过去。
+   * 装"永久标记"那一类的抽屉：按打的先后**倒序**列出**这一段对话**的书签，点一条就传送过去。
    * 回溯不上这儿 —— 它是"趁手、快跳"的那 5 个，住在正文区边上那颗传送球里（用户把两者
    * 分得很清楚："回溯是一个小工具…然后现在是书签，这个是永久性的标记"）。
    *
@@ -3824,22 +3904,12 @@
    *     列表项再逐条浮现（每条错 26ms）—— 一次全亮像"啪"地贴上去，逐条才像翻出一叠卡片。
    *   * **出去**：先加 `is-closing` 播 160ms 反向动画，**播完再拆 DOM**。直接 remove
    *     就是"啪"地消失（用户要的"注意平滑动效"说的就是这种地方）。
-   *   * **传送**：沿用 `gotoPlace` —— 点的那条脉冲、落点闪一下、跨对话时整条线程轻沉。
+   *   * **传送**：沿用 `gotoPlace` —— 点的那条脉冲、落点闪一下（只在本对话内）。
    *     `prefers-reduced-motion` 一开，三段全都静止。
    */
   var marksOpen = false;
   var marksClosing = false;
   var marksTimer = 0;
-
-  /** 这条书签在哪儿（给跨对话的认路用）。 */
-  function placeWhere(place) {
-    var cid = String(place.cid || '');
-    if (!cid || cid === String(state.current || '')) return '当前对话';
-    var conv = (state.list || []).filter(function (one) {
-      return String(one.id) === cid;
-    })[0];
-    return (conv && conv.title) || '另一条对话';
-  }
 
   function placeTime(place) {
     var d = new Date(place.at || Date.now());
@@ -3931,19 +4001,14 @@
     if (!marksOpen) return;
     document.addEventListener('keydown', marksKeydown, true);
 
-    var places = QF.store
-      .places()
-      .filter(function (one) {
-        return placeKind(one) === 'mark';
-      })
-      .reverse();   // 新的在前：刚标下来的最想马上就看见
+    var places = bookmarksHere().reverse();   // 新的在前：刚标下来的最想马上就看见
 
     var list = h('div.chatmarks__list');
     if (!places.length) {
       list.appendChild(
         h('div.chatmarks__empty', {
           text:
-            '这张图上还没有图钉。回到对话里，在消息尾部点那枚丝带（或右键 →「加书签」）——' +
+            '这段对话的图上还没有图钉。回到对话里，在消息尾部点那枚丝带（或右键 →「加书签」）——' +
             '标过的地方就会变成地图上的一枚图钉，同时列在这里。书签是永久的，数量不限。',
         })
       );
@@ -3978,7 +4043,7 @@
     );
   }
 
-  /** 抽屉里的一条：丝带 + 描述（没描述就退到那一句的开头）+ 在哪儿 + 两颗小动作。 */
+  /** 抽屉里的一条：丝带 + 描述（没描述就退到那一句的开头）+ 时间 + 两颗小动作。 */
   function markItem(place, index) {
     var item = h('div.chatmarkitem', {
       dataset: { place: place.id },
@@ -4008,7 +4073,7 @@
         'div.chatmarkitem__body',
         null,
         h('div.chatmarkitem__text', { text: placeLabel(place) }),
-        h('div.chatmarkitem__meta', { text: placeWhere(place) + ' · ' + placeTime(place) })
+        h('div.chatmarkitem__meta', { text: placeTime(place) })
       )
     );
     item.appendChild(
@@ -4040,18 +4105,9 @@
     return item;
   }
 
-  /** 一条批注头上的时间与"在哪儿"（显示态与编辑态都要有）。 */
+  /** 一条批注头上的时间（显示态与编辑态都要有）。清单里只有本对话的批注，不必再标"在哪儿"。 */
   function noteMetaNode(note) {
-    return h(
-      'div.chatnotes__meta',
-      null,
-      h('span.chatnotes__time', { text: noteTime(note) }),
-      note.cid && note.cid === state.current
-        ? h('span.chatnotes__tag', { text: '本次对话' })
-        : note.cid
-          ? h('span.chatnotes__tag', { text: '另一段对话' })
-          : null
-    );
+    return h('div.chatnotes__meta', null, h('span.chatnotes__time', { text: noteTime(note) }));
   }
 
   function noteNode(note) {
@@ -4186,8 +4242,10 @@
 
     // 批注栏**只装批注**：高亮与删除线是"给正文做记号"，不进这份清单
     //（用户："高亮和批注是分开的两个东西"）。它们要撤，就在正文上右键撤。
+    // **也只装本对话的**：批注按对话隔离（用户："每个对话的书签和批注要隔离"）。
+    var cid = String(state.current || '');
     var notes = (QF.store.notes() || []).filter(function (one) {
-      return QF.store.markKind(one) === 'note';
+      return QF.store.markKind(one) === 'note' && String(one.cid || '') === cid;
     });
     var saveBtn = h(
       'button.btn.btn--primary.chatnotes__save',
@@ -4692,16 +4750,21 @@
     });
     inputEl = h('textarea.chat__input', {
       rows: '1',
-      // `/` 那件事写进 placeholder：不写的话没人知道有这个东西（一句就够，别做教程）
-      placeholder: '问点什么，或者贴一段材料…（打 / 召唤一个流程）',
+      // 输入框只收问题和材料 —— `/` 命令已经彻底删掉（用户："那个/的功能彻底删掉，
+      // 以后没有/命令了"），所以 placeholder 里也不再提它。
+      placeholder: '问点什么，或者贴一段材料…',
       onInput: function (event) {
         growInput(event);
-        paintSkillPick();
       },
       onKeydown: onKeydown,
     });
-    // 输入框上方那份 `/` 清单（空的时候不占位置，见 CSS 的 `.chatskill:not(.is-open)`）
-    skillPickEl = h('div.chatskill', { role: 'listbox', 'aria-label': '流程' });
+    // 滤镜清单：**浮层**（与模式选择栏同一个 `.modepick` 长相），平时不进 DOM，
+    // 打开时才挂到 body 上（见 `openSkillPick`）。里面是"勾选框行"，不是一组可选项。
+    skillPickEl = h('div.modepick.chatskill', { role: 'group', 'aria-label': '滤镜' });
+    // 焦点落在清单里的勾选框上时，Esc 也收得起来（输入框那边只管焦点在它自己身上的 Esc）
+    skillPickEl.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') closeSkillPick();
+    });
     // 图标按钮：正文只放一个箭头，"发送/停止"两态换图标（见 `paintSend`）。
     // 文案进 title 与 aria-label —— 看得出、也读得出。
     sendBtn = h(
@@ -4748,8 +4811,6 @@
             'div.chat__composer',
             null,
             pendingEl,
-            // 引文那一条（"就这段追问"）：与待发附件同一位子、同一种长相，但是另一件事
-            (quoteEl = h('div.chat__quote', { hidden: true })),
             (jumpBtn = iconButton('down', '回到最新', function () {
               scrollToEnd(true);
             }, '.chat__jump')),
@@ -4759,8 +4820,7 @@
               // **传统两行**（用户："按钮多了，改成传统的两行。按钮放下面，输入放上面"）：
               // 第一行只有输入框，占满整宽；第二行才是图标、药丸与发送键。
               // 先前是一行到底，按钮一多，输入框就被挤成一小段。
-              // `/` 那份清单挂在输入框**上方**（它是"正在挑"，不是第三条药丸）。
-              skillPickEl,
+              //（滤镜清单是浮层，挂在 body 上 —— 见 `openSkillPick`。）
               inputEl,
               // 输入框这一侧不再挂信号灯了：用户要的是**消息框**右上角那盏
               //（"我说的是发出来的消息框的右上角——因为每次发送的模式都不一样"）。
@@ -5649,19 +5709,6 @@
       });
       row.querySelector('.chattree__menutext').textContent = item.label;
       if (item.hint) row.querySelector('.chattree__menuhint').textContent = item.hint;
-      /* `item.swatch`：这一项的图标位置放一枚**色点**（下划线三色、高亮的自定义色都用它）。
-       * 色点用 DOM 造、`style.background` 赋值，**不拼进 innerHTML** —— 颜色是要进样式的东西，
-       * 绝不拿字符串拼 HTML。 */
-      if (item.swatch) {
-        var ico = row.querySelector('.chattree__menuico');
-        if (ico) {
-          ui.clear(ico);
-          var dot = document.createElement('i');
-          dot.className = 'chattree__menuswatch';
-          dot.style.background = item.swatch;
-          ico.appendChild(dot);
-        }
-      }
       menu.appendChild(row);
     });
     document.body.appendChild(menu);
@@ -9203,57 +9250,6 @@
     return kind + ' · ' + kb + 'KB' + (info.textChars ? ' · 抽出 ' + info.textChars + ' 字' : '');
   }
 
-  /** 引文那一条（用户："我右键选一段，然后输入框不用复制直接问"）。
-   *
-   * 它长得像"待发的附件"，但不是一回事：附件那条装的是**上传后的文件**（每项带 id，发给服务端
-   * 的是 id 列表，见 `send` 里的 attachedIds），而引文只是一段文字 —— 所以它自己一条，
-   * 别混进 `state.pending`（混进去那一步就会把 id 列表搞坏）。
-   *
-   * 发送时它并进**正文最前面**（见 `onSendClick`）：他看到的、对面看到的都是"先这段、再他的
-   * 问题"，模型当然也知道他在问哪一段 —— 手动复制粘贴那一步就是这样省掉的。 */
-  function paintQuote() {
-    if (!quoteEl) return;
-    ui.clear(quoteEl);
-    if (!quoted || !quoted.text) {
-      quoteEl.hidden = true;
-      return;
-    }
-    quoteEl.hidden = false;
-    // **三个孩子要一个个 append**：`appendChild(a, b, c)` 只吃**第一个**，后面两个会被静静丢掉
-    //（实测踩过：引文条上只剩一个「引用」标签，那段话根本没出来）。
-    [
-      h('span.chat__quotetag', { text: '引用' }),
-      h('span.chat__quotetext', { text: quoted.text, title: quoted.text }),
-      h(
-        'button.chat__quotex',
-        {
-          type: 'button',
-          title: '不引用了',
-          'aria-label': '不引用了',
-          onClick: function () {
-            quoted = null;
-            paintQuote();
-            if (inputEl) inputEl.focus();
-          },
-        },
-        iconNode('close', 12)
-      ),
-    ].forEach(function (node) {
-      quoteEl.appendChild(node);
-    });
-  }
-
-  /** 引文进正文的样子：**逐行加 `>`**。用户发出那条消息是**纯文本**渲染的（见 messageRow），
-   *  所以别用别的花活 —— 这个写法他一看就懂，模型也一看就懂。 */
-  function quoteBlocks(text) {
-    return String(text || '')
-      .split('\n')
-      .map(function (line) {
-        return '> ' + line;
-      })
-      .join('\n');
-  }
-
   function renderPending() {
     if (!pendingEl) return;
     ui.clear(pendingEl);
@@ -9349,25 +9345,10 @@
         }
         inputEl.value = '';
         growInput();
+        // 清单要是还开着（勾选后不会自己关），发出去就收起来 —— 该回到对话了。
+        // 注意是 `closeSkillPick` 而不是重画：重画会把它又打开（清单不再由输入框驱动）。
+        closeSkillPick();
         scrollToEnd(true);
-      }
-
-      // 他刚用 `/` 挑的那个流程：**在发请求之前**记下来，所以**这一轮就带上**。
-      // 记在**这条链的末端**（也就是新消息将要挂的那个父节点）—— 服务端是
-      // "沿链取最近的那条记录"，从新消息往下都算挂着，这一轮自然也在内
-      //（见 `app/skills.py` 的 `resolve`）。链末端为空（这条对话还是空的）= 记
-      // `mid` 为空的那条，含义就是"整条对话"。
-      if (pendingSkill) {
-        QF.store.attachSkill({
-          cid: state.current || '',
-          mid: attachTo == null ? '' : String(attachTo),
-          key: pendingSkill,
-        });
-        pendingSkill = '';
-        paintSkillPick();
-        // 那枚标记长在**那条消息**上，而它此刻已经在屏幕上了 —— 不重画就看不到，
-        // 于是"装上了没有"要靠刷新页面才知道（第一版就是这样）。
-        repaintKeepingScroll();
       }
 
       state.busy = true;
@@ -9712,12 +9693,10 @@
 
     paintSend(false);
 
-    // 这一行只说**当下这一刻**的事（正在生成、第一句话会开新对话），
-    // 走哪条通道、用的哪个模型搬到设置里去了 —— 用户："内测通道的提示放到设置那边去"。
-    // 它也不再常驻：`.chat__hint:empty` 不占位（"这个地方不占位置"）。
-    var bits = [];
-    if (!state.current) bits.push('第一句话会开一条新对话');
-    hintEl.textContent = bits.join(' · ');
+    // 这里原来写过「第一句话会开一条新对话」—— 2026-11-06 按用户要求删掉：
+    // 空对话页上"第一句会开新对话"是明摆着的事，不必在输入框下面再讲一遍。
+    // `.chat__hint:empty` 不占位，留空即可；走哪条通道、用的哪个模型在设置里。
+    hintEl.textContent = '';
   }
 
   /**
@@ -9792,50 +9771,33 @@
     // 所以这里不必判断。
     if (window.QF && QF.latex && QF.latex.prewarm) QF.latex.prewarm();
     var body = String(inputEl.value || '');
-    if (quoted && quoted.text) {
-      // **引文走在最前面**（见 paintQuote）：他看到的、对面看到的都是"先这段、再他的问题"
-      body = quoteBlocks(quoted.text) + (body.trim() ? '\n\n' + body : '');
-      quoted = null;
-      paintQuote();
-    }
     send({ content: body });
   }
 
-  /* ------------------------------------------------------------ 流程（skill）
+  /* ------------------------------------------------------------ 流程（滤镜）
    *
-   * `docs/对话树.md` §十二 的三种形态里，**流程**做成 `/` 命令 —— 它是动作：有开始、
-   * 有走完，而且**讲的人是用户**。口吻 / 纪律是状态（装 / 取、挂在节点上、沿树继承），
-   * 要的是另一套机制，留给下一步。
+   * `docs/对话树.md` §十二 的三种形态：**流程**（有开始、有走完）、**口吻**、**纪律**
+   * 都从这里"装 / 取"，挂在节点上、沿树继承。
    *
-   * 界面只干一件事：把他挑的那条写进记录（`QF.store.attachSkill`，存法与记号同源）。
+   * 界面只干一件事：把"装 / 取"写进记录（`QF.store.attachSkill`，存法与记号同源）——
+   * 清单里勾一条 = 在链末端记一条 on，取消勾选 = 记一条 off。
    * "现在挂着什么"由**服务端**按当下的链算（`app/skills.py` 的 `resolve`）——
    * 链会随切分支/编辑重发而变，本地算一份必然过期。
+   *
+   * 入口只有一颗药丸，输入框里**不再解析任何命令**
+   *（用户："那个/的功能彻底删掉，以后没有/命令了"）：框里的字就是问题，一个字都不动。
    */
-  var pendingSkill = '';   // 这次发出去时要挂上的那条（从挑中到发送之间）
-  var skillPickEl = null;  // 输入框上方那份清单
-  var skillPickAt = 0;     // 清单里高亮到第几条（键盘上下走）
+  var skillPickEl = null;  // 药丸上方那份浮层清单（打开时才挂到 body 上）
+  var skillPickTimer = null; // 收起动效的定时器（收起跑到一半又打开时取消它）
 
   //: 形态的中文（`app/skills.py` 的 kind → 界面上那两个字）。只用来**标出来给他看**：
   //: "我装的到底是流程还是口吻"这件事，界面不说清，他就得靠猜。
   var SKILL_KIND_WORD = { flow: '流程', tone: '口吻', discipline: '纪律' };
 
-  //: 形态各自的小图标（药丸上跟在形态那两个字前面）。图标本身在 `theme/runtime/ui.js`
-  //: 的图标表里，与「深度思考」那颗原子同一路描边、同一个尺寸档。
-  var SKILL_KIND_ICON = { flow: 'steps', tone: 'voice', discipline: 'ban' };
-
   function skillCatalog() {
     var st = (QF.mounts && QF.mounts.state) || {};
     return Array.isArray(st.skills) ? st.skills : [];
   }
-
-  /** 冒号这一层：`/` 是**命令**，不只有 skill（用户："`/` 是命令，不只有 skill"）。
-   *
-   * 现在只登记了一条命令 `skill` —— 别的命令**先不设计**（用户："命令先不要设计"），
-   * 所以这张表就一条：它下面挂着他那个文件夹里的十来条 skill。 */
-  // 只有 skill 一条了：思考强度**不再放命令里**（用户："那个 thinking 强度的调整，
-  // 还是算了不要放在 command 里吧。做成右键「深度思考」那个药丸跳出来的菜单"）。
-  // 它本来就与那颗药丸是同一件事的两面 —— 药丸管"带不带思考"，菜单管"带多强"。
-  var COMMANDS = [{ key: 'skill', label: 'skill', hint: '装一个 skill：流程 / 口吻 / 纪律' }];
 
   //: 四档的说明。**口径要和后端那几句提示词对得上**（见 `chat.py` 的 `_THINKING_LINES`）——
   //: 这里写"遇到分叉才多想一步"，后端就得是同一句话；两边不一致，他选的东西就不是他以为的。
@@ -9846,102 +9808,122 @@
     { key: 'high', label: '使劲', hint: '前提、边界、反例都过一遍' },
   ];
 
-  function _skillMatch(one, word) {
-    if (!word) return true;
-    return (
-      String(one.key || '').toLowerCase().indexOf(word) === 0 ||
-      String(one.label || '').indexOf(word) === 0 ||
-      String(one.hint || '').toLowerCase().indexOf(word) >= 0
-    );
+  /* 清单是**浮层**了：与模式选择栏同一个 `.modepick` 长相，打开时挂到 body 上、
+   * 贴着药丸向上弹，收起时褪一下再摘节点（用户："样式和左边的'模式'药丸一样，还有
+   * 点击后跳出来的菜单栏也一样的样式（现在是对话框上顶出来一个框）"）。
+   * 不再长在输入框里 —— 那样一打开就把输入框和对话一起往上顶。 */
+
+  function openSkillPick() {
+    if (!skillPickEl) return;
+    if (skillPickTimer) {
+      window.clearTimeout(skillPickTimer);
+      skillPickTimer = null;
+    }
+    skillPickEl.classList.remove('is-out');
+    if (!skillPickEl.parentNode) document.body.appendChild(skillPickEl);
+    // 贴着药丸、**向上**弹：药丸在屏幕最下面，往下弹会被窗口截掉（同 mounts.js 的 openPick）
+    var pill = document.querySelector('.chatskill__open');
+    if (pill) {
+      var r = pill.getBoundingClientRect();
+      skillPickEl.style.left = Math.round(r.left) + 'px';
+      skillPickEl.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
+    }
+    if (!skillPickEl.classList.contains('is-open')) {
+      skillPickEl.classList.add('is-open');
+      // 逼一次布局再挂 `.is-in`：不这样浏览器会把两个状态并成一次计算，过渡那一帧根本不跑
+      //（与 mounts.js 的 openPick 同一理由）
+      void skillPickEl.offsetHeight;
+    }
+    skillPickEl.classList.add('is-in');
+    // 点别处 = 走开。捕获的 mousedown，与模式选择栏同一套；药丸自己除外 ——
+    // 它有自己的开合逻辑，同一次点击不能走两遍（见那颗药丸的 onClick）。
+    // 同一个函数重复 add 是空操作（浏览器按 类型+函数+捕获 去重），不必另设开关。
+    // Esc 不在这里管：焦点在输入框时归它自己的 keydown，在勾选框上时归清单自己的 keydown。
+    document.addEventListener('mousedown', onSkillPickAway, true);
+    syncSkillPill();
   }
 
-  /** 输入框里已经写了哪条命令（空 = 还在第一层，或者写的是一个 skill 名）。 */
-  function pickCommand() {
-    var text = String((inputEl && inputEl.value) || '');
-    var hit = /^\/\s*([a-z][a-z0-9-]*)\b/i.exec(text);
-    if (!hit) return '';
-    var key = hit[1].toLowerCase();
-    return COMMANDS.some(function (one) {
-      return one.key === key;
-    })
-      ? key
-      : '';
+  function closeSkillPick() {
+    if (!skillPickEl) return;
+    if (skillPickTimer) {
+      window.clearTimeout(skillPickTimer);
+      skillPickTimer = null;
+    }
+    document.removeEventListener('mousedown', onSkillPickAway, true);
+    var wasOpen = skillPickEl.classList.contains('is-open');
+    skillPickEl.classList.remove('is-open', 'is-in');
+    syncSkillPill();
+    if (!wasOpen) {
+      // 没开过（或早就收好了）：不用再演一遍淡出，直接摘掉
+      if (skillPickEl.parentNode) skillPickEl.parentNode.removeChild(skillPickEl);
+      return;
+    }
+    // 收起来也要有动效：先褪出去，过渡跑完再摘节点（同 mounts.js 的 closePick）。
+    // 这 170ms 里它 `pointer-events: none`（见 CSS），不挡下面的点击。
+    skillPickEl.classList.add('is-out');
+    skillPickTimer = window.setTimeout(function () {
+      skillPickTimer = null;
+      if (skillPickEl.parentNode && !skillPickEl.classList.contains('is-open')) {
+        skillPickEl.parentNode.removeChild(skillPickEl);
+      }
+    }, 170);
   }
 
-  /** 清单里要显示什么。命令与 skill 混在同一层里，各带各的标签 ——
-   *  两条路都留着：`/skill` 是正式入口，直接打 `/费` 也认（那个名字够具体，
-   *  没必要逼他先选一次命令）。 */
-  function pickItems() {
-    if (!inputEl) return [];
-    var text = String(inputEl.value || '');
-    if (text.charAt(0) !== '/') return [];
-    var typed = text.slice(1);
-    var word = typed.trim().toLowerCase();
-    // 第二层：每条命令有自己的子项（现在只有 `skill` → 那一堆）
-    var cmd = pickCommand();
-    if (cmd === 'skill') {
-      var rest = word.replace(/^\/?\s*skill\b/, '').trim();
-      return skillCatalog()
-        .filter(function (one) {
-          return _skillMatch(one, rest);
-        })
-        .map(function (one) {
-          return { type: 'skill', one: one };
-        });
-    }
-    var out = COMMANDS.filter(function (one) {
-      // 认 key 也认中文名（他打 `/思`，想要的显然是「思考」那条命令）
-      return !word || one.key.indexOf(word) === 0 || one.label.indexOf(word) >= 0;
-    }).map(function (one) {
-      return { type: 'command', one: one };
-    });
-    if (word) {
-      // 直接打 skill 名：与命令并排显示（他打 `/费`，想要的显然是费曼）
-      skillCatalog()
-        .filter(function (one) {
-          return _skillMatch(one, word);
-        })
-        .forEach(function (one) {
-          out.push({ type: 'skill', one: one });
-        });
-    }
-    return out;
+  function onSkillPickAway(ev) {
+    if (!skillPickEl || !skillPickEl.classList.contains('is-open')) return;
+    if (skillPickEl.contains(ev.target)) return;
+    var pill = document.querySelector('.chatskill__open');
+    if (pill && pill.contains(ev.target)) return;
+    // 点输入框不算"走开"：勾完滤镜回去接着写问题很正常，勾选本身也不关清单。
+    // 点别的工具药丸（模式 / 深度思考 …）要算 —— 那一下会弹出它们自己的菜单，
+    // 两张浮层叠在一处没法看。
+    if (inputEl && (inputEl === ev.target || inputEl.contains(ev.target))) return;
+    closeSkillPick();
   }
 
   function paintSkillPick() {
     if (!skillPickEl) return;
-    var list = pickItems();
-    ui.clear(skillPickEl);
+    var list = skillCatalog();
     if (!list.length) {
-      skillPickEl.classList.remove('is-open');
-      syncSkillPill();
+      // 目录还是空的（mounts 那份还没到）：收起。**不清空** —— 淡出那 170ms 里
+      // 让上一帧的样子留着，先清成一个空壳再褪会看见一条空框闪一下
+      closeSkillPick();
       return;
     }
-    if (skillPickAt >= list.length) skillPickAt = 0;
-    list.forEach(function (item, index) {
-      var one = item.one;
-      var isCmd = item.type === 'command';
-      skillPickEl.appendChild(
-        h(
-          'button.chatskill__item' + (index === skillPickAt ? '.is-on' : ''),
-          {
-            type: 'button',
-            onClick: function () {
-              chooseItem(item);
-            },
+    ui.clear(skillPickEl);
+    var live = activeSkills();
+    list.forEach(function (one) {
+      var on = live.some(function (s) {
+        return s.key === one.key;
+      });
+      // 滤镜那一行是个 `<label>`，包着勾选框：点整行任何地方都算点那颗框
+      //（用户："应该是一整行都可以点击选中，选中的时候小方框打勾"）。
+      // 行不是"挑这条去发"的按钮 —— 勾选就是装 / 取本身（见 `toggleLens`），清单也不跟着关。
+      // 长相照模式选择栏的一行（`.modepick__row`）：勾选框 + 名字 + 说明 + 右边的形态。
+      // `is-on` 是**装着**的那一条（名字转成赭红）。
+      var row = h('label.modepick__row.chatskill__item' + (on ? '.is-on' : ''));
+      row.appendChild(
+        h('input.chatskill__check', {
+          type: 'checkbox',
+          checked: on,
+          'aria-label': one.label + '：' + (on ? '已装上，点一下取下' : '没装，点一下装上'),
+          onInput: function (ev) {
+            toggleLens(one, !!ev.target.checked);
           },
-          h('span.chatskill__kind' + (isCmd ? '.is-cmd' : ''), {
-            text: isCmd ? '命令' : SKILL_KIND_WORD[one.kind] || '',
-          }),
-          // 名字**不带斜杠**（用户："command 的选项，不要带 / 了"）：
-          // 斜杠是"我在输入框里打什么"，不是这条东西的名字。
-          h('span.chatskill__name', { text: one.label }),
-          h('span.chatskill__hint', { text: one.hint })
+        })
+      );
+      row.appendChild(
+        h(
+          'span.modepick__main',
+          {},
+          h('span.modepick__name', { text: one.label }),
+          h('span.modepick__hint', { text: one.hint })
         )
       );
+      row.appendChild(h('span.modepick__meta', { text: SKILL_KIND_WORD[one.kind] || '' }));
+      skillPickEl.appendChild(row);
     });
-    skillPickEl.classList.add('is-open');
-    syncSkillPill();
+    openSkillPick();
   }
 
   /**
@@ -10048,31 +10030,38 @@
     }
   }
 
-  function chooseItem(item) {
-    if (item.type === 'command') {
-      // 进第二层：把 `skill` 写进输入框（`/skill` 这三个字本身就是他的输入）
-      inputEl.value = '/' + item.one.key + ' ';
-      growInput();
-      skillPickAt = 0;
-      paintSkillPick();
-      return;
-    }
-    chooseSkill(item.one);
-  }
-
-  /** 挑中一条：记在 `pendingSkill` 上，把输入框里那截 `/xxx` 撤掉（等他接着提问）。 */
-  function chooseSkill(one) {
-    pendingSkill = one.key;
-    inputEl.value = '';
-    growInput();
-    skillPickAt = 0;
+  /** 清单里勾上 / 取消一条滤镜 —— 点整行、点勾选框都走这里。
+   *
+   * 直接记在**链末端**（与消息上那枚 chip 同一存法）：勾上就是"从这一刻起都算挂着"，
+   * 不必再走"挑中 → 等发送"那条老路。链末端为空（这条对话还是空的）= 记 `mid` 为空
+   * 的那条，含义就是"整条对话"。
+   *
+   * 输入框**一个字都不动**（用户："那个/的功能彻底删掉，以后没有/命令了"）：
+   * 框里的字就是他要问的问题，装滤镜只是装滤镜。清单**不关**，可以接着勾下一条。
+   */
+  function toggleLens(one, next) {
+    var path = activePath() || [];
+    var leaf = path.length ? path[path.length - 1] : null;
+    QF.store.attachSkill({
+      cid: state.current || '',
+      mid: leaf ? String(leaf.id) : '',
+      key: one.key,
+      on: next,
+    });
+    // 整张重画（勾选框按 `activeSkills` 重算），但把滚动位置留住 —— 清单不关，
+    // 勾下一条时不该被弹回顶上。
+    var top = skillPickEl ? skillPickEl.scrollTop : 0;
     paintSkillPick();
-    inputEl.focus();
-    ui.toast('/' + one.label + ' 已装上 —— ' + one.hint, 'info', 2600);
+    if (skillPickEl) skillPickEl.scrollTop = top;
+    repaintKeepingScroll();
+    // 点勾选框会把焦点带到那颗框上，而重画已经把它换掉了 —— 交还给输入框
+    window.setTimeout(function () {
+      inputEl.focus();
+    }, 0);
   }
 
   /** 这条链上现在正生效的（与 `app/skills.py` 的 `resolve` 同一套语义：沿链取最近、
-   *  每个 key 各算各的）。**只用来画那一排药丸** —— 真正生效由服务端按当下的链算。 */
+   *  每个 key 各算各的）。**只用来画清单里的勾选框** —— 真正生效由服务端按当下的链算。 */
   function activeSkills() {
     var cid = String(state.current || '');
     var records = QF.store.skills() || [];
@@ -10100,32 +10089,37 @@
       });
   }
 
-  /** 输入区里与 skill 有关的两件东西（用户："常驻药丸要做，这个是状态的指示和取消药丸。
+  /** 输入区里与 skill 有关的一件东西（用户："常驻药丸要做，这个是状态的指示和取消药丸。
    *  skill 另外做一个药丸放在模式旁边。"）：
    *
-   *   * **`skill` 药丸**：紧挨着模式药丸，点一下把 `/skill` 填进输入框（= 打开清单）；
-   *   * **状态药丸**：这条链上正生效的每一条一枚，各带 × —— 既是"现在挂着什么"的指示，
-   *     也是**取下**的地方（不必再滚回那条消息去点它）。
+   *   * **`滤镜` 药丸**：紧挨着模式药丸，点一下打开清单。"现在挂着什么"的指示与取消，
+   *     2026-11-06 起搬进清单里的勾选框（用户："装上的lens的提示不要以药丸的形式出现在
+   *     输入框右下角的发送安按钮旁边，而是在lens的药丸里面：点击药丸以后跳出来的列表应该是
+   *     勾选框，在这里看。"）。它**只管开合清单**，从不动输入框里的字
+   *     （用户："那个/的功能彻底删掉，以后没有/命令了"）。
    *
-   * 都动态插进补药丸那一行（`.chat__tools`）：那一行是别处建的，这里只往里插；
+   * 动态插进补药丸那一行（`.chat__tools`）：那一行是别处建的，这里只往里插；
    * 找不到就什么都不做 —— 布局变了顶多少两颗药丸，不该把输入区弄崩。
    */
-  /** 输入框里现在是"刚由 skill 药丸填进去的那个 `/skill`"吗？
+  /** 那颗药丸"按下去"的样子：`aria-expanded` 跟着清单走（与模式药丸同一套，见 mounts.js）。
    *
-   * 只看 `/skill` 这一种：别的命令（`/思考`）不是这颗药丸填的，那一下该当成"换一个"，不该
-   * 把用户自己打的字抹掉（见 `paintSkillPills` 里那颗药丸的 onClick）。 */
-  function isSkillCompose() {
-    return /^\/skill\b/i.test(String((inputEl && inputEl.value) || '').trim());
-  }
-
-  /** 那颗药丸"按下去"的样子：清单开着的时候它就亮着（`is-on`，与「深度思考」同一套）。
-   *
-   * 加它的理由不只是好看：开与关**都得有反馈**。原先点一下是"重新填一遍 /skill"，界面
-   * 看上去毫无变化（用户："再点一下菜单栏不会自动收回去"）。 */
+   * 加它的理由不只是好看：开与关**都得有反馈**，否则点一下界面看上去毫无变化
+   *（用户："再点一下菜单栏不会自动收回去"）。 */
   function syncSkillPill() {
     var btn = document.querySelector('.chatskill__open');
-    if (btn) btn.classList.toggle('is-on', !!skillPickEl && skillPickEl.classList.contains('is-open'));
+    if (btn) {
+      btn.setAttribute(
+        'aria-expanded',
+        skillPickEl && skillPickEl.classList.contains('is-open') ? 'true' : 'false'
+      );
+    }
   }
+
+  /* 名字后头那个小向下箭头（画出来的，不用字符 —— 字符依赖字体，之前踩过；同 mounts.js
+   * 的 CARET）：没有它，这颗东西就只是一枚标签，看不出点得动。 */
+  var SKILL_CARET =
+    '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" ' +
+    'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9.5 12 15.5l6-6"/></svg>';
 
   function paintSkillPills() {
     var tools = document.querySelector('.chat__tools');
@@ -10133,83 +10127,34 @@
 
     var btn = tools.querySelector('.chatskill__open');
     if (!btn) {
-      btn = h(
-        'button.chat__deep.chatskill__open',
-        {
-          type: 'button',
-          title: '装一个 skill（也可以直接在输入框里打 /）',
-          onClick: function () {
-            /* **再点一下要收回去**（用户："点击 skill 那个按钮，再点一下菜单栏不会自动收回去，
-             * 输入框中的 /skill 也不会消失"）。判据 = "清单正开着**且**输入框里就是这个 /skill"
-             * —— 那种状态下这一下点的是"关"，其余情况都是"开"。
-             *
-             * 清空是**要**的：`/skill` 这三个字本来就是这颗药丸写进去的（清单的内容也完全由
-             * 输入框里的字决定，见 `pickItems`）—— 不清的话，它俩谁都不会自己消失。 */
-            var open = skillPickEl && skillPickEl.classList.contains('is-open');
-            if (open && isSkillCompose()) {
-              inputEl.value = '';
-              growInput();
-              skillPickAt = 0;
-              paintSkillPick(); // 输入框空了 → 清单自己收（见 `paintSkillPick`）
-              inputEl.focus();
-              return;
-            }
-            inputEl.value = '/skill ';
-            growInput();
-            skillPickAt = 0;
+      btn = h('button.modepill.chatskill__open', {
+        type: 'button',
+        'aria-expanded': 'false',
+        title: '装一个滤镜',
+        // 与左边的「模式」药丸**同一套长相**（`.modepill`：图标 + 名字 + 小箭头）
+        //（用户："样式和左边的'模式'药丸一样"）。颜色是赭红，见 CSS 里的 `--mode-color`。
+        html:
+          ui.icon('lens', 13) +
+          '<span class="modepill__label">滤镜</span>' +
+          '<span class="modepill__caret">' + SKILL_CARET + '</span>',
+        onClick: function () {
+          /* **再点一下要收回去**（用户："点击 skill 那个按钮，再点一下菜单栏不会自动收回去"）。
+           * 清单开着的时候这一下点的是"关"；关着就打开。除了清单本身，什么都不碰 ——
+           * 输入框里的字是他要问的问题，装 / 收滤镜都不该动它。 */
+          var open = skillPickEl && skillPickEl.classList.contains('is-open');
+          if (open) {
+            closeSkillPick();
+          } else {
             paintSkillPick();
-            inputEl.focus();
-          },
+          }
+          inputEl.focus();
         },
-        // 与「深度思考」那一颗**同一套**：图标 + 文字，同一个尺寸档、同一路描边
-        // （用户："那个 skill 药丸，同样的，图标+文字，对齐。"）
-        iconNode('skill', 14),
-        h('span.chat__deeptext', { text: 'skill' })
-      );
+      });
       var modes = tools.querySelector('.chat__modes');
       if (modes && modes.parentNode) modes.parentNode.insertBefore(btn, modes.nextSibling);
       else tools.appendChild(btn);
     }
 
-    var bar = tools.querySelector('.chatskill__states');
-    if (!bar) {
-      bar = h('div.chatskill__states');
-      tools.appendChild(bar);
-    }
-    ui.clear(bar);
-    var live = activeSkills();
-    live.forEach(function (one) {
-      bar.appendChild(
-        h(
-          'button.chatskill__state',
-          {
-            type: 'button',
-            title: '正在生效：「/' + one.label + '」—— 点 × 取下',
-            onClick: function () {
-              var path = activePath() || [];
-              var leaf = path.length ? path[path.length - 1] : null;
-              QF.store.attachSkill({
-                cid: state.current || '',
-                mid: leaf ? String(leaf.id) : '',
-                key: one.key,
-                on: false,
-              });
-              paintSkillPills();
-              repaintKeepingScroll();
-              ui.toast('已取下 /' + one.label, 'info', 1600);
-            },
-          },
-          // 状态药丸也是图标 + 文字：图标说明**哪一类**（流程/口吻/纪律），
-          // 文字说明是哪一条 —— 一排药丸里靠这个一眼分得开。
-          iconNode(SKILL_KIND_ICON[one.kind] || 'skill', 12),
-          h('span.chatskill__statetext', {
-            text: (SKILL_KIND_WORD[one.kind] || '') + ' ' + one.label,
-          }),
-          h('span.chatskill__x', { text: '×' })
-        )
-      );
-    });
-    bar.classList.toggle('is-on', live.length > 0);
   }
 
   /** 这条消息上挂着的标记（点一下 = 取下 / 再装回去）。没有就返回 []。
@@ -10233,7 +10178,7 @@
         btn.classList.toggle('is-on', now);
         btn.textContent = (now ? kind + ' · ' : '已取下 · ') + label;
         btn.title = now
-          ? '正在生效：「/' + label + '」—— 点一下取下'
+          ? '正在生效：「' + label + '」—— 点一下取下'
           : '这一条已经取下了（点一下再装回去）';
       };
       paint(on);
@@ -10250,35 +10195,23 @@
         //（实测：点一下炸出几百枚同样的标记）。
         paint(next);
         if (notesOpen) renderNotes();
-        ui.toast((next ? '又装上了 /' : '已取下 /') + label, 'info', 1600);
+        ui.toast((next ? '又装上了：' : '已取下：') + label, 'info', 1600);
       });
       return btn;
     });
   }
 
   function onKeydown(event) {
-    // 清单开着时，键盘先归它：上下走、回车挑中、Esc 收起（都**不**发送）
-    var list = pickItems();
-    if (list.length) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        skillPickAt = (skillPickAt + (event.key === 'ArrowDown' ? 1 : list.length - 1)) % list.length;
-        paintSkillPick();
-        return;
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        inputEl.value = '';
-        growInput();
-        paintSkillPick();
-        return;
-      }
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        chooseItem(list[skillPickAt] || list[0]);
-        return;
-      }
+    // Esc：清单开着就收起来（勾选框归它管，输入框的字一个字都不动）。
+    // 没有 `/` 命令了，输入框里的 Esc 不再有"撤掉命令"那层意思
+    //（用户："那个/的功能彻底删掉，以后没有/命令了"）。
+    if (event.key === 'Escape' && skillPickEl && skillPickEl.classList.contains('is-open')) {
+      event.preventDefault();
+      closeSkillPick();
+      return;
     }
+    // 回车 = 发送。清单开着也一样：勾选用鼠标点整行，或 Tab 到勾选框按空格。
+    // 回车**绝不能**落去勾滤镜 —— "问题打好了、滤镜勾上了、一回车"是发送的节奏。
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       onSendClick();

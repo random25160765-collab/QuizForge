@@ -84,8 +84,8 @@ def mounts_state(db: DbSession) -> dict:
     "图标亮着"与"模型看得到几个工具"必须能对得上，而这是唯一能证明它俩一致的办法
     （改完在界面上量一下 `declared` 的条数，就知道开关有没有真的接上）。
 
-    `skills` 是 `/` 那份清单（`app/skills.py`）—— 它跟着这一份一起发，是为了让输入框那个
-    选择器**不用自己抄一份名字**：加了新 skill，界面自动就有（抄成两份必然漂，这条吃过）。
+    `skills` 是「滤镜」那份清单（`app/skills.py`）—— 它跟着这一份一起发，是为了让输入框旁
+    那颗药丸的勾选清单**不用自己抄一份名字**：加了新 skill，界面自动就有（抄成两份必然漂，这条吃过）。
     """
     out = mounts.describe(db)
     out["skills"] = skill_lib.catalog()
@@ -544,7 +544,7 @@ def build_prompt(
     它不是工具（用户："对话轨迹是 llm 长期可见的用户信息仪表盘"），不受挂载影响 ——
     极简模式只是"没有工具"，不是"不认识这位用户"。
 
-    `skill_block` 是他用 `/` 召唤的那个流程（`app/skills.py`），同样两种模式都带 ——
+    `skill_block` 是他从「滤镜」清单里装上的那些（`app/skills.py`），两种模式都带 ——
     它与挂载无关：那是"他要求我这一段怎么陪他"，不是"我能查什么"。放在靠后的位置：
     它是**这一轮的行为约束**，与 `mode_notice` 一样属于"现在最要紧的"。
     """
@@ -2362,7 +2362,7 @@ def _stream(  # noqa: ANN001
         except Exception:  # noqa: BLE001
             trail = ""
 
-        # 他召唤的流程（skill）：沿这条链从根往下取最近的那条记录（见 `app/skills.py`）。
+        # 他装上的滤镜（skill）：沿这条链从根往下取最近的那条记录（见 `app/skills.py`）。
         # 同样兜底 —— 一段加成性质的行为约束，不该让整轮生成失败。
         try:
             from .. import skills as skill_lib
