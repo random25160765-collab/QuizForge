@@ -2841,12 +2841,6 @@ body.is-colresize {
   color: var(--fg3);
 }
 
-.chatnotes__tag {
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 0 7px;
-}
-
 .chatnotes__text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -3953,76 +3947,7 @@ body.is-colresize .panes__host > .chat {
   text-decoration-color: var(--mark-color, color-mix(in srgb, var(--amber) 80%, transparent));
 }
 
-/* 菜单项里那枚**色点**（下划线三色、高亮的自定义色都用它）：放在图标的位置上。
- * 颜色由 JS 用 `style.background` 赋值（见 `showChatMenu`），这里只管长相。 */
-.chattree__menuswatch {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
-}
-
-/* **引文那一条**（"就这段追问"，见 chat.js 的 paintQuote）：与"待发的附件"同一排、同一种长相，
- * 但它是**一段文字**而不是一个文件 —— 发送时并进正文最前面，那一步就省掉了"先复制到输入框"。 */
-.chat__quote {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  max-width: 100%;
-  margin: 0 0 6px;
-  padding: 5px 8px 5px 10px;
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--pri);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--bg2) 92%, transparent);
-  font-size: 12px;
-  color: var(--fg2);
-}
-
-.chat__quote[hidden] {
-  display: none;
-}
-
-.chat__quotetag {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--pri) 16%, transparent);
-  color: var(--pri);
-  font-size: 11px;
-}
-
-.chat__quotetext {
-  flex: 1 1 auto;
-  min-width: 0;
-  /* 长引文只露一行：它是"我要问的那段话"，不是正文 —— 全文在 title 里，鼠标停一下就看得到 */
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.chat__quotex {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: none;
-  color: var(--fg3);
-  cursor: pointer;
-}
-
-.chat__quotex:hover {
-  background: color-mix(in srgb, var(--fg3) 14%, transparent);
-  color: var(--fg);
-}
-
-/* 菜单里的**色板**（高亮用）：一行色点 + 末尾一个原生取色器。
+/* 菜单里的**色板**（高亮、下划线共用）：一行色点 + 末尾一个原生取色器（只有高亮有）。
  * 它长在菜单里、而不是"另开一个屏幕外的取色器"—— 原生弹层就贴着这一行（见 chat.js 的
  * `hlSwatches`）。上一版把 input 藏在 `left:-9999px`，取色器就跑到窗口左上角去了。 */
 .chattree__swatchrow {
@@ -4053,10 +3978,19 @@ body.is-colresize .panes__host > .chat {
   transform: scale(1.12);
 }
 
-.chattree__swatch.is-on {
+/* 色板里**选中**的那一枚：里面打一个勾（用户："选中打勾"）。
+ * 勾的墨色由 JS 按色点深浅给（见 chat.js 的 `tickInk`）—— 高亮、下划线同一套逻辑。 */
+.chattree__swatch.is-checked {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   box-shadow:
     inset 0 0 0 1px rgba(0, 0, 0, 0.18),
     0 0 0 2.5px var(--line);
+}
+
+.chattree__swatch.is-checked svg {
+  display: block;
 }
 
 .chattree__swatchinput {
@@ -4507,13 +4441,6 @@ body.is-colresize .panes__host > .chat {
   font-variant-numeric: tabular-nums;
 }
 
-/* 在别的对话里的那一枚：虚线的号 —— 与树图钉上的"要看别处"同一个意思 */
-.chatportal__slot.is-away .chatportal__num {
-  background: none;
-  border: 1px dashed var(--line-strong);
-  color: var(--fg3);
-}
-
 .chatportal__tag {
   overflow: hidden;
   white-space: nowrap;
@@ -4561,30 +4488,12 @@ body.is-colresize .panes__host > .chat {
   }
 }
 
-/* 跨对话传送：整条线程轻轻沉一下。一秒钟里换了一整屏内容，人得有个着落 ——
- * 同一条对话内不用这一下（那时闪落点就够了）。 */
-.chat__thread.is-arrive {
-  animation: chat-arrive 340ms var(--ease) both;
-}
-
-@keyframes chat-arrive {
-  from {
-    opacity: 0.3;
-    transform: translateY(7px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .chatportal__sweep,
   .chatportal__glow,
   .chatportal.is-open .chatportal__slot,
   .chatportal.is-shake .chatportal__core,
-  .ctnode.is-born .ctnode__ink,
-  .chat__thread.is-arrive {
+  .ctnode.is-born .ctnode__ink {
     animation: none;
   }
 
@@ -5009,7 +4918,7 @@ body.is-colresize .panes__host > .chat {
  *   * 进来：背景 150ms 淡入、抽屉 200ms 从右滑入（缓出，像被推进来）；列表项再逐条
  *     浮现（每条错开，延迟在 JS 里按序号写进 style）。
  *   * 出去：`is-closing` 反向播 160ms，**播完才拆 DOM**（见 `closeMarks`）。
- *   * 传送：沿用 rail 那一套（点的脉冲 + 落点闪 + 跨对话线程轻沉）。
+ *   * 传送：沿用 rail 那一套（点的脉冲 + 落点闪）—— 只在本对话内。
  */
 
 /* 抽屉挂在**画布那一层**里（不是整屏）：遮罩只压地图，工具栏还留着 ——
@@ -5196,127 +5105,52 @@ body.is-colresize .panes__host > .chat {
   }
 }
 
-/* ------------------------------------------------------------- 流程（skill）
+/* ------------------------------------------------------------- 流程（滤镜）
  *
- * `docs/对话树.md` §十二：这一版做的是**流程**（`/` 命令）。两处样式：
- *   * 输入框上方那份清单 —— 挑的时候才出现，不挑就不占位置；
+ * `docs/对话树.md` §十二：三种形态里的**流程**（有开始、有走完）、**口吻**、**纪律**
+ * 都从这里"装 / 取"。两处样式：
+ *   * 药丸上方那份清单 —— 与「模式」选择栏**同一个长相**（`.modepick`）：浮层、
+ *     贴着药丸向上弹，点药丸才出来；输入框里**不再有 `/` 命令**。
  *   * 消息行上那枚标记 —— 与「位置标记」同一排，但**性质相反**：位置标记是点出来的
  *     记号，而它是**状态**（挂着就一直亮），点一下才是取下。
  */
 
+/* 清单本体借 `.modepick` 的壳（定位、边框、阴影、淡入淡出都在那边，定位值由 JS 写）。
+ * 这里只补它自己的三件事：颜色跟赭红、长了要能滚、每一行是"勾选框 + 名字 + 说明 + 形态"。
+ * 用户："点击后跳出来的菜单栏也一样的样式（现在是对话框上顶出来一个框）"。 */
 .chatskill {
-  display: none;
-  max-height: 264px;
+  /* 滤镜不是三种模式里的任何一种：整张清单用赭红（`--ochre`），不跟模式色走 */
+  --mode-color: var(--ochre);
+  /* 滤镜比模式多得多：限高、自己滚，别把屏幕顶穿（`.modepick` 是 fixed，滚的是它自己） */
+  max-height: min(62vh, 430px);
   overflow-y: auto;
-  margin-bottom: 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg);
 }
 
-.chatskill.is-open {
-  display: block;
-}
-
+/* 一行（`.modepick__row` 已经给了 flex / 间距 / 悬浮底色 / 圆角）。
+ * 滤镜那几行是个 `<label>`：点整行 = 点勾选框。别让双击选中文字打断它。 */
 .chatskill__item {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 10px;
-  border: none;
-  background: none;
-  color: var(--fg);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
+  /* `.modepick__row` 把 `--mode-color` 定成了灰（那三种模式的兜底）：这里按文件先后
+   * 压回赭红 —— 否则"装着"那条的亮色与图标都变成中性的灰。 */
+  --mode-color: var(--ochre);
+  user-select: none;
 }
 
-.chatskill__item + .chatskill__item {
-  border-top: 1px solid var(--line);
+/* 入口那颗药丸（挨着「模式」药丸）—— 用户："常驻药丸要做，这个是状态的指示和取消药丸。
+ * skill 另外做一个药丸放在模式旁边。" 长相就是 `.modepill`（用户："样式和左边的'模式'
+ * 药丸一样"），颜色用赭红（用户："滤镜这个药丸换个颜色。换成赭红色吧。"）。 */
+.modepill.chatskill__open {
+  --mode-color: var(--ochre);
 }
 
-.chatskill__item.is-on,
-.chatskill__item:hover {
-  background: var(--bg2);
-}
-
-.chatskill__kind {
+/* 清单里每条滤镜的勾选框 —— "装没装"的指示器与开关 */
+.chatskill__check {
   flex: none;
-  min-width: 30px;
-  padding: 0 6px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm, 4px);
-  color: var(--fg3);
-  font-size: 11px;
-  line-height: 18px;
-  text-align: center;
-}
-
-.chatskill__name {
-  flex: none;
-  min-width: 92px;
-  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
-  font-size: 13px;
-}
-
-.chatskill__hint {
-  flex: 1;
-  min-width: 0;
-  color: var(--fg3);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-/* 入口那颗（挨着模式药丸）与"正生效"那一排 —— 用户："常驻药丸要做，这个是状态的指示和
- * 取消药丸。skill 另外做一个药丸放在模式旁边。" */
-
-.chatskill__open {
-  /* 外观照 `.chat__deep`（同一行的药丸），只补一个被点过的回执 */
+  width: 14px;
+  height: 14px;
+  /* 与名字那一行的头一个字对齐（`.modepick__row` 是 flex-start；图标那边是 1px） */
+  margin: 2px 0 0;
+  accent-color: var(--ochre);
   cursor: pointer;
-}
-
-.chatskill__states {
-  display: none;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.chatskill__states.is-on {
-  display: flex;
-}
-
-.chatskill__state {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 4px 2px 9px;
-  border: 1px solid color-mix(in srgb, var(--pri) 45%, var(--line));
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--pri) 10%, transparent);
-  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-}
-
-.chatskill__x {
-  padding: 0 4px;
-  border-radius: 999px;
-  color: var(--fg3);
-  font-size: 13px;
-  line-height: 1;
-}
-
-.chatskill__state:hover .chatskill__x {
-  color: var(--bad, #d14343);
-}
-
-/* 命令那一层：`/skill` 那一行 —— 与 skill 那几行区分开（它是命令，不是某一条 skill） */
-.chatskill__kind.is-cmd {
-  border-color: color-mix(in srgb, var(--pri) 40%, var(--line));
-  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
 }
 
 .chatskill__chip {
@@ -5336,65 +5170,8 @@ body.is-colresize .panes__host > .chat {
   color: color-mix(in srgb, var(--pri) 88%, var(--fg));
 }
 
-/* --------------------------------------------------------------- 动效
- *
- * 与这一页别处同一套：**动一下，但别让人等**。三处：
- *   * 状态药丸**逐枚浮现**（装第二、第三条时看得出"又多了一条"，而不是整排跳一下）；
- *   * 入口那颗按下去有回执（它是个开关，没有回执就像没点着）；
- *   * `/` 清单里的每一行轻轻浮出（清单是"正在挑"，不该硬邦邦地弹出来）。
- * 全部在 `prefers-reduced-motion` 下静止。
- */
-
-@keyframes chatskill-pop {
-  from { opacity: 0; transform: translateY(3px) scale(0.96); }
-  to { opacity: 1; transform: none; }
-}
-
-.chatskill__state {
-  animation: chatskill-pop 170ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
-}
-
-/* 最多错开四枚：装到第五、六条时不再往后拖（越拖越像卡住） */
-.chatskill__state:nth-child(2) { animation-delay: 30ms; }
-.chatskill__state:nth-child(3) { animation-delay: 60ms; }
-.chatskill__state:nth-child(4) { animation-delay: 90ms; }
-
-.chatskill__state:hover {
-  border-color: color-mix(in srgb, var(--bad, #d14343) 45%, var(--line));
-}
-
-.chatskill__x {
-  transition: color var(--dur) var(--ease), transform var(--dur) var(--ease);
-}
-
-.chatskill__state:hover .chatskill__x {
-  transform: scale(1.15);
-}
-
-.chatskill__open {
-  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
-}
-
-.chatskill__open:active {
-  transform: scale(0.97);
-}
-
-.chatskill__item {
-  animation: chatskill-pop 140ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-
-.chatskill__item:nth-child(2) { animation-delay: 18ms; }
-.chatskill__item:nth-child(3) { animation-delay: 36ms; }
-.chatskill__item:nth-child(4) { animation-delay: 54ms; }
-.chatskill__item:nth-child(5) { animation-delay: 72ms; }
-
-@media (prefers-reduced-motion: reduce) {
-  .chatskill__state,
-  .chatskill__item {
-    animation: none;
-  }
-}
+/* 清单的展开 / 回收动效不在这里做 —— 它借的是 `.modepick` 的 `.is-in` / `.is-out`
+ * （连同 `prefers-reduced-motion` 的静止），见上方「选择栏」那一节。 */
 
 
 /* 思考强度的拖动条（见 chat.js 的 paintThinkPick）。

@@ -75,12 +75,16 @@ def test_a_broken_file_is_skipped_and_does_not_kill_the_folder() -> None:
     assert good is not None and good.prompt == "正文"
 
 
-def test_a_command_is_found_by_key_or_by_its_chinese_name() -> None:
-    """`/费曼` 与 `/feynman` 是同一条 —— 他喊的是中文，写的是 key。"""
-    assert skills.find("/费曼").key == "feynman"
+def test_a_skill_is_found_by_key_or_by_its_chinese_name() -> None:
+    """`费曼` 与 `feynman` 是同一条 —— 他喊的是中文，写的是 key。
+
+    `/` 命令已经删了（2026-11-06）：带斜杠的词不再被认成 skill。
+    """
+    assert skills.find("费曼").key == "feynman"
     assert skills.find("feynman").key == "feynman"
-    assert skills.find("  /SQ3R ") is not None
-    assert skills.find("/没这个") is None
+    assert skills.find("  SQ3R ") is not None
+    assert skills.find("没这个") is None
+    assert skills.find("/费曼") is None, "带斜杠的词不再被认成 skill"
     assert skills.find("") is None
 
 
@@ -158,7 +162,7 @@ def test_records_from_another_conversation_do_not_leak(db_session) -> None:  # n
 def test_the_block_rides_along_in_both_modes() -> None:
     """它进系统提示，而且**极简模式也带** —— 与挂载无关（那是"你要我怎么陪你"）。"""
     note = skills.block([skills.find("费曼"), skills.find("大白话")])
-    assert "/费曼" in note and "/大白话" in note
+    assert "**费曼**" in note and "**大白话**" in note
     assert "流程" in note and "口吻" in note, "按形态分节"
 
     full = chat_router.build_prompt({"quiz"}, None, ["get_mastery"], "", note)

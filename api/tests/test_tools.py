@@ -381,6 +381,9 @@ def test_run_python_hands_the_code_to_the_resident_shell(
     为什么样板不能让模型每次手写：写错一次的表现是**一片空白**，用户看不出哪里坏了。
     为什么壳要常驻：Pyodide 每次启动都要重来（下载 + 初始化 + import 依赖），
     一段脚本一个壳就是"每跑一次等一秒多"（用户："跑 python 脚本非常慢"）。
+
+    （"运行时已就绪"这个前提由 conftest 的 `_runtime_always_ready` 统一钉住 ——
+    这条验的是零件的形状，不是那台机器有没有 144M 的缓存。）
     """
     _register(client)
 

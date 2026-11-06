@@ -165,6 +165,19 @@
     return v;
   }
 
+  /** 下划线用的颜色 —— 与高亮同一套"记住上次"的规矩。存的是 `red` / `blue` / `black`
+   * 这类语义名（老标记也是这么存的，见 chat.js 的 `MARK_TONES`）；空 = 没选过，
+   * 用第一个（红）。合不合法由 chat.js 判（`ulToneNow`）—— 这里只管记住。 */
+  function ulTone() {
+    return String(settings().chatUlTone || '');
+  }
+
+  function setUlTone(tone) {
+    var v = String(tone == null ? '' : tone).trim().slice(0, 20);
+    saveSettings({ chatUlTone: v });
+    return v;
+  }
+
   /** **读到哪儿了** —— 每条会话一份：`{mid, dy, bottom, at}`。
    *
    * 存的是"第一条还露在视口里的消息 + 它在视口上方被推掉多少"，**不是像素数**：消息的高会变
@@ -1461,7 +1474,7 @@
         kind: kind,
         cid: one.cid ? String(one.cid) : '',
         mid: mid,
-        // 描述是给人认的：跨对话的标记在树上只显示一枚图钉，认不出是哪儿
+        // 描述是给人认的：树上只显示一枚图钉，认不出是哪儿
         label: String(one.label || '').slice(0, 120),
         quote: String(one.quote || '').slice(0, 80),
         at: Date.now(),
@@ -1560,6 +1573,8 @@
     setNote: setNote,
     hlTone: hlTone,
     setHlTone: setHlTone,
+    ulTone: ulTone,
+    setUlTone: setUlTone,
     readAnchor: readAnchor,
     setReadAnchor: setReadAnchor,
     setMastered: setMastered,

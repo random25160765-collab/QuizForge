@@ -149,6 +149,28 @@ def _isolate_user_data(engine) -> Iterator[None]:  # noqa: ANN001
     yield
 
 
+@pytest.fixture(autouse=True)
+def _runtime_always_ready(monkeypatch) -> None:  # noqa: ANN001
+    """把「Pyodide 运行时已就绪」钉成前提。
+
+    运行时（144M）不进安装包，首次由 `heavy_deps` 取进本机缓存；而上面那句
+    `QF_HEAVY_PREFETCH=false` 又把"顺手取一份"关掉了（跑一次用例不该下几十兆）。
+    于是 `tools.pyodide_base()` 在干净检出和 CI 上都返回 `None`，`run_python`
+    走"运行时还没到位"那条早返回 —— **那是对的**，它不该假装能跑。
+
+    但好几条用例验的是**零件的形状**（只带 runId、样板在常驻壳里、壳里有
+    `loadPackagesFromImports` 与 Agg 后端），跟运行时在不在无关。不钉住这一项，
+    它们测的就成了"跑它的机器有没有那份缓存"，而且**不稳**：某条用例触发后台
+    预取之后缓存补齐，后面的用例又过了 —— 实测 CI 上 3 条里只红 1 条就是这个。
+
+    钉的只是 `tools.pyodide_base` 这一处；`heavy_deps.is_ready()` 本身不动，
+    它有自己的用例（`test_heavy_deps.py`，显式传目录进去）。
+    """
+    from app import tools
+
+    monkeypatch.setattr(tools, "pyodide_base", lambda: "__ORIGIN__/assets/pyodide/")
+
+
 @pytest.fixture()
 def db_session(engine) -> Iterator["object"]:  # noqa: ANN001
     """每个用例一个会话，用例结束回滚，保证互不影响。"""

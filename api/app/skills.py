@@ -139,8 +139,11 @@ def all_skills() -> tuple[Skill, ...]:
 
 
 def find(word: str) -> Skill | None:
-    """`/` 后面那两个字 → 一条 skill（认 key 也认中文名，大小写不敏感）。"""
-    raw = str(word or "").strip().lstrip("/").strip()
+    """一个词 → 一条 skill（认 key 也认中文名，大小写不敏感）。
+
+    只按 key / 名字认。**没有 `/` 前缀那回事**了（2026-11-06 起界面不再有命令）。
+    """
+    raw = str(word or "").strip()
     if not raw:
         return None
     for one in _load():
@@ -245,7 +248,7 @@ def block(skills: list[Skill]) -> str:
     parts = [
         "## 他这一轮给你装了什么（skill）",
         "",
-        "他用 `/` 装上的东西在下面。**它们都生效**（可以同时装好几条），"
+        "他从「滤镜」清单里装上的东西在下面。**它们都生效**（可以同时装好几条），"
         "**一条一条都可以随时被他取下** —— 取下之后就别再照它做了，也不要问「还要不要那样」。",
     ]
     for kind in KINDS:
@@ -256,7 +259,7 @@ def block(skills: list[Skill]) -> str:
         parts.append("### " + KIND_LABELS[kind])
         for one in mine:
             parts.append("")
-            parts.append("**/" + one.label + "**")
+            parts.append("**" + one.label + "**")
             parts.append(one.prompt)
     parts.append("")
     parts.append(

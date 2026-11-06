@@ -31,7 +31,7 @@
     access: [],
     groups: [],
     mounted: [],
-    //: `/` 那份流程清单（服务端 `app/skills.py` 的 `catalog` 发来）
+    //: 「滤镜」那份清单（服务端 `app/skills.py` 的 `catalog` 发来）
     skills: [],
     minimal: false,
     declared: 0,
@@ -296,8 +296,8 @@
     state.access = data.access || [];
     state.groups = data.groups || [];
     state.mounted = data.mounted || [];
-    // `/` 那份清单（`app/skills.py` 的 `catalog`）：跟着这一份一起发，界面**不抄名字** ——
-    // 加了新 skill，输入框那个选择器自动就有（抄成两份必然漂，这条吃过一次）。
+    // 「滤镜」那份清单（`app/skills.py` 的 `catalog`）：跟着这一份一起发，界面**不抄名字** ——
+    // 加了新 skill，输入框旁那颗「滤镜」药丸的清单自动就有（抄成两份必然漂，这条吃过一次）。
     state.skills = data.skills || [];
     state.minimal = !!data.minimal;
     state.declared = (data.declared || []).length;
