@@ -94,7 +94,10 @@
 `db-up` / `db-down` / `db-restore` / `db-dump` / `db-backup` 五个目标全部删除，
 旧快照 `db/quizforge.sql.gz` 也已删。数据快照换成 **`db/quizforge.db.gz.enc`（SQLite
 库本身，口令加密）**：`make db-restore` 解密解压即用，`make db-snapshot` 反向存回，
-存取都在 `tools/db_snapshot.py`（落盘前抹密钥、整体加密，载入前校验完整性 + 外键）。仓库里**不再有任何
+存取都在 `tools/db_snapshot.py`（落盘前抹密钥、整体加密，载入前校验完整性 + 外键）。
+2026-11-06 用 `git filter-repo` 把明文快照（`db/quizforge.db.gz` 与 `db/quizforge.sql.gz`）
+从**全部历史**里重写移除并 force push —— 历史里的聊天记录与旧密钥 dump 不再随 clone 可得；
+注意此前 clone / fork 过的副本仍持有旧对象，收不回来。仓库里**不再有任何
 需要 Docker 或 Postgres 的路径**。
 
 `tools/migrate_to_local.py` 保留着，但降级为**一次性搬运**工具（历史数据还在
