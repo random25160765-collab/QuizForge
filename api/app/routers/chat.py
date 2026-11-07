@@ -344,9 +344,10 @@ GROUP_PROMPTS = {
     "notes": (
         "笔记（他自己的，只在他的库里找）：`search_notes` 跨库按内容找；"
         "`read_note` 读正文（长的要分次读 —— 别只看开头就下结论）。"
-        "写有两种：`write_note` **追加到末尾**，`edit_note` **改某一处**"
-        "（给它一段原文换成新的，要删就给它空串）—— **要改已有的内容用后者**，"
-        "别拿追加去凑。两个写前都自动留快照、能撤回，写完把那句原文念给他听。"
+        "写只有 `edit_note` 一个：给它一段逐字原文换成新的（要删就给空串）就是改某一处；"
+        "**不给那段原文、只给 new**：文件在就追加到末尾，**文件不在就新建**"
+        "（所以「新写一篇」也用它，别先要求文件已存在）。"
+        "写前自动留快照、能撤回，写完把那句原文念给他听。"
     ),
     "library": (
         "资料：`attach_material` 按标题找条目、把正文节选读进上下文，`read_material` 精读某几十行。"
@@ -451,7 +452,7 @@ GROUP_LABELS = {
 from .. import tools as tool_registry  # noqa: E402  提示词要点名工具，得问注册表
 
 #: 组 → 里面的工具名（**兜底**）。正常路径是调用方把"这一轮真声明了哪些工具"传进来 ——
-#: 因为同一个组里还分权限档：查询模式挂着 `notes` 组，但 `write_note`（write 档）没声明，
+#: 因为同一个组里还分权限档：查询模式挂着 `notes` 组，但 `edit_note`（write 档）没声明，
 #: 提示词里就不能念它（念了它就会去调，然后被拒）。 —— 只说"你有笔记工具"是不够的：
 #: 实测模型会坚持"我没有 search_notes 这个东西"，点到名字才肯动手。
 #: 有测试盯着它和 `tools.REGISTRY` 一致（抄成两份必然漂）——
@@ -460,7 +461,8 @@ GROUP_TOOLS = {
     # `list_notes` / `read_note` 原先漏在这儿了 —— 而这一条正是"清单会漂"的现场：
     # 它是**兜底**，正常路径由调用方传入真声明的工具名，所以漂了也看不出来。
     # 兜底一旦被用到（`declared` 没传），模型会被告知"你只有那两个工具"。
-    "notes": ("list_notes", "read_note", "search_notes", "write_note", "edit_note"),
+    # 2026-11-07：`write_note` 并入 `edit_note`，写档只剩一个。
+    "notes": ("list_notes", "read_note", "search_notes", "edit_note"),
     "library": ("list_materials", "attach_material", "search_material", "search_library",
                 "read_material"),
     "graph": ("search_knowledge", "get_point_detail", "explore_graph"),

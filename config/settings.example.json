@@ -1,0 +1,258 @@
+{
+  "theme": "light",
+  "fontScale": 0.95,
+  "maxWidth": 860,
+  "shuffle": false,
+  "pinnedTopics": [],
+  "basket": [],
+  "ai": {
+    "enabled": false,
+    "baseUrl": "https://api.deepseek.com/v1",
+    "model": "deepseek-flash",
+    "apiKey": "",
+    "timeoutMs": 90000,
+    "temperature": 0.2,
+    "jsonMode": true,
+    "fallbackSelfRate": true,
+    "strictRubric": true
+  },
+  "chatRead": {
+    "aab05873-4beb-4f0c-82b6-a787d2495ab0": {
+      "mid": "904",
+      "dy": -1486,
+      "bottom": false,
+      "at": 1794061242038,
+      "last": "970"
+    },
+    "b7c01f36-4fda-41ff-aabb-25c3c7db145d": {
+      "mid": "215",
+      "dy": -27,
+      "bottom": false,
+      "at": 1794061947039,
+      "last": "234"
+    },
+    "7beb99b9-c048-4dfc-a3ee-646c40f9952d": {
+      "mid": "1024",
+      "dy": 20,
+      "bottom": false,
+      "at": 1794061133367,
+      "last": "1222"
+    },
+    "d11b5432-1b36-4266-b434-c55dcd0cb437": {
+      "mid": "1230",
+      "dy": -637,
+      "bottom": false,
+      "at": 1794064448513,
+      "last": "1230"
+    },
+    "17af19c7-6507-45a6-a7c9-1c4f1adb37c6": {
+      "mid": "",
+      "dy": 0,
+      "bottom": true,
+      "at": 1794057521391,
+      "last": ""
+    },
+    "261ad3f6-c72f-4d33-8401-ea2f06ca245a": {
+      "mid": "1223",
+      "dy": -56,
+      "bottom": true,
+      "at": 1794058767036,
+      "last": "1226"
+    },
+    "98c3b69b-b5b7-4d1e-8828-7f8e696cab0d": {
+      "mid": "1214",
+      "dy": -1456,
+      "bottom": false,
+      "at": 1794058767501,
+      "last": "1220"
+    },
+    "7f23475e-220d-41fd-8af3-feb83a6e589c": {
+      "mid": "932",
+      "dy": -2952,
+      "bottom": false,
+      "at": 1794042993883,
+      "last": "932"
+    },
+    "b41f2f43-1532-4f83-94f0-0c6eda4d0576": {
+      "mid": "844",
+      "dy": -52,
+      "bottom": true,
+      "at": 1794060568940,
+      "last": "844"
+    },
+    "b3772df0-f30a-418d-8159-fc3bd37de3bb": {
+      "mid": "836",
+      "dy": -2528,
+      "bottom": false,
+      "at": 1794058910148,
+      "last": "836"
+    },
+    "48de3a50-ffc0-416e-bd2f-d4d773a9d09a": {
+      "mid": "830",
+      "dy": -316,
+      "bottom": true,
+      "at": 1794042779165,
+      "last": "830"
+    },
+    "d9040870-4cfd-47cd-9a6b-bf65a6fab31e": {
+      "mid": "994",
+      "dy": -1297,
+      "bottom": false,
+      "at": 1794042780253,
+      "last": "994"
+    },
+    "d1832541-f2cc-46f0-a770-7cb90f53ed84": {
+      "mid": "",
+      "dy": 0,
+      "bottom": true,
+      "at": 1794060359460,
+      "last": ""
+    },
+    "fc59d62e-d781-406a-a6c4-02de220f3321": {
+      "mid": "992",
+      "dy": -787,
+      "bottom": true,
+      "at": 1794058767909,
+      "last": "992"
+    },
+    "d6fba3ef-6529-4a5b-87b6-85545db6cab1": {
+      "mid": "858",
+      "dy": -92,
+      "bottom": false,
+      "at": 1794061147773,
+      "last": "874"
+    },
+    "7f9b9c23-975a-4314-8204-fca49fd5925e": {
+      "mid": "270",
+      "dy": -241,
+      "bottom": true,
+      "at": 1794061138511,
+      "last": "274"
+    },
+    "2c036558-1e52-4494-a443-8df94aa9a88c": {
+      "mid": "",
+      "dy": 0,
+      "bottom": true,
+      "at": 1794062078438,
+      "last": ""
+    },
+    "3fd47a10-340b-4d53-b587-b1e09f456c9a": {
+      "mid": "362",
+      "dy": -189,
+      "bottom": true,
+      "at": 1794060156636,
+      "last": "467"
+    },
+    "6851440a-a251-48eb-b36c-0d5b0140ba9b": {
+      "mid": "388",
+      "dy": -607,
+      "bottom": false,
+      "at": 1794061137972,
+      "last": "430"
+    },
+    "583a3fb5-8e39-4107-b832-faf86753e2d0": {
+      "mid": "348",
+      "dy": -47,
+      "bottom": true,
+      "at": 1794061137284,
+      "last": "366"
+    },
+    "ceabfa99-7193-4985-a833-4c6d3ac6112d": {
+      "mid": "119",
+      "dy": -400,
+      "bottom": true,
+      "at": 1794060154748,
+      "last": "121"
+    },
+    "f4c37931-2b94-43b2-bda2-e4ca65978390": {
+      "mid": "737",
+      "dy": 20,
+      "bottom": false,
+      "at": 1794061134179,
+      "last": "808"
+    },
+    "4bdd2db6-8468-47a3-8a06-95d6a99e3501": {
+      "mid": "700",
+      "dy": -612,
+      "bottom": true,
+      "at": 1794061137062,
+      "last": "700"
+    },
+    "2e532a2a-3b25-4c18-b634-00a909213a64": {
+      "mid": "193",
+      "dy": -282,
+      "bottom": false,
+      "at": 1794061140301,
+      "last": "199"
+    },
+    "bf55b062-5979-4455-80dd-52b9fcf81264": {
+      "mid": "1234",
+      "dy": -837,
+      "bottom": true,
+      "at": 1794064630420,
+      "last": "1236"
+    }
+  },
+  "graph": {
+    "panel": {
+      "x": 0,
+      "y": 0,
+      "collapsed": true
+    }
+  },
+  "skills": [
+    {
+      "cid": "7f23475e-220d-41fd-8af3-feb83a6e589c",
+      "mid": "932",
+      "key": "counterexample",
+      "on": false,
+      "at": 1794042900462
+    },
+    {
+      "cid": "7f23475e-220d-41fd-8af3-feb83a6e589c",
+      "mid": "932",
+      "key": "feynman",
+      "on": false,
+      "at": 1794042900733
+    },
+    {
+      "cid": "7f23475e-220d-41fd-8af3-feb83a6e589c",
+      "mid": "932",
+      "key": "socratic",
+      "on": false,
+      "at": 1794042901013
+    },
+    {
+      "cid": "7f23475e-220d-41fd-8af3-feb83a6e589c",
+      "mid": "932",
+      "key": "sq3r",
+      "on": false,
+      "at": 1794042901270
+    },
+    {
+      "cid": "7f23475e-220d-41fd-8af3-feb83a6e589c",
+      "mid": "932",
+      "key": "analogy",
+      "on": false,
+      "at": 1794042902029
+    },
+    {
+      "cid": "7f23475e-220d-41fd-8af3-feb83a6e589c",
+      "mid": "932",
+      "key": "erudite",
+      "on": true,
+      "at": 1794042903413
+    },
+    {
+      "cid": "d11b5432-1b36-4266-b434-c55dcd0cb437",
+      "mid": "1230",
+      "key": "analogy",
+      "on": false,
+      "at": 1794062412773
+    }
+  ],
+  "obsidian": {
+    "vaultPath": ""
+  },
+  "search": {}
+}

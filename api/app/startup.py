@@ -117,17 +117,23 @@ def checks() -> list[Step]:
         )
     )
 
-    # 密钥：内测通道 or 自带
+    # 密钥：只看设置里那份（2026-11-07 起没有内测通道）
     try:
-        from . import ai_gateway  # noqa: PLC0415
+        from . import settings_store  # noqa: PLC0415
+        from .db import get_session_factory  # noqa: PLC0415
 
-        beta = bool(str((ai_gateway.beta_config() or {}).get("apiKey") or "").strip())
+        session = get_session_factory()()
+        try:
+            conf = (settings_store.load(session) or {}).get("ai") or {}
+        finally:
+            session.close()
+        has_key = bool(str(conf.get("apiKey") or "").strip()) and bool(conf.get("enabled"))
     except Exception:  # noqa: BLE001
-        beta = False
+        has_key = False
     if not settings.ai_enabled:
         steps.append(Step("ai", "模型通道", WARN, "实例级开关关着"))
-    elif settings.beta_active and beta:
-        steps.append(Step("ai", "模型通道", OK, "内测额度（不用自带密钥）"))
+    elif has_key:
+        steps.append(Step("ai", "模型通道", OK, "设置里已填密钥"))
     else:
         steps.append(Step("ai", "模型通道", WARN, "要在设置里填自己的密钥"))
 

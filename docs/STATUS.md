@@ -34,7 +34,7 @@
 | 对话树 | `api/app/tools.py`（`trees` 组，4 个）· `docs/对话树.md` | 只读四件：有哪些会话 · 在**所有对话正文**里搜字 · 读一棵树的形状 · 按 id 取消息原文。形状与「为什么这么回放」写在那份文档里 |
 | 资料流水线 | `pipeline/` · `make add` / `images` / `ops` / `watch` / `gpu-*` | 归一（`normalize.py`，不截断）→ 切片（`ingest.py`）→ 向量化（`ops.py` 调度，车道记芯片）→ 材料里的图也进检索（`images.py`）；运维仪表盘 `make ops`。链路手册是 `quizforge-ingest` |
 | 检索与向量 | `api/app/semantic.py` · `api/app/materials.py` · `docs/检索与向量化.md` | 两个书架（`search_material` 出题层 / `search_library` 检索层）加一路字面检索；向量存 SQLite BLOB，融合用 RRF。性能上刻意只取要用的列（别再让 ORM 构造几十万实例、解码十几万次 JSON） |
-| 构建与取源 | `tools/build_web.py` · `tools/vendor.py` · `vendor/` | 前端产物落 `api/web/`（入口 `make web`，要自包含用 `make web-full`）；第三方前端库**全部入库**在 `vendor/`（katex · mermaid · tikzjax · pyodide · demo-kit · cjk · mono · hljs · cm6），版本与取源钉在 `tools/vendor.py` |
+| 构建与取源 | `tools/build_web.py` · `tools/vendor.py` · `vendor/` | 前端产物落 `api/web/`（入口 `make web`，要自包含用 `make web-full`）；第三方前端库**全部入库**在 `vendor/`（katex · mermaid · tikzjax · pyodide · demo-kit · cjk · mono · hljs），版本与取源钉在 `tools/vendor.py` |
 | 小工具 | `tools/loc.py`（`make loc`）· `tools/beta-serve.sh` | 代码量口径钉死在工具里（`make loc` 一次说清排除哪些目录）；内测版的幂等启动器，**它自己说的话也进日志** |
 | 无账号 | `api/app/deps.py` | **连"用户"这个概念都没有**。登录面（注册 / 登录 / 会话 / CSRF）2026-09-18 删掉；`users` 表与 10 张表的 `user_id` 外键 2026-09-22 一并拆除 —— `deps.py` 现在只剩 `DbSession`。护栏在 `test_route_contract.py`：那批守卫不许挂回来 |
 | 图谱体检 | `pipeline/graph_build.py check` · `make graph-check` | 硬不变量（无环 / 同向不双向 / 同一对既前置又组成 / 考纲挂靠）+ 进度尺（`unrooted`）；破了退出码非零，可直接当闸门 |

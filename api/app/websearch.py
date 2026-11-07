@@ -557,7 +557,7 @@ def resolve(db) -> dict:  # noqa: ANN001
     XML、内容是无关的**（"看起来查过了"，比报错更糟，见模块 docstring 第一节）。
     "什么都没配"现在是**明说"没配"**，而不是假装搜了。
     """
-    from . import ai_gateway, settings_store  # 延迟导入：`ai_gateway` 会回调这边
+    from . import settings_store  # 延迟导入：`ai_gateway` 会回调这边（现已不需要）
 
     mine = settings_store.load(db).get(KEY)
     if isinstance(mine, dict) and mine.get("enabled") is False:
@@ -566,13 +566,9 @@ def resolve(db) -> dict:  # noqa: ANN001
             "再选一家服务商、填一把密钥。"
         )
 
-    for source, raw in (
-        ("user", mine if isinstance(mine, dict) else None),
-        ("beta", ((ai_gateway.beta_config() or {}).get(KEY) or None)),
-    ):
-        if not isinstance(raw, dict):
-            continue
-        found = _normalize(raw, source=source)
+    # 2026-11-07：内测通道删除，只认设置里那一份（含 `config/settings.local.json`）
+    if isinstance(mine, dict):
+        found = _normalize(mine, source="user")
         if found:
             return found
 

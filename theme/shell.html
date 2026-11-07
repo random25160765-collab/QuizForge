@@ -89,37 +89,9 @@
     </button>
   </nav>
 
-  <!-- 资源栏：一棵大树，三个根（对话 / 资料 / 笔记）＋ 笔记图谱。
-       可整体收起（body[data-side] 控制宽度，见 app.css 的外壳一节；开关在活动栏那颗）。 -->
-  <aside class="side" aria-label="资源">
-    <div class="side__head">
-      <!-- 品牌放在资源栏顶上（参考图里的 VS Code 也是这样）：
-           顶栏于是从内容左边缘开始，练习中心那排按钮能与下面对齐 -->
-      <a class="brand side__brand" href="index.html" aria-label="QuizForge 首页" title="返回首页">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 32 32" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4"
-               stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="14.4" cy="14.4" r="8.4"></circle>
-            <path d="M20.6 20.6 L26.4 26.4"></path>
-          </svg>
-        </span>
-      </a>
-      <span class="side__title" id="side-title">资源</span>
-      <!-- 收起这颗资源栏（活动栏那颗改成"进入资源页"了，所以这儿不再重复） -->
-      <button class="side__fold" id="side-fold" type="button" title="收起资源栏（Alt+B）" aria-label="收起资源栏">
-        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9"
-             stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14.5 6 8.5 12l6 6"></path>
-        </svg>
-      </button>
-      <!-- 这里原先还有一个「收起资源栏」的箭头 —— 活动栏里那颗 `side` 按钮做的就是
-           同一件事，两处并存容易让人以为它们收的不是同一样东西。用户说"只留左边"，删掉。 -->
-    </div>
-    <div class="side__body" id="side-body">
-      <!-- 资源树由 sidetree.js 填（对话 / 资料 / 笔记 三个根 + 笔记图谱）。
-           还没接上之前先不说空话 —— 树是懒加载的，空面板只在一瞬间。 -->
-    </div>
-  </aside>
+  <!-- 资源栏（那棵"对话 / 资料 / 笔记"大树）2026-11-07 整体删除：
+       主页的资源栏与窗格组合逻辑都不要了（见 docs），笔记改为将来直接桥接本机 Obsidian。 -->
+
 
   <div class="stage">
     <!-- 顶栏瘦身：只剩品牌 + 页面自己的子导航（刷题页那四个视图）+ 同步提示。

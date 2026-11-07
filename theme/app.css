@@ -2017,13 +2017,12 @@ body[data-page='wrongbook'] .qz__pane--detail .part {
 
 body {
   display: grid;
-  grid-template-columns: var(--rail-w, 46px) var(--side-w, 264px) minmax(0, 1fr);
+  /* 2026-11-07：资源栏整块删除 —— 外壳只剩「活动栏 + 舞台」两列 */
+  grid-template-columns: var(--rail-w, 46px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   height: 100dvh;
   overflow: hidden;
 }
-
-body[data-side='closed'] { --side-w: 0px; }
 
 .shell { display: contents; }
 
@@ -2057,7 +2056,7 @@ body[data-side='closed'] { --side-w: 0px; }
 
 /* 状态栏原本是通栏 fixed，现在得从活动栏与资源栏的右边开始 */
 .statusbar {
-  left: calc(var(--rail-w, 46px) + var(--side-w, 264px));
+  left: var(--rail-w, 46px);
   transition: left var(--dur, 160ms) var(--ease, ease-out);
 }
 
@@ -2130,102 +2129,7 @@ body[data-side='closed'] { --side-w: 0px; }
   border-left: 0;
 }
 
-/* ---- 资源栏 ---- */
-
-.side {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  border-right: 1px solid var(--line);
-  background: var(--bg2);
-  overflow: hidden;
-}
-
-.side__head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  height: 34px;
-  padding: 0 6px 0 12px;
-  border-bottom: 1px solid var(--line);
-}
-
-.side__title {
-  flex: 1;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--fg3);
-}
-
-.side__fold {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--r-sm, 6px);
-  background: transparent;
-  color: var(--fg3);
-  cursor: pointer;
-}
-
-.side__fold:hover { background: var(--bg3); color: var(--fg); }
-
-.side__body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 6px 0 14px;
-}
-
-body[data-side='closed'] .side { border-right: 0; }
-body[data-side='closed'] .side > * { display: none; }
-
-/* 窄屏：资源栏改成浮层，不再挤压舞台 */
-@media (max-width: 1180px) {
-  body { grid-template-columns: var(--rail-w, 46px) minmax(0, 1fr); }
-
-  .side {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    left: var(--rail-w, 46px);
-    width: 264px;
-    z-index: 70;
-    background: var(--bg);
-    box-shadow: var(--shadow-2, 0 8px 24px rgba(15, 26, 36, 0.16));
-    transition: transform var(--dur, 160ms) var(--ease, ease-out);
-  }
-
-  body[data-side='closed'] .side {
-    display: flex;
-    /* 收起时要**完全**让开图标条：原先只挪自身宽度的 108%，右缘仍压着图标条
-       左边 25px —— 而抽屉的 z-index(70) 比图标条高，于是窄屏下"收起之后就点不开"，
-       那颗"资源"按钮被抽屉自己盖住了（实测点击被拦，30 秒超时）。
-       pointer-events 一起关掉，收起状态不该接任何点击。 */
-    transform: translateX(calc(-100% - var(--rail-w, 46px)));
-    pointer-events: none;
-  }
-
-  body[data-side='closed'] .side > * { display: flex; }
-
-  .statusbar { left: var(--rail-w, 46px); }
-}
-
-.side__hint {
-  margin: 4px 12px;
-  font-size: 12px;
-  line-height: 1.7;
-  color: var(--fg3);
-}
-
-/* 品牌挪进资源栏之后的小尺寸修正（顶栏那条线留给练习中心的按钮与将来的标签） */
-.side__brand { flex: none; display: inline-flex; align-items: center; }
-.side__brand .brand-mark { width: 22px; height: 22px; }
+/* ---- 资源栏：2026-11-07 整块删除（含窄屏抽屉）。外壳只剩活动栏 + 舞台。 ---- */
 
 /* 错题本详情顶部那行小动作（目前只有「在工作台里打开」） */
 .wb__tools {
@@ -2384,18 +2288,9 @@ body[data-side='closed'] .side > * { display: none; }
  *   * 顶栏只在"真的有子导航"的页面出现（练习中心那一族）；别的页面留着它是一条空 bar
  * ========================================================================= */
 
-body:not([data-page='workbench']) {
-  --side-w: 0px;
-}
-
-body:not([data-page='workbench']) .side { display: none; }
-
-/* 三块显式指定列号：`.side` 一 `display:none` 就退出栅格流，
-   `.stage` 会被自动塞进那个 0px 的第二列 —— 整页宽度变 0（实测 view 宽 0）。
-   显式列号之后，谁来谁走都不影响别人。 */
+/* 两块显式指定列号：谁来谁走都不影响别人。 */
 .rail { grid-column: 1; }
-.side { grid-column: 2; }
-.stage { grid-column: 3; }
+.stage { grid-column: 2; }
 
 /* 顶栏：页面没给子导航时由 shell.js 打上 data-topbar='off'，整条收掉。
    高度一并归零 —— 几处 `calc(100vh - var(--topbar-h))` 靠它自动适配。 */

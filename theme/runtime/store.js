@@ -147,7 +147,44 @@
     // 下次进页面照样会被服务端那份旧设置覆盖回去，表现为「改了白改」。
     bumpSettingsRev();
     markSettingsDirty();
+    pushSettingsFile(patch);
     return settingsCache;
+  }
+
+  /* 设置文件是权威（`config/settings.local.json`，见 `api/app/settings_file.py`）：
+   * 界面上改完也写回文件，CLI 改文件时设置页打开就能看到 —— 两边永远是同一份。
+   *
+   * **只提交变动的键**（patch），不提交整份：设置有好几个页面在用，各自手里的
+   * `settings()` 可能已经过期；整份 PUT 会把别的页刚写的键冲掉（实测把
+   * `obsidian.vaultPath` 冲成了空串）。服务端默认也是按 patch 合并的。
+   * 防抖 400ms：拖滑块会连着改好几次，不必每次都落盘。 */
+  var settingsFileTimer = 0;
+  var pendingFilePatch = null;
+
+  function pushSettingsFile(patch) {
+    if (!QF.api || !QF.api.put) return;
+    pendingFilePatch = deepMerge(pendingFilePatch || {}, patch || {});
+    if (settingsFileTimer) window.clearTimeout(settingsFileTimer);
+    settingsFileTimer = window.setTimeout(function () {
+      settingsFileTimer = 0;
+      var body = pendingFilePatch;
+      pendingFilePatch = null;
+      QF.api.put('/settings', { patch: body }).catch(function () {
+        /* 写文件失败只影响"下次打开时看到的值"；这一次界面已经生效了 */
+      });
+    }, 400);
+  }
+
+  /** 用**服务端那份设置文件**整份替换本机（设置页打开时调）。
+   *
+   * 与 `hydrateSettings` 的区别：那个遵守 rev/pending 的合并规则（同步用），
+   * 这个不管 rev —— 设置页是编辑界面，打开就该显示文件里现在是什么。 */
+  function adoptSettings(data) {
+    if (!data || typeof data !== 'object') return false;
+    settingsCache = deepMerge(DEFAULT_SETTINGS, data);
+    writeJSON(K.settings, settingsCache);
+    clearSettingsDirty();
+    return true;
   }
 
   /** 高亮用的颜色 —— **记住上次选的那个**，之后的高亮全部跟随（用户："选定一个颜色之后，
@@ -1317,6 +1354,7 @@
     pendingResets: pendingResets,
     dropResets: dropResets,
     saveSettings: saveSettings,
+    adoptSettings: adoptSettings,
     settingsDirtyLocal: settingsDirtyLocal,
     clearSettingsDirty: clearSettingsDirty,
     noteSettingsPush: noteSettingsPush,

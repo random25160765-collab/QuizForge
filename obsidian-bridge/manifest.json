@@ -1,0 +1,9 @@
+{
+  "id": "quizforge-bridge",
+  "name": "QuizForge Bridge",
+  "version": "0.1.0",
+  "minAppVersion": "1.2.0",
+  "description": "让 QuizForge 的对话读写这个 vault 里的笔记。文件信箱，不走网络。",
+  "author": "quizforge",
+  "isDesktopOnly": true
+}

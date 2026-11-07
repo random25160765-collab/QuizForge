@@ -20,12 +20,23 @@ SETTINGS_ID = 1
 
 
 def row(db: Any, *, create: bool = False) -> Any:
-    """那唯一一行。`create=True` 时不存在就建出来。"""
+    """那唯一一行。`create=True` 时不存在就建出来。
+
+    **文件优先**（2026-11-07）：`config/settings.local.json` 存在时，这一行的
+    `data` 在内存里被文件内容覆盖 —— 于是"CLI/脚本改了文件、界面立刻看得见"，
+    而不会被前端同步推回来的旧值按下去。文件不存在时才是数据库那份（首次启动）。
+    """
+    from . import settings_file  # noqa: PLC0415 - 避免循环导入
+
     found = db.get(AppSettings, SETTINGS_ID)
     if found is None and create:
         found = AppSettings(id=SETTINGS_ID, data={})
         db.add(found)
         db.commit()
+    if found is not None:
+        on_disk = settings_file.load()
+        if on_disk:
+            found.data = on_disk
     return found
 
 
@@ -75,6 +86,13 @@ def put(db: Any, **changes: Any) -> dict:
             data[key] = value
     found.data = data
     db.commit()
+    # 文件是权威：改完一起写回去（写失败不该让这次请求失败 —— 数据库那份已经落了）
+    try:
+        from . import settings_file  # noqa: PLC0415
+
+        settings_file.save(data)
+    except OSError:
+        pass
     return data
 
 
