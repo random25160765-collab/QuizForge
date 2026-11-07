@@ -116,18 +116,10 @@ def health(db: Session = Depends(get_db)) -> dict:
         # 这个接口不需要登录，更不该暴露别人的配置。
         "ai": {
             "enabled": settings.ai_enabled,
-            # 「凭据模式」没变：仍然是谁的密钥谁负责。内测通道只是让没有密钥的人
-            # 也能用上本机那个模型，不改变凭据归属，所以这个字段维持 per-user。
+            # 「凭据模式」：谁填的密钥谁负责。2026-11-07 起没有内测通道了，
+            # 设置里（或 `config/settings.local.json`）那份就是唯一的配置。
             "mode": "per-user",
             "dailyQuota": settings.ai_daily_quota,
-            # 内测通道开没开、配置里有没有密钥（**不给地址、不给密钥**：
-            # 这个接口不需要登录，它只该回答"这个实例能不能免密钥用"）。
-            # 注意判据是 `beta_active`：正式通道下它恒为 False —— 正式包不可能
-            # 用到站长的额度，这是通道层保证的，不看配置写没写对。
-            "betaEnabled": settings.beta_active,
-            "betaConfigured": bool(
-                str((gateway.beta_config() or {}).get("apiKey") or "").strip()
-            ),
         },
     }
 

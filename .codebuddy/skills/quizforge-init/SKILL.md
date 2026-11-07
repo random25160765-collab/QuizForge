@@ -36,7 +36,7 @@ description: 接手 quizforge 时的开局入口——项目定位、目录地�
 | `api/app/` | FastAPI 后端：对话内核与工具（`tools.py`）· 资料与检索（`materials.py` / `semantic.py`）· 分享装配（`share.py`）· 设置存储（`settings_store.py`）|
 | `pipeline/` | **出题与资料流水线包**：归一 `normalize.py` · 切片 `ingest.py` · 向量 `embed.py` · 调度与账本 `ops.py` · 材料里的图 `images.py` · 状态机 `drive.py` / `dispatch.py` / `promote.py` / `rework.py` · 覆盖 `coverage.py` · 四层契约 `prompts/layers/` |
 | `build/` | 打包与分发：`package.py`（PyInstaller）· `dist_win.py` · `launcher.py` · 冒烟 `smoke_*.py` · 清单 `pyodide-manifest.json` / `embed-manifest.json` |
-| `vendor/` | 第三方前端库**全部入库**（katex · mermaid · tikzjax · pyodide · demo-kit · cjk · mono · hljs · cm6）；版本与取源钉在 `tools/vendor.py`（`make vendor`）|
+| `vendor/` | 第三方前端库**全部入库**（katex · mermaid · tikzjax · pyodide · demo-kit · cjk · mono · hljs）；版本与取源钉在 `tools/vendor.py`（`make vendor`）|
 | `scripts/` | 机器相关的脚本：`gpu-setup.sh`（GPU 依赖与本机 `config/embed.local.json`）|
 | `config/` | 本机配置：`ai.local.json`（密钥，不进版本库）· `embed.local.json`（有卡则 fp16 + CUDA）|
 | `skills/` | **仓库根这个 `skills/`** 是对话里可选的「答题风格」skill 本体（`api/app/skills.py` 读它）；**与 `.codebuddy/skills/` 不是一回事** |

@@ -97,3 +97,4 @@ share-*.html
 
 # `git filter-branch` 的中间目录（整份仓库副本），永远不该进版本库
 .git-rewrite/
+config/settings.local.json

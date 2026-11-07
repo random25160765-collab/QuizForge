@@ -46,85 +46,24 @@
   /* 最左那条窄图标条。原先这些页面入口挤在顶栏里（页面一多就挤不下，
      而且每个页面还会各自把顶栏改成自己的样子），现在归到这儿 ——
      顶栏于是能瘦下来，把位置让给"打开的标签"。 */
-  // 顺序照用户给的：主页 · 对话 · 笔记 · 练习 · 资料（从上到下）。
-  // 记一遍这条为什么重要：活动栏是**肌肉记忆**的那一列，顺序换一次要重新学一次，
-  // 所以顺序由用户定，不按"实现上谁先做出来"排。
+  // 顺序照用户给的：主页 · 对话 · 练习 · 资料（从上到下）。
+  // 2026-11-07：笔记页与资源树一起删了（笔记改为将来直接桥接本机 Obsidian），
+  // 主页暂时是一个空白页 —— 这颗入口留着，内容后面再填。
   var RAIL = [
-    // 第一项是**进入主页**的入口，不是"收起资源栏" ——
-    // 用户的原话："点击资源那个按钮，直接就跳转到资源的组合页面"。
-    // 资源栏自己的收起在它头上那颗（而资源栏只在主页出现）。
-    // 名字从「资源」改成「主页」也是用户提的（"或许现在应该叫主页"）：
-    // 这一页是**落地页 + 窗格组合**，不只是"资源的列表"。
-    // hint 里不再重复一遍 label：`railButton` 拼的是 `label + ' · ' + hint`，
-    // 这里再写一次「主页」，提示就成"主页 · 主页 · 全局浏览…"（重命名时留下的）。
-    // 在主页上这颗还是**资源栏的开合**，那件事由 `setSide` 现写（见下），
-    // 不写在这儿 —— 别处它确实只是"去主页"。
-    { href: 'workbench.html', label: '主页', icon: 'grip', page: 'workbench',
-      hint: '全局浏览 + 窗格组合' },
+    { href: 'workbench.html', label: '主页', icon: 'grip', page: 'workbench' },
     { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
-    { href: 'notes.html', label: '笔记', icon: 'list', page: 'notes' },
     { href: 'quiz.html', label: '练习中心', icon: 'play', pages: ['quiz', 'graph'],
       hint: '练习 · 组卷 · 复习 · 图谱' },
     { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
     // 错题本**不在这儿**：它是"练什么"的一部分，入口归练习中心（见 NAV 最后一项）
   ];
 
-  var SIDE_KEY = 'qf.side.open';
-
-  function sideOpen() {
-    return document.body.dataset.side !== 'closed';
-  }
-
-  /** 窄屏下资源栏是**浮层抽屉**（app.css 的 1180px 断点：position fixed + z-index 70）。
-   *  这时候它是盖在内容上的，不是并排 —— 所以窄屏不能沿用"上次开着"的习惯。 */
-  function drawerMode() {
-    return window.innerWidth <= 1180;
-  }
-
-  /** 把活动栏上那颗「主页」画成资源栏**现在的**样子。
-   *
-   *  在主页上这颗按钮就是资源栏的开关，所以提示得照实说：收起之后页面上再没有
-   *  第二个"展开"的入口（资源栏自己头上那颗箭头跟着栏一起藏起来了，见 app.css
-   *  的 `body[data-side='closed'] .side > *`），提示还写着"主页 · 全局浏览…"，
-   *  用户就只能靠猜 —— 这是"收了就展不开"的一半原因。
-   *  另外这一趟要**重画**：`renderRail()` 每次 mount 都新建节点，新节点上带着的是
-   *  RAIL 里那句静态 hint，状态得重新贴上去。 */
-  function paintSideButton() {
-    if (!document.body.dataset.side) return;   // 还没定过：等 bindSide 那一句
-    var btn = document.querySelector('#rail-nav .rail__btn[href$="workbench.html"]');
-    if (!btn) return;
-    var open = sideOpen();
-    btn.classList.toggle('is-on', open);
-    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if ((QF.config && QF.config.page) === 'workbench') {
-      var label = open ? '收起资源栏' : '展开资源栏';
-      btn.title = label + '（Alt+B）';
-      btn.setAttribute('aria-label', label);
-    }
-  }
-
-  function setSide(open, persist) {
-    document.body.dataset.side = open ? 'open' : 'closed';
-    // 首屏那次**不写本机**：窄屏默认收起只是"这一屏该怎么摆"，
-    // 不该把大屏上的习惯一起改掉（不然回到宽窗口，资源栏就再也默认不开了）
-    if (persist !== false) {
-      try { localStorage.setItem(SIDE_KEY, open ? '1' : '0'); } catch (e) { /* 无痕模式忽略 */ }
-    }
-    paintSideButton();
-  }
-
   function railButton(item, page) {
-    var node;
-    if (item.key === 'side') {
-      node = h('button.rail__btn', { type: 'button', 'data-key': 'side',
-        title: item.label + ' · ' + item.hint, 'aria-label': item.label });
-    } else {
-      // 当前页**高亮**而不是隐藏：图标条上少一个图标，比"点了没反应"更让人困惑
-      // 一个条目可以对应多个页面（练习中心就兼着图谱页）
-      var on = item.pages ? item.pages.indexOf(page) >= 0 : page === item.page;
-      node = h('a.rail__btn' + (on ? '.is-active' : ''),
-        { href: item.href, title: item.label + (item.hint ? ' · ' + item.hint : ''), 'aria-label': item.label });
-    }
+    // 当前页**高亮**而不是隐藏：图标条上少一个图标，比"点了没反应"更让人困惑
+    // 一个条目可以对应多个页面（练习中心就兼着图谱页）
+    var on = item.pages ? item.pages.indexOf(page) >= 0 : page === item.page;
+    var node = h('a.rail__btn' + (on ? '.is-active' : ''),
+      { href: item.href, title: item.label + (item.hint ? ' · ' + item.hint : ''), 'aria-label': item.label });
     node.innerHTML = ui.icon(item.icon, 17);
     return node;
   }
@@ -135,82 +74,6 @@
     var page = document.body.dataset.page || '';
     ui.clear(box);
     RAIL.forEach(function (item) { box.appendChild(railButton(item, page)); });
-  }
-
-  /** 活动栏里那颗「主页」：**在主页上它得能开合资源栏**。
-   *
-   *  踩过：窄屏（抽屉模式）默认收起资源栏，而这颗按钮只是个"跳到本页"的链接 ——
-   *  已经在本页时点了等于没反应，用户看到的就是"根本没法正常打开资源管理器"。
-   *  别的页上它仍然是"去主页"的链接（那里根本没有资源栏可开）。
-   *
-   *  ⚠️ 用**委托**挂在 `#rail-nav` 上，不是找到那颗按钮单独挂。
-   *  `renderRail()` 每次 `mount()` 都会 `ui.clear()` 之后重画一整排，
-   *  逐颗挂的处理器跟着旧节点一起没了；而 `bindSide()` 只在**第一次** mount
-   *  跑过（`if (!bound)` 那一关），于是从那以后这颗按钮就退化成普通链接：
-   *  点一下只是**重新加载本页**。收起状态是本机存的（`qf.side.open = '0'`），
-   *  重新加载回来还是收着的 —— 用户看到的就是"资源栏收了就展不开"
-   *  （不是没反应，是反应成了刷新，而刷新完照旧是收起的）。
-   *  挂在容器上就没有"跟着节点一起没"这回事，重画多少次都还在。 */
-  function bindRail() {
-    var box = document.getElementById('rail-nav');
-    if (!box || box.dataset.sideBound) return;
-    box.dataset.sideBound = '1';
-    box.addEventListener('click', function (ev) {
-      var btn = ev.target.closest ? ev.target.closest('.rail__btn[href$="workbench.html"]') : null;
-      if (!btn || !box.contains(btn)) return;
-      if ((QF.config && QF.config.page) !== 'workbench') return;
-      ev.preventDefault();
-      setSide(!sideOpen());
-    });
-  }
-
-  /** 资源栏的状态：读回上次的选择，并把两个入口（图标条那颗、资源栏右上角那个箭头）接上 */
-  function bindSide() {
-    var saved = null;
-    try { saved = localStorage.getItem(SIDE_KEY); } catch (e) { /* 同上 */ }
-    // 窄屏一律先收起：抽屉默认开着就等于一进来拿 264px 盖住右边的内容
-    // （实测 1000px 宽时正好压在画布那两行字上，看着像"内容被裁了"）
-    setSide(!drawerMode() && saved !== '0', false);
-
-    // 资源栏自己头上那颗收起
-    var fold = document.getElementById('side-fold');
-    if (fold && !fold.dataset.bound) {
-      fold.dataset.bound = '1';
-      fold.addEventListener('click', function () { setSide(false); });
-    }
-    // 拖窗口跨过断点（并排 <-> 抽屉）时重新摆一次：抽屉模式一进入就收起，
-    // 免得"并排时开着、缩窄后变成一块盖住内容的浮层"
-    var wasDrawer = drawerMode();
-    window.addEventListener('resize', function () {
-      var now = drawerMode();
-      if (now === wasDrawer) return;
-      wasDrawer = now;
-      setSide(false, false);
-    });
-    document.addEventListener('keydown', function (ev) {
-      if (!ev.altKey || ev.ctrlKey || ev.metaKey) return;
-      if (ev.key === 'b' || ev.key === 'B') { ev.preventDefault(); setSide(!sideOpen()); }
-    });
-    // 抽屉模式下点面板外面就收起 —— 浮层不该一直压着内容（抽屉的常规行为）。
-    // 点面板**里面**不动它：点资源、拖东西都在里面发生。
-    // 两个细节都是用实测换来的：
-    //  * **捕获阶段**（第三个参数 true）：画布那边自己的处理器会 stopPropagation，
-    //    冒泡阶段收不到；
-    //  * 听 `mousedown` 而不是 `click`：在画布上按下时**根本不生成 click 事件**
-    //    （实测 mousedown / mouseup 都有、click 没有 —— 画布那侧在按下时会改动 DOM，
-    //    down 与 up 的目标不是同一个元素，浏览器就不发 click 了）。按下即收起也更利落。
-    document.addEventListener('mousedown', function (ev) {
-      if (!drawerMode() || !sideOpen()) return;
-      var side = document.querySelector('.side');
-      if (side && side.contains(ev.target)) return;
-      var railBtn = ev.target.closest ? ev.target.closest('#rail-nav .rail__btn') : null;
-      if (railBtn) return;          // 由上面那颗按钮自己开合，别两边都动
-      // `persist: false`：这是**关掉一个浮层**，不是"我以后不要资源栏了"。
-      // 写本机的话，窄窗口下随手点一下内容，回到宽窗口资源栏就默认收起了 ——
-      // 与上面那条 resize 是同一条道理（"窄屏那个状态不该改掉大屏的习惯"）。
-      // 真要收，资源栏头上那颗箭头会写（那颗才是人的决定）。
-      setSide(false, false);
-    }, true);
   }
 
   function hrefFor(view) {
@@ -275,19 +138,30 @@
 
   function bindSettings() {
     var btn = document.getElementById('btn-settings');
-    if (btn) btn.addEventListener('click', openSettings);
+    if (!btn) return;
+    btn.addEventListener('click', openSettings);
+    // 设置是一个页面了：在这一页上把齿轮点亮（活动栏其余项由 renderRail 负责高亮）
+    if ((document.body.dataset.page || '') === 'settings') btn.classList.add('is-active');
   }
 
-  /* ======================================================== 设置面板
+  /* ======================================================== 设置
    *
-   * 它现在是全站共享的：任何页面点「设置」都是**在原地弹出来**，
-   * 不跳页、不重载、不动当前页面正在做的事（图谱的布局、练习的作答都在）。
-   * 面板里的改动都即时写进 store，关掉即生效。
+   * 2026-11-07 起它是**独立页面**（settings.html，版式见 runtime/settings.js），
+   * 不再原地弹浮窗：设置项多、每一项都带说明，一张弹窗塞不下、滚起来也难受。
+   * `openSettings()` 只负责导航；表单本身仍由这里造（`buildSettings()`），
+   * 页面与别处调用的都是同一份，不会两处漂移。
    *
    * 图谱页不用它：那一页的设置是画布上的浮动面板（见 graph.js），
-   * 只管力导向参数，与这里的三段（AI / 外观 / 数据）不是一回事。
+   * 只管力导向参数，与这里这四段（AI / 联网搜索 / 外观 / 数据）不是一回事。
    */
   function openSettings() {
+    if ((document.body.dataset.page || '') === 'settings') return;   // 已经在这页
+    window.location.href = 'settings.html';
+  }
+
+  /** 把设置表单造成一个 `.form` 节点（四段：AI / 联网搜索 / 外观 / 数据）。
+   *  改动即写 store，没有"保存"按钮。 */
+  function buildSettings() {
     var conf = store.settings();
     var aiConf = conf.ai;
     var resultBox = h('div');
@@ -367,28 +241,20 @@
           '你自己的密钥，存在本机库里（不随仓库走）。用量按天记在本机，方便看花了多少。',
           apiKeyInput)));
 
-    // **现在到底走哪条通道**：这句话原先挂在对话页输入框下面，用户让搬到设置里
-    //（"内测通道的提示放到设置那边去"）。放这儿更对路 —— 它就是"要不要填密钥"的答案，
-    // 而填密钥的地方就在下面。
+    // **现在能不能用**：2026-11-07 起没有内测通道了，只有"填了密钥"与"没填"两态。
     var channelRow = h('p', {
-      text: '正在读取当前通道…',
+      text: '正在读取…',
       style: { margin: '-4px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg2)' },
     });
     api
       .get('/ai/usage')
       .then(function (st) {
         var mode = (st && st.mode) || '';
-        // 两个模型是**两回事**：`betaModel` 是内测通道实际在用的那个，
-        // `model` 是你自己填的那个（没填时是默认值）。混用会报出一个根本没在跑的模型名
-        //（实测：内测通道写着 deepseek-chat，这行却报 gpt-4o-mini）。
         var mine = (st && st.model) || '';
-        var beta = (st && st.betaModel) || '';
         channelRow.textContent =
-          mode === 'beta'
-            ? '当前：本站内测通道' + (beta ? ' · ' + beta : '')
-            : mode === 'user'
-              ? '当前：你自己的密钥' + (mine ? ' · ' + mine : '')
-              : '当前：没有可用的通道 —— 对话与批改都用不了，填上密钥即可。';
+          mode === 'user'
+            ? '当前：已配置' + (mine ? ' · ' + mine : '')
+            : '当前：还没配 —— 对话与批改都用不了，填上密钥即可。';
       })
       .catch(function () {
         channelRow.textContent = '';
@@ -397,7 +263,7 @@
     var aiForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: 'AI（批改与对话）' }),
       h('p', {
-        text: '优先级：你自己填的密钥 > 本站的内测通道。不填密钥就用内测通道（站长的那份额度）。',
+        text: '密钥填在下面；也可以直接改 config/settings.local.json 的 ai 块（可拷贝，见「数据」段）。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       channelRow,
@@ -506,12 +372,11 @@
         if (providerEndpoints[want]) {
           searchEndpointInput.setAttribute('placeholder', '留空 = ' + providerEndpoints[want]);
         }
-        // **实际在走哪条路**由服务端说（可能是内测通道那份密钥，也可能是免密钥那条）——
-        // 光看这个框空着就说"没配置"，会让人对着一个其实能用的功能找问题。
+        // **实际在走哪条路**由服务端说 —— 光看这个框空着就说"没配置"，
+        // 会让人对着一个其实能用的功能找问题。
         searchStatus.textContent = st.ready
           ? '当前：可以联网 · ' + (st.label || '')
-            + (st.source === 'keyless' ? ' · 不用配任何东西'
-              : st.source === 'beta' ? ' · 本站内测通道' : ' · 你自己的密钥')
+            + (st.source === 'keyless' ? ' · 不用配任何东西' : ' · 你自己的密钥')
           : '当前：用不了 —— ' + (st.message || '');
       })
       .catch(function () {
@@ -576,14 +441,134 @@
       field('字号缩放', null, fontScale),
       field('内容最大宽度（像素）', null, maxWidth));
 
+    /* ------------------------------------------------------ Obsidian（笔记）
+     *
+     * 笔记已经不在 quizforge 里存了：读写都走本机 Obsidian 的桥接。
+     * 传输是**vault 里的一个信箱目录**（不走网络 —— WSL 的网络不可靠，见
+     * docs/Obsidian桥接协议.md）。没连上时，对话里那五个笔记工具直接不可用。
+     */
+    var obsConf = conf.obsidian || {};
+    var vaultInput = h('input.input.input--mono', {
+      type: 'text',
+      spellcheck: 'false',
+      placeholder: '例如 F:\\Notes 或 /mnt/f/Notes',
+      value: obsConf.vaultPath || '',
+      onInput: function (event) {
+        store.saveSettings({ obsidian: { vaultPath: event.target.value.trim() } });
+        // 路径一改，上一次的检测结果就不作数了
+        if (obsStatus) obsStatus.textContent = '还没检测。';
+      },
+    });
+    var obsStatus = h('p', {
+      text: '还没检测。',
+      style: { margin: '-4px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg2)' },
+    });
+    var obsForm = h('div.form__section', null,
+      h('div.form__sectiontitle', { text: 'Obsidian（笔记）' }),
+      h('p', {
+        text: '笔记不在 quizforge 里存。这里填 Obsidian vault 的路径，再到 Obsidian 里启用'
+          + '「QuizForge 桥接」插件；两边通过 vault 里的一个信箱目录通信，不走网络。'
+          + '没连上时，对话里的笔记读写工具就用不了。',
+        style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      field('vault 路径', 'Windows 路径（F:\\Notes）与 WSL 路径（/mnt/f/Notes）都认', vaultInput),
+      h('div.btnrow', { style: { marginTop: '12px' } },
+        h('button.btn', {
+          type: 'button',
+          onClick: function () {
+            obsStatus.textContent = '正在检测…';
+            // 带上输入框里的值：刚打完还没同步到后端，也能立刻检测
+            api.get('/obsidian/status?path=' + encodeURIComponent(vaultInput.value || '')).then(function (st) {
+              obsStatus.textContent = st && st.ok
+                ? '已连上：' + (st.vault || 'vault')
+                  + (st.pluginVersion ? ' · 插件 ' + st.pluginVersion : '')
+                : '没连上：' + ((st && st.error) || '未知原因');
+            }).catch(function (err) {
+              obsStatus.textContent = '没连上：' + ((err && err.message) || err);
+            });
+          },
+        }, h('span', { html: ui.icon('refresh', 15) }), h('span', { text: '检测连接' }))),
+      obsStatus);
+
     var stats = store.stats();
+    /* 题库生成时间：设置页**不装载题库**（那是几 MB，为一个时间戳不值），
+     * 所以 `QF.data.meta` 是空的。已装载题库的页面直接用现成的值；
+     * 没装载就取轻量的 `/bank/version` 补上（同一个来源，只是不带题目）。 */
+    var bankAtRow = h('div.statline', null,
+      h('span', { text: '题库生成时间' }),
+      h('b', { text: (D && D.generatedAt) || '读取中…' }));
+    if (!(D && D.generatedAt)) {
+      api.get('/bank/version')
+        .then(function (v) {
+          bankAtRow.querySelector('b').textContent = (v && v.importedAt) || '未知';
+        })
+        .catch(function () {
+          bankAtRow.querySelector('b').textContent = '未知';
+        });
+    }
+
+    /* ------------------------------------------------------ 设置文件
+     * 整份设置住在 `config/settings.local.json`（可拷贝，类比 VS Code 的 settings.json）。
+     * CLI/脚本改它 → 这里打开就看得到；这里改完 → 也写回去（见 store.saveSettings）。 */
+    var settingsFileRow = h('div.statline', null,
+      h('span', { text: '设置文件' }),
+      h('b', { text: '读取中…' }));
+    api.get('/settings').then(function (out) {
+      settingsFileRow.querySelector('b').textContent = (out && out.file) || '（还没建）';
+    }).catch(function () {
+      settingsFileRow.querySelector('b').textContent = '读不到';
+    });
+
+    function copySettings() {
+      var text = JSON.stringify(store.settings(), null, 2);
+      if (!navigator.clipboard || !navigator.clipboard.writeText) {
+        ui.toast('这个浏览器没有剪贴板接口', 'error');
+        return;
+      }
+      navigator.clipboard.writeText(text).then(function () {
+        ui.toast('整份设置已复制（可直接给新用户）', 'ok');
+      }, function () {
+        ui.toast('复制失败：浏览器不给剪贴板权限', 'error');
+      });
+    }
+
+    function importSettings() {
+      if (!navigator.clipboard || !navigator.clipboard.readText) {
+        ui.toast('这个浏览器读不了剪贴板：直接改设置文件更快', 'error');
+        return;
+      }
+      navigator.clipboard.readText().then(function (text) {
+        var data = JSON.parse(text);
+        if (!data || typeof data !== 'object') throw new Error('不是 JSON 对象');
+        store.adoptSettings(data);
+        // 导入是**整份替换**（与平时的 patch 合并区分开）
+        return api.put('/settings', { settings: store.settings(), replace: true });
+      }).then(function () {
+        ui.toast('已用剪贴板里的设置覆盖', 'ok');
+        window.setTimeout(function () { window.location.reload(); }, 400);
+      }).catch(function (err) {
+        ui.toast('导入失败：' + ((err && err.message) || err), 'error');
+      });
+    }
+
     var dataForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '数据' }),
       h('div.statline', null, h('span', { text: '本地数据体积' }), h('b', { text: ui.fmtBytes(stats.storageBytes) })),
       h('div.statline', null, h('span', { text: '存储状态' }), h('b', { text: store.available ? 'localStorage 可用' : '不可用（内存模式，刷新会丢失）' })),
-      h('div.statline', null, h('span', { text: '题库生成时间' }), h('b', { text: (D && D.generatedAt) || '未知' })),
+      bankAtRow,
       // 构建戳：`make web` 之后数字就该变，拿来一眼核对"我看的是不是最新那份"
       h('div.statline', null, h('span', { text: '前端构建戳' }), h('b', { text: myBuild() || '未知' })),
+      // 整份设置文件：路径 + 复制 / 从剪贴板导入
+      settingsFileRow,
+      h('div.btnrow', { style: { marginTop: '10px' } },
+        h('button.btn', {
+          type: 'button',
+          onClick: copySettings,
+        }, h('span', { html: ui.icon('download', 15) }), h('span', { text: '复制设置 JSON' })),
+        h('button.btn', {
+          type: 'button',
+          onClick: importSettings,
+        }, h('span', { html: ui.icon('upload', 15) }), h('span', { text: '从剪贴板导入设置' }))),
       h('div.btnrow', { style: { marginTop: '12px' } },
         h('button.btn', {
           type: 'button',
@@ -623,12 +608,7 @@
           },
         }, h('span', { html: ui.icon('trash', 15) }), h('span', { text: '清空进度' }))));
 
-    ui.modal({
-      title: '设置',
-      size: 'lg',
-      body: h('div.form', null, aiForm, searchForm, appearanceForm, dataForm),
-      actions: [{ label: '完成', kind: 'primary' }],
-    });
+  return h('div.form', null, aiForm, searchForm, obsForm, appearanceForm, dataForm);
   }
 
   /* 数据被导入或清空之后广播一次：页面各自的反应不一样
@@ -686,15 +666,10 @@
   function mount(opts) {
     opts = opts || {};
     renderRail();
-    // 每次都要做这两件：`renderRail()` 刚把那一排整个重画过 —— 接处理器、
-    // 贴状态都得跟着来一遍（两处各自带"做过就不再做"的守卫，重复调不花钱）
-    paintSideButton();
-    bindRail();
     if (!bound) {
       bound = true;
       bindTheme();
       bindSettings();
-      bindSide();
       watchBuild();
       // 工具挂载开关现在长在活动栏里，所以由外壳拉起（原来只有对话页调它）
       if (QF.mounts && QF.mounts.load) QF.mounts.load();
@@ -844,5 +819,6 @@
     build: myBuild,
     watchBuild: watchBuild,
   };
-  QF.settings = { open: openSettings };
+  // `open` 是导航（各页的入口都还这么调）；`build` 给设置页装配用（见 runtime/settings.js）
+  QF.settings = { open: openSettings, build: buildSettings };
 })();

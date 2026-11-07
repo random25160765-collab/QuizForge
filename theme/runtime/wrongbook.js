@@ -277,17 +277,8 @@
       name: 'detail',
       title: q ? D.topicName(q.topic) + ' · ' + ui.typeLabel(q.type) : '题目',
       note: view.selected || '',
-      actions: q
-        ? [
-            h('button.btn.btn--sm.btn--ghost', {
-              type: 'button',
-              title: '把这道题放进工作台的窗格里（与资料、笔记摆在一起）',
-              onClick: function () {
-                QF.panes.openResource('question', { question: q }, q.id);
-              },
-            }, h('span', { html: ui.icon('target', 14) }), h('span', { text: '在工作台里打开' })),
-          ]
-        : [],
+      // 「在工作台里打开」已删：窗格引擎与工作台组合逻辑 2026-11-07 整体移除。
+      actions: [],
       body: view.selected ? buildDetail(view.selected) : buildEmpty(),
     });
   }

@@ -38,12 +38,11 @@ def _resource_root() -> Path:
 RESOURCE_ROOT = _resource_root()
 
 
-#: 通道：`beta`（内测 —— 用**站长的额度**，给试用的人）或 `release`（正式 —— 用各人自己的密钥）。
+#: 分发通道：`beta`（试用包）或 `release`（正式包）。
 #:
-#: ① **分发的 exe 默认 beta**（用户定的：内测通道就是给人试用的）；
-#: ② 两条通道的**数据目录不同**（`~/quizforge-beta` vs `~/quizforge`）—— 内测怎么折腾
-#:    都碰不到正式那份库、记录、以后的笔记与资料；
-#: ③ 正式通道**连内测配置文件都不看**，所以正式包里用不到站长的额度。
+#: 它现在只管两件事：**数据目录选哪个**（`~/quizforge-beta` vs `~/quizforge`）、
+#: 打包产物叫什么。**不再与 AI 额度有关** —— 内测通道（共享密钥那一套）已于
+#: 2026-11-08 整块删除，两种包都只认 `config/settings.local.json` 里那份密钥。
 CHANNELS = ("beta", "release")
 
 
@@ -65,7 +64,7 @@ def _default_channel() -> str:
             value = ""
         if value in CHANNELS:
             return value
-    # 开发机默认内测：仓库里就放着 `config/ai.local.json`，日常开发一直这么走
+    # 开发机默认 beta：与打包产物一致，数据落在 `~/quizforge-beta`
     return "beta"
 
 
@@ -200,7 +199,7 @@ class Settings(BaseSettings):
     #
     # 与「通道」的关系（2026-09-18 定）：**只有 beta 通道才读它**。
     # 正式包里连这个文件都不看，所以正式包用不到站长的额度（见 `beta_active`）。
-    ai_beta_enabled: bool = True
+    # （2026-11-07：`ai_beta_enabled` / `beta_active` 随内测通道一起删除）
     # 走 `RESOURCE_ROOT` 而不是 `ROOT`：打包后后者是解包目录的上一级（`%TEMP%`），
     # 会把"内测配置在不在"问到一个临时目录里去。打包时这个文件被放进包里
     # （`build/package.py --channel beta`），所以冻结之后它是**跟着包走**的。
@@ -215,18 +214,7 @@ class Settings(BaseSettings):
     tools_dir: Path = _default_tools_dir()
 
     # ------------------------------------------------------------ 派生属性
-    @property
-    def beta_active(self) -> bool:
-        """内测额度还能不能用：**通道是 beta**，且没被显式关掉。
-
-        这是"内测和正式要分开"的落点：正式通道下**连文件都不看**，
-        所以正式包不可能用到站长的额度 —— 而不是"看着像没配、其实能命中"。
-        """
-        return self.channel == "beta" and self.ai_beta_enabled
-
-    @property
-    def is_beta(self) -> bool:
-        return self.channel == "beta"
+    # （2026-11-07：`beta_active` / `is_beta` 已随内测通道删除）
 
     @property
     def cors_origin_list(self) -> list[str]:

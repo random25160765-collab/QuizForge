@@ -109,34 +109,10 @@ def test_data_dir_is_out_of_the_bundle_and_per_channel() -> None:
     assert config.frozen_data_dir("beta") != config.frozen_data_dir("release")
 
 
-def test_release_channel_never_uses_the_beta_quota() -> None:
-    """正式通道**连内测配置文件都不看** —— "内测和正式分开"的落点在这里。
-
-    不靠"配置写对"，靠结构：通道不是 beta 就没有内测额度可用。
-    于是正式包不可能悄悄用站长的钱。
-    """
-    from app.config import Settings
-
-    assert Settings(channel="beta", ai_beta_enabled=True).beta_active is True
-    assert Settings(channel="beta", ai_beta_enabled=False).beta_active is False
-    # 关键的一条：正式通道下，开关开着也不生效
-    assert Settings(channel="release", ai_beta_enabled=True).beta_active is False
-    assert Settings(channel="release").is_beta is False
-    assert Settings(channel="beta").is_beta is True
-
-
-def test_beta_config_is_looked_up_in_the_bundle_not_in_temp() -> None:
-    """内测配置按**只读资源根**找：开发时在仓库里，打包后在解包里。
-
-    用 `ROOT` 会怎样：单文件模式下它是解包目录的上一级（`%TEMP%`），
-    于是"内测配置在不在"被问到一个临时目录里去 —— 内测包因此拿不到额度，
-    而报错的地方离原因很远（`heavy_deps` 里同样的坑刚踩过）。
-    """
-    from app import config
-
-    settings = config.get_settings()
-    assert settings.ai_beta_config_file == config.RESOURCE_ROOT / "config" / "ai.local.json"
-    assert settings.ai_beta_config_file.parent.parent == config.RESOURCE_ROOT
+# 2026-11-07：内测通道（`beta_active` / `is_beta` / `ai_beta_enabled`）整块删除。
+# 原来这里那两条用例测的是"正式包不会用到站长的额度" —— 现在连"站长那份"都没有了，
+# 用例随之作废。`ai_beta_config_file` 这个路径字段还在，但它只是"本地配置目录"的锚点
+# （`local_embed.py` 用它找同目录的 `embed.local.json`）。
 
 
 def test_channel_comes_from_env_then_bundle(monkeypatch) -> None:  # noqa: ANN001

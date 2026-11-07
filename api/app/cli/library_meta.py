@@ -25,38 +25,27 @@ from typing import Any
 from .. import ai_gateway as gateway
 from .. import library as lib
 from .. import library_meta
+from .. import settings_store
 from ..config import get_settings
 from ..db import get_session_factory
-from ..settings_store import row as settings_row
 from ..routers import library as libapi
 
 
 def _config() -> dict[str, Any]:
-    """这次用哪套模型配置：**内测通道 > 某个用户自己的密钥**。
+    """这次用哪套模型配置：**设置文件（或库里那份）里的 ai 块**。
 
-    命令没有"当前请求"，所以拿不到 `resolve_config` 的入参。这里按同样的优先序
-    自己走一遍：内测通道开着就用它（这是开发机上的常态），否则取库里第一行设置。
+    2026-11-07 起没有内测通道了：设置文件就是唯一来源
+    （`config/settings.local.json`，见 `app/settings_file.py`）。
     """
-    beta = gateway.beta_config()
-    if beta and beta.get("apiKey"):
-        return {
-            "apiKey": str(beta["apiKey"]),
-            "baseUrl": str(beta.get("baseUrl") or gateway.DEFAULT_BASE_URL),
-            "model": str(beta.get("model") or gateway.DEFAULT_MODEL),
-            "timeoutMs": int(beta.get("timeoutMs") or get_settings().ai_timeout_ms),
-            "jsonMode": bool(beta.get("jsonMode")),
-            "source": "beta",
-        }
     session = get_session_factory()()
     try:
-        row = settings_row(session)
-        conf = ((row.data if row else {}) or {}).get("ai") or {}
+        conf = (settings_store.load(session) or {}).get("ai") or {}
     finally:
         session.close()
     if not (conf.get("enabled") and str(conf.get("apiKey") or "").strip()):
         raise SystemExit(
-            "  没有可用的模型配置：内测通道没开，库里的用户设置也没填密钥。\n"
-            "  去「设置 → AI」填一个，或让站长配好 config/ai.local.json。"
+            "  没有可用的模型配置：设置里没填密钥。\n"
+            "  去「设置 → AI」填一个，或直接改 config/settings.local.json。"
         )
     return {
         "apiKey": str(conf["apiKey"]),

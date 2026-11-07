@@ -39,7 +39,7 @@ WEB_OUT   ?= api/web
 # 所以统一用它：只要跑过 `make api-venv`（README 的第一步）就一定能用。
 CHECK_PYTHON = $(VENV)/bin/python
 
-.PHONY: vendor check test new web web-watch web-full package pyodide-manifest notes-import \
+.PHONY: vendor check test new web web-watch web-full package pyodide-manifest \
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
         env-init db-snapshot db-restore \
@@ -84,19 +84,8 @@ web-watch:
 web-full:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT) --with-pyodide
 
-# ============================================================================
-# 笔记库导入
-#
-# 把旧编辑器的笔记库搬进应用数据目录（`data/notes/<库名>/`）。三件事同时成立：
-# **源目录只读** · **第二次跑不产生副本** · **你改过的笔记不会被冲掉**（报冲突、不动）。
-#
-#   make notes-import VAULT=Math        导入一个库
-#   make notes-import                   根目录下所有库
-#   make notes-import VAULT=Math DRY=1  只看会做什么，一个字都不写
-# ============================================================================
-
-notes-import:
-	@$(VENV)/bin/python tools/import_vault.py $(if $(VAULT),--vault $(VAULT),) $(if $(DRY),--dry-run,)
+# 笔记不再导入副本：2026-11-07 起改为**直接桥接本机 Obsidian**（协议见
+# docs/Obsidian桥接协议.md）。`tools/import_vault.py` 与 `make notes-import` 已删除。
 
 # 单文件可执行程序（不含重型组件）。**必须在本平台构建**：PyInstaller 不能交叉编译。
 # 这条出的是"当前平台"的包 —— 在 WSL 里跑它得到的是 Linux 二进制，
@@ -132,11 +121,8 @@ win-sync:
 smoke: win-sync
 	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/smoke_win.py
 
-# 界面检查：六页冒烟 + 笔记编辑器（源码/编辑两个视图、⌘Z、⌘S 只差一行、装饰是否生效）。
-# 需要先起着服务（默认 http://127.0.0.1:8100），并且本机能 require 到 playwright-core：
-#     QF_PLAYWRIGHT=/path/to/playwright-core make ui-check
-ui-check:
-	@QF_BASE=$${QF_BASE:-http://127.0.0.1:8100} node tools/checks/notes_editor.mjs
+# 2026-11-08：`ui-check` 已删 —— 它调的是 `tools/checks/notes_editor.mjs`（笔记编辑器冒烟），
+# 那个文件从来就不在仓库里，笔记页也已删除。
 
 dist:
 	@$(MAKE) --no-print-directory web

@@ -1,0 +1,133 @@
+/* settings.css —— 设置页的版式（左侧分类 + 右侧内容）。
+ *
+ * 控件本身的行距、开关、输入框样式仍在 app.css（.form__section / .field /
+ * .switchrow / .statline…）—— 这里只补"页面"这一层：两列、卡片、导航。
+ * 一页设置与其余页面同源：同一套 token、同一套圆角与描边，不另起一套。
+ */
+
+/* 这一页要**铺满**：`.view` 的 1280 上限会让 1920 宽的窗口只用到左边 1280，
+ * 右侧空出近 600px，滚动条也跟着停在中间（用户："布局不平衡，滑动条放到右边"）。
+ * 铺满之后滚动条回最右侧，内容自己的上限与居中交给下面这条。 */
+body[data-page='settings'] .view {
+  max-width: none;
+}
+
+.setpage {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  /* 左栏与内容之间留足呼吸；内容整体因此更靠右（用户："中间也往右挪"） */
+  gap: 56px;
+  align-items: start;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding-bottom: 24px;
+}
+
+/* 左栏跟着滚：分类一直看得见（与笔记页的文件栏同一个做法） */
+.setpage__nav {
+  position: sticky;
+  top: 0;
+  padding-top: 2px;
+}
+
+.setpage__title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.setpage__sub {
+  margin: 0 0 18px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg3);
+}
+
+.setnav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setnav__item {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-md, 8px);
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur, 140ms) var(--ease, ease), color var(--dur, 140ms) var(--ease, ease);
+}
+
+.setnav__item:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.setnav__item.is-on {
+  background: color-mix(in srgb, var(--pri) 12%, transparent);
+  color: var(--fg);
+}
+
+.setnav__hint {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.setpage__body {
+  min-width: 0;
+}
+
+/* 四段各是一张同源的卡片：有边界的设置项比"弹窗里一串分隔线"好扫 */
+.setpage__body .form {
+  gap: 16px;
+}
+
+.setpage__body .form__section {
+  padding: 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg2);
+  scroll-margin-top: 12px;
+}
+
+.setpage__body .form__section + .form__section {
+  margin-top: 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+
+/* 窄屏：分类改横排，内容占满 —— 与其余页面的窄屏档同一个断点 */
+@media (max-width: 860px) {
+  .setpage {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  .setpage__nav {
+    position: static;
+  }
+
+  .setnav {
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .setnav__item {
+    white-space: nowrap;
+  }
+
+  .setnav__hint {
+    display: none;
+  }
+}

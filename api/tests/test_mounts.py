@@ -51,7 +51,7 @@ def test_specs_follow_the_mount_set():
 
     only_notes = tools.specs({"notes"})
     names = [item["function"]["name"] for item in only_notes]
-    assert names, "笔记组应当有工具（search_notes / write_note）"
+    assert names, "笔记组应当有工具（search_notes / edit_note）"
     # 元能力不在任何组里，但它要跟着走：挂了任何工具就有它
     assert "run_subagent" in names
     assert all(tools.group_of(name) == "notes" for name in names if name not in tools.META_TOOLS)
@@ -164,7 +164,7 @@ def test_access_filters_tools():
 
     read_only = [s["function"]["name"] for s in tools.specs(set(tools.ALL_GROUPS), ("read",))]
     assert "get_mastery" in read_only            # 只读的留下
-    assert "write_note" not in read_only          # 直接写的筛掉
+    assert "edit_note" not in read_only           # 写档的筛掉（追加也并进它了）
     assert "grade_problem" not in read_only
     assert "run_python" not in read_only          # 执行的筛掉
     assert "mark_mastered" not in read_only       # 只提案的也筛掉
@@ -178,7 +178,7 @@ def test_call_refuses_off_level(db_session):
     from app import tools
 
     ok, payload = tools.call(
-        db_session, "write_note", {"note": "x", "text": "y"},
+        db_session, "edit_note", {"path": "x.md", "new": "y"},
         {}, mounts=set(tools.ALL_GROUPS), allow=("read",),
     )
     assert ok is False

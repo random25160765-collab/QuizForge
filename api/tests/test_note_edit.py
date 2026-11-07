@@ -20,10 +20,14 @@ from pathlib import Path
 
 import pytest
 
-from app import notelib, tools
+from app import notelib, tools, vault
 
 HEAD = "---\ntitle: 测试笔记\ntags: [a, b]\n---\n\n"
 TAIL = "\n\n## 末尾一节\n\n这一段谁都不该碰。\n"
+
+#: 工具层现在认 `vault`（Obsidian 桥接）；两者同形，测试里把它接回本地的 `notelib`。
+#: 这正是当初"同形替换"的意义：换传输层不用改工具、也不用重写这批用例。
+_VAULT_API = ("libraries", "library", "tree", "read_note", "search", "write_body", "create_note")
 
 
 @pytest.fixture()
@@ -36,6 +40,18 @@ def lib(tmp_path, monkeypatch):  # noqa: ANN001
     """
     monkeypatch.setattr(notelib, "notes_root", lambda: tmp_path / "notes")
     monkeypatch.setattr(notelib, "extra_roots", lambda: [])
+    for name in _VAULT_API:
+        monkeypatch.setattr(vault, name, getattr(notelib, name))
+
+    def fake_create_at(library, rel, body=""):  # noqa: ANN001, ANN202
+        """`create_at` 的本地版：按完整相对路径新建（`notelib` 里没有对应函数）。"""
+        path = notelib.safe_path(library, rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        notelib.reset_index()
+        return {"path": rel}
+
+    monkeypatch.setattr(vault, "create_at", fake_create_at)
     root = tmp_path / "notes" / "T"
     root.mkdir(parents=True)
     return root
@@ -132,9 +148,8 @@ def test_refuses_ambiguous_and_shows_the_places(lib) -> None:  # noqa: ANN001
     [
         ({"old": "a", "new": "a"}, "一模一样"),          # 等于没改
         ({"old": "a"}, "得给 new"),                       # 忘了给（而不是想删）
-        ({"old": ""}, "得给 old"),                        # 空原文会把整篇撑爆
+        ({"old": "", "new": ""}, "空的"),                 # 空 old = 追加，但没给内容
         ({"old": "a", "new": 3}, "得是字符串"),
-        ({"new": "a"}, "得给 old"),
     ],
 )
 def test_refuses_bad_input(lib, args, keyword: str) -> None:  # noqa: ANN001
@@ -143,6 +158,47 @@ def test_refuses_bad_input(lib, args, keyword: str) -> None:  # noqa: ANN001
     result = _edit(**args)
     assert "error" in result
     assert keyword in result["error"]
+
+
+def test_append_when_old_is_omitted(lib) -> None:  # noqa: ANN001
+    """**不给 `old` 就是追加到末尾**（`write_note` 并进 `edit_note` 之后的那一半）。"""
+    path = _make(lib, "正文。")
+    result = _edit(new="追加的一行。")
+    assert result["ok"] is True
+    assert result.get("mode") == "append"
+    text = path.read_text(encoding="utf-8")
+    assert "正文。" in text, "已有的正文不该动"
+    assert text.rstrip().endswith("追加的一行。"), "新内容要接在末尾"
+
+
+def test_refuses_when_the_bridge_renames_the_file(lib, monkeypatch) -> None:  # noqa: ANN001
+    """桥接把文件建到别的路径（旧版插件忽略 `path`）→ **报错**，不许说成功。
+
+    真实踩过：请求 `QuizForge 写入验证.md`，旧插件按空 title 建成了 `未命名.md`，
+    回执照样说 `mode: create` —— 用户以为写到了 A，其实在 B。
+    """
+    monkeypatch.setattr(vault, "create_at", lambda library, rel, body="": {"path": "未命名.md"})
+    result = tools.edit_note(None, {"lib": "T", "path": "目标.md", "new": "内容"})
+    assert "error" in result
+    assert "未命名.md" in result["error"] and "目标.md" in result["error"]
+    assert result.get("landedAt") == "未命名.md"
+
+
+def test_creates_the_file_when_missing(lib) -> None:  # noqa: ANN001
+    """写一个还不存在的文件 = **新建**（coding agent 的惯例），不是报"没有这篇笔记"。
+
+    这条是回归：用户让模型写一篇全新笔记 `QuizForge 写入验证.md`，原先返回
+    "没有这篇笔记" —— 因为追加那条路先 `read_note` 了。
+    """
+    target = lib / "新的一篇.md"
+    assert not target.exists()
+
+    result = tools.edit_note(None, {"lib": "T", "path": "新的一篇.md", "new": "# 标题\n\n正文。"})
+
+    assert result["ok"] is True, result
+    assert result.get("mode") == "create"
+    assert target.exists()
+    assert target.read_text(encoding="utf-8").startswith("# 标题")
 
 
 def test_refuses_without_path(lib) -> None:  # noqa: ANN001
@@ -194,12 +250,16 @@ def test_lib_can_be_omitted(lib) -> None:  # noqa: ANN001
 
 
 def test_registry_shapes() -> None:
-    """挂载表里的位置：写在 `notes` 组、要 `write` 档，且只读档里必须没有它。"""
+    """挂载表里的位置：写在 `notes` 组、要 `write` 档，且只读档里必须没有它。
+
+    2026-11-07：`write_note` 并入 `edit_note`（不给 `old` 就是追加），
+    所以 `old` 不再是必填，写档只剩这一个工具。
+    """
     spec = tools.REGISTRY["edit_note"]
     assert spec["group"] == "notes"
     assert spec["access"] == "write"
-    assert set(spec["parameters"]["required"]) == {"path", "old", "new"}
+    assert set(spec["parameters"]["required"]) == {"path", "new"}
+    assert "write_note" not in tools.REGISTRY, "追加已并进 edit_note"
 
     read_only = [one["function"]["name"] for one in tools.specs(set(tools.ALL_GROUPS), ("read",))]
     assert "edit_note" not in read_only, "只读档不该看见它"
-    assert "write_note" not in read_only

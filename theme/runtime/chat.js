@@ -478,8 +478,33 @@
   }
 
   /** 主区顶上那个入口：显示这棵树有多大、几处分叉。 */
+  /* 窄屏（< 860px）时**主动**把会话栏收起来（用户："收窄的时候，对话选择栏应该主动收回"）。
+   *
+   * 单列布局下它是一整块横排铺在正文上方（实测 675px 宽时占掉半屏），而这一栏在
+   * 窄屏里本来就不该常驻。这里只改**显示**、不写 localStorage —— 那是环境决定的，
+   * 不是人的选择：回到宽屏照旧按他存的偏好；窄屏也可以点顶部那颗按钮手动展开。 */
+  var NARROW_ASIDE = window.matchMedia('(max-width: 860px)');
+  var autoFolded = false;   //: 这一次收起是"环境决定"的，不是人按的
+
+  function applyNarrowAside() {
+    if (!chatEl) return;
+    if (NARROW_ASIDE.matches && asideOpen) {
+      autoFolded = true;
+      asideOpen = false;                       // 不写 localStorage：不是人的选择
+      chatEl.setAttribute('data-aside', 'closed');
+      renderBar();
+    } else if (!NARROW_ASIDE.matches && autoFolded) {
+      autoFolded = false;
+      asideOpen = true;
+      chatEl.setAttribute('data-aside', 'open');
+      renderBar();
+    }
+  }
+
   /** 会话管理栏的开合。收/展两个朝向之间**转过去**，与笔记页那颗同一套。 */
   function toggleAside() {
+    // 人按了就以他的选择为准：从这里起不再"自动回到宽屏时展开"
+    autoFolded = false;
     asideOpen = !asideOpen;
     if (chatEl) chatEl.setAttribute('data-aside', asideOpen ? 'open' : 'closed');
     try {
@@ -564,6 +589,66 @@
     ev.preventDefault();
     toggleAside();
   });
+
+  /* ---------------------------------------------------------- 演示清单
+   *
+   * 一条对话里可能生成了好几张演示（HTML / canvas / Python 输出）。它们散在
+   * 各条消息中间，要回头看第 3 张得一路往下翻 —— 用户："历史的所有 canvas（html等）
+   * 弄一个列表，在这里统一访问。"
+   *
+   * 这里只做"清单 + 跳转"：点一条就滚到它所在的那条消息（不在当前分支上会明说）。
+   */
+  function demoItems() {
+    var out = [];
+    (state.messages || []).forEach(function (m) {
+      (m.parts || []).forEach(function (part) {
+        if (!part || part.type !== 'demo') return;
+        // **只有 HTML 演示算**（用户："python 不算演示。只有 html 算演示。"）：
+        // Python 那一路是一次计算的结果，不是能再回访的演示页面。
+        // 判据与 `demoCard` 里分流用的那条一致，免得两处各认一套。
+        if (part.kind === 'python' || /pyodide/i.test(part.html || '')) return;
+        out.push({ mid: m.id, title: String(part.title || '演示') });
+      });
+    });
+    return out;
+  }
+
+  /** 滚到某条消息并闪一下。切分支之后旧消息可能不在 DOM 里 —— 那时要说清楚。 */
+  function jumpToMessage(mid) {
+    var row = threadEl && threadEl.querySelector('.chatmsg[data-id="' + String(mid) + '"]');
+    if (!row) {
+      ui.toast('那张演示不在当前分支上（切到对应分支才能看）', 'info');
+      return false;
+    }
+    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    row.classList.add('is-focus');
+    window.setTimeout(function () { row.classList.remove('is-focus'); }, 1200);
+    return true;
+  }
+
+  function openDemoList() {
+    var items = demoItems();
+    if (!items.length) {
+      ui.toast('这条对话里还没有演示', 'info');
+      return;
+    }
+    var handle = ui.modal({
+      title: '演示（' + items.length + '）',
+      size: 'md',
+      body: h('div.demolist', null, items.map(function (one, index) {
+        return h('button.demolist__item', {
+          type: 'button',
+          onClick: function () {
+            handle.close();
+            jumpToMessage(one.mid);
+          },
+        },
+          h('span.demolist__no', { text: String(index + 1) }),
+          h('span.demolist__title', { text: one.title }));
+      })),
+      actions: [{ label: '关闭' }],
+    });
+  }
 
   function renderBar() {
     if (!barEl) return;
@@ -656,6 +741,23 @@
     // 分享：把这一条会话装配成**一个自带数据的网页**（对话正文 + 那棵对话树），
     // 发给别人双击就能看。装配在服务端做（实测 158 条 37ms），所以**不做**"正在打包"
     // 那一套 —— 成功与失败都由 toast 说清楚（见 onShare）。
+    // 演示清单：这条对话里生成过的 HTML/Python 演示，一处集中看
+    var demos = demoItems();
+    barEl.appendChild(
+      h(
+        'button.chat__asidefold.chat__demobtn',
+        {
+          type: 'button',
+          title: demos.length ? '演示清单（' + demos.length + ' 张）' : '这条对话里还没有演示',
+          'aria-label': '演示清单',
+          draggable: 'false',
+          onClick: openDemoList,
+        },
+        iconNode('list', 15),
+        demos.length ? h('span.chat__treebadge', { text: String(demos.length) }) : null
+      )
+    );
+
     barEl.appendChild(
       h(
         'button.chat__asidefold.chat__sharebtn',
@@ -3141,7 +3243,7 @@
    *（`{x, y}`），换个窗口大小它还在原地；默认是右边框旁、高度 42% 处。
    */
   var PORTAL_KEY = 'qf.chat.portal';
-  var PORTAL_SIZE = 46;          // 球的直径（与 CSS 里的 width/height 一致）
+  var PORTAL_SIZE = 44;          // 球的直径（与 CSS 里的 width/height 一致）
   var PORTAL_GAP = 12;           // 默认离边框多远
   var PORTAL_EDGE = 6;           // 贴边时留的缝（吸到边上就是这个数）
   var PORTAL_SNAP = 56;          // 离框边多近算"靠近"（磁铁的阈值，只在这儿生效）
@@ -3580,8 +3682,8 @@
       return placeKind(each) === kind;
     })[0];
     if (one) {
+      // 取消不弹提示：图标变回灰色本身就是反馈（与下面成功那条同理）
       QF.store.removePlace(one.id);
-      ui.toast('已取消' + placeKindName(one), 'info', 1200);
     } else if (
       !QF.store.addPlace({
         kind: kind,
@@ -3597,13 +3699,9 @@
         shakeStations();
       }
       return;
-    } else {
-      ui.toast(
-        kind === 'mark' ? '已加书签（右键可写描述）' : '已打回溯点（最多 5 个，在右边那颗传送球里传送）',
-        'info',
-        1800
-      );
     }
+    // **成功不弹提示**（用户："这两个图标点击之后会变绿，说明就是成功了。右下角不要再有弹窗了"）。
+    // 图标自己就是回执；失败与上限那两条仍要说，那是"没成功"的场合。
     refreshPlaces();
   }
 
@@ -4895,10 +4993,22 @@
         applyPortalPos();
       }).observe(portalMain);
     }
+    /* 窄屏抽屉：点正文任意处收起（与浮层同一套"点外面走开"）。
+     * 不拦这一下 —— 正文该收到的点击照收，抽屉只是先让开。 */
+    if (portalMain) {
+      portalMain.addEventListener('pointerdown', function () {
+        if (!NARROW_ASIDE.matches || !asideOpen) return;
+        toggleAside();
+      });
+    }
     window.addEventListener('resize', function () {
       applyPortalPos();
     });
     if (chatEl) chatEl.setAttribute('data-aside', asideOpen ? 'open' : 'closed');
+    // 进来先按当前宽度对一次：窄屏里直接开着的话，这一下就收回去
+    applyNarrowAside();
+    if (NARROW_ASIDE.addEventListener) NARROW_ASIDE.addEventListener('change', applyNarrowAside);
+    else if (NARROW_ASIDE.addListener) NARROW_ASIDE.addListener(applyNarrowAside);   // 老 Safari
   }
 
   /* ------------------------------------------------------------ 左栏 */
@@ -5048,10 +5158,26 @@
     }
   }
 
-  /** 区标题那一行。`withTools` 时右边带上这一区的工具（归档区：排序按钮）。 */
+  /** 区标题那一行。`withTools` 时右边带上这一区的工具：
+   *  新建文件夹 + 排序（两颗并列的小图标，不再占一行"＋ 新建文件夹"）。 */
   function zoneHead(text, withTools) {
     var box = h('div.chatzone__head', null, h('span.chatzone__headtext', { text: text }));
     if (withTools) {
+      box.appendChild(
+        h(
+          'button.chatzone__headbtn',
+          {
+            type: 'button',
+            title: '新建文件夹（在归档区空白处右键也可以）',
+            'aria-label': '新建文件夹',
+            onClick: function (ev) {
+              ev.stopPropagation();
+              openFolderMenu({ path: '', name: '最外层' }, ev);
+            },
+          },
+          iconNode('plus', 13)
+        )
+      );
       box.appendChild(
         h(
           'button.chatzone__headbtn',
@@ -5163,10 +5289,8 @@
   }
 
   function walkChatTree(node, depth, host) {
-    // 树顶那一条"＋ 新建分组"。分组的新建/改名/删除本来就有（接口、菜单都在），
-    // 但入口只有"在列表空白处右键" —— 用户找不到（原话："对话模块没有做新建/删除
-    // 文件夹之类的逻辑"）。给一条看得见的。
-    if (depth === 0) host.appendChild(newFolderRow());
+    // "新建文件夹"已经搬到区标题右边，和排序并列（见 zoneHead）——
+    // 树顶不再单占一行："这个新建文件夹直接变成和排序并列的一个小图标"。
     Object.keys(node.children)
       .sort(function (a, b) {
         return a.localeCompare(b, 'zh');
@@ -5294,8 +5418,9 @@
           var mark = document.createElement('span');
           mark.className = 'chattree__caretmark';
           mark.innerHTML =
+            // 线宽 2（原来是 2.8）：用户要"细一点"，与旁边的 ⋯、排序图标同一档
             '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"' +
-            ' stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">' +
+            ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
             '<path d="M9.5 6.5 15 12l-5.5 5.5"></path></svg>';
           return mark;
         })()
@@ -5319,21 +5444,6 @@
       )
     );
     return row;
-  }
-
-  /** 树顶那一条"＋ 新建分组"（分组菜单挂在分组行上，一个分组都没有时它够不着）。 */
-  function newFolderRow() {
-    return h(
-      'div.chattree__new',
-      {
-        title: '新建文件夹（在归档区空白处右键也可以）',
-        onClick: function (ev) {
-          openFolderMenu({ path: '', name: '最外层' }, ev);
-        },
-      },
-      h('span.chattree__newplus', { text: '＋' }),
-      h('span.chattree__newlabel', { text: '新建文件夹' })
-    );
   }
 
   /** 一条会话（沿用原来的三行小卡，只是按层级缩进）。 */
@@ -5796,28 +5906,27 @@
       },
     ];
     if (atRoot) {
-      // 最外层：给的是"新建分组"。没有这一条就没法建**第一个**分组
-      //（分组菜单挂在分组行上，而一开始一个分组都没有）。
-      items = [
-        {
-          label: '新建文件夹',
-          run: function () {
-            askName('新建分组', '', '创建').then(function (name) {
-              if (!name) return;
-              api
-                .post('/chat/folders', { path: name })
-                .then(function () {
-                  loadList();
-                })
-                .catch(function (err) {
-                  toast('新建失败：' + ((err && err.message) || '未知原因'), 'bad');
-                });
-            });
-          },
-        },
-      ];
+      // 根上只有"新建"一件事：再套一层只含一项的菜单，等于让人点两下才看到输入框
+      //（用户："那个加号，点击之后竟然跳出来「新建文件夹」"）。
+      newRootFolder();
+      return;
     }
     showChatMenu(items);
+  }
+
+  /** 在归档根上建一个文件夹（区标题那颗 ＋、以及归档区空白处右键都走这里）。 */
+  function newRootFolder() {
+    askName('新建分组', '', '创建').then(function (name) {
+      if (!name) return;
+      api
+        .post('/chat/folders', { path: name })
+        .then(function () {
+          loadList();
+        })
+        .catch(function (err) {
+          toast('新建失败：' + ((err && err.message) || '未知原因'), 'bad');
+        });
+    });
   }
 
   /* ------------------------------------------------------------ 搜索 */
@@ -8560,14 +8669,17 @@
       part.ms ? h('span.chatmsg__toolms', { text: part.ms + ' ms' }) : null,
       part.ok === false ? h('span.chatmsg__tag.is-bad', { text: '失败' }) : null
     );
-    var tail = part.output
+    // **只有空白的结果不算结果**：原先判的是 `part.output` 的真假，一个 `"\n"`
+    // 也会渲染出一个空的 `pre` —— 窄屏截图里那块白色空框就是它。
+    var hasOut = part.output != null && String(part.output).trim() !== '';
+    var tail = hasOut
       ? h(
           'details.chatmsg__toolout',
           null,
           h('summary', { text: '结果' }),
           h('pre.chatmsg__toolpre', { text: part.output })
         )
-      : h('div.chatmsg__toolwait', { text: '调用中…' });
+      : h('div.chatmsg__toolwait', { text: part.ms ? '（没有输出）' : '调用中…' });
     return h('div.chatmsg__tool' + (part.ok === false ? '.is-bad' : ''), null, head, tail);
   }
 
@@ -9722,15 +9834,14 @@
     if (!noticeEl) return;
     ui.clear(noticeEl);
     var mode = aiState && aiState.mode;
-    // `mode` 的取值：user（自己的密钥）/ beta（本站内测通道）/ off（AI 关着）/ none（都不行）。
-    // 内测通道能答就别挂横幅 —— 这条提示原先会把 mode='beta' 也算成"不能对话"，
-    // 于是开了内测的用户一直在被劝去填密钥。
-    if (!mode || mode === 'user' || mode === 'beta' || mode === 'local') return;
+    // `mode` 的取值：user（已配密钥）/ off（AI 被关掉）/ none（没配）。
+    // 2026-11-07 起没有内测通道了。
+    if (!mode || mode === 'user' || mode === 'local') return;
 
     var text =
       mode === 'off'
         ? '本站已关闭 AI 功能，对话暂时不可用。'
-        : '还不能对话：本站内测通道未就绪，去设置里填自己的 API 密钥即可使用。';
+        : '还不能对话：去「设置 → AI」填自己的 API 密钥即可使用。';
     noticeEl.appendChild(
       h(
         'div.chat__noticebox',
@@ -9839,7 +9950,10 @@
     // 它有自己的开合逻辑，同一次点击不能走两遍（见那颗药丸的 onClick）。
     // 同一个函数重复 add 是空操作（浏览器按 类型+函数+捕获 去重），不必另设开关。
     // Esc 不在这里管：焦点在输入框时归它自己的 keydown，在勾选框上时归清单自己的 keydown。
+    // mousedown 与 pointerdown 都挂：鼠标走前者、触屏/笔走后者；
+    // 同一次操作里两个都到也无妨（closeSkillPick 是幂等的）。
     document.addEventListener('mousedown', onSkillPickAway, true);
+    document.addEventListener('pointerdown', onSkillPickAway, true);
     syncSkillPill();
   }
 
@@ -9850,6 +9964,7 @@
       skillPickTimer = null;
     }
     document.removeEventListener('mousedown', onSkillPickAway, true);
+    document.removeEventListener('pointerdown', onSkillPickAway, true);
     var wasOpen = skillPickEl.classList.contains('is-open');
     skillPickEl.classList.remove('is-open', 'is-in');
     syncSkillPill();
@@ -9874,10 +9989,10 @@
     if (skillPickEl.contains(ev.target)) return;
     var pill = document.querySelector('.chatskill__open');
     if (pill && pill.contains(ev.target)) return;
-    // 点输入框不算"走开"：勾完滤镜回去接着写问题很正常，勾选本身也不关清单。
-    // 点别的工具药丸（模式 / 深度思考 …）要算 —— 那一下会弹出它们自己的菜单，
-    // 两张浮层叠在一处没法看。
-    if (inputEl && (inputEl === ev.target || inputEl.contains(ev.target))) return;
+    /* **点哪儿都算走开**，输入框也不例外（用户："点击别的地方，这个红框不会自己收起来"）。
+     * 原先给输入框留了一个例外（"勾完回去接着写"），可这一层浮在正文上，
+     * 留着它更像"点不动"；要勾选就再点一次药丸，不差这一下。
+     * 药丸本身除外 —— 它有自己的开合逻辑，同一次点击不能走两遍。 */
     closeSkillPick();
   }
 
@@ -10195,7 +10310,8 @@
         //（实测：点一下炸出几百枚同样的标记）。
         paint(next);
         if (notesOpen) renderNotes();
-        ui.toast((next ? '又装上了：' : '已取下：') + label, 'info', 1600);
+        /* 不再弹 toast（用户："点这里的时候右下角一直跳出来提示，这是冗余的"）：
+         * 装没装上已经直接写在这枚 chip 上（亮/灭 + 文案），右下角那一句是重复的。 */
       });
       return btn;
     });

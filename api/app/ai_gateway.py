@@ -37,9 +37,7 @@ from .config import get_settings
 from .models import AiUsage
 from .settings_store import row as settings_row
 
-# 内测通道那份配置的缓存：{path, mtime, data}
-# 按 mtime 判断，所以改完文件立刻生效，不用重启服务
-_BETA_CACHE: dict = {"path": "", "mtime": 0.0, "data": {}}
+# （2026-11-07：内测通道的 `_BETA_CACHE` 随 beta 一起删除）
 
 # 用户没在设置里填接口地址时的默认值（OpenAI 兼容）
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -245,51 +243,15 @@ class UpstreamError(Exception):
         self.detail = detail or message
 
 
-def beta_config() -> dict | None:
-    """读内测通道那份实例级配置（与用户设置里的 `ai` 同形）。
-
-    * **通道不是 beta**（正式包）／被显式关掉（`QF_AI_BETA_ENABLED=false`）／文件不在 → None
-    * 文件按 **mtime** 缓存：改完立刻生效，不必重启
-    * 坏文件当成"没有"而不是抛异常 —— 一个手写的 JSON 不该让整站 AI 全挂
-
-    密钥只在这里落地，**不进 Settings**：那个对象会被 repr、被日志打印。
-
-    判据是 `settings.beta_active` 而不是单个开关：**正式通道连文件都不看**，
-    这样"内测和正式分开"是结构上的保证，而不是靠配置写对。
-    """
-    settings = get_settings()
-    if not settings.beta_active:
-        return None
-
-    path = Path(settings.ai_beta_config_file)
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return None
-
-    if _BETA_CACHE["path"] == str(path) and _BETA_CACHE["mtime"] == mtime and _BETA_CACHE["data"]:
-        return _BETA_CACHE["data"]
-
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) or {}
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-
-    _BETA_CACHE.update({"path": str(path), "mtime": mtime, "data": data})
-    return data
-
-
 def resolve_config(db) -> dict:  # noqa: ANN001
-    """取出这次调用该用哪套配置：**本机设置里的密钥 > 内测通道 > 明确报错**。
+    """取出这次调用该用哪套配置：**本机设置里的那一份**。
 
-    返回值多一个 `source`（`user` / `local`）与 `label`：调用方要靠它决定
-    "连不上时该叫人去启动本地模型，还是去检查自己的密钥" —— 这两种失败的
-    下一步动作完全不同，提示语不能混。
+    2026-11-07：内测通道（`config/ai.local.json` + `beta_active`）整块删除 ——
+    用户要求"beta 和正式的区别不要有了"，他的配置已经并进
+    `config/settings.local.json` 的 `ai` 块（见 `app/settings_file.py`）。
+    于是这里只剩一条路：设置里填了什么就用什么。
 
-    缺失且没有内测通道时抛 503，文案必须**可操作**：前端会把它原样显示给用户，
-    所以要说清「去哪儿填」，而不是「未配置」这种没有下一步的话。
+    返回值里的 `source` / `label` 保留：调用方靠它决定连不上时的提示语。
     """
     from fastapi import HTTPException, status as http_status
 
@@ -321,40 +283,11 @@ def resolve_config(db) -> dict:  # noqa: ANN001
             "label": "你自己的密钥",
         }
 
-    beta = beta_config()
-    beta_key = str((beta or {}).get("apiKey") or "").strip()
-    if beta and beta_key and beta.get("enabled", True) is not False:
-        # 内测通道：用站长那份密钥。超时也用实例的 —— 用户自己那份没生效，
-        # 拿他的超时来约束这条通道没有道理
-        beta_timeout = int(beta.get("timeoutMs") or settings.ai_timeout_ms)
-        model = str(beta.get("model") or "").strip() or DEFAULT_MODEL
-        return {
-            "apiKey": beta_key,
-            "baseUrl": str(beta.get("baseUrl") or "").strip() or DEFAULT_BASE_URL,
-            "model": model,
-            "vision": _vision_of(beta, model),
-            "timeoutMs": max(MIN_TIMEOUT_MS, min(beta_timeout, settings.ai_timeout_ms)),
-            # 内测通道用的是**它自己那份模型名**在算窗口（见 budget_tokens），
-            # 而 `maxContextTokens` 仍取用户设置里那个（他照样能自己调小）
-            "maxContextTokens": budget_tokens(model, conf, settings.ai_max_context_tokens),
-            "jsonMode": bool(beta.get("jsonMode")),
-            "source": "beta",
-            "label": str(beta.get("label") or "").strip() or ("内测通道 · " + model),
-        }
-
-    if beta is not None and not beta_key:
-        # 文件在、但没密钥：这是配置写错了，得说清是哪儿，而不是让人去设置里翻
-        raise HTTPException(
-            http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            "内测通道的配置里没有 apiKey：检查 config/ai.local.json，"
-            "或在「设置 → AI」填入你自己的密钥。",
-        )
-
     if not conf.get("enabled"):
         raise HTTPException(
             http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            "尚未启用 AI：打开「设置 → AI」，填入你自己的 API 密钥。"
-            "（本站的内测通道没有开，所以没有免密钥的用法。）",
+            "尚未启用 AI：打开「设置 → AI」，填入你自己的 API 密钥"
+            "（或直接改 `config/settings.local.json` 的 ai 块）。",
         )
 
     raise HTTPException(
@@ -364,19 +297,7 @@ def resolve_config(db) -> dict:  # noqa: ANN001
 
 
 def connection_hint(conf: dict) -> str:
-    """连不上上游时该补的那半句话。
-
-    「连不上」这件事，两种来源的下一步动作完全不同：用自己密钥的人该去查
-    密钥与网络；走内测通道的人该去找站长（那是站长的密钥与额度）。
-    写成同一句，两种人都会白折腾一遍。
-    """
-    if conf.get("source") == "beta":
-        return (
-            "内测通道连不上（"
-            + str(conf.get("baseUrl") or "")
-            + "）：把这个问题告诉站长（他那边检查 config/ai.local.json 与网络），"
-            "或者在「设置 → AI」里填自己的密钥照样能用。"
-        )
+    """连不上上游时该补的那半句话。"""
     return "无法连接你填写的接口：" + str(conf.get("baseUrl") or "")
 
 

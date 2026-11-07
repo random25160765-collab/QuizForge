@@ -227,30 +227,21 @@ def usage(db: DbSession) -> dict:
 
     has_key = bool(str(conf.get("apiKey") or "").strip())
     uses_own = bool(conf.get("enabled")) and has_key
-    beta = gateway.beta_config() or {}
-    beta_ready = bool(str(beta.get("apiKey") or "").strip()) and beta.get("enabled", True) is not False
 
+    # 2026-11-07：内测通道删除 —— 只有「填了」与「没填」两种状态
     if not settings.ai_enabled:
         mode = "off"
     elif uses_own:
         mode = "user"
-    elif settings.ai_beta_enabled and beta_ready:
-        mode = "beta"
     else:
         mode = "none"
 
-    beta_model = str(beta.get("model") or "").strip()
     return {
         "today": gateway.today_usage(db),
         "quota": settings.ai_daily_quota,
-        # enabled 现在的意思是「现在能不能用」，而不是「你自己那个开关开没开」——
-        # 内测通道让没填密钥的人也能用，面板与对话页要能说清是哪种情况
-        "enabled": mode in ("user", "beta"),
+        "enabled": mode == "user",
         "mode": mode,
-        "label": "你自己的密钥"
-        if uses_own
-        else (str(beta.get("label") or "").strip() or ("内测通道 · " + beta_model) if mode == "beta" else ""),
-        "betaModel": beta_model if mode == "beta" else "",
+        "label": "你自己的密钥" if uses_own else "",
         "model": str(conf.get("model") or "") or gateway.DEFAULT_MODEL,
         "hasKey": has_key,
     }

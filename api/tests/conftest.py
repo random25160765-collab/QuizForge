@@ -98,10 +98,8 @@ os.environ["QF_HEAVY_PREFETCH"] = "false"
 # 这里不再需要担心误打真实接口：服务端**不持有任何密钥**，
 # 密钥只能来自测试自己写进用户设置里的假值。
 os.environ.setdefault("QF_AI_ENABLED", "true")
-# 内测通道默认**关**：那些「没密钥就该被拦住」的用例测的正是这条契约，
-# 开着它会把 503 变成"连不上内测通道"的 502，测试就测的是别的东西了。
-# 通道本身的行为由 test_beta_channel.py 单独打开来测。
-os.environ.setdefault("QF_AI_BETA_ENABLED", "false")
+# 2026-11-08：`QF_AI_BETA_ENABLED` 那行删了 —— 内测通道整块移除之后这个变量没人读，
+# 留着只会让人以为"把它打开就能用共享密钥"。
 
 
 @pytest.fixture(scope="session")

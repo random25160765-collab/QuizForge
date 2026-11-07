@@ -9,7 +9,20 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from . import ai, bank, chat, graph, health, knowledge, library, mybank, notes, problem, progress
+from . import (
+    ai,
+    bank,
+    chat,
+    graph,
+    health,
+    knowledge,
+    library,
+    mybank,
+    obsidian,
+    problem,
+    progress,
+    settings_api,
+)
 
 
 def all_routers() -> list[APIRouter]:
@@ -24,8 +37,10 @@ def all_routers() -> list[APIRouter]:
         chat.router,
         problem.router,
         mybank.router,
-        # 笔记：权威是文件（`data/notes/`），不碰数据库
-        notes.router,
+        # 笔记：只给 LLM 工具用（走 Obsidian 桥接），这里只开一个"连上没有"的只读状态
+        obsidian.router,
+        # 整份设置（文件是权威，可拷贝）
+        settings_api.router,
         # 资料：源目录只读，可写的只有元数据（`data/library/*.yaml`）与派生缓存
         library.router,
     ]
