@@ -10,12 +10,13 @@
   var ui = QF.ui;
   var h = ui.h;
 
-  // key 与 buildSettings() 里四段的顺序一一对应（第 i 段配第 i 组）
+  // key 与 buildSettings() 里各段的顺序一一对应（第 i 段配第 i 组）
   var GROUPS = [
     { key: 'ai', label: 'AI', hint: '密钥 / 模型 / 上下文' },
     { key: 'search', label: '联网搜索', hint: '服务商与密钥' },
     { key: 'obsidian', label: 'Obsidian', hint: 'vault 路径与连接' },
     { key: 'appearance', label: '外观', hint: '主题 / 字号 / 宽度' },
+    { key: 'sync', label: '同步', hint: 'Turso 地址与令牌' },
     { key: 'data', label: '数据', hint: '导入 / 导出 / 清空' },
   ];
 

@@ -33,18 +33,20 @@
 ```bash
 make api-venv      # 后端依赖 → api/.venv
 make env-init      # 生成 .env（没有密钥要填）
-make db-restore    # 解压快照 → data/quizforge.db（题库 + 考纲 + 知识空间）
 make web           # 构建在线前端 → api/web
 make api-dev       # → http://127.0.0.1:8100
+
+# 只有拿到自己的快照时才需要（数据不进版本库；先把 .enc 拷到 db/）
+# make db-restore  # 解压快照 → data/quizforge.db（题库 + 考纲 + 知识空间）
 ```
 
-打开页面即可开始（没有注册账号那一步）。首次运行会自动建好表；**库里空时
-用 `make db-restore` 把快照解压进来**（见下）。
+打开页面即可开始（没有注册账号那一步）。首次运行会自动建好表；干净克隆是**空库**，
+要接着用自己的题库与历史，把另一台机器的快照拷到 `db/` 再 `make db-restore`（见下）。
 
 ### 从快照恢复数据
 
-仓库里带着一份快照 `db/quizforge.db.gz.enc` —— **就是 SQLite 库本身**，gzip 压缩、
-口令加密。一条命令解密解压即用，不需要起任何服务：
+快照 `db/quizforge.db.gz.enc` 只在你自己的机器上（**数据不进版本库**）—— 它
+**就是 SQLite 库本身**，gzip 压缩、口令加密。一条命令解密解压即用，不需要起任何服务：
 
 ```bash
 make snapshot-key          # 生成口令 config/snapshot.key（一台机器一次，复制到每台要同步的机器）
@@ -56,8 +58,32 @@ make db-restore ARGS=--force   # 覆盖已有的库（先删掉它再解压）
 "看着能跑、其实少了一半题"的库。
 
 反向操作是 `make db-snapshot`：把库里的现状压回 `db/quizforge.db.gz`、加密成
-`.enc`，**提交那份密文** —— 这是"换台机器接着干"唯一的载体。公开仓库里只有密文
-（没有口令文件就解不开，聊天记录不会跟着 clone 出去）；快照落盘前还会自动抹掉 AI 密钥。
+`.enc`，**三份都只留本机**（`db/` 已 gitignore，绝不提交）。它是**冷备份 / 换机器
+手动拷贝**的载体；快照落盘前会自动抹掉 AI 密钥与 Turso token。
+
+### 跨机器同步（Turso，日常通道）
+
+日常两台机器一起用**不再靠拷快照** —— 快照恢复是覆盖语义，两边各写一份必然互相
+冲掉。现在走 Turso 行级增量同步：
+
+```bash
+# 配置：设置页 →「同步」填数据库地址与令牌（也可以直接改
+# config/settings.local.json 的 turso 块），然后
+make sync               # 推一次、拉一次
+make sync ARGS=status   # 看状态（不会显示令牌）
+```
+
+本地 SQLite 仍是唯一工作库，Turso 只中转 `(表, 主键)` 粒度的变化：
+
+* **对话四张表端到端加密**（`conversations` / `conversation_folders` / `messages` /
+  `attachments`），密钥由 `config/snapshot.key` 派生，两台机器必须同一份；
+* 其余用户数据（进度、自出的题、设置、用量）明文上传，但 `ai.apiKey` /
+  `search.apiKey` 和整个 `turso` 块会被抹掉，不会出本机；
+* 首次同步会把现有库补一遍（baseline），之后只推变化；两台机器都能写，按行的
+  `at` 做 last-write-wins，删除也会传播。
+
+令牌只存在本机设置文件里（`config/settings.local.json`，已 gitignore），不会跟着
+同步走，也不会写进快照。
 
 > 历史数据还在 Postgres 里的那种场合，才用得上 `tools/migrate_to_local.py`
 > （逐表搬到 SQLite，含对账与账号收敛）。它是**一次性搬运**工具，日常用不到。
@@ -185,14 +211,15 @@ base  = acc × (0.55 + 0.45 × fresh) × (0.6 + 0.4 × ev)
 
 ```bash
 make snapshot-key   # 一次性：生成口令（复制到每台要同步的机器）
-make db-snapshot    # 库里 → db/quizforge.db.gz.enc（这是唯一进版本库的数据形态）
+make db-snapshot    # 库里 → db/quizforge.db.gz.enc（冷备份 / 换机手动拷贝）
 make db-restore     # 从它恢复（解密解压即用）
 ```
 
-规矩是：**数据进版本库只走快照，而且只走密文**。改了题、补了概念、跑完流水线，
-就 `make db-snapshot` 一次，把 `db/quizforge.db.gz.enc` 一起提交 —— 换台机器
-`make db-restore` 就能接着干。快照就是**库本身**（不是某种导出版本），落盘前会自动
-抹掉 AI 密钥、再整体口令加密（它进的是公开仓库）。
+规矩是：**数据不进版本库**（2026-11-08 起）。快照是**冷备份 / 换机器手动拷贝**
+通道；日常两台机器一起用走上一节的 Turso 同步，不要再用快照互相覆盖。
+改了题、补了概念、跑完流水线想留一份冷备份，就 `make db-snapshot` 一次，
+把 `db/` 里的文件留在本机（或拷到备份盘）。快照就是**库本身**（不是某种导出版本），
+落盘前会自动抹掉 AI 密钥，再整体口令加密。
 
 库在本机时，备份它就是拷贝 `data/quizforge.db` 那一个文件。
 
@@ -316,7 +343,8 @@ make graph-export   # → graph.json（图谱页取不到接口时的降级快�
 ### 运维
 
 ```bash
-make db-snapshot    # 把快照更新进版本库（加密成 db/quizforge.db.gz.enc）
+make sync           # 跟 Turso 推拉一次（日常跨机器通道，ARGS=status 看状态）
+make db-snapshot    # 冷备份 / 换机拷贝：加密成 db/quizforge.db.gz.enc（只留本机）
 make db-restore     # 从快照恢复（解压即用，ARGS=--force 覆盖）
 ```
 
@@ -336,7 +364,8 @@ make db-restore     # 从快照恢复（解压即用，ARGS=--force 覆盖）
 | `make web` | 构建前端 → `api/web` |
 | `make check` / `test` | 题库校验 / 校验 + 前端自测 |
 | `make coverage` / `drive` | 知识空间对账 / 跑一整轮流水线 |
-| `make db-snapshot` / `db-restore` | 快照进版本库 / 从快照恢复 |
+| `make sync` | 跟 Turso 推拉一次（日常跨机器同步；`ARGS=status` 看状态）|
+| `make db-snapshot` / `db-restore` | 冷备份（只留本机）/ 从本机快照恢复 |
 | `make bank-export` / `bank-import` | 题目文件形态的导出 / 导入 |
 | `make skills-link` | 把 `.codebuddy/skills` 链到工作区根（工作区不是本仓库时用）|
 | `make help` | 全部命令 |

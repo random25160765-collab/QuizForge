@@ -898,6 +898,12 @@ class ConversationFolder(Base):
     __tablename__ = "conversation_folders"
 
     id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
+    #: 跨机器的稳定身份（见 `app/sync.py`）。自增 `id` 只在**这台机器**上有意义，
+    #: 两台机器各自新建分组都会得到 1、2、3……，拿它当同步键会把两条不同的分组
+    #: 合并成一条。同步只认 `uid`，`id` 不进远端。
+    uid: Mapped[str] = mapped_column(
+        String(32), default=lambda: uuid.uuid4().hex, nullable=False, index=True
+    )
     path: Mapped[str] = mapped_column(String(240), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime, server_default=func.now(), nullable=False)
 
@@ -931,6 +937,15 @@ class Message(Base):
     __tablename__ = "messages"
 
     id: Mapped[int] = mapped_column(BigAutoId, primary_key=True, autoincrement=True)
+    #: 跨机器的稳定身份（见 `app/sync.py`）。
+    #:
+    #: `id` 是自增整数，只在**这台机器**上有意义 —— 两台机器各自离线写对话，
+    #: 都会从同一个号段往下发；拿 `id` 当同步键，第二台机器的新消息会顶掉
+    #: 第一台机器的同号消息。所以同步只认 `uid`，`id` 不进远端，
+    #: 消息之间的父子引用也按 `uid` 翻译（`parent_id` ↔ `parent_uid`）。
+    uid: Mapped[str] = mapped_column(
+        String(32), default=lambda: uuid.uuid4().hex, nullable=False, index=True
+    )
     #: **这一轮用的是哪套模式** —— 发送那一刻挂载了哪几组工具，存成 JSON 列表。
     #:
     #: 为什么要落库：模式是用户随时在改的（那排开关），改完之后"当时是怎么问的"

@@ -153,6 +153,10 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 置顶：老对话一律 False = 未置顶，正是想要的默认
     ("conversations", "pinned", "BOOLEAN NOT NULL DEFAULT 0"),
     ("messages", "mounts", "TEXT NOT NULL DEFAULT ''"),
+    # 跨机器同步的稳定身份（见 `app/sync.py`）。自增 `id` 两台机器会撞号，
+    # 同步只认这两列；老行由下面 `_BACKFILLS` 补一个随机串。
+    ("messages", "uid", "VARCHAR(32) NOT NULL DEFAULT ''"),
+    ("conversation_folders", "uid", "VARCHAR(32) NOT NULL DEFAULT ''"),
     # 资料走到哪一步（检索 / 出题）。默认给"检索"是给**以后新来的行**选的，
     # 老行得靠下面那张回填表 —— 见 `_BACKFILLS`。
     ("materials", "depth", "VARCHAR(16) NOT NULL DEFAULT '检索'"),
@@ -176,6 +180,16 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
 #: 表现是升级之后 `search_material` 突然什么都搜不到（而且不报错）。
 _BACKFILLS: dict[tuple[str, str], str] = {
     ("materials", "depth"): "UPDATE materials SET depth = '出题'",
+    # 同步身份：老行没有 uid，补一个 32 位随机串（一次 16 字节 = 32 个 hex 字符）。
+    # 每行各算一次 `randomblob`，不是全表同一个值。
+    ("messages", "uid"): (
+        "UPDATE messages SET uid = lower(hex(randomblob(16)))"
+        " WHERE uid IS NULL OR uid = ''"
+    ),
+    ("conversation_folders", "uid"): (
+        "UPDATE conversation_folders SET uid = lower(hex(randomblob(16)))"
+        " WHERE uid IS NULL OR uid = ''"
+    ),
 }
 
 

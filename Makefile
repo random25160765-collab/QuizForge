@@ -12,14 +12,17 @@
 #   make test           上面的校验 + 前端逻辑自测
 #   make graph-check    图谱体检（无环 / 能走到根 / 闭包不矛盾）
 #
-# 数据快照（**唯一进版本库的数据形态**，就是 SQLite 库本身）—— 分两份：
-#   make db-snapshot   一次写三个：
-#                        db/quizforge.db.gz               明文、不含向量 → 本机留（已 gitignore）
-#                        db/quizforge.db.gz.enc           口令加密       → **提交它**（公开仓库只有密文）
-#                        db/quizforge.db.with-vectors.gz  含向量         → 本机自己留（已 gitignore）
+# 数据快照（**只在本机，绝不进版本库**，就是 SQLite 库本身）—— 分三份：
+#   make db-snapshot   一次写三个，全部落在 db/（已 gitignore）：
+#                        db/quizforge.db.gz               明文、不含向量
+#                        db/quizforge.db.gz.enc           口令加密（拷给另一台机器 / 冷备份）
+#                        db/quizforge.db.with-vectors.gz  含向量
 #   make db-restore    db/quizforge.db.gz.enc → data/quizforge.db（先解密再解压；向量靠 make embed 重建）
 #                      要连向量一起搬：make db-restore ARGS="--path db/quizforge.db.with-vectors.gz"
 #   make snapshot-key  生成口令 config/snapshot.key（一台机器一次，复制到每台要同步的机器，绝不进 git）
+#
+# **数据不进 git（2026-11-08 起）**：日常跨机器走 Turso（make sync），题库交换走
+# bank-export / bank-import。仓库里只有代码；干净克隆起来是个空库。
 # ============================================================================
 
 PYTHON ?= python3
@@ -43,7 +46,7 @@ CHECK_PYTHON = $(VENV)/bin/python
         win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
         api-venv api-dev api-test dev \
         env-init db-snapshot db-restore \
-        bank-export bank-import user-export user-import user-show \
+        bank-export bank-import user-export user-import user-show sync \
         graph graph-check graph-relate graph-relate-centric \
         graph-export share skills-link embed intake \
         coverage coverage-gaps drive help cases
@@ -153,25 +156,26 @@ api-venv:
 	@$(VENV)/bin/pip install -q -r api/requirements.txt
 	@echo "后端依赖就绪：$(VENV)"
 
-# ---- 数据快照：**唯一进版本库的数据形态**（SQLite 库本身，不是某种导出版本）----
+# ---- 数据快照：**只在本机，绝不进版本库**（SQLite 库本身，不是某种导出版本）----
 #
-# 权威是 `data/quizforge.db`（本机一个文件）；快照用来"换台机器接着干"。
+# 权威是 `data/quizforge.db`（本机一个文件）；快照用来"换台机器接着干"或冷备份。
 # 这里刻意**不再有 Postgres**：
 #   * 快照就是 SQLite 库本身，解压即用，没有"先起一台库再灌 dump"这一步；
 #   * 载入即校验（完整性 + 外键悬空），坏快照当场拒绝，不会悄悄给出一个半库。
 #
-# 快照**必须抹掉 AI 密钥**再落盘：它是进版本库的（仓库公开），而 `app_settings`
-# 里存着用户自己填的密钥。踩过：2026-09-17 导出的快照里带过一把真密钥。
+# 快照**仍要抹掉 AI 密钥与 turso token** 再落盘：它会被拷来拷去（另一台机器、
+# 备份盘），而 `app_settings` 里存着用户自己填的密钥。踩过：2026-09-17 导出的快照
+# 里带过一把真密钥。
 #
-# **分两份**（2026-09-26）：向量占全库 82.9%，而它是派生物、又**压不动**
-# （float32 的 blob 走 zlib 只有 1.08 倍，正文有 3.8 倍）—— 进了版本库就是按原始
-# 大小长、历史里还删不掉。所以进 git 的那份**不含向量**，带向量的那份本机自己留：
-# 换机器带上它就不用重算，不带也行（`make embed` 重建）。详见 tools/db_snapshot.py。
+# **三份都本机留**（2026-11-08 起数据不进 git）：向量占全库 82.9%，是派生物、又
+# **压不动**（float32 的 blob 走 zlib 只有 1.08 倍，正文有 3.8 倍），本来就不该进
+# 版本库；密文那份给另一台机器 / 冷备。换机器带上它就不用重算向量，不带也行
+#（`make embed` 重建）。详见 tools/db_snapshot.py。
 DB_SNAPSHOT ?= db/quizforge.db.gz
 DB_VECTORS  ?= db/quizforge.db.with-vectors.gz
 
 # 库里 → 三份。用 SQLite 的 backup API 取一致性快照（有 WAL 也不会读到半写状态）。
-# 明文两份本机留（gitignore）；进 git 的是第三份 —— 口令加密后的密文。
+# 三份都落在 db/（已 gitignore）：明文、密文、含向量；没有任何一份该进 git。
 db-snapshot:
 	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_SNAPSHOT) --no-vectors
 	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_VECTORS)
@@ -430,6 +434,13 @@ user-show:
 user-import:
 	@(cd api && .venv/bin/python -m app.cli.pack import --in $(USER_PACK) $(ARGS))
 
+# ------------------------------------------------- 跨机器同步（Turso）
+# 本地 SQLite 仍是工作库；Turso 只做行级增量的中转。对话端到端加密，
+# 口令就是 `config/snapshot.key`（两台机器必须同一份，见 `make snapshot-key`）。
+# 配置：config/settings.local.json 的 `turso` 块（地址 + 令牌），设置页也能改。
+sync:
+	@(cd api && .venv/bin/python -m app.cli.sync $(if $(ARGS),$(ARGS),run))
+
 # ---------------------------------------------------------------- 知识图谱
 # merge 把 981 个点归并成概念（幂等，可反复跑）；edges 派共现边；
 # relate 让模型给反复共现的概念对判语义关系（花 LLM 的钱，按 --limit 控制规模）。
@@ -491,30 +502,38 @@ BANK_MATERIALIZE = $(VENV)/bin/python -m pipeline.bankfile materialize
 # 密钥只要推出去了，后面所有校验都变得没有意义（收不回来，只能换）。
 check:
 	@$(CHECK_PYTHON) tools/secret_scan.py
-	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
-	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
-	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(CHECK_PYTHON) tools/check.py; \
-	status=$$?; $(CHECK_PYTHON) -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" $$BANK; \
-	exit $$status
+	@if [ "$$QF_SKIP_BANK_CHECK" = "1" ]; then \
+	  echo "[SKIP] 题库校验：此环境没有数据库（数据不进版本库）"; \
+	else \
+	  BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
+	  $(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
+	  QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(CHECK_PYTHON) tools/check.py; \
+	  status=$$?; $(CHECK_PYTHON) -c "import shutil,sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" $$BANK; \
+	  exit $$status; \
+	fi
 
 test:
 	@# 先过一遍语法：运行时脚本只要有一处解析失败，整页就白屏
 	@# （实测踩过 —— chat.js 被编辑截断，逻辑断言一条都抓不到）
 	@for f in theme/runtime/*.js; do node --check "$$f" || exit 1; done
-	@BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
-	PUB=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
-	$(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
-	QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(CHECK_PYTHON) tools/check.py; \
-	status=$$?; \
-	if [ $$status -eq 0 ]; then \
-	  $(BANK_MATERIALIZE) --out $$PUB >/dev/null; \
-	  (cd api && QF_QUESTIONS_DIR=$$PUB/questions QF_TOPICS_FILE=$$PUB/meta/topics.yaml \
-	     .venv/bin/python -m app.cli.import_bank --dataset-out $$PUB/bank.json >/dev/null); \
+	@if [ "$$QF_SKIP_BANK_CHECK" = "1" ]; then \
+	  echo "[SKIP] 题库校验 + 前端联测：此环境没有数据库（数据不进版本库）"; \
+	else \
+	  BANK=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
+	  PUB=$$(mktemp -d "$${TMPDIR:-/tmp}/qf-bank-XXXXXX"); \
+	  $(BANK_MATERIALIZE) --out $$BANK --status all >/dev/null; \
+	  QF_QUESTIONS_DIR=$$BANK/questions QF_TOPICS_FILE=$$BANK/meta/topics.yaml $(CHECK_PYTHON) tools/check.py; \
 	  status=$$?; \
-	fi; \
-	if [ $$status -eq 0 ]; then QF_BANK_JSON=$$PUB/bank.json node tools/selftest.mjs; status=$$?; fi; \
-	$(CHECK_PYTHON) -c "import shutil,sys; [shutil.rmtree(p, ignore_errors=True) for p in sys.argv[1:]]" $$BANK $$PUB; \
-	exit $$status
+	  if [ $$status -eq 0 ]; then \
+	    $(BANK_MATERIALIZE) --out $$PUB >/dev/null; \
+	    (cd api && QF_QUESTIONS_DIR=$$PUB/questions QF_TOPICS_FILE=$$PUB/meta/topics.yaml \
+	       .venv/bin/python -m app.cli.import_bank --dataset-out $$PUB/bank.json >/dev/null); \
+	    status=$$?; \
+	  fi; \
+	  if [ $$status -eq 0 ]; then QF_BANK_JSON=$$PUB/bank.json node tools/selftest.mjs; status=$$?; fi; \
+	  $(CHECK_PYTHON) -c "import shutil,sys; [shutil.rmtree(p, ignore_errors=True) for p in sys.argv[1:]]" $$BANK $$PUB; \
+	  exit $$status; \
+	fi
 
 # 资料库入库：登记 + 切片，**止步于此**（不抽点 / 不归概念 / 不出题 —— 见 pipeline/intake.py）。
 # 之后接 `make embed` 就有向量了。逐条确认要不要继续往下走看 `materials.depth`。
@@ -544,6 +563,7 @@ help:
 	@echo "              四步：dispatch → worker → promote --apply → rework --apply（drive 已含）"
 	@echo "  校验        make check（密钥扫描 + 题库校验）· make test · make graph-check"
 	@echo "  构建发布    make web（前端 → api/web/）· make package / dist-linux（单文件）"
-	@echo "  数据快照    make db-restore（快照 → data/quizforge.db，解压即用）"
-	@echo "              make db-snapshot（库里 → 快照，提交它）· 另见 bank-export / bank-import"
+	@echo "  跨机器同步  make sync（Turso 推拉一次）· make sync ARGS=status（看状态）"
+	@echo "  数据快照    make db-restore（本机快照 → data/quizforge.db，解压即用）"
+	@echo "              make db-snapshot（冷备份 / 换机手动拷贝）· 数据不进 git，日常用 make sync"
 	@echo "  其它        make env-init（生成 .env）· make skills-link · make loc（代码量）· make help"

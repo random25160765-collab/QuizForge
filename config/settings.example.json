@@ -254,5 +254,10 @@
   "obsidian": {
     "vaultPath": ""
   },
-  "search": {}
+  "search": {},
+  "turso": {
+    "url": "",
+    "token": "",
+    "enabled": false
+  }
 }

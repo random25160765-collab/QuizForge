@@ -5,6 +5,8 @@
 #
 #   1. `/api/health` 200 —— 在监听；
 #   2. 题库不是空壳，且**接口给的与库里对得上** —— 快照真的恢复出来了；
+#      （数据不进版本库之后，干净克隆本来就没有题 —— CI 用
+#      `SMOKE_REQUIRE_BANK=0` 关掉这一条，接口对账仍然做。）
 #   3. 入口一致：顶层 `/` 跳对话页，而对话页能开。
 #
 # ## 为什么是这三件
@@ -31,6 +33,8 @@ set -euo pipefail
 BASE="${1:-http://127.0.0.1:8100}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DB="$ROOT/data/quizforge.db"
+# 1 = 要求题库非空（有数据的机器 / 本地验收）；0 = 允许空库（CI 的干净克隆）。
+REQUIRE_BANK="${SMOKE_REQUIRE_BANK:-1}"
 
 fail() { printf '✗ %s\n' "$1" >&2; exit 1; }
 
@@ -50,14 +54,14 @@ done
 echo "✓ /api/health 200"
 
 # ------------------------------------------------- 2) 题库不是空壳，且与库一致
-[ -f "$DB" ] || fail "没有库：$DB —— 先跑 make db-restore"
-python3 - "$DB" "$BASE" <<'PY'
+[ -f "$DB" ] || fail "没有库：$DB —— 服务首启会自动建；手动验请先起服务"
+python3 - "$DB" "$BASE" "$REQUIRE_BANK" <<'PY'
 import json
 import sqlite3
 import sys
 import urllib.request
 
-db_path, base = sys.argv[1], sys.argv[2]
+db_path, base, require_bank = sys.argv[1], sys.argv[2], sys.argv[3] == "1"
 conn = sqlite3.connect(db_path)
 live = conn.execute(
     "SELECT COUNT(*) FROM questions"
@@ -67,13 +71,13 @@ topics = conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
 served = json.load(urllib.request.urlopen(base + "/api/bank"))["questions"]
 
 print(f"  库：现行题 {live} · 主题 {topics}；接口：{len(served)} 题")
-if live <= 0:
+if require_bank and live <= 0:
     raise SystemExit("✗ 库里一道题都没有 —— 快照没恢复出来")
-if topics <= 0:
+if require_bank and topics <= 0:
     raise SystemExit("✗ 库里没有考纲 —— 快照不完整")
 if len(served) != live:
     raise SystemExit(f"✗ 接口与库对不上：接口 {len(served)} ≠ 库 {live}")
-print("✓ 题库与库一致")
+print("✓ 题库与库一致" if require_bank else "✓ 空库，接口与库一致")
 PY
 
 # ---------------------------------------------------------------- 3) 入口一致

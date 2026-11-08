@@ -5,11 +5,13 @@ config/ai.local.json
 # 由 `scripts/gpu-setup.sh` 写；见 `local_embed.local_config()`。
 config/embed.local.json
 
-# 数据快照的明文两份都**本机自己留**，不进 git：
-#  * db/quizforge.db.gz           不含向量 —— 加密成 .enc 后提交那份（见 tools/db_snapshot.py 文件头）
-#  * db/*.with-vectors.gz         含向量 —— float32 的 blob 走 zlib 只压 1.08 倍，进了版本库
-#    就几乎按原始大小增长，历史里还删不掉。向量是派生物，`make embed` 能重建。
+# 数据快照**三份都只在本机**，绝不进 git（2026-11-08 起）：
+#  * db/quizforge.db.gz           不含向量的明文
+#  * db/quizforge.db.gz.enc       口令密文（拷给另一台机器 / 冷备份）
+#  * db/*.with-vectors.gz         含向量（派生物，`make embed` 能重建）
+# 数据走 Turso 行级同步与本地快照；旧快照已从 git 历史里用 git filter-repo 清掉。
 db/quizforge.db.gz
+db/*.gz.enc
 db/*.with-vectors.gz
 # 快照口令：只该在机器之间手动复制，绝不进 git（口令进了仓库，加密就是白做）
 config/snapshot.key

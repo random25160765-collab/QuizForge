@@ -10,13 +10,17 @@
 
 ## 跑起来
 
-三条命令，从干净克隆到能用（实测约半分钟，主要花在装依赖）：
+两条命令，从干净克隆到能起服务（实测约半分钟，主要花在装依赖）：
 
 ```bash
 make api-venv     # 建后端环境（venv + 依赖）
-make db-restore   # 解压快照 → data/quizforge.db（题库 + 考纲 + 知识空间）
 make api-dev      # 构建前端并起服务（**前台阻塞**）
 ```
+
+干净克隆是**空库**：表由首启自动建好，题是 0。要用自己的题库与历史，把另一台
+机器的 `db/quizforge.db.gz.enc` 拷到同路径后 `make db-restore`，或者旧机器
+`make bank-export`、新机器 `make bank-import`；日常用户数据走 Turso 同步。
+**数据不进版本库**（2026-11-08 起），仓库里只有代码。
 
 然后打开 **<http://127.0.0.1:8100/chat.html>** —— **对话是前台**：
 问、讲、做题、记笔记都发生在这一个上下文里，其余页面是它的侧门
@@ -33,11 +37,16 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/api/health   # 20
 （`data/quizforge.db`）；表由首启自动建好（alembic 已退役）。
 `.env` 可选（`make env-init` 从 `.env.example` 生成，里面是端口与用量上限）。
 
-**库里一开始是空的，题在快照里**：`db/quizforge.db.gz.enc` **就是 SQLite 库本身**、
-口令加密过的，`make db-restore` 解密解压即用，不用起任何服务。反向的 `make db-snapshot`
-把现状压回去、加密、提交它 —— 那是"换台机器接着干"唯一的载体。公开仓库里只有密文：
-没拿 `config/snapshot.key`（`make snapshot-key` 生成，两台机器同一份）就解不开，
-聊天记录不会跟着 clone 出去；落盘前还会自动抹掉 AI 密钥。
+**数据全在本机，仓库里没有库**：权威是 `data/quizforge.db`；快照
+`db/quizforge.db.gz.enc` **就是 SQLite 库本身**、口令加密过的，`make db-restore`
+解密解压即用，不用起任何服务。`make db-snapshot` 把它写回 `db/`（**三份都只留本机**，
+已 gitignore），用途是**冷备份 / 换机器手动拷贝**。
+
+两台机器日常一起用走 Turso 行级增量同步：设置页「同步」填数据库地址与令牌，或
+`make sync`。对话、分组、消息、附件端到端加密后才上传（密钥仍是
+`config/snapshot.key`，两台机器必须同一份）；进度、自出的题、设置等其余数据明文上传。
+`config/snapshot.key` 由 `make snapshot-key` 生成，**绝不进 git**；落盘快照前还会
+自动抹掉 AI 密钥与 Turso token。
 
 要用 AI 相关的功能，得在 `config/ai.local.json` 里填自己的 key
 （`baseUrl` / `apiKey` / `model`；这个文件已被 git 忽略，不会跟着仓库走）。
@@ -101,12 +110,12 @@ agent 把"推导"的边际成本压到近零，于是**验证与审读成了不�
 
 ## 权威在哪
 
-**题目、考纲、知识图谱都在数据库里 —— 仓库里没有题目文件。**
+**题目、考纲、知识图谱都在数据库里 —— 仓库里没有题目文件，也没有数据库副本。**
 
-**版本库里唯一的副本是快照 `db/quizforge.db.gz.enc`（库本身的口令密文）。**
+数据**不进版本库**：库只在本机 `data/quizforge.db`，快照只在本机 `db/`。
 校验与测试会把库**物化到临时目录**再读，避免用到跨轮残渣。
-另有一个可选的交换形态（`make bank-export` → `bank.json`）：它是**按需生成的投影**，
-不进版本库 —— 需要"一个厂商中立的文件"时现生一份即可。
+交换形态有 `make bank-export` → `bank.json`（题库投影）和 `make user-export`
+（用户数据包）：都是按需生成的投影，不进版本库；日常跨机器用 Turso 行级同步。
 
 内容来源是几个只读目录（材料 PDF、笔记 vault、文档仓库）—— 它们**只读**，
 写回去的只有库里那一份。

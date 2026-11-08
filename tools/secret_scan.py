@@ -3,12 +3,13 @@
 
 ## 为什么要有它
 
-2026-09-17 撞过一次：开发库快照（当时是 `db/quizforge.sql.gz`，现在是
+2026-09-17 撞过一次：开发库快照（当时是 `db/quizforge.sql.gz`，后来是
 `db/quizforge.db.gz`）是进版本控制的，而
 `app_settings` 里存着用户自己填的 API 密钥（见 `api/app/routers/ai.py` 里
 那个写明的取舍）—— 一把真的 DeepSeek 密钥就这么跟着快照上了公开仓库，
 追下去有十一个提交。**事后清理没有意义**（旧对象仍可按 SHA 取到，克隆与
-fork 里也有），只能换密钥。所以真正的解法是别再让它出去。
+fork 里也有），只能换密钥。所以真正的解法是别再让它出去 —— 2026-11-08 起
+数据（明文与密文）统统不进 git。
 
 配套的两道口子：`make db-snapshot` 落盘前抹 `"apiKey"`（源头），这个扫描器
 在 `make check` 里兜底（出口）。
@@ -116,12 +117,12 @@ def scan_text(text: str) -> list[tuple[str, str, str]]:
 
 def scan_files(paths: list[str]) -> int:
     problems = 0
-    # 明文快照不许被跟踪：进 git 的必须是加密的 .enc（2026-11-06 起）。
-    # 聊天记录跟着明文快照进公开仓库，和密钥出去是同一类事故。
-    if "db/quizforge.db.gz" in paths:
-        print("[E] 明文快照 db/quizforge.db.gz 被 git 跟踪了 —— "
-              "该提交的是加密的 db/quizforge.db.gz.enc（make db-snapshot 会自动生成）")
-        problems += 1
+    # 数据一律不进 git（2026-11-08 起）：库与快照（明文 / 密文 / 含向量）都不该被跟踪。
+    # 聊天记录跟着库进公开仓库，和密钥出去是同一类事故 —— 加密也改变不了"整库外泄"。
+    for name in paths:
+        if name.startswith("db/") and "quizforge.db" in name:
+            print(f"[E] 数据库/快照被 git 跟踪了：{name} —— 数据只留本机，绝不提交")
+            problems += 1
     for name in paths:
         path = ROOT / name
         if not path.is_file():

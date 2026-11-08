@@ -4,7 +4,7 @@
 ## 为什么长这样
 
 题库、考纲、知识空间的唯一权威在库（`data/quizforge.db`），而库里那些是几个月
-攒下来的东西，不能重来一遍。所以"数据进版本库"必须有个载体。
+攒下来的东西，不能重来一遍。所以数据必须有个能搬走、能备份的载体。
 
 原先那个载体是 `db/quizforge.sql.gz` —— 一份 `pg_dump` 的产物。它的代价是：
 **要把它变成能用的库，得先起一台 Postgres**（`docker compose up` → `psql` 灌进去
@@ -23,16 +23,14 @@
     python3 tools/db_snapshot.py genkey                              # 生成 config/snapshot.key
     python3 tools/db_snapshot.py load --path … --target /tmp/x.db    # 换个落点（自检用）
 
-## 快照分三份：一份密文进 git，两份明文本机留
+## 快照分三份：**三份都只在本机，绝不进 git**（2026-11-08 起）
 
-2026-11-06 起，进 git 的只有**口令加密**的那份：
-
-* `db/quizforge.db.gz` —— 明文，**本机留**（已 gitignore），不含向量。题、考纲、
-  图谱、材料正文（正文是"坐标的唯一来源"，删不得）都在里面，几十 MB 级别。
-* `db/quizforge.db.gz.enc` —— 上面那份用口令加密后的产物，**进 git**。
-  公开仓库里只有密文：没有口令文件的机器 clone 下来也打不开。
-* `db/quizforge.db.with-vectors.gz` —— **本机留**（已 gitignore），含向量。
-  换机器时带上它，不必重算；不带也行，`make embed` 重建。
+* `db/quizforge.db.gz` —— 明文，不含向量。题、考纲、图谱、材料正文（正文是
+  "坐标的唯一来源"，删不得）都在里面，几十 MB 级别。
+* `db/quizforge.db.gz.enc` —— 上面那份用口令加密后的产物，给**另一台机器 /
+  冷备份**用。数据不进版本库；历史里的旧密文也已用 `git filter-repo` 清掉。
+* `db/quizforge.db.with-vectors.gz` —— 含向量。换机器时带上它，不必重算；
+  不带也行，`make embed` 重建。
 
 口令只有一个，三处来源（按顺序）：环境变量 `QUIZFORGE_SNAPSHOT_PASSPHRASE`、
 `config/snapshot.key`、终端里现敲。生成口令走 `make snapshot-key` —— 一台机器
@@ -42,29 +40,30 @@
 `make embed` 随时能从正文重算出来（GPU 约 10 分钟）。更要紧的是它**压不动**：
 float32 的向量 blob 走 zlib 只有 **1.08 倍**，而正文有 3.8 倍 —— 也就是说向量一旦进了
 版本库，仓库体积几乎按它的原始大小增长，历史里还删不掉（旧对象仍按 SHA 可取）。
-所以它不该进 git；而那份 core 快照拿去 clone 之后，一条 `make embed` 就补齐了。
+所以数据整体不进 git；那份不含向量的 core 快照拷到新机器后，一条 `make embed` 就补齐了。
 
 `load --no-vectors`（载入时剔掉向量）与 `save --with-vectors/--no-vectors` 都留着口子，
 两条路都验过：core 快照载入后 `make embed` 能从零重建。
 
 ## 两件不许省的事
 
-* **落盘前抹掉 AI 密钥**。`user_settings.data.ai.apiKey` 存着用户自己填的密钥，
-  而快照是进版本控制的（仓库公开）。2026-09-17 撞过一次真事故：一把真的
-  DeepSeek 密钥跟着快照上了公开仓库，追下去有十一个提交；事后清理没有意义
-  （旧对象仍可按 SHA 取到），只能换密钥。这里抹的是**快照里的那份**，库里照旧。
-  出口还有一道 `tools/secret_scan.py` 兜底（`make check` 里跑）。
+* **落盘前抹掉 AI 密钥与 Turso token**。`user_settings.data.ai.apiKey` 存着用户
+  自己填的密钥，而快照会被拷来拷去（另一台机器、备份盘）。2026-09-17 撞过一次真
+  事故：一把真的 DeepSeek 密钥跟着快照上了公开仓库，追下去有十一个提交；事后清理
+  没有意义（旧对象仍可按 SHA 取到），只能换密钥。这里抹的是**快照里的那份**，
+  库里照旧。出口还有一道 `tools/secret_scan.py` 兜底（`make check` 里跑）。
 
 * **载入时校验完整性**。一个坏了或半截的快照，宁可当场拒绝，也不要给出一份
   "看着能跑、其实少了一半题"的库 —— 那种问题会在几天后以"某道题怎么不见了"
   的形式冒出来，届时已经查不清是哪一步坏的。校验两项：SQLite 的 `integrity_check`
   与 `foreign_key_check`（悬空引用是搬运/截断最典型的翻车方式）。
 
-* **进 git 的只能是密文**。2026-11-06 之前明文快照直接进公开仓库 —— 聊天记录
-  （`conversations` / `messages`）跟着 clone 就出去了，和 2026-09-17 那起密钥事故
-  同一个道理：那次抹了密钥、没管聊天。现在出口两道：`make db-snapshot` 落盘即
-  加密（`encrypt` 子命令），`tools/secret_scan.py` 兜底拦"明文快照被提交"。
-  历史里已经出去的那批明文快照，只能靠重写历史清掉（见仓库维护记录）。
+* **数据一律不进 git**（2026-11-08 起）。2026-11-06 之前明文快照直接进公开仓库 ——
+  聊天记录（`conversations` / `messages`）跟着 clone 就出去了，和 2026-09-17 那起
+  密钥事故同一个道理：那次抹了密钥、没管聊天。密文时代（2026-11-06 ~ 11-08）虽然
+  只提交 `.enc`，仍不该把整库留在公开仓库；现在三份都只在本机。
+  `tools/secret_scan.py` 仍兜底拦"数据库文件被跟踪"。历史里已经出去的明文与密文
+  快照，只能靠重写历史清掉（见仓库维护记录）。
 """
 
 from __future__ import annotations
@@ -405,7 +404,7 @@ def _load_maybe_encrypted(path: Path, target: Path, *, force: bool, with_vectors
     """load 的入口。`.enc` 先解密成临时文件（用完即删）再走 load；明文 `.gz` 直接载入。
 
     `.enc` 不存在时回退到同名明文 `.gz` —— 只该在迁移期出现：老机器按旧流程存的
-    明文快照，`make db-restore` 还能用。提交前必须换成密文（secret_scan 会拦）。
+    明文快照，`make db-restore` 还能用。它只在本机，别提交（secret_scan 会拦）。
     """
     if path.suffix != ".enc":
         return load(path, target, force, with_vectors=with_vectors)
@@ -425,7 +424,7 @@ def _load_maybe_encrypted(path: Path, target: Path, *, force: bool, with_vectors
             tmp.unlink(missing_ok=True)
     legacy = path.with_suffix("")
     if legacy.is_file():
-        print(f"没有密文快照 {path}，回退到明文快照 {legacy}（旧流程，提交前记得换成密文）")
+        print(f"没有密文快照 {path}，回退到明文快照 {legacy}（旧流程；数据不进 git）")
         return load(legacy, target, force, with_vectors=with_vectors)
     print(f"快照不存在：{path}", file=sys.stderr)
     return 1
@@ -434,7 +433,7 @@ def _load_maybe_encrypted(path: Path, target: Path, *, force: bool, with_vectors
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tools/db_snapshot.py",
-        description="数据快照的存取（快照 = SQLite 库本身；进 git 的形态是口令密文）",
+        description="数据快照的存取（快照 = SQLite 库本身；三份都只在本机，绝不进 git）",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -442,7 +441,7 @@ def main(argv: list[str] | None = None) -> int:
     save_parser.add_argument("--out", default="db/quizforge.db.gz")
     save_parser.add_argument("--db", default=str(DEFAULT_DB), help="源库路径（默认 data/quizforge.db）")
     save_parser.add_argument("--no-vectors", action="store_true",
-                             help="不带向量（加密提交的那份；向量在目标机器上 make embed 重建）")
+                             help="不带向量（加密拷给另一台机器的那份；向量在目标机器上 make embed 重建）")
 
     load_parser = sub.add_parser("load", help="快照 → 库（.enc 先解密；载入前校验）")
     load_parser.add_argument("--path", default="db/quizforge.db.gz.enc")
@@ -450,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
     load_parser.add_argument("--force", action="store_true", help="目标已存在也覆盖")
     load_parser.add_argument("--no-vectors", action="store_true", help="载入时剔掉向量（改主意想换一台重算）")
 
-    enc_parser = sub.add_parser("encrypt", help="明文快照 → 口令密文（进 git 的形态）")
+    enc_parser = sub.add_parser("encrypt", help="明文快照 → 口令密文（拷给另一台机器 / 冷备份）")
     enc_parser.add_argument("--in", dest="src", default="db/quizforge.db.gz")
     enc_parser.add_argument("--out", default="db/quizforge.db.gz.enc")
 

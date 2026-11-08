@@ -551,6 +551,135 @@
       });
     }
 
+    /* ------------------------------------------------------ 跨机器同步（Turso）
+     *
+     * 本地库仍是唯一工作库；Turso 只做行级增量的中转（见 api/app/sync.py）。
+     * 对话四张表端到端加密，密钥就是 `config/snapshot.key` —— 两台机器必须
+     * 同一份。其余数据明文上传。这里只填连接信息，令牌不会显示回来。
+     */
+    var syncConf = conf.turso || {};
+    var syncStatusLine = h('p', {
+      text: '正在读取同步状态…',
+      style: { margin: '-4px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg2)' },
+    });
+    var syncResult = h('div');
+    var syncUrlInput = h('input.input.input--mono', {
+      type: 'text',
+      spellcheck: 'false',
+      placeholder: 'libsql://你的库.turso.io',
+      value: syncConf.url || '',
+      onInput: function (event) {
+        store.saveSettings({ turso: { url: event.target.value.trim() } });
+      },
+    });
+    var syncTokenInput = h('input.input.input--mono', {
+      type: 'password',
+      autocomplete: 'off',
+      placeholder: 'Turso 数据库令牌（存在本机，不会上传）',
+      value: syncConf.token || '',
+      onInput: function (event) {
+        store.saveSettings({ turso: { token: event.target.value.trim() } });
+      },
+    });
+
+    function paintSync(st) {
+      if (!st) {
+        syncStatusLine.textContent = '读不到同步状态。';
+        return;
+      }
+      if (!st.enabled) {
+        syncStatusLine.textContent = '已关闭 —— 打开下面的开关才会同步。';
+        return;
+      }
+      if (!st.configured) {
+        syncStatusLine.textContent = '还没配置 —— 填上数据库地址与令牌就能用。';
+        return;
+      }
+      var bits = ['已配置', '待推送 ' + (st.pending || 0) + ' 行'];
+      bits.push(st.keyReady ? '对话加密口令：有' : '对话加密口令：没有（对话不会上传）');
+      var last = st.last;
+      if (last && last.ok) {
+        bits.push('上次 ' + last.at + ' · 推 ' + (last.pushed || 0) + ' / 拉 ' + (last.pulled || 0));
+      } else if (last && !last.ok) {
+        bits.push('上次失败：' + last.error);
+      } else {
+        bits.push('还没同步过');
+      }
+      syncStatusLine.textContent = bits.join(' · ');
+    }
+
+    function refreshSync() {
+      api.get('/sync/status').then(paintSync).catch(function () {
+        syncStatusLine.textContent = '读不到同步状态。';
+      });
+    }
+
+    function pollSync(deadline) {
+      api.get('/sync/status').then(function (st) {
+        paintSync(st);
+        if (st && st.running && Date.now() < deadline) {
+          window.setTimeout(function () { pollSync(deadline); }, 1500);
+          return;
+        }
+        ui.clear(syncResult);
+        var last = st && st.last;
+        if (last && last.ok) {
+          syncResult.appendChild(h('div.statline', { style: { color: 'var(--ok)' } },
+            h('span', { html: ui.icon('check', 15) }),
+            h('span', { text: '同步完成 · 推 ' + (last.pushed || 0) + ' 行 · 拉 '
+              + (last.pulled || 0) + ' 行 · ' + (last.seconds || 0) + ' 秒' })));
+        } else {
+          syncResult.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
+            h('span', { html: ui.icon('warn', 15) }),
+            h('span', { text: '同步失败：' + ((last && last.error) || '未知原因') })));
+        }
+      }).catch(function (err) {
+        ui.clear(syncResult);
+        syncResult.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
+          h('span', { text: '同步失败：' + ((err && err.message) || err) })));
+      });
+    }
+
+    var syncForm = h('div.form__section', null,
+      h('div.form__sectiontitle', { text: '同步（Turso）' }),
+      h('p', {
+        text: '换机器时不用再搬整库：本地 SQLite 照常用，Turso 只中转变化。'
+          + '对话、分组、消息、附件端到端加密后上传（密钥是 config/snapshot.key，'
+          + '两台机器必须同一份）；进度、自出的题、设置等其余数据明文上传。'
+          + '令牌只存在本机设置里，不会显示回来。',
+        style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      syncStatusLine,
+      switchRow('启用跨机器同步', '关闭时不会推送，也不会拉取；本机数据不受影响。',
+        syncConf.enabled !== false, function (value) {
+          store.saveSettings({ turso: { enabled: value } });
+        }),
+      h('div.form__grid', { style: { marginTop: '12px' } },
+        field('数据库地址', '形如 libsql://xxx.turso.io（设置页只连这一台）', syncUrlInput),
+        field('数据库令牌', '在 Turso 控制台生成；只存本机，也不会跟着同步走', syncTokenInput)),
+      h('div.btnrow', { style: { marginTop: '12px' } },
+        h('button.btn', {
+          type: 'button',
+          onClick: function () {
+            ui.clear(syncResult);
+            syncResult.appendChild(h('div.statline', null, h('span.spinner'), h('span', { text: '正在同步…（首次会久一点）' })));
+            api.post('/sync/run', {}).then(function (res) {
+              if (res && res.started === false) {
+                ui.clear(syncResult);
+                syncResult.appendChild(h('div.statline', { text: '已经有一次同步在跑，等它结束。' }));
+              }
+              pollSync(Date.now() + 10 * 60 * 1000);
+            }).catch(function (err) {
+              ui.clear(syncResult);
+              syncResult.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
+                h('span', { text: '没开始：' + ((err && err.message) || err) })));
+            });
+          },
+        }, h('span', { html: ui.icon('refresh', 15) }), h('span', { text: '立即同步' }))),
+      syncResult);
+
+    refreshSync();
+
     var dataForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '数据' }),
       h('div.statline', null, h('span', { text: '本地数据体积' }), h('b', { text: ui.fmtBytes(stats.storageBytes) })),
@@ -608,7 +737,7 @@
           },
         }, h('span', { html: ui.icon('trash', 15) }), h('span', { text: '清空进度' }))));
 
-  return h('div.form', null, aiForm, searchForm, obsForm, appearanceForm, dataForm);
+  return h('div.form', null, aiForm, searchForm, obsForm, appearanceForm, syncForm, dataForm);
   }
 
   /* 数据被导入或清空之后广播一次：页面各自的反应不一样

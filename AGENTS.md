@@ -95,15 +95,16 @@ docs(pipeline): settle the retrieval layer and the authoring orchestration
 1. **未经用户明确许可，不要 commit。** 提交前把 subject 给用户看一眼。
 2. **不要 force push 到 main**，除非用户明确要求；即便要求，也必须用 `--force-with-lease`，
    并把被覆盖的旧 SHA 打印出来（回滚依据）。
-3. **提交前先 `git status`**：绝不能把密钥或材料带进版本库——
-   `config/ai.local.json`、`.env`、`reference/`（材料软链）、`dist/`、`api/web/`、`dist-local/`。
+3. **提交前先 `git status`**：绝不能把密钥、数据库或材料带进版本库——
+   `config/ai.local.json`、`config/settings.local.json`、`.env`、`reference/`（材料软链）、
+   `db/`（库与快照，明文密文都不行）、`dist/`、`api/web/`、`dist-local/`。
 4. 一次提交一件事；拿不准就拆。
 5. 改完题库必须 `python3 tools/check.py` 到 **0 error**，再 `python3 tools/build.py`。
 
 ## 其它硬规则
 
 - **材料只读**：`reference/` 与 `Codebase/` 都是**仓库外**的只读软链（各自指向哪由本机决定），
-  进 git 的只能是题目
+  进 git 的只有代码与文档；题目在库里，数据（库/快照）不进 git
 - **题目是唯一事实来源**：`dist/`、`api/web/`、数据库都是它的投影，不要手改
 - **出题依据优先级**：原材料内容 + 用户诉求 > 考纲；考纲只作归类、可随时重构
 - **layer / wing 不许留空**：它们是学习算法的坐标轴（见 `docs/THESIS.md`）

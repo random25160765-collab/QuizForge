@@ -22,6 +22,7 @@ from . import (
     problem,
     progress,
     settings_api,
+    sync_api,
 )
 
 
@@ -41,6 +42,8 @@ def all_routers() -> list[APIRouter]:
         obsidian.router,
         # 整份设置（文件是权威，可拷贝）
         settings_api.router,
+        # 跨机器同步（Turso 行级增量；对话端到端加密）
+        sync_api.router,
         # 资料：源目录只读，可写的只有元数据（`data/library/*.yaml`）与派生缓存
         library.router,
     ]

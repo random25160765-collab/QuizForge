@@ -32,6 +32,10 @@ from app.datapack import (
     read_manifest,
 )
 
+#: 测试用的假密钥。带 "test" 是给 `tools/secret_scan.py` 认的：
+#: 它看到占位词就跳过，不会把这条测试桩当成真密钥报出来。
+FAKE_KEY = "sk-test-真不该跟着包走"
+
 
 # --------------------------------------------------------------------- 边界本身
 
@@ -106,7 +110,7 @@ def _seed(db_session) -> None:  # noqa: ANN001 - 夹具给的就是 Session
             last_score=1.0,
         )
     )
-    db_session.add(AppSettings(id=1, data={"theme": "dark", "ai": {"apiKey": "sk-真不该跟着包走"}}))
+    db_session.add(AppSettings(id=1, data={"theme": "dark", "ai": {"apiKey": FAKE_KEY}}))
     db_session.commit()
 
 
@@ -158,7 +162,7 @@ def test_export_leaves_the_source_database_alone(engine, db_session, world: dict
     assert _counts(db_file(), USER_TABLES) == before
     from app.datapack import _read_secret  # noqa: PLC0415 - 只在这里用，且不打印值
 
-    assert _read_secret(db_file()) == "sk-真不该跟着包走"
+    assert _read_secret(db_file()) == FAKE_KEY
 
 
 def test_library_text_is_opt_in(engine, db_session, world: dict, tmp_path: Path) -> None:
@@ -215,7 +219,7 @@ def test_secret_is_scrubbed_unless_asked(engine, db_session, world: dict, tmp_pa
     assert _read_secret(_open_pack_db(world["pack"], tmp_path / "unzip")) == ""
 
     export_user(world["pack"], root=world["root"], with_secrets=True)
-    assert _read_secret(_open_pack_db(world["pack"], tmp_path / "unzip2")) == "sk-真不该跟着包走"
+    assert _read_secret(_open_pack_db(world["pack"], tmp_path / "unzip2")) == FAKE_KEY
 
 
 def test_import_keeps_the_local_secret_when_the_pack_has_none(

@@ -11,8 +11,10 @@ description: quizforge 出题流水线的运行手册——权威在哪（数据
 仓库里**没有**题目文件、没有 `maps/`、没有 `meta/topics.yaml` —— 那些都已经入库。
 所以：**不要去找文件，去查库**（`make coverage` / `python -m pipeline.status`）。
 
-数据要进版本库的唯一形态是快照：`db/quizforge.db.gz.enc` —— **就是 SQLite 库本身**、
-口令加密过的，`make db-snapshot` 存、`make db-restore` 取（解密解压即用，**不需要 Docker 或 Postgres**）。
+**数据不进版本库**（2026-11-08 起，明文密文都不进）：库只在本机 `data/quizforge.db`，
+快照 `db/quizforge.db.gz.enc`（**就是 SQLite 库本身**，口令加密）只作冷备份 / 换机手动拷贝，
+`make db-snapshot` 存、`make db-restore` 取（解密解压即用，**不需要 Docker 或 Postgres**）。
+日常跨机器走 Turso 行级同步。
 
 ## 状态机（一张图）
 
@@ -67,7 +69,7 @@ make drive ARGS="--dry-run"                  # 只看它要做什么
    （跑完一轮就 `make drive` 或 `python -m pipeline.rework --apply`，别让草稿越积越多 ✗）
 4. **编号在库内分配** ✗（咨询锁 + 最大值 ✗），不许扫目录取号 ✔
 5. **退役而不是删除** ✗：题目 id 是稳定资产，删了就解释不了"这道题去哪了" ✔
-6. **数据库必须推送** ✔：`db/quizforge.db.gz.enc`（口令密文）是唯一的数据形态 ✔
+6. **数据库绝不进 git** ✔：`db/`（明文与密文快照）只留本机；日常同步走 Turso，备份走 `make db-snapshot` ✔
 
 ## 新机器上手
 

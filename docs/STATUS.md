@@ -3,7 +3,7 @@
 > **唯一易变的状态落点。** 稳定的约定在 `.codebuddy/skills/`，这里只放会变的东西。
 > 开工先读它，收工更新它。
 >
-> 最后更新：2026-09-30
+> 最后更新：2026-11-08
 
 ## 一、形态（一句话）
 
@@ -55,7 +55,7 @@
 
 - **1623 现行**：published 1619 + verified 4，**草稿 0**（单一学科 tt-metal）
 - **权威在库，不在文件**：`questions/` 已不是仓库目录 —— `make check` / `make test`
-  现场把库物化到临时目录再校验；`db/quizforge.db.gz.enc` 是库里唯一带进版本控制的副本（口令密文）
+  现场把库物化到临时目录再校验；**数据不进版本库**（2026-11-08 起），库与快照都只在本机
 - 层：识记 683 · 理解 740 · 应用 199 · **迁移 0**
 - 翼：基础 1398 · 应用 200 · 综合 24 · **创新 0**
 - **游离题 0**（没挂概念的现行题）：曾经 86 道 —— 不是手工补的，是 `graph_build merge` 里的
@@ -87,7 +87,7 @@
 `/api/bank` 给出 1623 道题、浏览器里前端内存中 1624 条（含 1 道我的题单）。
 只改了 `theme/` 时 `make web` 后刷新即可，不用重启。
 
-测试：`make api-test`（后端 **492 项**，跑在临时 SQLite 文件上，**不需要数据库服务**）·
+测试：`make api-test`（后端 **515 项**，跑在临时 SQLite 文件上，**不需要数据库服务**）·
 `make test`（题库校验 + 前端 3170 断言 + `node --check` 语法门禁）。
 
 **Postgres 与 Docker 已彻底清出这条链**（2026-09-22）：`docker-compose.yml` 与
@@ -99,6 +99,24 @@
 从**全部历史**里重写移除并 force push —— 历史里的聊天记录与旧密钥 dump 不再随 clone 可得；
 注意此前 clone / fork 过的副本仍持有旧对象，收不回来。仓库里**不再有任何
 需要 Docker 或 Postgres 的路径**。
+
+**2026-11-08：数据彻底移出版本库。** 连口令密文快照 `db/quizforge.db.gz.enc` 也不
+再提交 —— 日常换机器走 Turso，题库交换走 `bank-export` / `bank-import`，快照只作
+本机冷备份。同时用 `git filter-repo` 把 `.enc` 从**全部历史**移除并 force push；
+明文与密文快照现在都不在 git 对象里（`db/*.gz*` 已 gitignore）。此前 clone / fork
+的副本仍可能持有旧对象，收不回来；`config/snapshot.key` 从未进过 git。
+
+**2026-11-08：跨机器同步改成 Turso，GitHub 快照不再当同步通道。**
+本地 SQLite 仍是唯一工作库；Turso 只做 `(表, 主键)` 粒度的双向增量中转
+（`api/app/sync.py`；本地三张影子表 `qf_sync_journal` / `qf_sync_rows` /
+`qf_sync_state` 加触发器，远端 `qf_sync_rows` / `qf_sync_log` / `qf_sync_meta`）。
+连接信息是新增设置 `turso.url` / `turso.token`（`config/settings.local.json`，
+设置页「同步」也能改；令牌不会回显、不会上传）。对话、分组、消息、附件四张表
+端到端加密（AES-256-GCM，密钥由 `config/snapshot.key` 经 scrypt 派生），其余用户表
+明文；`ai.apiKey` / `search.apiKey` / 整个 `turso` 块在上传前抹掉。`records` 的计数列
+不从远端覆盖，仍由流水累加，远端行只带「没有流水的那部分差额」。快照
+（`db/quizforge.db.gz.enc`）只留本机，作**冷备份 / 换机手动拷贝**；它仍是覆盖语义，
+日常并行用会互相冲掉，这正是改 Turso 的原因。数据（明文或密文）都不再进 git。
 
 `tools/migrate_to_local.py` 保留着，但降级为**一次性搬运**工具（历史数据还在
 Postgres 里的那种场合）；为此它补了两处容错：源库缺表时按 0 行搬、对账不因查不到
@@ -316,8 +334,9 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
   版本库里唯一的数据副本是 `db/quizforge.sql.gz`（Postgres dump），恢复它要
   `make db-up && make db-restore && python tools/migrate_to_local.py` —— 依赖一台活的
   Postgres。于是新环境首启得到的是**空壳库**（`questions` / `topics` 都是 0 行）。
-  现在快照换成 **`db/quizforge.db.gz.enc`（就是 SQLite 库本身，口令加密）**，`make db-restore`
-  解密解压即用；Postgres 与 Docker 已从这条链上彻底清除（见 §五）。
+  现在数据不进版本库：干净克隆就是**空库**（这是预期，不是事故）；拿到自己的快照后
+  `make db-restore` 解密解压即用，题库也可走 `bank-export` / `bank-import`，日常用户数据
+  走 Turso。Postgres 与 Docker 已从这条链上彻底清除（见 §五）。
 - ~~86 道题没挂概念~~ —— 实测**游离题 0**。§三 那条 `link_questions` 回填已兑现，
   `make coverage` 现在拿「游离题为零」当硬断言盯着。
 - ~~根目录的 `bank.json` 与库不一致~~（2026-09-22 **已删**）—— 它是**最早测试期**留下的
