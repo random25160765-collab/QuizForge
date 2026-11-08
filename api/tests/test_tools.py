@@ -151,7 +151,7 @@ def test_point_detail_carries_line_ranges(client, db_session, imported_bank) -> 
     assert "error" in missing and "similar" in missing, "给线索，而不是干巴巴一句没有"
 
 
-def test_questions_hide_the_answer_by_default(client, db_session) -> None:  # noqa: ANN001
+def test_questions_hide_the_answer_by_default(client, db_session, imported_bank) -> None:  # noqa: ANN001
     """推题时不能剧透；要讲解时模型自己会传 includeAnswer。"""
     _register(client)
     _, key = _seed_knowledge(db_session, _first_question_id(db_session))

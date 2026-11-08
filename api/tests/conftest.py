@@ -31,47 +31,20 @@ if str(API_DIR) not in sys.path:
 TEST_DB = Path(os.environ.get("QF_TEST_TMP", tempfile.gettempdir())) / f"quizforge-test-{os.getpid()}.db"
 TEST_URL = f"sqlite:///{TEST_DB}"
 
-# 物化题库要读**权威库**（开发库），不是测试库。
-BANK_SOURCE_URL = os.environ.get(
-    "QF_BANK_SOURCE_URL",
-    f"sqlite:///{Path(__file__).resolve().parents[2] / 'data' / 'quizforge.db'}",
-)
+# 测试用的是一组**合成题库夹具**，随代码进版本库（`tests/fixtures/bank/`）。
+#
+# 为什么不从开发库物化：2026-11-08 起任何用户数据都不进版本库，干净克隆
+# 根本没有 `data/quizforge.db`。此前测试依赖本机题库，CI 上只能把整批
+# 题库用例跳过 —— 最该在 CI 里跑的那部分，恰恰没跑。夹具很小（5 道题，
+# 五种题型各一道），但解析、导入、ETag、统计、选题、诊断这些路径一条不少。
+#
+# 要拿真实题库跑一遍，显式设 `QF_QUESTIONS_DIR` / `QF_TOPICS_FILE` 即可。
+FIXTURE_BANK = API_DIR / "tests" / "fixtures" / "bank"
 
-
-def _ensure_bank_source() -> None:
-    """题库的权威在数据库，测试也从库里取。
-
-    `app.bank_import` 是按**目录**写的（那条路径是给不接数据库的老部署留的），
-    所以这里先把库物化到临时目录，再把 `QF_QUESTIONS_DIR` 指过去 ——
-    仓库里不再需要留一份 `questions/`。必须在导入 `app` 之前跑完
-    （`get_settings` 带 lru_cache，导入后再改环境变量就晚了）。
-    """
-    if os.environ.get("QF_QUESTIONS_DIR"):
-        return
-    repo_questions = API_DIR.parent / "questions"
-    if repo_questions.is_dir() and any(repo_questions.rglob("*.md")):
-        os.environ["QF_QUESTIONS_DIR"] = str(repo_questions)
-        return
-
-    import subprocess
-    import tempfile
-
-    bank_dir = Path(tempfile.mkdtemp(prefix="qf-test-bank-"))
-    proc = subprocess.run(
-        [sys.executable, "-m", "pipeline.bankfile", "materialize", "--out", str(bank_dir)],
-        cwd=str(API_DIR.parent),
-        env={**os.environ, "QF_DATABASE_URL": BANK_SOURCE_URL},
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        print("[conftest] 物化题库失败：", proc.stdout[-400:], proc.stderr[-400:])
-        return
-    os.environ["QF_QUESTIONS_DIR"] = str(bank_dir / "questions")
-    os.environ["QF_TOPICS_FILE"] = str(bank_dir / "meta" / "topics.yaml")
-
-
-_ensure_bank_source()
+if not os.environ.get("QF_QUESTIONS_DIR"):
+    os.environ["QF_QUESTIONS_DIR"] = str(FIXTURE_BANK / "questions")
+if not os.environ.get("QF_TOPICS_FILE"):
+    os.environ["QF_TOPICS_FILE"] = str(FIXTURE_BANK / "meta" / "topics.yaml")
 
 
 def _ensure_database() -> None:
@@ -217,7 +190,7 @@ def client(engine) -> Iterator["object"]:  # noqa: ANN001
 
 @pytest.fixture(scope="session")
 def imported_bank(engine) -> "object":  # noqa: ANN001
-    """把真实题库导入一次并提交，**并发布**。
+    """把合成题库夹具导入一次并提交，**并发布**。
 
     放在 conftest 而不是某个测试模块里：任何需要「库里有题」的用例都要用它，
     而 pytest 的 fixture 只在定义它的模块内可见。
@@ -226,7 +199,7 @@ def imported_bank(engine) -> "object":  # noqa: ANN001
 
     为什么还要显式发布一次：导入器刻意只产出 `draft`（发布是流水线 `promote`
     的职责），而 `/api/bank` 只放行 verified / published。少了这一步，库里有
-    1657 道题、接口却回空数组 —— 相关用例会以"接口没题"的形式失败，很容易
+    题、接口却回空数组 —— 相关用例会以"接口没题"的形式失败，很容易
     被误读成接口坏了。
     """
     from sqlalchemy import update
@@ -237,6 +210,7 @@ def imported_bank(engine) -> "object":  # noqa: ANN001
 
     result = scan()
     assert not result.errors, [d.render() for d in result.errors]
+    assert result.questions, f"没有找到题库夹具：{FIXTURE_BANK}"
 
     session = get_session_factory()()
     try:

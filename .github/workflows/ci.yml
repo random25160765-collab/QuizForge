@@ -22,7 +22,9 @@
 #
 # 2026-11-08 起数据不进版本库，干净克隆是**空库**（表由首启建好，题是 0）。
 # README 的起步命令因此从三条变成两条（去掉了 `make db-restore`），
-# 题库非空的断言也不再是 CI 能验的事 —— 它只在有库的机器上由 `make check` 负责。
+# 起服务后的题库非空断言也不再是 CI 能验的事 —— 它只在有库的机器上由
+# `make check` 负责。后端 pytest 不受影响：它用的是随代码提交的合成题库
+# 夹具（`api/tests/fixtures/bank/`），和本机有没有真实题库无关。
 #
 # 验收逻辑在 `tools/checks/serve_smoke.sh` 里（仓库里的一份可读文本，
 # 本地也能直接跑），这里只负责按 README 起服务再调它。
@@ -116,5 +118,6 @@ jobs:
       - name: make web（构建前端产物 —— 后端测试有 3 项依赖它）
         run: make web
 
-      - name: make api-test（后端 pytest，474 项）
+      # 题库用 `api/tests/fixtures/bank/` 里的合成夹具，不依赖本机数据。
+      - name: make api-test（后端 pytest）
         run: make api-test

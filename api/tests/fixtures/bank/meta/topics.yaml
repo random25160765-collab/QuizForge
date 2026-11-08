@@ -1,0 +1,26 @@
+# 测试题库的考纲树 —— **这是合成数据，不是用户的题库**。
+#
+# 后端用例只需要一棵合法的、题量很小的树：形状对了，导入、ETag、统计、
+# 覆盖面这些路径就都能跑到。真实题库（`data/quizforge.db`）只在本机，
+# 数据不进版本库，测试也不该依赖它。
+groups:
+  - key: "fixture"
+    name: "测试分组"
+    order: 1
+
+topics:
+  - key: "testbank"
+    name: "测试学科"
+    group: "fixture"
+    color: "#38BDF8"
+    order: 1
+    desc: "仅用于自动化测试的合成题库，不含任何用户数据。"
+    children:
+      - key: "testbank-basics"
+        name: "基础题型"
+        order: 1
+        desc: "单选、多选、填空"
+      - key: "testbank-advanced"
+        name: "进阶题型"
+        order: 2
+        desc: "简答、大题"
