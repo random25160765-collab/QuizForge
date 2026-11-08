@@ -85,6 +85,22 @@ def _stub(monkeypatch, gen) -> None:  # noqa: ANN001
     monkeypatch.setattr(ai_gateway, "stream_completion", gen)
 
 
+def _report_run(monkeypatch, text: str = "") -> None:  # noqa: ANN001
+    """代替页面：沙箱输出**直接报回来**。
+
+    `run_python` / `render_demo` 的回合会停在 `runs.wait_blocking` 上等页面回报
+    （见 `agent_loop` 里那段注释）。TestClient 里没有页面，真等就等满 90 秒 ——
+    实测这两条用例合计 180 秒，占全量时长 77%。等待与放行本身由 `test_runs.py`
+    用显式 timeout 覆盖，这里只把这条链路上的等待换成"页面已经报过了"。
+    """
+    from app import runs
+
+    def fake(run_id, timeout=None):  # noqa: ANN001, ARG001
+        return {"ok": True, "text": text, "images": []}
+
+    monkeypatch.setattr(runs, "wait_blocking", fake)
+
+
 def _happy_stream():
     def fake(conf, messages, *, tools=None, params=None):
         assert conf["model"] == "test-model", "用的是调用者自己配的模型"
@@ -1092,6 +1108,7 @@ def test_the_sandbox_output_comes_back_by_itself(client, monkeypatch) -> None:  
 
     _ready(client)
     _stub(monkeypatch, fake)
+    _report_run(monkeypatch, "numpy 1.26.4\n结果是 2\n")
     cid = _new_conversation(client)
     events = dict(_events(_send(client, cid, content="算个 1+1").text))
 
@@ -1354,6 +1371,7 @@ def test_render_demo_becomes_a_sandbox_part(client, monkeypatch) -> None:  # noq
 
     _ready(client)
     _stub(monkeypatch, fake)
+    _report_run(monkeypatch)
     cid = _new_conversation(client)
 
     events = _events(_send(client, cid, content="画个图讲数据怎么流").text)

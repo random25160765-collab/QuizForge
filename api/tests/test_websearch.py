@@ -91,7 +91,11 @@ def _serve(body, content_type: str = "application/json", status: int = 200):  # 
         {"body": body, "content_type": content_type, "status": status, "received": {}},
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # poll_interval 要短：`shutdown()` 得等 `serve_forever` 轮到下一轮才返回，
+    # 默认 0.5 秒 —— 这里三十来条用例，光收尾就是十几秒。
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+    )
     thread.start()
     try:
         yield "http://127.0.0.1:" + str(server.server_address[1]) + "/search", handler
@@ -576,7 +580,9 @@ class _Drip(BaseHTTPRequestHandler):
 def _hang_server(handler_cls):
     """起一个"坏掉的"服务（不回 / 一直吐），yield 它的地址。"""
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True
+    ).start()
     try:
         yield "http://127.0.0.1:" + str(server.server_address[1]) + "/x"
     finally:
