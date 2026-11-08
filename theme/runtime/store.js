@@ -1541,36 +1541,41 @@
       saveSettings({ places: next, stations: [] });
       return true;
     },
-    /* ------------------------------------------------------------ 流程（skill）
+    /* ------------------------------------------------------------ 流程（lens / 滤镜）
      *
-     * `docs/对话树.md` §十二：skill 是一段提示词，挂在**节点**上、沿树继承、可回退。
+     * `docs/对话树.md` §十二：滤镜是一段提示词，挂在**节点**上、沿树继承、可回退。
      * 存法与记号同源（settings）：一条 `{cid, mid, key, on}` 记录 —— 前端只管写，
-     * **服务端按当下的链自己算"现在挂着什么"**（见 `app/skills.py` 的 `resolve`）。
+     * **服务端按当下的链自己算"现在挂着什么"**（见 `app/lens.py` 的 `resolve`）。
      *
      * 为什么不本地算好再报给服务端：链是会变的（切分支、编辑重发），本地那一份随时可能
      * 过期；交给服务端按当下的链算，就不存在"两边不一致"这回事。
      * `mid` 为空 = 整条对话（第一条消息还没有 mid 可挂，见 `chat.js` 里 `/` 那一段）。
+     *
+     * **老数据还认**：这一批记录原先存在 `skills` 这个键上（那时它叫 skill）。
+     * 读的时候两处都看，写只写 `lens` —— 升级之后"我已经装上的那些"不该凭空消失。
      */
-    skills: function () {
-      var list = settings().skills;
-      return Array.isArray(list) ? list.slice() : [];
+    _lensRows: function () {
+      var conf = settings();
+      if (Array.isArray(conf.lens)) return conf.lens;
+      return Array.isArray(conf.skills) ? conf.skills : [];
+    },
+    lens: function () {
+      return this._lensRows().slice();
     },
     /** 这一条消息上挂过哪些（一条记录一条）。 */
-    skillsOn: function (mid) {
+    lensOn: function (mid) {
       var key = mid == null ? '' : String(mid);
-      var list = settings().skills;
-      return (Array.isArray(list) ? list : []).filter(function (one) {
+      return this._lensRows().filter(function (one) {
         return one && String(one.mid || '') === key;
       });
     },
-    /** 在某条消息上装一个流程（`on: false` = 取下）。同一条上同一种只留最新的一条。 */
-    attachSkill: function (info) {
+    /** 在某条消息上装一个滤镜（`on: false` = 取下）。同一条上同一个只留最新的一条。 */
+    attachLens: function (info) {
       var one = info || {};
       var key = String(one.key || '').trim();
       if (!key) return false;
       var mid = one.mid == null ? '' : String(one.mid);
-      var list = settings().skills;
-      list = (Array.isArray(list) ? list : []).filter(function (each) {
+      var list = this._lensRows().filter(function (each) {
         return !(each && String(each.mid || '') === mid && String(each.key || '') === key);
       });
       list.push({
@@ -1580,7 +1585,7 @@
         on: one.on !== false,
         at: Date.now(),
       });
-      saveSettings({ skills: list });
+      saveSettings({ lens: list });
       return true;
     },
     // 选题篮落盘：攒题可以跨刷新、跨会话继续

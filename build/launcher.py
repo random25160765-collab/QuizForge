@@ -154,8 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.db import ensure_schema, get_engine
 
     settings = get_settings()
-    tag = "内测版" if settings.is_beta else "正式版"
-    _say(f"QuizForge {tag} · 数据目录：{settings.data_dir}")
+    _say(f"QuizForge · 数据目录：{settings.data_dir}")
     try:
         ensure_schema(get_engine())
     except Exception as exc:  # noqa: BLE001 —— 起不来的话要说清楚，不能静默退出
@@ -169,9 +168,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from app.main import app as application
 
-    _say(f"已启动：{base}（{tag}）")
-    if settings.is_beta:
-        _say("内测版走站长的额度；想用自己的密钥，在设置里填。")
+    _say(f"已启动：{base}")
 
     # 4) 浏览器打开的是**启动页**，不是主界面：
     #    它自己会做启动检查、画进度条，就绪后再跳进去（用户要的 splash + 进度条）。

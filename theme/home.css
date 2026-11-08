@@ -1,0 +1,170 @@
+/* ===========================================================================
+ * home.css —— 主页（只挂这一页，见 tools/build_web.py 的 PAGE_CSS）
+ *
+ * 现在首页只有一件东西：**今天的精力**（三段带 + 两个打卡按钮，见
+ * runtime/wellbeing.js）。它原先挤在日程页 300px 的左栏里，一行小字被截成
+ * 两次省略号；搬到首页之后有了自己的宽度，才排得下一整句。
+ *
+ * 卡片长什么样直接照抄 `.card`（同一套描边、圆角与投影）—— 首页的卡片
+ * 不该看着比别页的卡片"轻"或"重"，这类差异肉眼最先看出来。
+ * ========================================================================= */
+
+.home {
+  /* 顶部留白按视口给：太靠上像没画完，太高又空。 10vh 在笔电上是 60~80px。 */
+  padding: clamp(28px, 10vh, 88px) 0 56px;
+}
+
+.home__inner {
+  /* 一句话 + 一张卡片的宽度：再宽，视线就要在两端来回跑。 */
+  max-width: 560px;
+  margin: 0 auto;
+}
+
+.home__date {
+  color: var(--fg3);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+}
+
+.home__hello {
+  margin: 6px 0 22px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* ------------------------------------------------------------------ 精力卡片 */
+
+.wb-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px 14px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--edge-hi), var(--shadow-2);
+}
+
+.wb-card__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wb-card__title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.wb-card__meta {
+  flex: none;
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.wb-card__strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.wb-card__cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wb-card__band {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  /* 轨道用 `--line` 而不是 `--bg2`：浅色档 `--bg2` 是纯白，轨道会消失，
+     只剩一截不知从哪开始的填充。 */
+  background: var(--line);
+  overflow: hidden;
+}
+
+.wb-card__fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--pri);
+  transition: width 180ms ease;
+}
+
+.wb-card__cap {
+  flex: none;
+  color: var(--fg3);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.wb-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wb-card__line {
+  min-width: 0;
+  color: var(--fg3);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wb-card__acts {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+}
+
+/* 打卡是**文字按钮**：它是顺手的动作，不该长成一个跟"新建"一样重的按钮。 */
+.wb-card__btn {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--pri);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: opacity 140ms ease;
+}
+
+.wb-card__btn:hover {
+  opacity: 0.75;
+}
+
+.wb-card__btn.is-on {
+  color: var(--fg3);
+  cursor: default;
+}
+
+.wb-card__btn.is-on:hover {
+  opacity: 1;
+}
+
+/* 接口慢 / 读不到时的骨架态：只留一个标题与一行说明，别装成"有数据" */
+.wb-card.is-quiet .wb-card__line {
+  color: var(--fg3);
+}
+
+@media (max-width: 560px) {
+  .wb-card__head {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .wb-card__foot {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+}

@@ -1,0 +1,129 @@
+apply plugin: 'com.android.application'
+apply plugin: 'com.chaquo.python'
+
+// 签名信息留在仓库外：~/.config/quizforge-android/keystore.properties（见 scripts/keystore.sh）。
+// 文件不在时 release 构建不签名 —— 那是有意的：宁可产出一个不能安装的包，
+// 也不把口令写进仓库或 build.gradle。
+def keystorePropsFile = new File(
+    System.getenv("QF_KEYSTORE_PROPERTIES") ?: "${System.getProperty('user.home')}/.config/quizforge-android/keystore.properties"
+)
+def keystoreProps = new Properties()
+if (keystorePropsFile.isFile()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace = "com.quizforge.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.quizforge.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "0.1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        // arm64-v8a 给真机，x86_64 给本机模拟器（没有真机时的验收环境）
+        ndk {
+            abiFilters "arm64-v8a", "x86_64"
+        }
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (keystorePropsFile.isFile()) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (keystorePropsFile.isFile()) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+// ------------------------------------------------------------------ Chaquopy
+// Python 版本必须与 buildPython 的主次版本一致；本机只有 3.14，正好与
+// Chaquopy 17.2 支持的上限对齐。
+//
+// 依赖清单刻意比桌面端的 requirements.txt 窄：psycopg / argon2-cffi /
+// email-validator / pytest 在 Android 上要么没有引用，要么没有 wheel。
+chaquopy {
+    defaultConfig {
+        version = "3.14"
+        buildPython("/usr/bin/python3.14")
+        pip {
+            // 一律 --no-deps、依赖全列出来：sqlalchemy 会无条件要 greenlet，
+            // 而 greenlet 只有 cp313 的 Android wheel。同步 ORM 用不到 greenlet，
+            // 跳过它是安全的；代价是这份清单得自己维护（版本与 api/.venv 对齐）。
+            options "--no-deps"
+            // pydantic-core 没有官方 Android wheel；2.50.0 正好是 pydantic 2.14.0
+            // 钉死的那一版，用 mobile/wheels/ 里社区预编译的 arm64/x86_64 wheel。
+            options "--find-links", file("../../wheels").absolutePath
+            install "fastapi==0.141.1"
+            install "starlette==1.6.0"
+            install "pydantic==2.14.0"
+            install "pydantic-core==2.50.0"
+            install "pydantic-settings==2.15.0"
+            install "sqlalchemy==2.0.53"
+            install "uvicorn==0.53.0"
+            install "httpx==0.28.1"
+            install "python-multipart==0.0.32"
+            install "anyio==4.15.1"
+            install "annotated-types==0.8.0"
+            install "annotated-doc==0.0.5"
+            install "typing-inspection==0.4.4"
+            install "typing_extensions==4.16.0"
+            install "idna==3.19"
+            install "sniffio"
+            install "certifi"
+            install "httpcore==1.0.9"
+            install "h11==0.16.0"
+            install "click==8.5.0"
+            install "python-dotenv==1.2.3"
+            // PyYAML、cryptography 都没有 cp314 的 Android wheel：
+            //   * yaml 由 scripts/assemble-python.sh 拷贝纯 Python 版；
+            //   * AES-GCM/scrypt 由 app/crypto_compat.py 在 Android 上换实现。
+        }
+    }
+}
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

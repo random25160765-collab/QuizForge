@@ -118,6 +118,14 @@
   </div>
 </div>
 
+<!--
+  手机底栏：与活动栏是同一批去处，但入口取舍不同（手机上不设"主页"，图谱从
+  练习中心里提出来单列）—— 数据在 shell.js 的 TABS，样式在 mobile.css。
+  不写 hidden 属性：hidden 的 UA 样式是 display:none，而手机档要用 display:flex，
+  两处都在管同一件事只会让人以为"JS 忘了移除 hidden"。
+-->
+<nav class="tabbar" id="tabbar" aria-label="主要入口"></nav>
+
 <div class="toast-root" id="toast-root" aria-live="polite" aria-atomic="false"></div>
 <div class="modal-root" id="modal-root" hidden></div>
 

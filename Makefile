@@ -43,7 +43,7 @@ WEB_OUT   ?= api/web
 CHECK_PYTHON = $(VENV)/bin/python
 
 .PHONY: vendor check test new web web-watch web-full package pyodide-manifest \
-        win-setup win-sync dist dist-release dist-linux dist-linux-release smoke \
+        win-setup win-sync dist dist-check dist-verify dist-linux smoke \
         api-venv api-dev api-test dev \
         env-init db-snapshot db-restore \
         bank-export bank-import user-export user-import user-show sync \
@@ -87,6 +87,20 @@ web-watch:
 web-full:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT) --with-pyodide
 
+# 切片正文回填：从原文件按行区间截出正文写进 material_slices.text（一次性，慢）
+library-texts:
+	@(cd api && .venv/bin/python -m app.cli.library_texts $(if $(LIMIT),--limit $(LIMIT),) $(if $(FORCE),--force,))
+
+# 资料切片整包上云 / 拉回（只传切片，不传原文件、不重新解析）
+library-push:
+	@(cd api && .venv/bin/python -m app.cli.library_cloud push)
+
+library-pull:
+	@(cd api && .venv/bin/python -m app.cli.library_cloud pull)
+
+library-show:
+	@(cd api && .venv/bin/python -m app.cli.library_cloud show)
+
 # 笔记不再导入副本：2026-11-07 起改为**直接桥接本机 Obsidian**（协议见
 # docs/Obsidian桥接协议.md）。`tools/import_vault.py` 与 `make notes-import` 已删除。
 
@@ -99,17 +113,17 @@ package:
 # ============================================================================
 # 分发工作流
 #
-# **唯一事实是 WSL 侧这份仓库。** Windows 侧那个目录（`%USERPROFILE%\qf-build\src`）
+# **唯一事实是 WSL 侧这份仓库。** Windows 侧那个目录（`%USERPROFILE%\Desktop\QF_dist\src`）
 # 只是构建用的**镜像**，不许手改 —— 改了会在下次同步时被覆盖。
 # 打包必须在 Windows 上跑（PyInstaller 不能交叉编译），所以是"这边开发、那边出包"。
 #
-#   make win-setup     首次准备 Windows 侧构建环境（Python + venv + 依赖，幂等）
-#   make win-sync      把仓库镜像过去（删掉多出来的、逐文件校验哈希）
-#   make dist          出**内测**包（默认通道）：带走内测配置，试用的人不用自备密钥
-#   make dist-release  出正式包：不带内测配置，且数据目录与内测分开
+#   make win-setup      首次准备 Windows 侧构建环境（Python + venv + 依赖 + Node，幂等）
+#   make win-sync       把仓库镜像过去（逐目录 robocopy /MIR）
+#   make dist           出包：前端 → 同步 → 后端 exe → 桌面外壳的安装包 → 归位到桌面
+#   make dist-check     桌面上那个包是不是当前代码打的（不打包）
+#   make dist-verify    静默重装一遍，把装好的应用逐页截图（看白屏就看它）
 #
-# 日常顺序：`win-setup` 一次 → 之后每次改完代码直接 `make dist`（它会先构建前端、
-# 再同步、再在 Windows 上打包并自检、最后把产物放到桌面与 build/dist/）。
+# 日常顺序：`win-setup` 一次 → 之后每次改完代码直接 `make dist`。
 # ============================================================================
 
 win-setup:
@@ -127,24 +141,16 @@ smoke: win-sync
 # 2026-11-08：`ui-check` 已删 —— 它调的是 `tools/checks/notes_editor.mjs`（笔记编辑器冒烟），
 # 那个文件从来就不在仓库里，笔记页也已删除。
 
+# 只有一个版本（2026-11-08 起没有分发通道）：产物 `quizforge.exe`，数据 `~/quizforge`。
 dist:
 	@$(MAKE) --no-print-directory web
 	@# PYTHONUNBUFFERED：这一步要跑两三分钟，输出被缓冲的话看起来像卡死
-	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/dist_win.py --channel beta
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/dist_win.py
 
-dist-release:
-	@$(MAKE) --no-print-directory web
-	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/dist_win.py --channel release
-
-# Linux 的包：在**本机**就能出（开发机就是 Linux），不用绕 Windows。
-# 产物是 `build/dist/quizforge-beta`（内测）或 `quizforge`（正式），自检自动跑。
+# Linux 的包：在**本机**就能出（开发机就是 Linux），不用绕 Windows。自检自动跑。
 dist-linux:
 	@$(MAKE) --no-print-directory web
-	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/package.py build --channel beta
-
-dist-linux-release:
-	@$(MAKE) --no-print-directory web
-	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/package.py build --channel release
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/package.py build
 
 # 从 vendor/pyodide 生成首启下载时用的哈希清单（`make vendor` 之后跑，产物要提交）
 pyodide-manifest:
@@ -256,6 +262,11 @@ api-dev: web
 # 这条是给"开发端改了、exe 还是老的"这种情况准备的 —— 一句话就能问清楚。
 dist-check:
 	@$(VENV)/bin/python build/dist_win.py --check
+
+# 装一遍、跑起来、**逐页截图**：白屏（页面空白）只能这么验 ——
+# 接口全绿、文件都在，页面上照样可以是空的（数据目录空着时对话页就这样）。
+dist-verify:
+	@PYTHONUNBUFFERED=1 $(VENV)/bin/python build/dist_win.py --install-check
 
 # 开发通道：本机起 web 服务（**不是**分发形态）。
 # 它用的是仓库里的 `data/`（不是 exe 那两份 `~/quizforge*`），改代码即时生效。
@@ -567,3 +578,28 @@ help:
 	@echo "  数据快照    make db-restore（本机快照 → data/quizforge.db，解压即用）"
 	@echo "              make db-snapshot（冷备份 / 换机手动拷贝）· 数据不进 git，日常用 make sync"
 	@echo "  其它        make env-init（生成 .env）· make skills-link · make loc（代码量）· make help"
+
+# ============================================================================
+# Android APK（Capacitor + Chaquopy）—— 说明见 mobile/README.md
+# 工具链只需装一次；keystore 在仓库外（~/.config/quizforge-android/）。
+# ============================================================================
+.PHONY: apk apk-debug apk-sync apk-toolchain apk-keystore apk-bank
+
+apk:
+	@bash mobile/scripts/build-apk.sh
+
+apk-debug:
+	@bash mobile/scripts/build-apk.sh --debug
+
+# 把本机 Turso 配置与对话口令打进包（含密钥，仅自用包）
+apk-sync:
+	@bash mobile/scripts/build-apk.sh --with-sync
+
+apk-toolchain:
+	@bash mobile/scripts/bootstrap-toolchain.sh
+
+apk-keystore:
+	@bash mobile/scripts/keystore.sh
+
+apk-bank:
+	@$(PYTHON) mobile/scripts/export-bank-db.py

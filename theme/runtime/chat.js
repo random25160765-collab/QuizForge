@@ -294,14 +294,22 @@
     return modeChanged(message) ? '◆ 模式：' + modeLabel(modeKeys(message)) : '';
   }
 
-  function treeLines(message) {
+  /** 一条消息的预览文字：内容为空时退到"（题卡 · 附件）"这类占位。
+   *
+   * 地图（SVG 节点）与手机大纲（列表行）共用这一份 —— 两处各写一遍的话，
+   * 同一条空消息在地图上说"（空）"、在列表里说别的，读起来像两条不同的消息。
+   */
+  function treePreview(message) {
     var text = String(message.content || '').replace(/\s+/g, ' ').trim();
-    if (!text) {
-      var kinds = (message.parts || []).map(function (part) {
-        return part.type === 'card' ? '题卡' : part.type === 'file' ? '附件' : part.type === 'demo' ? '演示' : part.type === 'tool_call' ? '工具' : part.type === 'action' ? '凭条' : null;
-      }).filter(Boolean);
-      text = kinds.length ? '（' + kinds.join(' · ') + '）' : message.status === 'error' ? '（失败）' : '（空）';
-    }
+    if (text) return text;
+    var kinds = (message.parts || []).map(function (part) {
+      return part.type === 'card' ? '题卡' : part.type === 'file' ? '附件' : part.type === 'demo' ? '演示' : part.type === 'tool_call' ? '工具' : part.type === 'action' ? '凭条' : null;
+    }).filter(Boolean);
+    return kinds.length ? '（' + kinds.join(' · ') + '）' : message.status === 'error' ? '（失败）' : '（空）';
+  }
+
+  function treeLines(message) {
+    var text = treePreview(message);
     // 按**整行的实测宽度**切，不按字数 —— 字数治不了：中英混排、标点、
     // 系统字体各占多少宽都不一样，前两版都栽在这儿（用户两次都看到越界）。
     // 量不了（极老的浏览器）就退回按 11px 估一个保守值。
@@ -485,6 +493,11 @@
    * 不是人的选择：回到宽屏照旧按他存的偏好；窄屏也可以点顶部那颗按钮手动展开。 */
   var NARROW_ASIDE = window.matchMedia('(max-width: 860px)');
   var autoFolded = false;   //: 这一次收起是"环境决定"的，不是人按的
+
+  /* 手机（与 mobile.css、底栏同一条断点）：对话树换成大纲列表。
+   * 判据只看视口宽 —— 与那两处一致。跨过这条线时 `renderTree` 会换一种画法，
+   * 状态是同一份（见 `renderOutline` 上面那段说明）。 */
+  var MOBILE_TREE = window.matchMedia('(max-width: 600px)');
 
   function applyNarrowAside() {
     if (!chatEl) return;
@@ -786,6 +799,7 @@
       }
       marksOpen = false;
       marksClosing = false;
+      TREE.outlineOpen = false;   // 下次打开重新滚到"你在这儿"
       renderMarks();
       stopPlay();   // 地图收起来了，播放也停（计时器不能留着空转）
       return;
@@ -796,6 +810,12 @@
       renderBar();
       renderTree();
     };
+
+    // 手机：换大纲列表（大屏那张连接图在 390 宽里读不出来，见 renderOutline 上面那段）
+    if (MOBILE_TREE.matches) {
+      renderTreeList(close);
+      return;
+    }
 
     var canvas = h('div.chattree__canvas');
     treeEl.appendChild(h('div.chattree__screen', null, treeBar(close), canvas));
@@ -809,7 +829,258 @@
     renderMarks();
   }
 
-  function treeBar(close) {
+  /* ---- 手机上的对话树 = 大纲列表 ------------------------------------
+   *
+   * 大屏那张"圆角矩形连接图"在手机上不成立：390 宽的屏里把一支 45 条摆开，
+   * 横向要滑三四屏、字得缩到 8px 才装得下，等于把一张地图塞进邮票。手机上要读的是
+   * 同一件事的另一面 —— 我在这棵树的哪儿、旁边还岔出几支、这一支下面还藏着什么。
+   * 这些按行读比按图看快，所以这里换成就地滚动的**大纲列表**。
+   *
+   * 三条与地图对齐的约定（不新增概念：两套视图看的是同一棵树）
+   *   * 缩进按**分支**算，不按消息深度算。一条 45 层的直线对话若按深度缩进，
+   *     会变成斜到屏幕外的楼梯 —— 而它其实一次都没分叉，就该是一条直线。
+   *     只有"从主线拐进一支岔路"的那一步缩一格，岔路内部不再逐层缩
+   *     （否则一条长支线也会一路缩出屏幕）。主线永远贴着左边。
+   *   * 收起（`state.treeFolded`）、当前分支（`activePath`）、"你在这儿"（`markReading`）
+   *     沿用地图那一份状态：在地图上收起的支，换成手机还是收着的。
+   *   * 点一行 = 跳到那一条（`revealMessage`），与点节点完全一致。
+   */
+
+  function renderTreeList(close) {
+    var list = h('div.ctoutline');
+    // 列表外面再套一层**不滚动**的壳：书签抽屉（`.chatmarks`，absolute inset:0）挂在这层上。
+    // 直接挂在滚动容器里的话，`inset: 0` 是相对**内容**算的 —— 列表一滚，抽屉就跟着滚走了。
+    var shell = h('div.ctoutline__shell', null, list);
+    treeEl.appendChild(
+      h('div.chattree__screen.chattree__screen--list', null, treeBar(close, true), shell)
+    );
+
+    // 这次是"刚打开"还是"重画"（收起一支 / 换分支）？刚打开要滚到"你在这儿"，
+    // 重画要接着原来的位置 —— 收个支就弹回顶部，人得重新翻一遍。
+    var locate = !TREE.outlineOpen;
+    TREE.outlineOpen = true;
+    var keep = TREE.outlineScroll || 0;
+    list.addEventListener('scroll', function () {
+      TREE.outlineScroll = list.scrollTop;
+    });
+
+    renderOutline(list);
+
+    // 抽屉装在**壳这一层**里（与地图那边同一个理由：遮罩只压内容，工具栏还留着 ——
+    // 否则开着抽屉时那颗「书签」自己也被压住，点不动了）
+    shell.appendChild(marksEl);
+    renderMarks();
+    // 一打开就把"你在这儿"标上（手机上没有地图上的图钉，标在行上）
+    markReading();
+
+    list.scrollTop = locate ? 0 : keep;
+    if (locate) scrollOutlineToReading(list);
+  }
+
+  /** 打开列表时停在"你在这儿"那一行：一打开就该看到自己读到哪儿。
+   *  那一行被收在别的支里（量不到）就停在顶部。 */
+  function scrollOutlineToReading(list) {
+    var mid = String(lastReadMid || '');
+    if (!mid) return;
+    var id = window.CSS && CSS.escape ? CSS.escape(mid) : mid;
+    var row = list.querySelector('.ctrow[data-node="' + id + '"]');
+    if (!row) return;
+    // 上面留三分之一屏的上下文：正好居中会让人以为上面没内容了
+    list.scrollTop = Math.max(0, row.offsetTop - list.clientHeight / 3);
+    TREE.outlineScroll = list.scrollTop;
+  }
+
+  /** 把整棵树摊成一条行列表（前序：父在前、子在后，缩进由 `--ind` 表达）。 */
+  function renderOutline(list) {
+    var byParent = {};
+    state.messages.forEach(function (message) {
+      var key = keyOf(message.parentId);
+      (byParent[key] = byParent[key] || []).push(message);
+    });
+    Object.keys(byParent).forEach(function (key) {
+      byParent[key].sort(function (a, b) {
+        return a.id - b.id;
+      });
+    });
+    var kidsOf = function (id) {
+      // 与 `treeGeometry` 同一条：收起的那一支当作没有孩子，
+      // 于是遍历天然跳过整棵子树，不必在递归里到处判断
+      if (state.treeFolded[keyOf(id)]) return [];
+      return byParent[keyOf(id)] || [];
+    };
+    var onPath = {};
+    activePath().forEach(function (message) {
+      onPath[message.id] = true;
+    });
+
+    var roots = byParent.root || [];
+    if (!roots.length) {
+      list.appendChild(h('div.ctoutline__empty', { text: '这条对话还没有消息。' }));
+      return;
+    }
+
+    function walk(message, indent, offPath) {
+      list.appendChild(outlineRow(message, indent, onPath, kidsOf));
+      kidsOf(message.id).forEach(function (kid) {
+        // 岔路判定按"这个孩子是不是当前分支上的"：主线一直在最左边，岔路各缩一格
+        var kidOff = offPath || !onPath[kid.id];
+        var step = !offPath && kidOff ? 1 : 0;
+        walk(kid, Math.min(indent + step, 4), kidOff);
+      });
+    }
+
+    roots.forEach(function (root) {
+      walk(root, 0, !onPath[root.id]);
+    });
+  }
+
+  /** 列表里的一行：收起三角 + 角色 + 预览（两行封顶）+ 角标，右边是「⋯」。
+   *
+   * 为什么缩进用行内边距（`--ind`）而不是嵌套 DOM：列表是**一条滚动带**，
+   * 嵌套会让"收起"变成重排整棵 DOM；扁平行 + 一个变量，收起时只是少几行。
+   */
+  function outlineRow(message, indent, onPath, kidsOf) {
+    var key = keyOf(message.id);
+    var folded = !!state.treeFolded[key];
+    var all = childrenOf(message.id);          // 真有几个孩子（收起与否都算）
+    var visible = kidsOf(message.id);          // 眼下露出来的孩子
+    var hidden = folded ? descendantsOf(message.id).length : 0;
+    var on = !!onPath[message.id];
+    var places = placesOn(message.id);
+    var mode = modeNote(message);
+
+    var row = h(
+      'div.ctrow' +
+        (on ? '.is-onpath' : '') +
+        (indent ? '.is-indented' : '') +
+        (message.role === 'user' ? '.is-user' : '.is-out') +
+        (folded ? '.is-folded' : '') +
+        (message.status === 'error' ? '.is-error' : ''),
+      {
+        'data-node': String(message.id),
+        // 长按 = 这一行上能做的事（收起 / 分家 / 删）。与地图上的右键是**同一张菜单** ——
+        // 触屏上的长按就是右键（Android Chrome 会发 contextmenu）
+        onContextmenu: function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          chatMenuX = event.clientX;
+          chatMenuY = event.clientY;
+          openNodeMenu(message);
+        },
+      }
+    );
+    // `--ind` 必须走 setProperty：`h()` 的 style 用的是 `Object.assign`，
+    // 自定义属性在 CSSStyleDeclaration 上不是可赋值字段，`{'--ind': 2}` 会被静默丢掉
+    //（于是所有行都缩进 0 —— 实测就是这么发现的）。
+    row.style.setProperty('--ind', String(indent));
+
+    row.appendChild(
+      all.length
+        ? h(
+            'button.ctrow__caret',
+            {
+              type: 'button',
+              title: folded ? '展开这一支（' + hidden + ' 条）' : '收起这一支',
+              'aria-expanded': folded ? 'false' : 'true',
+              'aria-label': folded ? '展开这一支' : '收起这一支',
+              onClick: function (event) {
+                event.stopPropagation();
+                toggleBranchFold(message.id);
+              },
+            },
+            document.createTextNode(folded ? '▸' : '▾')
+          )
+        : h('span.ctrow__caret.ctrow__caret--leaf')
+    );
+
+    row.appendChild(
+      h(
+        'button.ctrow__main',
+        {
+          type: 'button',
+          // 与点节点同一条路：收起地图 → 回到对话 → 那条消息闪一下（`revealMessage` 自带）
+          onClick: function (event) {
+            event.stopPropagation();
+            state.treeOpen = false;
+            renderBar();
+            renderTree();
+            revealMessage(message.id);
+          },
+        },
+        h('span.ctrow__who', { text: message.role === 'user' ? '我' : 'AI' }),
+        h(
+          'span.ctrow__body',
+          null,
+          h('span.ctrow__text', { text: treePreview(message) }),
+          // 模式那一行与地图上同一个来源：它是"从这一条起换了模式"的分界，不只是一行小字
+          mode ? h('span.ctrow__mode', { text: mode }) : null
+        ),
+        hidden
+          ? h('span.ctrow__badge', { text: '＋' + hidden })
+          : visible.length > 1
+            ? h('span.ctrow__badge', { text: '⑂' + visible.length })
+            : null,
+        places.length
+          ? h('span.ctrow__mark', { title: places.length + ' 个标记（书签 / 回溯点）' }, iconNode('bookmark', 12))
+          : null
+      )
+    );
+
+    var more = h(
+      'button.ctrow__more',
+      {
+        type: 'button',
+        title: '这一支能做的事',
+        'aria-label': '这一支能做的事',
+        onClick: function (event) {
+          event.stopPropagation();
+          var box = more.getBoundingClientRect();
+          chatMenuX = box.left;
+          chatMenuY = box.bottom + 4;
+          openNodeMenu(message);
+        },
+      },
+      document.createTextNode('⋯')
+    );
+    row.appendChild(more);
+    return row;
+  }
+
+  function treeBar(close, isList) {
+    // 书签抽屉的入口：**这张图的地点清单**（用户："书签抽屉是要做的"）。
+    // 它长在对话树的工具栏上，不长在 chat 页 —— 那里是地图外面。
+    // 只数**本对话**的：书签按对话隔离（用户："每个对话的书签和批注要隔离"）。
+    var marks = bookmarksHere();
+    var marksBtn = h(
+      'button.chattree__btn.chattree__marksbtn' + (marksOpen ? '.is-on' : ''),
+      {
+        type: 'button',
+        title: marks.length
+          ? '书签抽屉 · ' + marks.length + ' 个永久标记（这一段对话）'
+          : '书签抽屉（这一段对话还没标过）',
+        'aria-expanded': marksOpen ? 'true' : 'false',
+        onClick: toggleMarks,
+      },
+      iconNode('bookmark', 14),
+      h('span', { text: marks.length ? '书签 · ' + marks.length : '书签' })
+    );
+
+    // 手机：那排"形状"开关（横向/纵向、适应窗口、轨迹、播放、速度）全是大屏那张图
+    // 才有的操作 —— 列表里没有"视角"，一个都不留。留下的两样是共同的：
+    // 节点数（一眼知道这棵树多大）与书签抽屉。
+    if (isList) {
+      return h(
+        'div.chattree__bar',
+        null,
+        h('span.chattree__title', { text: '对话树' }),
+        h('span.chattree__sub', {
+          text: state.messages.length + ' 个节点 · 亮着的是当前分支 · 点一条跳过去',
+        }),
+        marksBtn,
+        iconButton('close', '关闭（Esc）', close)
+      );
+    }
+
     var dirButton = h(
       'button.chattree__btn',
       {
@@ -864,25 +1135,7 @@
       // 播放：按时间顺序把整棵树放一遍（多久一枚由旁边那颗速度键定）
       h('button.chattree__btn.chattree__playbtn', { type: 'button', onClick: togglePlay }, '▶ 播放'),
       h('button.chattree__btn.chattree__speedbtn', { type: 'button', onClick: cyclePlaySpeed }, '1×'),
-      // 书签抽屉的入口：**这张地图的地点清单**（用户："书签抽屉是要做的"）。
-      // 它长在地图的工具栏上，不长在 chat 页 —— 那里是地图外面。
-      (function () {
-        // 只数**本对话**的：书签按对话隔离（用户："每个对话的书签和批注要隔离"）。
-        var marks = bookmarksHere();
-        return h(
-          'button.chattree__btn.chattree__marksbtn' + (marksOpen ? '.is-on' : ''),
-          {
-            type: 'button',
-            title: marks.length
-              ? '书签抽屉 · ' + marks.length + ' 个永久标记（这一段对话）'
-              : '书签抽屉（这一段对话还没标过）',
-            'aria-expanded': marksOpen ? 'true' : 'false',
-            onClick: toggleMarks,
-          },
-          iconNode('bookmark', 14),
-          h('span', { text: marks.length ? '书签 · ' + marks.length : '书签' })
-        );
-      })(),
+      marksBtn,
       iconButton('close', '关闭（Esc）', close)
     );
     return bar;
@@ -4105,9 +4358,10 @@
     if (!places.length) {
       list.appendChild(
         h('div.chatmarks__empty', {
+          // 说"树上"不说"图上"：手机上这棵树是大纲列表，没有图钉可找
           text:
-            '这段对话的图上还没有图钉。回到对话里，在消息尾部点那枚丝带（或右键 →「加书签」）——' +
-            '标过的地方就会变成地图上的一枚图钉，同时列在这里。书签是永久的，数量不限。',
+            '这棵树上还没有标记。回到对话里，在消息尾部点那枚丝带（或右键 →「加书签」）——' +
+            '标过的地方就会挂在树上，同时列在这里。书签是永久的，数量不限。',
         })
       );
     }
@@ -4857,11 +5111,11 @@
       onKeydown: onKeydown,
     });
     // 滤镜清单：**浮层**（与模式选择栏同一个 `.modepick` 长相），平时不进 DOM，
-    // 打开时才挂到 body 上（见 `openSkillPick`）。里面是"勾选框行"，不是一组可选项。
-    skillPickEl = h('div.modepick.chatskill', { role: 'group', 'aria-label': '滤镜' });
+    // 打开时才挂到 body 上（见 `openLensPick`）。里面是"勾选框行"，不是一组可选项。
+    lensPickEl = h('div.modepick.chatlens', { role: 'group', 'aria-label': '滤镜' });
     // 焦点落在清单里的勾选框上时，Esc 也收得起来（输入框那边只管焦点在它自己身上的 Esc）
-    skillPickEl.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Escape') closeSkillPick();
+    lensPickEl.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') closeLensPick();
     });
     // 图标按钮：正文只放一个箭头，"发送/停止"两态换图标（见 `paintSend`）。
     // 文案进 title 与 aria-label —— 看得出、也读得出。
@@ -4918,7 +5172,7 @@
               // **传统两行**（用户："按钮多了，改成传统的两行。按钮放下面，输入放上面"）：
               // 第一行只有输入框，占满整宽；第二行才是图标、药丸与发送键。
               // 先前是一行到底，按钮一多，输入框就被挤成一小段。
-              //（滤镜清单是浮层，挂在 body 上 —— 见 `openSkillPick`。）
+              //（滤镜清单是浮层，挂在 body 上 —— 见 `openLensPick`。）
               inputEl,
               // 输入框这一侧不再挂信号灯了：用户要的是**消息框**右上角那盏
               //（"我说的是发出来的消息框的右上角——因为每次发送的模式都不一样"）。
@@ -5009,6 +5263,13 @@
     applyNarrowAside();
     if (NARROW_ASIDE.addEventListener) NARROW_ASIDE.addEventListener('change', applyNarrowAside);
     else if (NARROW_ASIDE.addListener) NARROW_ASIDE.addListener(applyNarrowAside);   // 老 Safari
+    // 跨过手机那条线时，开着的对话树要换一种画法（地图 ↔ 大纲）。状态是同一份，
+    // 只重画 —— 不重画的话，转屏之后会留着一张按 1400 宽算好的图。
+    function onTreeBreakpoint() {
+      if (state.treeOpen) renderTree();
+    }
+    if (MOBILE_TREE.addEventListener) MOBILE_TREE.addEventListener('change', onTreeBreakpoint);
+    else if (MOBILE_TREE.addListener) MOBILE_TREE.addListener(onTreeBreakpoint);   // 老 Safari
   }
 
   /* ------------------------------------------------------------ 左栏 */
@@ -5040,9 +5301,8 @@
     }
 
     if (!state.list.length) {
-      listEl.appendChild(
-        h('div.chat__emptylist', { text: '还没有对话。上面这个按钮开始第一条。' })
-      );
+      // 一条对话都没有时**什么都不写**（用户："不要出现"）：上一行就是「新对话」，
+      // 对话区里也有一整页引导 —— 这里再写一句"还没有对话"只是噪音。
       return;
     }
 
@@ -5751,86 +6011,20 @@
   var chatMenuX = 0;
   var chatMenuY = 0;
 
-  /** 点在菜单外面 → 走开。用 `mousedown` 而不是 `click`/`contextmenu`。
-   *
-   * 这一步的时机是整块菜单的要害：**关旧菜单必须早于开新菜单**。`contextmenu` 同时
-   * 是"关"与"开" —— 右键时 threadEl 的监听先把新菜单画出来，事件再冒泡到 document，
-   * 挂在 document 上的那条"关菜单"就把**刚画出来的这张**撤掉了，菜单只闪一瞬。
-   * 原先是 `{once:true}` + `setTimeout` 那么写的，症状正是"标注/高亮一次之后，
-   * 再选任何文字都没有选择栏了"——而且它每开一次菜单都会重新武装，等于永久失效。
-   * `mousedown` 比 `contextmenu` 先到，于是关旧的、随后再开新的，两件事互不打扰。
-   *
-   * 与 `sidetree.js` / `mounts.js` 那几个小菜单同一套写法。
-   */
-  function closeChatMenuAway(ev) {
-    var menu = document.getElementById('chat-menu');
-    if (menu && !menu.contains(ev.target)) closeChatMenu();
-  }
-
-  function closeChatMenuKey(ev) {
-    if (ev.key !== 'Escape') return;
-    // **菜单是"最上面那一层"**：Esc 只该关它，不该顺手把底下的对话树也关掉
-    //（启动时那条"逐层关"的 Esc 挂在冒泡阶段，这里拦一下它就收不到了；与批注抽屉同一处讲究）
-    ev.stopPropagation();
-    closeChatMenu();
-  }
-
   function closeChatMenu() {
-    var found = document.getElementById('chat-menu');
-    if (found) found.remove();
-    document.removeEventListener('mousedown', closeChatMenuAway, true);
-    document.removeEventListener('keydown', closeChatMenuKey, true);
+    ui.closeMenu();
   }
-
 
   /** 一个小弹出菜单（会话行 / 分组行右键用）。
    *
    * 每条 = 图标 + 文字 +（可选）右边的快捷键：用户要的是"重命名，置顶，删除，
-   * 都是图标 + 文字，删除做成红色"。 */
+   * 都是图标 + 文字，删除做成红色"。
+   *
+   * 画与关都在 `ui.menu`（资料页的右键删除用的是同一份），这里只补坐标 ——
+   * 坐标由各处 `contextmenu` 事先记进 `chatMenuX/Y`（弹出菜单的定位都这么走）。
+   */
   function showChatMenu(items) {
-    closeChatMenu();
-    var menu = h('div.chattree__menu', { id: 'chat-menu', role: 'menu' });
-    items.forEach(function (item) {
-      // `item.node`：这一项不是一行按钮，而是**任意节点**（思考强度那根拖动条
-      // 就是这么塞进来的 —— 它不是"点一下"的东西）。
-      if (item.node) {
-        menu.appendChild(item.node);
-        return;
-      }
-      var row = h('button.chattree__menuitem' + (item.danger ? '.is-danger' : ''), {
-        type: 'button',
-        role: 'menuitem',
-        html:
-          '<span class="chattree__menuico">' +
-          // 同样查 ui.js 那张唯一的表（原先它单独查 `MENU_ICONS`，
-          // `bookmark`/`flag` 不在那张表里，于是那两行是空的）
-          (item.icon && ui.iconPath(item.icon)
-            ? '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
-              'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
-              ui.iconPath(item.icon) +
-              '</svg>'
-            : '') +
-          '</span><span class="chattree__menutext"></span>' +
-          (item.hint ? '<span class="chattree__menuhint"></span>' : ''),
-        onClick: function () {
-          closeChatMenu();
-          item.run();
-        },
-      });
-      row.querySelector('.chattree__menutext').textContent = item.label;
-      if (item.hint) row.querySelector('.chattree__menuhint').textContent = item.hint;
-      menu.appendChild(row);
-    });
-    document.body.appendChild(menu);
-    var box = menu.getBoundingClientRect();
-    menu.style.left = Math.min(chatMenuX, window.innerWidth - box.width - 8) + 'px';
-    menu.style.top = Math.min(chatMenuY, window.innerHeight - box.height - 8) + 'px';
-    // 推到下一拍再装：开菜单这一下自己也会派发 mousedown，同拍装会把这次点击
-    // 当成"点在外面"（与 sidetree.js / mounts.js 同一个讲究）。
-    setTimeout(function () {
-      document.addEventListener('mousedown', closeChatMenuAway, true);
-      document.addEventListener('keydown', closeChatMenuKey, true);
-    }, 0);
+    ui.menu(items, { x: chatMenuX, y: chatMenuY });
   }
 
   /** 分组行上的右键菜单。 */
@@ -6084,9 +6278,17 @@
     // 工具栏也在这儿刷新一次：空对话不走 paintThread（它直接画引导页），
     // 只在 paintThread 里刷的话，刚进页面时"对话树"这个入口根本不出现
     renderBar();
+    // **「滤镜」药丸同理**：它原先只在 `paintThread()` 里补，而"一条会话都没有"的
+    // 首屏走的是这条分支 —— 于是新装的应用（库、会话都是空的）里那颗药丸**永远不出现**，
+    // 开发端却有（那里总有会话，一进来就 openConversation → paintThread）。
+    // 用户报的就是这个："chat 页面的「滤镜」药丸，在打包出来的应用里就没有出现"。
+    paintLensPills();
     ui.clear(threadEl);
+    // 三句都是**不挑学科**的（用户："给用户看的预设信息里出现了专业内容"）：
+    // 一句审读、一句材料、一句错题 —— 这正是这东西能干的三种事，
+    // 而不是"我当年拿它学什么"的痕迹。
     var examples = [
-      '用一句话说清 circular buffer 在 tt-metal 里解决什么问题',
+      '这段解释里有一句是错的，帮我挑出来',
       '我贴一段材料，你讲讲它到底在说什么',
       '这道题我选错了，帮我看看是哪一步想歪了',
     ];
@@ -6395,13 +6597,15 @@
     if (mid) lastReadMid = mid;
     else mid = lastReadMid;
     mid = String(mid || '');
-    var lit = treeEl.querySelector('.ctnode.is-reading');
+    // 两种画法共用这一个标记：地图上是 `.ctnode`（SVG 框），手机大纲上是 `.ctrow`（一行）
+    var lit = treeEl.querySelector('.ctnode.is-reading, .ctrow.is-reading');
     if (lit && lit.dataset.node === mid) return; // 还是那一条，不折腾
-    Array.prototype.forEach.call(treeEl.querySelectorAll('.ctnode.is-reading'), function (one) {
+    Array.prototype.forEach.call(treeEl.querySelectorAll('.ctnode.is-reading, .ctrow.is-reading'), function (one) {
       one.classList.remove('is-reading');
     });
+    var id = window.CSS && CSS.escape ? CSS.escape(mid) : mid;
     var node = mid
-      ? treeEl.querySelector('.ctnode[data-node="' + (window.CSS && CSS.escape ? CSS.escape(mid) : mid) + '"]')
+      ? treeEl.querySelector('.ctnode[data-node="' + id + '"], .ctrow[data-node="' + id + '"]')
       : null;
     if (node) node.classList.add('is-reading');
     moveHerePin(node);
@@ -6451,8 +6655,8 @@
     paintedCid = String(state.messagesCid || '') || String(state.current || '');
     renderBar();
     // 药丸要在 `renderBar()` **之后**补：那一行是 `renderBar` 重建的，
-    // 插早了会被它连锅端掉（这颗药丸是动态插进那一行的，见 `paintSkillPills`）。
-    paintSkillPills();
+    // 插早了会被它连锅端掉（这颗药丸是动态插进那一行的，见 `paintLensPills`）。
+    paintLensPills();
     renderTree();
     if (!state.messages.length) {
       renderEmptyThread();
@@ -6626,10 +6830,10 @@
            * 回答一到，`start` 那一步会把这两枚补上（见 `send` 里"回答到了"那段）。
            */
           answered(m) ? placeButtons(m) : null,
-          // 用 `/` 装上的 skill 记在**这条消息**上（点一下可取下）—— 与记号同一类：
+          // 用 `/` 装上的 lens 记在**这条消息**上（点一下可取下）—— 与记号同一类：
           // "从这儿往下都该这样"，只是它管的是"怎么陪他"，不是"标记哪儿"。
           // 一串（可能同时挂着流程 + 口吻 + 纪律），`h` 会把数组摊平。
-          skillChips(m)
+          lensChips(m)
         );
       }
     } else {
@@ -8416,6 +8620,22 @@
 
   function receiptBody(part, repaint) {
     var payload = part.payload || {};
+    var kind = String(payload.kind || '');
+    // 凭条按 kind 分家：`mastered` / `flag` 是"给某道题打个标记"（本地 store），
+    // 三个 `plan.*` 是"往库里写计划/日程"（走后端，见 planReceipt）。
+    // 两类的东西完全不同，硬塞进一个函数只会让每一方都长满 if。
+    if (
+      kind === 'plan.create' ||
+      kind === 'plan.edit' ||
+      kind === 'plan.schedule' ||
+      kind === 'plan.scheduleBatch'
+    ) {
+      return planReceipt(part, repaint);
+    }
+    return questionReceipt(payload, repaint);
+  }
+
+  function questionReceipt(payload, repaint) {
     var questionId = String(payload.questionId || '');
     var box = h('div.chatreceipt');
     if (!questionId) return box;
@@ -8476,6 +8696,438 @@
       'info',
       1500
     );
+  }
+
+  /* ------------------------------------------------------------ 计划凭条 */
+
+  /**
+   * `plan.create` / `plan.edit` / `plan.schedule` 三种卡。
+   *
+   * 与上面那两张凭条的根本区别：**这几张写的是库，不是本地 store**。
+   * 所以"确认过没有"不能只靠一个本地布尔 —— 刷新之后那个布尔就没了，而记录不会。
+   * `plan.create` 因此按 `proposalId` 回读一次服务端（`GET /plans?proposalId=…`），
+   * 问的是"这份计划到底建成没有"；点确认时也带着它，重复点不会建两份。
+   *
+   * 改期/排期那两张没有回读：它们没有稳定的身份可查（同一块日程可以被改很多次），
+   * 但写入仍是幂等的（`POST /schedule` 认 `proposalId`），所以重画一张也没关系。
+   */
+  var planCommitted = {}; // proposalId → 已落库的结果（null = 问过了，没有）
+
+  function pad2(n) {
+    return n < 10 ? '0' + n : String(n);
+  }
+
+  /** 本地时间的一句话（凭条上读起来比 ISO 顺眼） */
+  function whenText(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return (
+      d.getMonth() + 1 + '月' + d.getDate() + '日 ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+    );
+  }
+
+  /** `2026-11-09` → `11月9日`；空 → 还没定 */
+  function dayText(value) {
+    var parts = String(value || '').split('-');
+    if (parts.length !== 3) return '哪天还没定';
+    return Number(parts[1]) + '月' + Number(parts[2]) + '日';
+  }
+
+  function planReceipt(part, repaint) {
+    var payload = part.payload || {};
+    var kind = String(payload.kind || '');
+    var key = String(payload.proposalId || '');
+
+    // 已经确认过：只留一条凭据（卡片重画时靠 `payload.committed` 认，见下面各处的 remember）
+    if (payload.committed) return planDoneBox(kind);
+
+    // 回读：历史里那张卡片在他点过之后才被重新画出来（刷新 / 翻页）。
+    // 只问一次 —— 一张卡片问一次就够；失败就当没加过（按钮还在，再点也不会建两份）。
+    if (key && kind === 'plan.create' && planCommitted[key] === undefined) {
+      planCommitted[key] = null; // 占位：正在问，别再发第二次
+      QF.api.get('/plans?proposalId=' + encodeURIComponent(key)).then(
+        function (data) {
+          if (data && data.plan) {
+            planCommitted[key] = data.plan;
+            payload.committed = true;
+            repaint();
+          }
+        },
+        function () {}
+      );
+    }
+
+    if (kind === 'plan.edit') return planEditBox(payload, repaint);
+    if (kind === 'plan.schedule') return planScheduleBox(payload, repaint);
+    if (kind === 'plan.scheduleBatch') return planScheduleBatchBox(payload, repaint);
+    return planCreateBox(payload, repaint);
+  }
+
+  function planDoneBox(kind) {
+    var label =
+      kind === 'plan.scheduleBatch'
+        ? '已排进日程'
+        : kind === 'plan.schedule'
+          ? '已排进日程'
+          : kind === 'plan.edit'
+            ? '改动已生效'
+            : '已加入计划';
+    var box = h('div.chatplan.chatplan--done');
+    // 凭据上的标签与卡片一致：排程是排程，不是"计划"（两者在日程页是两种东西）
+    var tag = kind === 'plan.schedule' || kind === 'plan.scheduleBatch' ? '排程' : '计划';
+    box.appendChild(
+      h(
+        'div.chatplan__head',
+        null,
+        h('span.chatplan__tag', { text: tag }),
+        h('span.chatplan__title', { text: label })
+      )
+    );
+    box.appendChild(
+      h(
+        'div.chatplan__foot',
+        null,
+        h('a.btn.btn--ghost.btn--sm', { href: 'schedule.html' }, '打开日程')
+      )
+    );
+    return box;
+  }
+
+  function planHead(tag, title, meta) {
+    return h(
+      'div.chatplan__head',
+      null,
+      h('span.chatplan__tag', { text: tag }),
+      h('span.chatplan__title', { text: title || '未命名' }),
+      meta ? h('span.chatplan__meta', { text: meta }) : null
+    );
+  }
+
+  /** 按钮先关掉再发请求：本地服务通常几十毫秒，但双击建出两份计划是不可接受的 */
+  function lock(btn, on, text) {
+    if (!btn) return;
+    if (on) {
+      btn.__idle = btn.__idle || btn.textContent;
+      btn.textContent = text || '处理中…';
+      btn.disabled = true;
+    } else {
+      btn.textContent = btn.__idle || text || '重试';
+      btn.disabled = false;
+    }
+  }
+
+  /** `plan.create`：一张计划卡，条目可就地改标题 / 改日期 / 删 */
+  function planCreateBox(payload, repaint) {
+    var box = h('div.chatplan');
+    var rows = h('div.chatplan__rows');
+    var kept = [];
+
+    // meta 只放条数：`note` 是模型写给自己看的一句目标（常含 LaTeX 原样），
+    // 塞在标题后面就会被截成半句乱码 —— 留成 tooltip，想看再看。
+    var noteMeta = payload.note ? h('span.chatplan__meta', { text: '目标' }) : null;
+    if (noteMeta) noteMeta.title = String(payload.note);
+    box.appendChild(
+      planHead('计划', payload.title, (payload.items || []).length + ' 条')
+    );
+    if (noteMeta) box.firstChild.appendChild(noteMeta);
+
+    function addRow(one) {
+      var title = h('input.chatplan__input', {
+        type: 'text',
+        value: String(one.title || ''),
+        placeholder: '做什么',
+        'aria-label': '条目',
+      });
+      var date = h('input.chatplan__date', {
+        type: 'date',
+        value: one.dueDate || '',
+        'aria-label': '哪天做',
+      });
+      var row = h('div.chatplan__row', null, title, date);
+      // `meta` 原样带着卡片上的排程元数据（focus / domain / estimateMin / gate / points）：
+      // 提交时一起送进 `/plans`，自动排程才知道这一条该排上午还是晚上。
+      var entry = { node: row, title: title, date: date, meta: one };
+      var del = h(
+        'button.chatplan__del',
+        {
+          type: 'button',
+          title: '删掉这条',
+          'aria-label': '删掉这条',
+          onClick: function () {
+            var at = kept.indexOf(entry);
+            if (at >= 0) kept.splice(at, 1);
+            if (row.parentNode) row.parentNode.removeChild(row);
+          },
+        },
+        '×'
+      );
+      row.appendChild(del);
+      kept.push(entry);
+      rows.appendChild(row);
+    }
+
+    (payload.items || []).forEach(addRow);
+    if (!kept.length) {
+      // 一条都没有时给一个空行，免得卡片看起来像坏了
+      addRow({ title: '', dueDate: '' });
+    }
+    box.appendChild(rows);
+
+    var go = h('button.btn.btn--primary.btn--sm.chatplan__go', { type: 'button' }, '加入计划');
+    go.addEventListener('click', function () {
+      var items = kept
+        .map(function (entry) {
+          var meta = entry.meta || {};
+          return {
+            title: String(entry.title.value || '').trim(),
+            dueDate: String(entry.date.value || '').trim(),
+            estimateMin: meta.estimateMin,
+            important: meta.important,
+            focus: meta.focus,
+            domain: meta.domain,
+            splittable: meta.splittable,
+            gate: meta.gate,
+            points: meta.points,
+          };
+        })
+        .filter(function (one) {
+          return one.title;
+        });
+      if (!items.length) {
+        ui.toast('至少留一条要做的', 'warn', 1800);
+        return;
+      }
+      lock(go, true, '正在加入…');
+      QF.api
+        .post('/plans', {
+          proposalId: payload.proposalId || undefined,
+          title: payload.title || '',
+          note: payload.note || '',
+          source: 'chat',
+          items: items,
+        })
+        .then(
+          function (data) {
+            if (data && data.plan && payload.proposalId) planCommitted[payload.proposalId] = data.plan;
+            payload.committed = true;
+            ui.toast(data && data.created === false ? '这份计划已经在日程里了' : '已加入计划', 'ok', 1800);
+            repaint();
+          },
+          function (err) {
+            lock(go, false, '加入计划');
+            ui.toast((err && err.message) || '加入失败', 'bad', 2600);
+          }
+        );
+    });
+
+    box.appendChild(
+      h(
+        'div.chatplan__foot',
+        null,
+        go,
+        h('span.chatplan__hint', { text: '条目可以就地改、可以删；点了才保存' })
+      )
+    );
+    return box;
+  }
+
+  /** 一条改动写成一句人话 */
+  function changeText(one) {
+    var current = one.current || {};
+    if (one.remove) return '删掉「' + (current.title || '') + '」';
+    var bits = [];
+    if (one.title) bits.push('改叫「' + one.title + '」');
+    if ('dueDate' in one) {
+      bits.push(one.dueDate ? dayText(current.dueDate) + ' → ' + dayText(one.dueDate) : '清掉日期');
+    }
+    if ('done' in one) bits.push(one.done ? '勾上完成' : '取消完成');
+    if ('important' in one) bits.push(one.important ? '加星' : '去星');
+    return (current.title || '这条') + '：' + (bits.join('，') || '没有改动');
+  }
+
+  /** `plan.edit`：一张改动清单，点一次把它们都应用了 */
+  function planEditBox(payload, repaint) {
+    var box = h('div.chatplan');
+    box.appendChild(planHead('改计划', payload.planTitle, (payload.changes || []).length + ' 处改动'));
+
+    var rows = h('div.chatplan__rows');
+    (payload.changes || []).forEach(function (one) {
+      rows.appendChild(h('div.chatplan__change', { text: changeText(one) }));
+    });
+    box.appendChild(rows);
+
+    var go = h('button.btn.btn--primary.btn--sm.chatplan__go', { type: 'button' }, '应用改动');
+    go.addEventListener('click', function () {
+      var chain = Promise.resolve();
+      var changes = payload.changes || [];
+      lock(go, true, '正在应用…');
+      changes.forEach(function (one) {
+        chain = chain.then(function () {
+          var path = '/plan-items/' + encodeURIComponent(one.itemId);
+          if (one.remove) return QF.api.del(path);
+          var body = {};
+          if (one.title) body.title = one.title;
+          if ('dueDate' in one) body.dueDate = one.dueDate || '';
+          if ('done' in one) body.done = !!one.done;
+          if ('important' in one) body.important = !!one.important;
+          return QF.api.patch(path, body);
+        });
+      });
+      chain.then(
+        function () {
+          payload.committed = true;
+          ui.toast('改动已应用', 'ok', 1600);
+          repaint();
+        },
+        function (err) {
+          lock(go, false, '应用改动');
+          ui.toast((err && err.message) || '改动没成功', 'bad', 2600);
+        }
+      );
+    });
+
+    box.appendChild(h('div.chatplan__foot', null, go));
+    return box;
+  }
+
+  /** `plan.schedule`：把某条待办排进某个时段（带 `eventId` 就是改期） */
+  function planScheduleBox(payload, repaint) {
+    var box = h('div.chatplan');
+    var editing = !!payload.eventId;
+    box.appendChild(planHead(editing ? '改期' : '排期', payload.title, ''));
+
+    var line = payload.startAt + ' → ' + payload.endAt;
+    box.appendChild(
+      h(
+        'div.chatplan__when',
+        null,
+        h('span.chatplan__time', { text: whenText(payload.startAt) + ' – ' + whenText(payload.endAt) }),
+        payload.itemTitle ? h('span.chatplan__from', { text: '来自：' + payload.itemTitle }) : null,
+        h('span.chatplan__raw', { text: line })
+      )
+    );
+
+    var go = h(
+      'button.btn.btn--primary.btn--sm.chatplan__go',
+      { type: 'button' },
+      editing ? '改到这个时间' : '排进日程'
+    );
+    go.addEventListener('click', function () {
+      lock(go, true, '正在排…');
+      var body = {
+        proposalId: payload.proposalId || undefined,
+        itemId: payload.itemId || undefined,
+        title: payload.title || '',
+        startAt: payload.startAt,
+        endAt: payload.endAt,
+        allDay: !!payload.allDay,
+      };
+      var call = editing
+        ? QF.api.patch('/schedule/' + encodeURIComponent(payload.eventId), body)
+        : QF.api.post('/schedule', body);
+      call.then(
+        function () {
+          payload.committed = true;
+          ui.toast(editing ? '已改到这个时间' : '已排进日程', 'ok', 1600);
+          repaint();
+        },
+        function (err) {
+          lock(go, false, editing ? '改到这个时间' : '排进日程');
+          ui.toast((err && err.message) || '没排上', 'bad', 2600);
+        }
+      );
+    });
+
+    box.appendChild(h('div.chatplan__foot', null, go));
+    return box;
+  }
+
+  /** `plan.scheduleBatch`：整周排程（`schedule_week` 出的那张卡）。
+   *
+   * 卡片**只读**：改某一块去日历页（那里能拖）；这里只负责"看一眼、应用整批"。
+   * 确认之后重跑一次 `/schedule/replan` —— 求解器是确定性的，同样输入出同样结果，
+   * 所以卡片上看到的与应用之后的是一回事。 */
+  function planScheduleBatchBox(payload, repaint) {
+    var box = h('div.chatplan');
+    var blocks = payload.blocks || [];
+    var missed = payload.unscheduled || [];
+    box.appendChild(
+      planHead('整周排程', '未来 ' + (payload.horizonDays || 7) + ' 天', blocks.length + ' 块')
+    );
+
+    var rows = h('div.chatplan__rows');
+    blocks.slice(0, 12).forEach(function (one) {
+      rows.appendChild(
+        h(
+          'div.chatplan__slot',
+          null,
+          h('span.chatplan__time', { text: whenText(one.startAt) }),
+          h('span.chatplan__slotTitle', { text: one.title || '' }),
+          h('span.chatplan__slotWhy', { text: one.reason || '' })
+        )
+      );
+    });
+    if (blocks.length > 12) {
+      rows.appendChild(
+        h('div.chatplan__hint', { text: '还有 ' + (blocks.length - 12) + ' 块（应用后在日历上看）' })
+      );
+    }
+    box.appendChild(rows);
+
+    if (missed.length) {
+      box.appendChild(
+        h(
+          'div.chatplan__rows',
+          null,
+          missed.slice(0, 4).map(function (one) {
+            return h(
+              'div.chatplan__slot',
+              null,
+              h('span.chatplan__time', { text: '排不进' }),
+              h('span.chatplan__slotTitle', { text: one.title || '' }),
+              h('span.chatplan__slotWhy', { text: one.reason || '' })
+            );
+          })
+        )
+      );
+    }
+
+    var go = h('button.btn.btn--primary.btn--sm.chatplan__go', { type: 'button' }, '应用');
+    go.addEventListener('click', function () {
+      lock(go, true, '正在排…');
+      QF.api
+        .post('/schedule/replan', {
+          horizonDays: payload.horizonDays || 7,
+          apply: true,
+        })
+        .then(
+          function (res) {
+            payload.committed = true;
+            var counts = (res && res.diff && res.diff.counts) || {};
+            ui.toast(
+              '已排进日历 · 新增 ' + (counts.created || 0) + ' / 移动 ' + (counts.moved || 0),
+              'ok',
+              2000
+            );
+            repaint();
+          },
+          function (err) {
+            lock(go, false, '应用');
+            ui.toast((err && err.message) || '没排成', 'bad', 2600);
+          }
+        );
+    });
+
+    box.appendChild(
+      h(
+        'div.chatplan__foot',
+        null,
+        go,
+        h('span.chatplan__hint', { text: '应用之后可在日历上一键撤销' }),
+        h('a.btn.btn--ghost.btn--sm', { href: 'schedule.html' }, '打开日程')
+      )
+    );
+    return box;
   }
 
   /* ------------------------------------------------------------ 零件 */
@@ -8875,9 +9527,9 @@
         foot.appendChild(btn);
       });
     }
-    // skill 标记：挂在**哪条消息**上就在哪一行显示（点一下取下）—— 它可能挂在用户那条，
+    // lens 标记：挂在**哪条消息**上就在哪一行显示（点一下取下）—— 它可能挂在用户那条，
     // 也可能挂在这一条（用 `/` 之后紧接着发的那一句在哪条上，就记在哪条上）。
-    skillChips(m).forEach(function (chip) {
+    lensChips(m).forEach(function (chip) {
       foot.appendChild(chip);
     });
 
@@ -9458,8 +10110,8 @@
         inputEl.value = '';
         growInput();
         // 清单要是还开着（勾选后不会自己关），发出去就收起来 —— 该回到对话了。
-        // 注意是 `closeSkillPick` 而不是重画：重画会把它又打开（清单不再由输入框驱动）。
-        closeSkillPick();
+        // 注意是 `closeLensPick` 而不是重画：重画会把它又打开（清单不再由输入框驱动）。
+        closeLensPick();
         scrollToEnd(true);
       }
 
@@ -9890,24 +10542,24 @@
    * `docs/对话树.md` §十二 的三种形态：**流程**（有开始、有走完）、**口吻**、**纪律**
    * 都从这里"装 / 取"，挂在节点上、沿树继承。
    *
-   * 界面只干一件事：把"装 / 取"写进记录（`QF.store.attachSkill`，存法与记号同源）——
+   * 界面只干一件事：把"装 / 取"写进记录（`QF.store.attachLens`，存法与记号同源）——
    * 清单里勾一条 = 在链末端记一条 on，取消勾选 = 记一条 off。
-   * "现在挂着什么"由**服务端**按当下的链算（`app/skills.py` 的 `resolve`）——
+   * "现在挂着什么"由**服务端**按当下的链算（`app/lens.py` 的 `resolve`）——
    * 链会随切分支/编辑重发而变，本地算一份必然过期。
    *
    * 入口只有一颗药丸，输入框里**不再解析任何命令**
    *（用户："那个/的功能彻底删掉，以后没有/命令了"）：框里的字就是问题，一个字都不动。
    */
-  var skillPickEl = null;  // 药丸上方那份浮层清单（打开时才挂到 body 上）
-  var skillPickTimer = null; // 收起动效的定时器（收起跑到一半又打开时取消它）
+  var lensPickEl = null;  // 药丸上方那份浮层清单（打开时才挂到 body 上）
+  var lensPickTimer = null; // 收起动效的定时器（收起跑到一半又打开时取消它）
 
-  //: 形态的中文（`app/skills.py` 的 kind → 界面上那两个字）。只用来**标出来给他看**：
+  //: 形态的中文（`app/lens.py` 的 kind → 界面上那两个字）。只用来**标出来给他看**：
   //: "我装的到底是流程还是口吻"这件事，界面不说清，他就得靠猜。
-  var SKILL_KIND_WORD = { flow: '流程', tone: '口吻', discipline: '纪律' };
+  var LENS_KIND_WORD = { flow: '流程', tone: '口吻', discipline: '纪律' };
 
-  function skillCatalog() {
+  function lensCatalog() {
     var st = (QF.mounts && QF.mounts.state) || {};
-    return Array.isArray(st.skills) ? st.skills : [];
+    return Array.isArray(st.lens) ? st.lens : [];
   }
 
   //: 四档的说明。**口径要和后端那几句提示词对得上**（见 `chat.py` 的 `_THINKING_LINES`）——
@@ -9924,89 +10576,88 @@
    * 点击后跳出来的菜单栏也一样的样式（现在是对话框上顶出来一个框）"）。
    * 不再长在输入框里 —— 那样一打开就把输入框和对话一起往上顶。 */
 
-  function openSkillPick() {
-    if (!skillPickEl) return;
-    if (skillPickTimer) {
-      window.clearTimeout(skillPickTimer);
-      skillPickTimer = null;
+  function openLensPick() {
+    if (!lensPickEl) return;
+    if (lensPickTimer) {
+      window.clearTimeout(lensPickTimer);
+      lensPickTimer = null;
     }
-    skillPickEl.classList.remove('is-out');
-    if (!skillPickEl.parentNode) document.body.appendChild(skillPickEl);
+    lensPickEl.classList.remove('is-out');
+    if (!lensPickEl.parentNode) document.body.appendChild(lensPickEl);
     // 贴着药丸、**向上**弹：药丸在屏幕最下面，往下弹会被窗口截掉（同 mounts.js 的 openPick）
-    var pill = document.querySelector('.chatskill__open');
+    var pill = document.querySelector('.chatlens__open');
     if (pill) {
       var r = pill.getBoundingClientRect();
-      skillPickEl.style.left = Math.round(r.left) + 'px';
-      skillPickEl.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
+      lensPickEl.style.left = Math.round(r.left) + 'px';
+      lensPickEl.style.bottom = Math.round(window.innerHeight - r.top + 6) + 'px';
     }
-    if (!skillPickEl.classList.contains('is-open')) {
-      skillPickEl.classList.add('is-open');
+    if (!lensPickEl.classList.contains('is-open')) {
+      lensPickEl.classList.add('is-open');
       // 逼一次布局再挂 `.is-in`：不这样浏览器会把两个状态并成一次计算，过渡那一帧根本不跑
       //（与 mounts.js 的 openPick 同一理由）
-      void skillPickEl.offsetHeight;
+      void lensPickEl.offsetHeight;
     }
-    skillPickEl.classList.add('is-in');
+    lensPickEl.classList.add('is-in');
     // 点别处 = 走开。捕获的 mousedown，与模式选择栏同一套；药丸自己除外 ——
     // 它有自己的开合逻辑，同一次点击不能走两遍（见那颗药丸的 onClick）。
     // 同一个函数重复 add 是空操作（浏览器按 类型+函数+捕获 去重），不必另设开关。
     // Esc 不在这里管：焦点在输入框时归它自己的 keydown，在勾选框上时归清单自己的 keydown。
     // mousedown 与 pointerdown 都挂：鼠标走前者、触屏/笔走后者；
-    // 同一次操作里两个都到也无妨（closeSkillPick 是幂等的）。
-    document.addEventListener('mousedown', onSkillPickAway, true);
-    document.addEventListener('pointerdown', onSkillPickAway, true);
-    syncSkillPill();
+    // 同一次操作里两个都到也无妨（closeLensPick 是幂等的）。
+    document.addEventListener('mousedown', onLensPickAway, true);
+    document.addEventListener('pointerdown', onLensPickAway, true);
+    syncLensPill();
   }
 
-  function closeSkillPick() {
-    if (!skillPickEl) return;
-    if (skillPickTimer) {
-      window.clearTimeout(skillPickTimer);
-      skillPickTimer = null;
+  function closeLensPick() {
+    if (!lensPickEl) return;
+    if (lensPickTimer) {
+      window.clearTimeout(lensPickTimer);
+      lensPickTimer = null;
     }
-    document.removeEventListener('mousedown', onSkillPickAway, true);
-    document.removeEventListener('pointerdown', onSkillPickAway, true);
-    var wasOpen = skillPickEl.classList.contains('is-open');
-    skillPickEl.classList.remove('is-open', 'is-in');
-    syncSkillPill();
+    document.removeEventListener('mousedown', onLensPickAway, true);
+    document.removeEventListener('pointerdown', onLensPickAway, true);
+    var wasOpen = lensPickEl.classList.contains('is-open');
+    lensPickEl.classList.remove('is-open', 'is-in');
+    syncLensPill();
     if (!wasOpen) {
       // 没开过（或早就收好了）：不用再演一遍淡出，直接摘掉
-      if (skillPickEl.parentNode) skillPickEl.parentNode.removeChild(skillPickEl);
+      if (lensPickEl.parentNode) lensPickEl.parentNode.removeChild(lensPickEl);
       return;
     }
     // 收起来也要有动效：先褪出去，过渡跑完再摘节点（同 mounts.js 的 closePick）。
     // 这 170ms 里它 `pointer-events: none`（见 CSS），不挡下面的点击。
-    skillPickEl.classList.add('is-out');
-    skillPickTimer = window.setTimeout(function () {
-      skillPickTimer = null;
-      if (skillPickEl.parentNode && !skillPickEl.classList.contains('is-open')) {
-        skillPickEl.parentNode.removeChild(skillPickEl);
+    lensPickEl.classList.add('is-out');
+    lensPickTimer = window.setTimeout(function () {
+      lensPickTimer = null;
+      if (lensPickEl.parentNode && !lensPickEl.classList.contains('is-open')) {
+        lensPickEl.parentNode.removeChild(lensPickEl);
       }
     }, 170);
   }
 
-  function onSkillPickAway(ev) {
-    if (!skillPickEl || !skillPickEl.classList.contains('is-open')) return;
-    if (skillPickEl.contains(ev.target)) return;
-    var pill = document.querySelector('.chatskill__open');
+  function onLensPickAway(ev) {
+    if (!lensPickEl || !lensPickEl.classList.contains('is-open')) return;
+    if (lensPickEl.contains(ev.target)) return;
+    var pill = document.querySelector('.chatlens__open');
     if (pill && pill.contains(ev.target)) return;
     /* **点哪儿都算走开**，输入框也不例外（用户："点击别的地方，这个红框不会自己收起来"）。
      * 原先给输入框留了一个例外（"勾完回去接着写"），可这一层浮在正文上，
      * 留着它更像"点不动"；要勾选就再点一次药丸，不差这一下。
      * 药丸本身除外 —— 它有自己的开合逻辑，同一次点击不能走两遍。 */
-    closeSkillPick();
+    closeLensPick();
   }
 
-  function paintSkillPick() {
-    if (!skillPickEl) return;
-    var list = skillCatalog();
-    if (!list.length) {
-      // 目录还是空的（mounts 那份还没到）：收起。**不清空** —— 淡出那 170ms 里
-      // 让上一帧的样子留着，先清成一个空壳再褪会看见一条空框闪一下
-      closeSkillPick();
-      return;
-    }
-    ui.clear(skillPickEl);
-    var live = activeSkills();
+  function paintLensPick() {
+    if (!lensPickEl) return;
+    ui.clear(lensPickEl);
+    var list = lensCatalog();
+    var live = activeLenses();
+
+    // **一条都没有也要能打开**：新装的桌面包就是 0 条（滤镜是用户自己的数据，
+    // 不随包发）。原先这里是 `closeLensPick(); return;` —— 点药丸什么都不发生，
+    // 最像"坏了"。现在什么都不解释，只留下面那个"新建"：
+    // 那句"这里说的是什么"是废话（用户："——这是冗余，删掉"）。
     list.forEach(function (one) {
       var on = live.some(function (s) {
         return s.key === one.key;
@@ -10016,9 +10667,18 @@
       // 行不是"挑这条去发"的按钮 —— 勾选就是装 / 取本身（见 `toggleLens`），清单也不跟着关。
       // 长相照模式选择栏的一行（`.modepick__row`）：勾选框 + 名字 + 说明 + 右边的形态。
       // `is-on` 是**装着**的那一条（名字转成赭红）。
-      var row = h('label.modepick__row.chatskill__item' + (on ? '.is-on' : ''));
+      // 这一行是个 **2×3 的网格**（不是 `.modepick__row` 那种 flex）：
+      //
+      //      ☐  名字      形态
+      //         说明      铅笔 垃圾桶
+      //
+      // 为什么要网格：右边那两样原来是挤在一行里的（"口吻 ✏️ 🗑"），
+      // 而左边是两行字，于是右边孤零零贴在第一行上，怎么调 `margin` 都对不齐
+      //（用户："形态和两个图标在一行里，改成两行。注意分别对齐"）。
+      // 网格按行对齐：名字 ↔ 形态 同一行、说明 ↔ 图标 同一行，两边各自跟自己的行居中。
+      var row = h('label.chatlens__item' + (on ? '.is-on' : ''));
       row.appendChild(
-        h('input.chatskill__check', {
+        h('input.chatlens__check', {
           type: 'checkbox',
           checked: on,
           'aria-label': one.label + '：' + (on ? '已装上，点一下取下' : '没装，点一下装上'),
@@ -10027,18 +10687,230 @@
           },
         })
       );
+      row.appendChild(h('span.chatlens__name', { text: one.label }));
+      row.appendChild(h('span.chatlens__kind', { text: LENS_KIND_WORD[one.kind] || '' }));
+      row.appendChild(h('span.chatlens__hint', { text: one.hint }));
+      /* 行里那两个小按钮（铅笔 / 垃圾桶）。它们长在 `<label>` 里，**必须 preventDefault**：
+       * 否则点"编辑"会顺带把勾选框翻一下（HTML 里 label 的默认行为），
+       * 用户看到的就是"我想改一句话，结果它被装上了"。 */
       row.appendChild(
         h(
-          'span.modepick__main',
+          'span.chatlens__ops',
           {},
-          h('span.modepick__name', { text: one.label }),
-          h('span.modepick__hint', { text: one.hint })
+          h('button.chatlens__op', {
+            type: 'button',
+            title: '改这一条',
+            'aria-label': '改「' + one.label + '」',
+            html: ui.icon('pencil', 14),
+            onClick: function (ev) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              openLensEditor(one);
+            },
+          }),
+          h('button.chatlens__op', {
+            type: 'button',
+            title: '删掉这一条',
+            'aria-label': '删掉「' + one.label + '」',
+            html: ui.icon('trash', 14),
+            onClick: function (ev) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              removeLens(one);
+            },
+          })
         )
       );
-      row.appendChild(h('span.modepick__meta', { text: SKILL_KIND_WORD[one.kind] || '' }));
-      skillPickEl.appendChild(row);
+      lensPickEl.appendChild(row);
     });
-    openSkillPick();
+
+    // 底部那一行就是"再写一条"：与上面几行同一套格子（加号占**勾选框那一列**，
+    // 于是它和上面那些方框在同一条竖线上）。只有一行字，不再带说明 ——
+    // 那一句是废话（用户："'写一段自己的要求'那段字是冗余，删掉"）。
+    lensPickEl.appendChild(
+      h(
+        'button.chatlens__new',
+        {
+          type: 'button',
+          onClick: function () {
+            openLensEditor(null);
+          },
+        },
+        h('span.chatlens__plus', { html: ui.icon('plus', 14) }),
+        h('span.chatlens__name', { text: '新建滤镜' })
+      )
+    );
+    openLensPick();
+  }
+
+  /** 保存 / 删除之后把清单换成服务端刚给的那份，并重画（药丸里那份也跟着新）。 */
+  function refreshLenses() {
+    return QF.api
+      .get('/lens')
+      .then(function (res) {
+        if (QF.mounts && QF.mounts.state) {
+          QF.mounts.state.lens = (res && res.items) || [];
+        }
+        var top = lensPickEl ? lensPickEl.scrollTop : 0;
+        paintLensPick();
+        if (lensPickEl) lensPickEl.scrollTop = top;
+      })
+      .catch(function () {
+        /* 取不到就保持原样：清单旧一点不影响已经装上的那些 */
+      });
+  }
+
+  /** 删一条：问一句（它是**文件**，删了就没了），再请服务端删。 */
+  function removeLens(one) {
+    ui.confirm('删掉「' + one.label + '」？它是一次写入，删了不恢复。', {
+      title: '删掉这条滤镜',
+      okLabel: '删掉',
+      danger: true,
+    }).then(function (ok) {
+      if (!ok) return;
+      QF.api
+        .del('/lens/' + encodeURIComponent(one.key))
+        .then(function () {
+          ui.toast('已删掉「' + one.label + '」', 'info', 2000);
+          refreshLenses();
+        })
+        .catch(function (err) {
+          ui.toast('没删掉：' + ((err && err.message) || '服务端拒绝了'), 'error', 4000);
+        });
+    });
+  }
+
+  /** 新建 / 改一条：弹层里写名字、形态、一句话说明、正文。
+   *
+   * 为什么是弹层不是就地改：正文常常是好几段，清单只有一指宽；而且"保存 / 取消"
+   * 需要一条明确的边界 —— 边打边存会把写到一半的提示词直接带进下一轮生成。
+   */
+  function openLensEditor(one) {
+    var isNew = !one;
+    var head = function (text) {
+      return h('span.lenseditor__key', { text: text });
+    };
+    /* 字数上限与 `app/lens.py` 的 `MAX_LABEL / MAX_HINT / MAX_PROMPT` 是同一组数。
+     * 这里只是"提前拦住"（打不进去，界面就不会被撑变形）；**判据在服务端** ——
+     * 手改 md 的人绕不过那一道。 */
+    var nameInput = h('input.lenseditor__input', {
+      type: 'text',
+      value: isNew ? '' : one.label,
+      placeholder: '比如：费曼 / 大白话 / 先问我（24 字以内）',
+      maxlength: '24',
+      spellcheck: 'false',
+    });
+    var kindSelect = h(
+      'select.lenseditor__input',
+      {},
+      Object.keys(LENS_KIND_WORD).map(function (key) {
+        return h('option', { value: key, text: LENS_KIND_WORD[key] });
+      })
+    );
+    kindSelect.value = isNew ? 'flow' : one.kind || 'flow';
+    var hintInput = h('input.lenseditor__input', {
+      type: 'text',
+      value: isNew ? '' : one.hint || '',
+      placeholder: '一句话，装它之前你自己看得懂就行（60 字以内）',
+      maxlength: '60',
+    });
+    var area = h('textarea.lenseditor__area', {
+      rows: '10',
+      placeholder: '写"你现在要……"。这一段会原样进系统提示 —— 写清楚点，别写口令。（4000 字以内）',
+      maxlength: '4000',
+      spellcheck: 'false',
+    });
+    var error = h('div.lenseditor__error', { hidden: true });
+    var showError = function (text) {
+      error.textContent = text;
+      error.hidden = false;
+    };
+
+    var body = h(
+      'div.lenseditor',
+      {},
+      h('label.lenseditor__row', {}, head('名字'), nameInput),
+      h('label.lenseditor__row', {}, head('形态'), kindSelect),
+      h('label.lenseditor__row', {}, head('一句话'), hintInput),
+      h('label.lenseditor__row.lenseditor__row--tall', {}, head('提示词'), area),
+      error
+    );
+
+    var filled = isNew
+      ? Promise.resolve()
+      : QF.api
+          .get('/lens/' + encodeURIComponent(one.key))
+          .then(function (res) {
+            var full = (res && res.item) || {};
+            area.value = full.prompt || '';
+          })
+          .catch(function () {
+            showError('这一条的正文没取回来，先别存（会把它覆盖成空）');
+          });
+
+    var save = function (close) {
+      var payload = {
+        label: nameInput.value.trim(),
+        kind: kindSelect.value,
+        hint: hintInput.value.trim(),
+        prompt: area.value,
+      };
+      if (!payload.label) {
+        showError('名字不能空');
+        return;
+      }
+      if (!payload.prompt.trim()) {
+        showError('提示词不能空 —— 它就是这条滤镜本身');
+        return;
+      }
+      var req = isNew
+        ? QF.api.post('/lens', payload)
+        : QF.api.put('/lens/' + encodeURIComponent(one.key), payload);
+      req
+        .then(function () {
+          ui.toast(isNew ? '已加一条滤镜' : '已改好', 'info', 2000);
+          refreshLenses();
+          close();
+        })
+        .catch(function (err) {
+          showError('没存上：' + ((err && err.message) || '服务端拒绝了'));
+        });
+    };
+
+    var actions = [
+      { label: '取消', kind: 'ghost' },
+      {
+        label: '保存',
+        kind: 'primary',
+        onClick: function (close) {
+          // 正文还在路上时先别存 —— 否则会把那条滤镜的正文覆盖成空
+          filled.then(function () {
+            save(close);
+          });
+          return false; // 请求回来再关（成功才关，见 save）
+        },
+      },
+    ];
+    if (!isNew) {
+      actions.unshift({
+        label: '删除',
+        kind: 'danger',
+        onClick: function (close) {
+          close();
+          removeLens(one);
+        },
+      });
+    }
+
+    ui.modal({
+      title: isNew ? '新建滤镜' : '编辑滤镜',
+      size: 'lg',
+      body: body,
+      actions: actions,
+    });
+    window.setTimeout(function () {
+      nameInput.focus();
+    }, 0);
   }
 
   /**
@@ -10134,7 +11006,7 @@
     } catch (err) {
       /* 存不下只影响下次开页面，不该拦住这一次 */
     }
-    var deepPill = document.querySelector('.chat__deep:not(.chatskill__open)');
+    var deepPill = document.querySelector('.chat__deep:not(.chatlens__open)');
     if (deepPill) {
       deepPill.classList.toggle('is-on', !!state.deepThink);
       deepPill.setAttribute('aria-pressed', state.deepThink ? 'true' : 'false');
@@ -10157,17 +11029,17 @@
   function toggleLens(one, next) {
     var path = activePath() || [];
     var leaf = path.length ? path[path.length - 1] : null;
-    QF.store.attachSkill({
+    QF.store.attachLens({
       cid: state.current || '',
       mid: leaf ? String(leaf.id) : '',
       key: one.key,
       on: next,
     });
-    // 整张重画（勾选框按 `activeSkills` 重算），但把滚动位置留住 —— 清单不关，
+    // 整张重画（勾选框按 `activeLenses` 重算），但把滚动位置留住 —— 清单不关，
     // 勾下一条时不该被弹回顶上。
-    var top = skillPickEl ? skillPickEl.scrollTop : 0;
-    paintSkillPick();
-    if (skillPickEl) skillPickEl.scrollTop = top;
+    var top = lensPickEl ? lensPickEl.scrollTop : 0;
+    paintLensPick();
+    if (lensPickEl) lensPickEl.scrollTop = top;
     repaintKeepingScroll();
     // 点勾选框会把焦点带到那颗框上，而重画已经把它换掉了 —— 交还给输入框
     window.setTimeout(function () {
@@ -10175,11 +11047,11 @@
     }, 0);
   }
 
-  /** 这条链上现在正生效的（与 `app/skills.py` 的 `resolve` 同一套语义：沿链取最近、
+  /** 这条链上现在正生效的（与 `app/lens.py` 的 `resolve` 同一套语义：沿链取最近、
    *  每个 key 各算各的）。**只用来画清单里的勾选框** —— 真正生效由服务端按当下的链算。 */
-  function activeSkills() {
+  function activeLenses() {
     var cid = String(state.current || '');
-    var records = QF.store.skills() || [];
+    var records = QF.store.lens() || [];
     var mids = [''].concat((activePath() || []).map(function (m) {
       return String(m.id);
     }));
@@ -10197,15 +11069,15 @@
       })
       .map(function (k) {
         return (
-          skillCatalog().filter(function (one) {
+          lensCatalog().filter(function (one) {
             return one.key === k;
           })[0] || { key: k, label: k, kind: '', hint: '' }
         );
       });
   }
 
-  /** 输入区里与 skill 有关的一件东西（用户："常驻药丸要做，这个是状态的指示和取消药丸。
-   *  skill 另外做一个药丸放在模式旁边。"）：
+  /** 输入区里与 lens 有关的一件东西（用户："常驻药丸要做，这个是状态的指示和取消药丸。
+   *  lens 另外做一个药丸放在模式旁边。"）：
    *
    *   * **`滤镜` 药丸**：紧挨着模式药丸，点一下打开清单。"现在挂着什么"的指示与取消，
    *     2026-11-06 起搬进清单里的勾选框（用户："装上的lens的提示不要以药丸的形式出现在
@@ -10220,29 +11092,29 @@
    *
    * 加它的理由不只是好看：开与关**都得有反馈**，否则点一下界面看上去毫无变化
    *（用户："再点一下菜单栏不会自动收回去"）。 */
-  function syncSkillPill() {
-    var btn = document.querySelector('.chatskill__open');
+  function syncLensPill() {
+    var btn = document.querySelector('.chatlens__open');
     if (btn) {
       btn.setAttribute(
         'aria-expanded',
-        skillPickEl && skillPickEl.classList.contains('is-open') ? 'true' : 'false'
+        lensPickEl && lensPickEl.classList.contains('is-open') ? 'true' : 'false'
       );
     }
   }
 
   /* 名字后头那个小向下箭头（画出来的，不用字符 —— 字符依赖字体，之前踩过；同 mounts.js
    * 的 CARET）：没有它，这颗东西就只是一枚标签，看不出点得动。 */
-  var SKILL_CARET =
+  var LENS_CARET =
     '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" ' +
     'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9.5 12 15.5l6-6"/></svg>';
 
-  function paintSkillPills() {
+  function paintLensPills() {
     var tools = document.querySelector('.chat__tools');
     if (!tools) return;
 
-    var btn = tools.querySelector('.chatskill__open');
+    var btn = tools.querySelector('.chatlens__open');
     if (!btn) {
-      btn = h('button.modepill.chatskill__open', {
+      btn = h('button.modepill.chatlens__open', {
         type: 'button',
         'aria-expanded': 'false',
         title: '装一个滤镜',
@@ -10251,16 +11123,16 @@
         html:
           ui.icon('lens', 13) +
           '<span class="modepill__label">滤镜</span>' +
-          '<span class="modepill__caret">' + SKILL_CARET + '</span>',
+          '<span class="modepill__caret">' + LENS_CARET + '</span>',
         onClick: function () {
-          /* **再点一下要收回去**（用户："点击 skill 那个按钮，再点一下菜单栏不会自动收回去"）。
+          /* **再点一下要收回去**（用户："点击 lens 那个按钮，再点一下菜单栏不会自动收回去"）。
            * 清单开着的时候这一下点的是"关"；关着就打开。除了清单本身，什么都不碰 ——
            * 输入框里的字是他要问的问题，装 / 收滤镜都不该动它。 */
-          var open = skillPickEl && skillPickEl.classList.contains('is-open');
+          var open = lensPickEl && lensPickEl.classList.contains('is-open');
           if (open) {
-            closeSkillPick();
+            closeLensPick();
           } else {
-            paintSkillPick();
+            paintLensPick();
           }
           inputEl.focus();
         },
@@ -10276,17 +11148,17 @@
    *
    * **返回的是一串**：三种形态可以并存（用户："流程/口吻/纪律实际上是可以兼容的"），
    * 同一条消息上完全可能同时挂着"费曼"和"大白话"。 */
-  function skillChips(m) {
-    return (QF.store.skillsOn(m && m.id) || []).map(function (live) {
+  function lensChips(m) {
+    return (QF.store.lensOn(m && m.id) || []).map(function (live) {
       var on = live.on !== false;
-      var one = skillCatalog().filter(function (each) {
+      var one = lensCatalog().filter(function (each) {
         return each.key === live.key;
       })[0];
       var label = one ? one.label : live.key;
-      var kind = one && one.kind ? SKILL_KIND_WORD[one.kind] || '' : '';
+      var kind = one && one.kind ? LENS_KIND_WORD[one.kind] || '' : '';
       var btn = h(
-        'button.chatskill__chip' + (on ? '.is-on' : ''),
-        { type: 'button', dataset: { skill: live.key } },
+        'button.chatlens__chip' + (on ? '.is-on' : ''),
+        { type: 'button', dataset: { lens: live.key } },
         (on ? kind + ' · ' : '已取下 · ') + label
       );
       var paint = function (now) {
@@ -10299,7 +11171,7 @@
       paint(on);
       btn.addEventListener('click', function () {
         var next = !btn.classList.contains('is-on');
-        QF.store.attachSkill({
+        QF.store.attachLens({
           cid: state.current || '',
           mid: m.id == null ? '' : String(m.id),
           key: live.key,
@@ -10321,9 +11193,9 @@
     // Esc：清单开着就收起来（勾选框归它管，输入框的字一个字都不动）。
     // 没有 `/` 命令了，输入框里的 Esc 不再有"撤掉命令"那层意思
     //（用户："那个/的功能彻底删掉，以后没有/命令了"）。
-    if (event.key === 'Escape' && skillPickEl && skillPickEl.classList.contains('is-open')) {
+    if (event.key === 'Escape' && lensPickEl && lensPickEl.classList.contains('is-open')) {
       event.preventDefault();
-      closeSkillPick();
+      closeLensPick();
       return;
     }
     // 回车 = 发送。清单开着也一样：勾选用鼠标点整行，或 Tab 到勾选框按空格。

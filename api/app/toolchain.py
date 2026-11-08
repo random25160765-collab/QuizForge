@@ -34,11 +34,14 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from . import REPO_ROOT
+
 #: 清单：`{组件: {平台: {url, sha256, member}}}`。与 pyodide 那份清单同一个位置、同一个道理。
-MANIFEST_FILE = Path(__file__).resolve().parents[2] / "build" / "toolchain.json"
+#: 走 `REPO_ROOT`（= 打包后的解包目录）：`parents[2]` 在冻结后会指到 `%TEMP%`。
+MANIFEST_FILE = REPO_ROOT / "build" / "toolchain.json"
 
 #: 仓库自包含的那一份（开发与离线开发用）。分发包里可能没有，所以它是可选的。
-VENDOR_DIR = Path(__file__).resolve().parents[2] / "vendor" / "tools"
+VENDOR_DIR = REPO_ROOT / "vendor" / "tools"
 
 DOWNLOAD_TIMEOUT = 180  # 秒：几十 MB 的包，慢网也够
 

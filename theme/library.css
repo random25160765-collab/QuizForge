@@ -1,845 +1,801 @@
-/* 资料页样式。只在 body[data-page='library'] 下生效。
+/* 资料页（2026-11-08）：云端资料管理台。
  *
- * 沿用既有令牌（`app.css` 的 `:root` 变量），不新造配色。
- * 三栏：左列表（固定宽）· 中条目（自适应）· 右引用（固定宽）。
- * 资料是**读**的地方：这里没有任何"编辑文件"的视觉入口，可编辑的只有元数据那几个输入框。
+ * 布局照对话页：**左栏是操作与状态，右栏是看板**。
+ *   左：标题 · 库存数字 · 流水线（竖向 o=o=o=o=o）· 上传
+ *   右：看板（矩阵树 / 列表 两个视图）+ 同步按钮
  */
 
 body[data-page='library'] .view {
-  /* 这一页是应用面：取消 app.css 的居中容器约束，宽度交给浏览器 */
   max-width: none;
   padding: 0;
-}
-
-body[data-page='library'] {
-  overflow: hidden;                 /* 滚动交给各自的面板，别让整页跟着滚 */
-}
-
-.lib {
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 300px;
-  /* **别把"没显示的状态栏"也减掉**：状态栏是按需出现的（`body[data-sb='on']` 才显示），
-   * 这里原先无条件减了 46px —— 于是资料页底部永久空着一条（用户："这个界面的下方有留白"）。
-   * 实测那条正好 46px，等于 --statusbar-h。 */
-  height: calc(100vh - var(--topbar-h, 48px));
-  min-height: 0;
-  background: var(--bg);
-}
-
-body[data-sb='on'] .lib {
-  height: calc(100vh - var(--topbar-h, 48px) - var(--statusbar-h, 26px));
-}
-
-/* 左右两栏收起：栅格那一列变 0 宽，栏本身**留在 DOM 里**（少一个子项会让主区
- * 前移一格，落在 0 宽那一列上 —— 笔记页踩过这个坑，正文只剩 16px）。 */
-.lib[data-lib-list='closed'] {
-  grid-template-columns: 0 minmax(0, 1fr) 300px;
-}
-
-.lib[data-lib-side='closed'] {
-  grid-template-columns: 300px minmax(0, 1fr) 0;
-}
-
-.lib[data-lib-list='closed'][data-lib-side='closed'] {
-  grid-template-columns: 0 minmax(0, 1fr) 0;
-}
-
-.lib[data-lib-list='closed'] .lib__list,
-.lib[data-lib-side='closed'] .lib__side {
-  /* `min-width: 0` 不能少：栅格子项默认 `min-width: auto`，缩不到比自己内容更窄
-     —— 列已经是 0 了，它还会撑出 25px 顶到右边缘外面（实测），页面就能横向滚了。 */
-  min-width: 0;
-  overflow: hidden;
-  visibility: hidden;
-}
-
-/* 主区那一列：上面一条常驻工具条 + 下面内容 */
-.lib__col {
+  /* 看板要长到窗口底：撑满 stage，并顶掉全局那条 min-height（它会留出 100vh - 58px）。
+   * 用 flex 传高度而不是 height:100% —— 百分比高度在 flex 定出来的高度上不解析。
+   * width / margin 必须显式写：全局的 `margin: 0 auto` 一旦成了 flex 子项，
+   * 就会把宽度收成内容宽（看板会缩成窄窄一条）。 */
+  width: 100%;
+  margin: 0;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  flex: 1;
   min-height: 0;
 }
 
-.lib__tools {
+/* 左栏的宽度只认 `--lib-aside-w` 一个变量（拖动时由 JS 写它），
+ * 收起就是那一列收到 0 —— 与对话页 `.chat` 完全同一条手法。 */
+.libsplit {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--lib-aside-w, 268px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  /* 收起时整栏向左滑出会溢出到列外，裁掉 */
+  overflow: hidden;
+  transition: grid-template-columns 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.libsplit[data-aside='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+/* 拖动调宽时关掉过渡，不然宽度会追着手指慢慢爬 */
+body.is-colresize .libsplit { transition: none; }
+
+body.is-colresize {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* ---------------------------------------------------------------- 左栏 */
+
+.libaside {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  /* 下边距 8px 是为了让底部两颗 28px 的键与活动栏的齿轮（32px）**同轴**：
+   * 视口 724、齿轮 686–718（心 702），这里 716-14 = 702（原先 18px 时心是 692，
+   * 比齿轮低 10px —— 用户："和左边的设置图标对齐"）。 */
+  padding: 14px 16px 8px;
+  border-right: 1px solid var(--line);
+  background: var(--bg2);
+  /* 纵向滚动就够：拖动条（`.libgrip`）用了 `right: -4px`，横向 auto 会多出一条
+   * 永远拖不动的横向滚动条 */
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 宽度写死：列收到 0 时若让这一栏跟着缩，内容会被压窄、文字重排，
+   * 看着是"挤扁"而不是"向左滑走"。固定宽度 + translateX 才是整栏平移。 */
+  width: var(--lib-aside-w, 268px);
+  box-sizing: border-box;
+  transform: translateX(0);
+  transition: transform 180ms var(--ease, ease), visibility 0s;
+  will-change: transform;
+}
+
+.libsplit[data-aside='closed'] .libaside {
+  transform: translateX(-100%);
+  visibility: hidden;
+  pointer-events: none;
+  /* 延迟到滑完再隐藏，否则框还在动、内容已经没了 */
+  transition: transform 180ms var(--ease, ease), visibility 0s linear 180ms;
+}
+
+/* ---------------------------------------------------------------- 右边界手柄 */
+
+.libgrip {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 9px;
+  z-index: 4;
+  cursor: col-resize;
+  background: none;
+  /* 触屏上别把拖动当成滚动 */
+  touch-action: none;
+}
+
+.libgrip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: var(--pri);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.libgrip:hover::after,
+body.is-colresize .libgrip::after { opacity: 0.5; }
+
+/* 窄屏：左栏变抽屉（浮在主区上），不拖宽，默认收起 */
+@media (max-width: 900px) {
+  .libsplit,
+  .libsplit[data-aside='closed'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .libaside {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 6;
+    width: min(300px, 86vw);
+    box-shadow: var(--shadow-2);
+    transition: transform 180ms var(--ease, ease), opacity 180ms var(--ease, ease);
+  }
+
+  .libsplit[data-aside='closed'] .libaside {
+    transform: translateX(-100%);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    /* 抽屉滑出时若把内距/边框归零，内容会重排一下 —— 写回来 */
+    padding: 18px 16px 28px;
+    border-right: 1px solid var(--line);
+    transition: transform 180ms var(--ease, ease), opacity 180ms var(--ease, ease),
+      visibility 0s linear 180ms;
+  }
+
+  /* 拖动是宽屏的习惯，抽屉上没意义 */
+  .libgrip { display: none; }
+}
+
+/* 两个动作沉在左下角（`margin-top: auto`：内容短时也贴着底）。
+ *
+ * 顶上一条**通栏**分割线把动作区与上面的账目隔开（用户："用分割线做隔离"）：
+ * 用伪元素而不是 border —— 线要横贯整栏（顶掉左右内距），按钮却仍按
+ * `margin-left: -5px` 贴着文字的左边线（图标的空边补偿）。 */
+.libaside__acts {
+  position: relative;
+  display: flex;
+  justify-content: flex-start;
+  gap: 2px;
+  margin-top: auto;
+  padding-top: 16px;
+  margin-left: -5px;
+}
+
+.libaside__acts::before {
+  content: '';
+  position: absolute;
+  left: -16px;
+  right: -16px;
+  top: 0;
+  height: 1px;
+  background: var(--line);
+}
+
+/* 图标键：比通用 .icon-btn 小一档 */
+.libact {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+.libact--pri { color: var(--pri); }
+
+/* 图标键的盒子比图标本身宽：右侧那 6.5px 空白不该算进"图标与字"的间距
+ *（用户："资料看板这四个字和旁边的 < 间距收一点"）。 */
+.libfold {
+  margin-right: -6px;
+  transition: color 140ms var(--ease, ease), background 140ms var(--ease, ease),
+    box-shadow 140ms var(--ease, ease);
+  /* 这一行的高度是这颗 28px 的键撑出来的，而文字行盒只有 22.1px（13px × 1.7）：
+   * `align-self: center` 于是把图标摆在**键**的中心（实测 30），而「资料看板」
+   * 四个字的墨迹中心在 27 —— 差 3px，看着就是"图标比字低"。
+   * 往上抬两个盒高之差的一半，图标才落在字的视觉中线上。 */
+  transform: translateY(-3px);
+}
+
+/* hover 不要那圈绿框（用户："那个收起的框，hover 的时候不要显示绿色框"）：
+ * 照对话页那颗收起键——一块中性底，再补一点浮起，不描边。 */
+.libfold:hover {
+  color: var(--fg);
+  background: var(--bg3);
+  border-color: transparent;
+  box-shadow: var(--shadow-1);
+}
+
+.libact.is-busy {
+  color: var(--fg3);
+  pointer-events: none;
+}
+
+.libact.is-busy svg { animation: libspin 900ms linear infinite; }
+
+@keyframes libspin {
+  to { transform: rotate(360deg); }
+}
+
+/* 库存：不再是一格一格的卡片，就是几条带点的账目 */
+.libfacts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.libfact {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.libfact__dot {
+  flex: none;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--fg3);
+  opacity: 0.55;
+  transform: translateY(-2px);
+}
+
+.libfact__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libfact__value {
+  flex: none;   /* 数字不许被压：要缩就缩左边的标签 */
+  margin-left: auto;
+  color: var(--fg);
+  font-weight: 600;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.libfact__unit {
+  margin-left: 2px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.libfact.is-cloud .libfact__dot,
+.libfact.is-cloud .libfact__value { color: var(--pri); }
+
+.libfact.is-cloud .libfact__dot {
+  background: var(--pri);
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- 区块（只用分割线分隔） */
+
+/* 区与区之间只留一条线，不给盒子、不给底色 —— 与对话页左栏同一条规矩 */
+.libblock + .libblock {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+
+.libblock__head {
   display: flex;
   align-items: center;
-  flex: none;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--line);
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 0 2px;
 }
 
-.lib__toolssp {
+.libblock__title {
   flex: 1;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--fg3);
 }
 
-/* 开合按钮：两个朝向之间转过去，而不是换一张图那样闪一下 */
-.lib__fold {
+/* 暂停 / 继续：无框图标键，hover 才给一点底 */
+.libblock__act {
+  flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
-  border-radius: var(--r-sm, 6px);
-  background: none;
+  border-radius: 6px;
+  background: transparent;
   color: var(--fg3);
   cursor: pointer;
-  transition:
-    transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    background 140ms ease,
-    color 140ms ease;
 }
 
-.lib__fold:hover {
-  background: var(--bg3);
-  color: var(--fg);
-}
-
-.lib__fold.is-on {
+.libblock__act:hover {
+  background: var(--bg3, rgba(0, 0, 0, 0.06));
   color: var(--fg2);
 }
 
-/* ---- 左：列表 ---- */
+/* ---------------------------------------------------------------- 流水线（竖向 o=o=o=o=o） */
 
-.lib__list {
+/* 水平一条线串起四步：O=O=O=O。圆点压在线上，名字挂在圆点底下 ——
+ * 名字若排在线右侧，那条线就会从字中间穿过去。 */
+.libflow {
+  position: relative;
+  padding-top: 34px;  /* 给绝对定位的节点让出高度 */
+  margin: 2px 0 0;
+}
+
+.libflow__rail {
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  top: 9px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: var(--line);
+}
+
+/* 走完的那一段：宽度按当前节点在线上的位置切。
+ * 默认必须是 0 —— 块级元素的 width:auto 是撑满，空闲时整条线会绿掉。 */
+.libflow__done {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--ok);
+}
+
+.libstep {
+  position: absolute;
+  top: 0;
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  background: var(--bg2);
-  border-right: 1px solid var(--line);
-}
-
-.lib__head {
-  display: flex;
-  gap: 4px;
   align-items: center;
-  padding: 8px 8px 4px;
+  gap: 5px;
+  transform: translateX(-50%);
+  white-space: nowrap;
 }
 
-.lib__root {
-  flex: 1;
-  min-width: 0;
-  height: 26px;
-  padding: 0 6px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fg);
+/* 正在处理谁：排在节点下方一行 */
+.libflow__now {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--fg3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libstep__dot {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
   background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
-}
-
-.lib__searchrow {
   display: flex;
-  gap: 4px;
-  padding: 0 8px 6px;
+  align-items: center;
+  justify-content: center;
+  font-size: 9.5px;
+  color: var(--fg3);
 }
 
-.lib__search {
+.libstep__label {
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.libstep.is-done .libstep__dot {
+  border-color: var(--ok);
+  background: var(--ok);
+  color: #fff;
+}
+
+.libstep.is-done .libstep__label { color: var(--fg2); }
+
+.libstep.is-active .libstep__dot {
+  border-color: var(--pri);
+  color: var(--pri);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pri) 16%, transparent);
+}
+
+.libstep.is-active .libstep__label { color: var(--fg); font-weight: 500; }
+
+/* ---------------------------------------------------------------- 队列 */
+
+.libqueue {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-top: 8px;
+  max-height: 190px;
+  overflow: auto;
+}
+
+.libjob {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 11.5px;
+}
+
+.libjob__name {
   flex: 1;
   min-width: 0;
-  height: 26px;
-  padding: 0 8px;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg2);
 }
 
-.lib__search:focus,
-.lib__field:focus {
-  border-color: var(--pri);
+.libjob__stage {
+  font-size: 10.5px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--bg3, rgba(0, 0, 0, 0.06));
+  color: var(--fg3);
+  white-space: nowrap;
+}
+
+.libjob.is-running .libjob__stage { background: color-mix(in srgb, #2f6fed 15%, transparent); color: #2f6fed; }
+.libjob.is-done .libjob__stage { background: color-mix(in srgb, #3f9d6b 15%, transparent); color: #3f9d6b; }
+.libjob.is-failed .libjob__stage { background: color-mix(in srgb, #b4544a 15%, transparent); color: #b4544a; }
+.libjob.is-canceled .libjob__stage { background: color-mix(in srgb, #888 16%, transparent); color: var(--fg3); }
+
+.libjob__btn {
+  border: 0;
+  background: transparent;
+  color: var(--fg3);
+  cursor: pointer;
+  padding: 1px 3px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.libjob__btn:hover { background: var(--bg3, rgba(0, 0, 0, 0.06)); color: var(--fg); }
+
+/* ---------------------------------------------------------------- 上传 */
+
+.libdrop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 62px;
+  /* 它自己就是一层：虚线框是它的边界，外面不再套卡片 */
+  border: 1.5px dashed var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 140ms var(--ease, ease), background 140ms var(--ease, ease);
+}
+
+.libdrop:hover,
+.libdrop:focus-visible {
+  border-color: var(--accent, #2f6fed);
+  color: var(--fg2);
   outline: none;
 }
 
-.lib__icon {
-  flex: none;
-  width: 26px;
-  height: 26px;
-  font-size: 14px;
-  line-height: 1;
-  color: var(--fg2);
-  background: none;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
-  cursor: pointer;
-}
-
-.lib__icon:hover {
+.libdrop.is-over {
+  border-color: var(--accent, #2f6fed);
+  background: color-mix(in srgb, var(--accent, #2f6fed) 7%, transparent);
   color: var(--fg);
-  background: var(--bg3);
 }
 
-.lib__icon--mini {
-  width: 22px;
-  height: 26px;
-  border-color: transparent;
-}
+.libdrop__icon { font-size: 16px; line-height: 1; }
 
-/* 计数与「待补」：它是面板的一部分，不放进滚动区 */
-.lib__bar {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 5px 10px;
-  font-size: 11.5px;
-  color: var(--fg2);
-  border-bottom: 1px solid var(--line);
-}
+/* ---------------------------------------------------------------- 右栏看板 */
 
-.lib__baritem--dim {
-  color: var(--fg3);
-}
-
-.lib__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding-bottom: 6px;
-}
-
-.lib__row {
-  display: block;
-  width: 100%;
-  padding: 7px 10px;
-  font: inherit;
-  color: var(--fg);
-  text-align: left;
-  background: none;
-  border: 0;
-  border-left: 2px solid transparent;
-  cursor: pointer;
-}
-
-.lib__row:hover {
-  background: var(--bg3);
-}
-
-.lib__row.is-on {
-  background: color-mix(in srgb, var(--pri) 12%, transparent);
-  border-left-color: var(--pri);
-}
-
-.lib__rowtop {
-  display: flex;
-  gap: 6px;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.lib__title {
-  overflow: hidden;
-  font-size: 12.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lib__kind {
-  flex: none;
-  padding: 1px 6px;
-  font-size: 10.5px;
-  color: var(--fg2);
-  background: var(--bg3);
-  border-radius: 999px;
-}
-
-.lib__kind--paper { color: #6aa6e0; background: color-mix(in srgb, #6aa6e0 16%, transparent); }
-.lib__kind--book { color: #c99a5b; background: color-mix(in srgb, #c99a5b 16%, transparent); }
-.lib__kind--manual { color: #7bc47f; background: color-mix(in srgb, #7bc47f 16%, transparent); }
-.lib__kind--report { color: #b48ae0; background: color-mix(in srgb, #b48ae0 16%, transparent); }
-.lib__kind--code { color: #d98f6a; background: color-mix(in srgb, #d98f6a 16%, transparent); }
-.lib__kind--webpage { color: #66c2c2; background: color-mix(in srgb, #66c2c2 16%, transparent); }
-
-.lib__rowbot {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 2px;
-}
-
-.lib__meta {
-  overflow: hidden;
-  font-size: 11.5px;
-  color: var(--fg3);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lib__marks {
-  display: flex;
-  gap: 4px;
-  flex: none;
-}
-
-.lib__mark {
-  padding: 0 5px;
-  font-size: 10px;
-  color: var(--fg3);
-  background: var(--bg3);
-  border-radius: 999px;
-}
-
-.lib__mark--manual { color: #7bc47f; }
-.lib__mark--llm { color: #b48ae0; }
-.lib__mark--bad { color: var(--bad); }
-.lib__mark--warn { color: #d9a441; }
-
-.lib__key {
-  display: block;
-  margin-top: 3px;
-  overflow: hidden;
-  font-family: var(--font-mono, monospace);
-  font-size: 10.5px;
-  color: var(--fg3);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lib__empty,
-.lib__hint {
-  padding: 10px 12px;
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--fg3);
-}
-
-/* 进度：一条细轨 + 填充。抓正文与判元数据共用（同一时刻只跑一件）。
- * 空闲时带 `hidden`，不占视觉。整条跨满页脚，所以页脚要允许换行。 */
-.lib__progress {
-  position: relative;
-  flex: 1 0 100%;
-  height: 3px;
-  overflow: hidden;
-  background: var(--bg3);
-  border-radius: 999px;
-}
-
-.lib__progressfill {
-  height: 100%;
-  width: 0;
-  background: var(--pri);
-  border-radius: 999px;
-  transition: width 160ms var(--ease, ease-out);
-}
-
-.lib__foot {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 10px;
-  border-top: 1px solid var(--line);
-}
-
-.lib__count {
-  overflow: hidden;
-  font-size: 11px;
-  color: var(--fg3);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lib__btn {
-  flex: none;
-  padding: 4px 10px;
-  font: inherit;
-  font-size: 11.5px;
-  color: var(--fg2);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
-  cursor: pointer;
-}
-
-.lib__btn:hover {
-  color: var(--fg);
-  background: var(--bg3);
-}
-
-.lib__btn.is-on {
-  color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
-}
-
-.lib__btn:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.lib__btn--tiny {
-  padding: 2px 8px;
-  font-size: 11px;
-}
-
-/* ---- 中：条目详情 ---- */
-
-.lib__main {
-  /* `flex: 1` 不能少：它是这一列里唯一该吃剩余高度的那一格。
-   * 少这一行时它按内容长高，而查看器里的 iframe 是 `height: 100%` ——
-   * 父高 auto 则百分比失效，iframe 退回**默认 150px**，
-   * 看到的就是「PDF 只显示上面一小条，下面一大片空」（实测：中栏 228.5px、
-   * iframe 156.5px，而列高 720px）。旧样式用 `min-height: 70vh` 给 iframe
-   * 兜过底，抽成共用查看器时兜底没了才暴露出来 —— 缺的其实是这里。 */
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  background: var(--bg);
-}
-
-.lib__welcome {
+.libmain {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  padding: 16px 18px 24px;
+  overflow: auto;
+  min-width: 0;
+}
+
+.libmain__head {
+  display: flex;
+  /* **按基线对齐，不是按中线**：这一行三段字三种字号（13 / 12 / 11.5px），
+   * 中线对齐会把基线错开 1px 上下（实测 title 墨迹底 38.95、name 37.8、
+   * meta 37.22）—— 看着就是"字没对齐"。 */
+  align-items: baseline;
+  gap: 10px;
+  flex: none;
+}
+
+/* 图标键与分段控件本身没有文字基线：跟着 baseline 会把它们拽到行底 */
+.libmain__head > .icon-btn,
+.libmain__head > .libviews { align-self: center; }
+
+.libmain__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg2);
+  flex: none;
+  white-space: nowrap;
+}
+
+/* 视图切换（分段控件）：无论有没有选中信息，都贴在看板头右端。
+ *
+ * 选中那一格**是白的**（用户 2026-11-08："用白色表示当前界面"，原先它是灰的）。
+ * 于是槽得让到灰那一档，否则白块看不见。
+ *
+ * 两档的明度阶梯方向是反的：浅色 `--bg3`(灰) < `--bg2`(白)，深色
+ * `--bg2`(#131A22) < `--bg3`(#1E2936)。所以深色下按同一关系取反 —— 选中格
+ * 永远比槽更亮/更白，而不是"永远用 --bg2"（那样深色下选中格反而沉下去）。 */
+.libviews {
+  display: inline-flex;
+  flex: none;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg3, rgba(0, 0, 0, 0.06));
+  overflow: hidden;
+}
+
+.libviews button {
+  border: 0;
+  background: transparent;
+  color: var(--fg3);
+  font-size: 11.5px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.libviews button + button { border-left: 1px solid var(--line); }
+.libviews button.is-on { background: var(--bg2); color: var(--fg); }
+
+html[data-theme='dark'] .libviews { background: var(--bg2); }
+html[data-theme='dark'] .libviews button.is-on { background: var(--bg3); }
+
+/* ---------------------------------------------------------------- 树图 */
+
+.libtree {
+  position: relative;
+  width: 100%;
+  /* 不用 calc 猜高度：标题行、图例占多少就扣多少，剩下的全给树图 */
+  flex: 1;
+  min-height: 380px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+}
+
+.libtree__cell {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid var(--bg2);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: filter 120ms var(--ease, ease);
+}
+
+.libtree__cell:hover { filter: brightness(1.08); z-index: 3; }
+
+.libtree__cell.is-picked {
+  outline: 2px solid var(--fg);
+  outline-offset: -2px;
+  z-index: 4;
+}
+
+.libtree__name {
+  position: absolute;
+  inset: 2px 4px auto 4px;
+  font-size: 9.5px;
+  line-height: 1.3;
+  color: rgba(255, 255, 255, 0.95);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  pointer-events: none;
+}
+
+.libtree__badge {
+  position: absolute;
+  left: 4px;
+  bottom: 3px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* 树图第一层：类别窄带（占块顶一条，材料铺在它下面） */
+.libtree__group {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  overflow: hidden;
+  font-size: 9.5px;
+  color: var(--fg3);
+  pointer-events: none;
+}
+
+.libtree__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 2px;
+}
+
+.libtree__subject {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.libtree__count {
+  margin-left: auto;
+  padding-left: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.libtree__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 11px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.libtree__legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+/* 视图切换靠 hidden 属性；这几块各自带 display，必须显式让位。 */
+.libtree[hidden],
+.libtree__legend[hidden],
+.liblist[hidden] {
+  display: none;
+}
+
+.libtree__empty,
+.liblist__empty {
+  display: flex;
   align-items: center;
   justify-content: center;
   height: 100%;
-  padding: 24px;
-  text-align: center;
-}
-
-.lib__welcometitle {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--fg2);
-}
-
-.lib__welcometext {
-  max-width: 420px;
+  min-height: 200px;
   font-size: 12.5px;
-  line-height: 1.7;
   color: var(--fg3);
 }
 
-.lib__detailhead {
-  padding: 18px 22px 12px;
-  border-bottom: 1px solid var(--line);
+/* 选中信息：直接长在看板标题行里，不另起一块 */
+.libpicked {
+  display: flex;
+  /* 名字 12px、元信息 11.5px：同样按基线对齐（见 `.libmain__head` 的说明） */
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--fg2);
 }
 
-.lib__detailtitle {
-  margin: 0 0 8px;
-  font-size: 19px;
-  font-weight: 600;
-  line-height: 1.35;
+.libpicked[hidden] { display: none; }
+
+.libpicked__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
   color: var(--fg);
 }
 
-.lib__detailline {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.lib__citekey {
-  padding: 2px 7px;
-  font-family: var(--font-mono, monospace);
-  font-size: 11.5px;
-  color: var(--fg2);
-  background: var(--bg3);
-  border-radius: var(--r-sm, 6px);
-}
-
-.lib__detailtags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin-top: 10px;
-  font-size: 11.5px;
+.libpicked__meta {
   color: var(--fg3);
-}
-
-.lib__origin--manual { color: #7bc47f; }
-.lib__origin--llm { color: #b48ae0; }
-
-.lib__textstate--ok { color: #7bc47f; }
-.lib__textstate--warn { color: #d9a441; }
-.lib__textstate--bad { color: var(--bad); }
-
-.lib__path {
-  overflow: hidden;
-  max-width: 100%;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
-}
-
-.lib__detailbody {
-  padding: 16px 22px 40px;
-}
-
-.lib__panel {
-  margin-bottom: 18px;
-}
-
-.lib__paneltitle {
-  margin-bottom: 8px;
   font-size: 11.5px;
-  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- 列表视图 */
+
+/* 一条类别一张卡，行与行之间用细线，不再一行一个浮块 */
+.liblist {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-bottom: 4px;
+}
+
+.liblist__group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg2);
+  overflow: hidden;
+}
+
+.liblist__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  font-size: 11px;
   color: var(--fg3);
   letter-spacing: 0.04em;
 }
 
-.lib__meta {
-  display: grid;
-  gap: 6px;
-}
-
-.lib__metarow {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-}
-
-.lib__metakey {
-  font-size: 12px;
-  color: var(--fg3);
-}
-
-.lib__field {
-  width: 100%;
-  height: 26px;
-  padding: 0 8px;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--fg);
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
-}
-
-.lib__notice {
-  margin-bottom: 14px;
-  padding: 9px 12px;
-  font-size: 12px;
-  line-height: 1.7;
-  border-left: 2px solid var(--line);
-  border-radius: 0 var(--r-sm, 6px) var(--r-sm, 6px) 0;
-}
-
-.lib__notice--bad {
-  color: var(--fg2);
-  background: color-mix(in srgb, var(--bad) 10%, transparent);
-  border-left-color: var(--bad);
-}
-
-.lib__notice--warn {
-  color: var(--fg2);
-  background: color-mix(in srgb, #d9a441 10%, transparent);
-  border-left-color: #d9a441;
-}
-
-.lib__file {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 5px 0;
-  border-bottom: 1px dashed var(--line);
-  font-size: 12px;
-}
-
-.lib__filerole {
+.liblist__head i {
   flex: none;
-  width: 52px;
-  color: var(--fg3);
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
 }
 
-.lib__filerole--asset {
-  color: var(--fg3);
-  opacity: 0.75;
+.liblist__head b {
+  margin-left: auto;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
-.lib__filepath {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-family: var(--font-mono, monospace);
-  font-size: 11.5px;
-  color: var(--fg2);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;               /* 路径太长时，露出来的该是文件名那一头 */
-  text-align: left;
-}
-
-.lib__filesize {
-  flex: none;
-  font-size: 11px;
-  color: var(--fg3);
-}
-
-.lib__text {
-  max-height: 320px;
-  margin: 0;
-  padding: 10px 12px;
-  overflow: auto;
-  font-family: var(--font-mono, monospace);
-  font-size: 11.5px;
-  line-height: 1.65;
-  color: var(--fg2);
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm, 6px);
-}
-
-.lib__text--bib {
-  max-height: 220px;
-}
-
-/* ---- 右：引用与出处 ---- */
-
-.lib__side {
-  min-height: 0;
-  padding: 14px 12px;
-  overflow: auto;
-  background: var(--bg2);
-  border-left: 1px solid var(--line);
-}
-
-.lib__cited {
-  padding: 7px 0;
-  border-bottom: 1px dashed var(--line);
-}
-
-.lib__citedtitle {
-  font-size: 12.5px;
-  color: var(--fg);
-}
-
-.lib__citedpath {
-  margin-top: 2px;
-  overflow: hidden;
-  font-size: 11px;
-  color: var(--fg3);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* ---- 窄屏：右栏收起来（资料页以列表与条目为主） ---- */
-
-@media (max-width: 1180px) {
-  .lib {
-    grid-template-columns: 268px minmax(0, 1fr);
-  }
-
-  .lib__side {
-    display: none;
-  }
-}
-
-/* ---- 归类复核（模型给建议、人勾选） ---- */
-
-.lib__footbtns {
-  display: flex;
-  gap: 4px;
-  flex: none;
-}
-
-.lib__kind--spec { color: #9db4e0; background: color-mix(in srgb, #9db4e0 16%, transparent); }
-.lib__kind--other { color: var(--fg3); }
-.lib__kind--blog,
-.lib__kind--slides { color: #d991b4; background: color-mix(in srgb, #d991b4 16%, transparent); }
-
-.lib__review {
-  max-height: 60vh;
-  overflow: auto;
-}
-
-.lib__reviewrow {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  padding: 8px 4px;
-  border-bottom: 1px dashed var(--line);
-  cursor: pointer;
-}
-
-.lib__reviewmain {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.lib__reviewtitle {
-  overflow: hidden;
-  font-size: 12.5px;
-  color: var(--fg);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.lib__reviewkind {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.lib__reviewarrow {
-  color: var(--fg3);
-}
-
-.lib__reviewtopics {
-  font-size: 11px;
-  color: var(--fg3);
-}
-
-.lib__reviewwhy {
-  font-size: 11.5px;
-  color: var(--fg3);
-}
-
-/* ---- 查看面板：PDF 用浏览器自带阅读器，md/docx/pptx 换成能读的样子 ---- */
-
-.lib__open {
-  flex: none;
-  margin-left: 8px;
-  padding: 1px 8px;
-  font-size: 11.5px;
-  color: var(--fg2);
-  background: var(--bg3);
-  border: 1px solid transparent;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: color 120ms ease-out, background 120ms ease-out;
-}
-
-.lib__open:hover {
-  color: var(--pri);
-  background: color-mix(in srgb, var(--pri) 12%, transparent);
-}
-
-.lib__viewer {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
-.lib__viewbar {
+.liblist__row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--line);
-}
-
-.lib__back {
-  padding: 3px 10px;
-  font-size: 12.5px;
-  color: var(--fg);
-  background: none;
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  padding: 6px 10px;
+  font-size: 12px;
   cursor: pointer;
 }
 
-.lib__back:hover {
-  background: var(--bg3);
+.liblist__row + .liblist__row { border-top: 1px solid var(--line); }
+.liblist__row:hover { background: var(--bg3, rgba(0, 0, 0, 0.04)); }
+
+.liblist__row.is-picked {
+  background: color-mix(in srgb, var(--accent, #2f6fed) 9%, transparent);
 }
 
-.lib__viewname {
+.liblist__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.liblist__title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--fg);
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--fg2);
 }
 
-.lib__viewkind {
+.liblist__num {
   font-size: 11.5px;
   color: var(--fg3);
-}
-
-.lib__download {
-  font-size: 12px;
-  color: var(--fg2);
-  text-decoration: none;
-}
-
-.lib__download:hover {
-  color: var(--pri);
-}
-
-.lib__viewbody {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 14px 16px;
-}
-
-.lib__frame {
-  width: 100%;
-  height: 100%;
-  min-height: 70vh;
-  border: 0;
-  border-radius: 6px;
-  background: var(--bg3);
-}
-
-.lib__image {
-  max-width: 100%;
-  border-radius: 6px;
-}
-
-.lib__prose {
-  max-width: 760px;
-  font-size: 13.5px;
-  line-height: 1.7;
-}
-
-.lib__prose--docx table {
-  border-collapse: collapse;
-  margin: 10px 0;
-}
-
-.lib__prose--docx th,
-.lib__prose--docx td {
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-}
-
-.lib__text--raw {
-  max-width: 100%;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.lib__slide {
-  max-width: 720px;
-  margin: 0 0 14px;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.lib__slideno {
-  font-size: 11px;
-  color: var(--fg3);
-}
-
-.lib__slidetitle {
-  margin: 2px 0 6px;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.lib__slidebody {
-  margin: 0;
-  padding-left: 18px;
-  font-size: 13px;
-  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: 62px;
+  text-align: right;
 }

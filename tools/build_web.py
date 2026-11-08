@@ -85,6 +85,7 @@ RUNTIME_ORDER = [
     "sm2.js",
     "ai.js",
     "shell.js",
+    "wellbeing.js",     # 首页那条精力带与打卡（只画，不算：曲线在 app/wellbeing/）
     "mounts.js",        # 顶栏的挂载开关：亮度＝AI 能调哪几块
     "qview.js",
     "router.js",
@@ -102,13 +103,17 @@ PAGE_JS = {
     "wrongbook": ["wrongbook.js", "boot.js"],
     "graph": ["graph.js"],
     "chat": ["chat.js", "boot.js"],
-    "library": ["library.js"],           # 资料页也自己启动（数据来自 /api/library）
+    # 资料页（2026-11-08 重做）：只管**云端资料** —— 上传入口 / 流水线 / 总览大屏。
+    # 本地不再浏览材料，检索与阅读在对话里（`search_material` / `read_material`）。
+    "library": ["library.js"],
     # 设置页：全屏页面（2026-11-07 起，不再是浮窗）。表单由 QF.settings.build()
     # 从 shell.js 取，这一份只管版式；不依赖题库，所以不带 boot.js。
     "settings": ["settings.js"],
-    # 主页：**暂时只留一个空白页面**（用户："资源栏和窗格组合逻辑全部不要"）。
-    # home.js 只挂外壳（活动栏 / 状态栏），正文留白；等 Obsidian 桥接好再填内容。
+    # 主页：只放"今天的状态"（精力带 + 睡眠打卡，从日程页挪过来的）。
+    # 外壳由 home.js 挂（活动栏 / 状态栏），正文内容见 runtime/home.js。
     "workbench": ["home.js"],
+    # 日程：自己启动（像 graph / settings），不依赖题库，所以不带 boot.js
+    "schedule": ["schedule.js"],
 }
 
 #: 首帧就该是最终态的两个布局属性（见 shell.html 里的说明）：顶栏与底部状态栏
@@ -127,6 +132,7 @@ PAGE_TITLE = {
     "library": "QuizForge · 资料",
     "settings": "QuizForge · 设置",
     "workbench": "QuizForge · 主页",
+    "schedule": "QuizForge · 日程",
 }
 
 PAGE_BODY = {
@@ -137,6 +143,7 @@ PAGE_BODY = {
     "library": "library.body.html",
     "settings": "settings.body.html",
     "workbench": "workbench.body.html",
+    "schedule": "schedule.body.html",
 }
 
 # 页面专属样式：默认共用合并后的 app.css，只有图谱页、对话页、资料页与设置页要再加一份。
@@ -146,13 +153,16 @@ PAGE_CSS = {
     "chat": ["chat.css"],
     "library": ["library.css"],
     "settings": ["settings.css"],
-    # 主页暂时是空白页：不再带窗格/对话/笔记那三份样式
-    "workbench": [],
+    # 主页：只剩"今天的状态"一张卡片，样式单开一份（几十行，不值得进共用包）
+    "workbench": ["home.css"],
+    # 日程：三栏布局 + 日历网格 + 事件块，样式量与图谱页相当，单开一份
+    "schedule": ["schedule.css"],
 }
 
 # 应用样式合并成一份，避免每页重复下载
 # 文件查看器的样式：资料页与工作台都要用，所以进共用那一份
-APP_CSS = ["markdown.css", "app.css", "docview.css"]
+# mobile.css 必须在最后：手机档的覆盖规则要靠"后写者赢"压住上面的桌面规则
+APP_CSS = ["markdown.css", "app.css", "docview.css", "mobile.css"]
 
 
 def _read(path: Path) -> str:

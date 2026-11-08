@@ -16,11 +16,13 @@ from . import (
     graph,
     health,
     knowledge,
-    library,
+    material,
     mybank,
     obsidian,
+    plans,
     problem,
     progress,
+    schedule_ops,
     settings_api,
     sync_api,
 )
@@ -42,10 +44,17 @@ def all_routers() -> list[APIRouter]:
         obsidian.router,
         # 整份设置（文件是权威，可拷贝）
         settings_api.router,
-        # 跨机器同步（Turso 行级增量；对话端到端加密）
+        # 资料：源目录只读，可写的只有元数据（`data/library/*.yaml`）与派生缓存；
+        # 上传进来自动排进后台流水线（`app/jobs.py`）
+        material.router,
+        # 计划与日程：日程页的读写 + 对话凭条确认后落库（`proposalId` 是幂等键）
+        plans.router,
+        # 日程的操作面：健康（打卡 / 档位 / 精力曲线）与自动重排。
+        # 与 `health.router`（`/api/health` 服务自检）是两件事，别名不同路径不冲突。
+        schedule_ops.router,
+        # Turso 同步：`shell.js` 早就在调 `/api/sync/status`，但这个路由一直没登记
+        # （前端 catch 掉了，所以表现为"同步面板永远是空的"）。2026-11-08 补上。
         sync_api.router,
-        # 资料：源目录只读，可写的只有元数据（`data/library/*.yaml`）与派生缓存
-        library.router,
     ]
 
 

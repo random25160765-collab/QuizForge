@@ -487,7 +487,13 @@
     var sb = document.body.dataset.sb === 'on'
       ? parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--statusbar-h')) || 0
       : 0;
-    document.documentElement.style.setProperty('--graph-h', Math.max(320, window.innerHeight - top - sb) + 'px');
+    // 手机上还有一条固定的底栏压在画布下面。量它的实际高度而不是读 --tabbar-h：
+    // 那个变量是 calc(56px + env(...))，parseFloat 拿不到数；元素本身在桌面上是
+    // display:none，量出来正好是 0，两端都不必分平台判断。
+    var tabbar = document.getElementById('tabbar');
+    var tabs = tabbar ? Math.round(tabbar.getBoundingClientRect().height) : 0;
+    document.documentElement.style.setProperty(
+      '--graph-h', Math.max(320, window.innerHeight - top - sb - tabs) + 'px');
   }
 
   function resize() {

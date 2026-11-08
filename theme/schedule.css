@@ -1,0 +1,1313 @@
+/* ===========================================================================
+ * schedule.css —— 日程页（只挂这一页，见 tools/build_web.py 的 PAGE_CSS）
+ *
+ * 只用 app.css 的令牌。功能色（星标 / 手动事件 / 删除）在这一页**整体压浅一档**：
+ * app.css 里的 `--bad` / `--amber` 是给按钮用的强色，日历上一排小色块用同一个
+ * 饱和度会吵。所以这里定义四个 `--sch-*`，只在这一页生效 —— 不动全局那几个
+ * （改全局等于把所有页的删除按钮一起改浅，那不是这件事该有的影响面）。
+ *
+ * 命名沿用 BEM（.sch-item__check），状态类用 is-*。
+ * 所有选择器都带 body[data-page='schedule'] 前缀，避免影响别的页。
+ * ========================================================================= */
+
+/* 高度链：`.view` 是整页容器，`#app-root` 跟着撑满，`.sch-root` 才能自己滚 */
+body[data-page='schedule'] .view {
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+  height: calc(100vh - var(--topbar-h) - var(--tabbar-h, 0px));
+  min-height: 0;
+}
+
+body[data-page='schedule'] #app-root {
+  height: 100%;
+  min-height: 0;
+}
+
+.sch-root {
+  /* 深色档的默认值（`:root` 那一套）。浅色档在文件末尾覆盖。 */
+  --sch-ok: #4fb39d;
+  --sch-amber: #c99a55;
+  --sch-blue: #6e9bd1;
+  --sch-bad: #d98079;
+  /*: 订阅来的块（课表 / 会议邀请）：事实在别处，用一档**更安静**的藕紫 ——
+     与计划的青、手动事件的蓝都分得开，又不会三色打架。 */
+  --sch-sub: #8d86b8;
+
+  position: relative;
+  display: flex;
+  /* 两栏并排：左栏与日历**各自整栏到底**，中间一条竖线从上贯到下。
+     原来是"上一条整宽工具条 + 下面两栏"，于是日期标题横在计划列头顶上，
+     看着像计划区的标题（用户 2026-11-08 指出的就是这一处）。 */
+  flex-direction: row;
+  height: 100%;
+  min-height: 0;
+  color: var(--fg);
+}
+
+html[data-theme='light'] .sch-root {
+  /* 浅色档：明度高、饱和度低。功能色只做"提示"，不做"强调"。 */
+  --sch-ok: #5aaf9c;
+  --sch-amber: #d9a85c;
+  --sch-blue: #7ba5dc;
+  --sch-bad: #e2877f;
+  --sch-sub: #9a91cf;
+}
+
+/* ---------------------------------------------------------------- 工具条 */
+
+.sch-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex: none;
+  height: 52px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sch-bar__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sch-bar__nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 日/周/月：分段控件。三格等宽，选中那格抬起一层底色 —— 不做滑块动画，
+   一个三选一的开关不值得动效（翻页才是要动的那个动作）。 */
+.sch-seg {
+  display: flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+}
+
+.sch-seg__item {
+  min-width: 40px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: calc(var(--r-md) - 2px);
+  background: transparent;
+  color: var(--fg2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.sch-seg__item:hover {
+  color: var(--fg);
+}
+
+.sch-seg__item.is-on {
+  background: var(--bg);
+  color: var(--fg);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* ---------------------------------------------------------------- 两栏 */
+
+.sch-side {
+  display: flex;
+  flex-direction: column;
+  /* 320 而不是 300：条目行里同时要放"勾选框 + 标题 + 日期 + 星标"，
+     300 时第三行那种长标题会把日期挤没。 */
+  width: 320px;
+  flex: none;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+}
+
+/* 左栏的顶带：与右边工具条**同高、同一条底线**。
+   两栏各自有一条顶带，中间那条竖线才有地方落；否则上半截是通栏，
+   线到工具条下面才出现，看着像断了。 */
+.sch-side__top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 52px;
+  padding: 0 12px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* 顶带里的"计划"是**栏名**，比正文重、比右边的日期轻 */
+.sch-side__top .sch-side__title {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sch-side__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+/* 日历那一栏：工具条在上，网格在下，自己占满剩下的宽高 */
+.sch-calwrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.sch-cal {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  /* 上边距给 0：sticky 的列头要贴在容器顶边。留着 16px 的 padding-top，
+     滚动时那 16px 会一直空在表头上方（像一条没用的横档）。月视图的上边距
+     单独补在 `.sch-month` 上。 */
+  padding: 0 16px 16px;
+  overflow: auto;
+}
+
+.sch-month {
+  margin-top: 16px;
+}
+
+.sch-side__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg3);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+}
+
+.sch-side__title {
+  flex: 1;
+}
+
+.sch-side__add {
+  width: 22px;
+  height: 22px;
+}
+
+/* ---------------------------------------------------------------- 订阅 */
+
+/* 与计划之间用一条分栏线隔开：两者都是"要做的事"，但事实来源不同 */
+.sch-subs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.sch-subs__hint {
+  margin: 0;
+  color: var(--fg3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* 只读的一行：这份课表来自哪份订阅。管理与地址都在设置页（凭据只放一处）。 */
+.sch-subline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 140ms ease;
+}
+
+.sch-subline:hover {
+  border-color: color-mix(in srgb, var(--sch-sub) 45%, var(--line));
+}
+
+.sch-subline__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sch-subline__meta {
+  flex: none;
+  color: var(--fg3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- 计划卡 */
+
+.sch-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+}
+
+.sch-plan__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sch-plan__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sch-plan__count {
+  font-size: 11px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 三个 hover 才出现的动作（删除计划）：平时不占视线 */
+.sch-plan__del {
+  width: 20px;
+  height: 20px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.sch-plan:hover .sch-plan__del,
+.sch-plan__del:focus-visible {
+  opacity: 1;
+}
+
+.sch-plan__del:hover {
+  color: var(--sch-bad);
+}
+
+.sch-plan__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sch-plan__rename,
+.sch-item__rename {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--pri);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.sch-plan__add {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px dashed transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg3);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: text;
+}
+
+.sch-plan__add:hover,
+.sch-plan__add:focus {
+  border-color: var(--line);
+  color: var(--fg2);
+  outline: none;
+}
+
+/* ---------------------------------------------------------------- 待办条目 */
+
+.sch-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 4px;
+  border-radius: var(--r-sm);
+  cursor: grab;
+}
+
+.sch-item:hover {
+  background: var(--bg3);
+}
+
+.sch-item.is-dragging {
+  opacity: 0.5;
+}
+
+.sch-item__check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: transparent;
+  cursor: pointer;
+}
+
+.sch-item__check:hover {
+  border-color: var(--sch-ok);
+}
+
+.sch-item__check.is-done {
+  border-color: var(--sch-ok);
+  background: var(--sch-ok);
+  color: #fff;
+}
+
+.sch-item__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sch-item__text.is-done {
+  color: var(--fg3);
+  text-decoration: line-through;
+}
+
+.sch-item__date {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg3);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sch-item__date.is-set {
+  border-color: var(--line);
+  color: var(--fg2);
+}
+
+.sch-item__date:hover {
+  border-color: var(--line-strong);
+  color: var(--fg);
+}
+
+.sch-item__dateinput {
+  flex: none;
+  width: 118px;
+  height: 22px;
+  border: 1px solid var(--pri);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.sch-item__star {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--line-strong);
+  cursor: pointer;
+}
+
+.sch-item__star:hover {
+  color: var(--sch-amber);
+}
+
+.sch-item__star.is-on {
+  color: var(--sch-amber);
+}
+
+/* ---------------------------------------------------------------- 空状态 */
+
+.sch-empty {
+  padding: 10px 4px;
+}
+
+.sch-empty__text {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  color: var(--fg2);
+}
+
+.sch-empty__hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--fg3);
+  line-height: 1.6;
+}
+
+.sch-loading {
+  padding: 24px;
+  font-size: 12.5px;
+  color: var(--fg3);
+}
+
+/* ---------------------------------------------------------------- 月视图 */
+
+.sch-month {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.sch-month__head {
+  padding: 6px 8px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--fg3);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.sch-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 104px;
+  padding: 4px 5px 6px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  cursor: default;
+}
+
+.sch-cell:hover {
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+}
+
+.sch-cell.is-out {
+  opacity: 0.4;
+}
+
+.sch-cell.is-today {
+  background: color-mix(in srgb, var(--pri) 6%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pri) 20%, transparent);
+}
+
+.sch-cell__top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sch-cell__num {
+  font-size: 11.5px;
+  color: var(--fg2);
+  font-variant-numeric: tabular-nums;
+}
+
+.sch-cell.is-today .sch-cell__num {
+  color: var(--pri);
+  font-weight: 600;
+}
+
+/* 有到期条目：一个空心小点。空心是为了不与事件块的颜色抢眼 */
+.sch-cell__dot {
+  width: 5px;
+  height: 5px;
+  border: 1px solid var(--sch-amber);
+  border-radius: 50%;
+}
+
+.sch-cell__list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sch-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  width: 100%;
+  padding: 1px 4px;
+  border: 0;
+  border-left: 2px solid var(--sch-blue);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--sch-blue) 10%, transparent);
+  color: var(--fg2);
+  font-family: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.sch-chip.is-plan {
+  border-left-color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+}
+
+.sch-chip:hover {
+  background: color-mix(in srgb, var(--pri) 18%, transparent);
+  color: var(--fg);
+}
+
+.sch-chip__time {
+  flex: none;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+.sch-chip__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sch-cell__more {
+  padding-left: 4px;
+  color: var(--fg3);
+  font-size: 10.5px;
+}
+
+/* ---------------------------------------------------------------- 日 / 周视图 */
+
+.sch-grid {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.sch-grid.is-day {
+  grid-template-columns: 48px minmax(0, 1fr) 240px;
+}
+
+.sch-rail {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 表头钉住：一周往下翻到 15:00 时，"周三是哪一列"这件事不能靠记性 */
+.sch-rail__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 40px;
+  background: var(--bg);
+}
+
+.sch-rail__hour {
+  height: 48px;
+  padding-right: 6px;
+  color: var(--fg3);
+  font-size: 10.5px;
+  text-align: right;
+  transform: translateY(-6px);
+  font-variant-numeric: tabular-nums;
+}
+
+.sch-cols {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  border-left: 1px solid var(--line);
+}
+
+.sch-col {
+  min-width: 0;
+  border-right: 1px solid var(--line);
+}
+
+.sch-col__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
+  height: 40px;
+  padding-top: 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.sch-col__num {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.sch-col.is-today .sch-col__dow,
+.sch-col.is-today .sch-col__num {
+  color: var(--pri);
+}
+
+.sch-col.is-today .sch-col__head {
+  border-bottom-color: color-mix(in srgb, var(--pri) 40%, var(--line));
+}
+
+.sch-col__body {
+  position: relative;
+  /* 小时线：一条重复的极淡横线，一小时一格。不铺 24 个节点 —— 那是 168 个
+     div 换一条 CSS 渐变，还会让事件块的定位参照变得复杂。 */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--line) 0 1px,
+    transparent 1px 48px
+  );
+}
+
+.sch-col.is-today .sch-col__body {
+  background-color: color-mix(in srgb, var(--pri) 6%, transparent);
+}
+
+/* 事件块 */
+.sch-ev {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 6px;
+  border: 0;
+  border-left: 3px solid var(--sch-blue);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--sch-blue) 14%, var(--bg2));
+  color: var(--fg);
+  font-size: 11px;
+  text-align: left;
+  cursor: grab;
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+  transition: box-shadow 140ms ease;
+}
+
+.sch-ev.is-plan {
+  border-left-color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 14%, var(--bg2));
+}
+
+/* 订阅来的（课表、会议邀请）。颜色淡一档：一个学期几十节课铺满一周，
+   它该是背景，不该跟"我今天要做的两件事"抢注意力。 */
+.sch-ev.is-sub {
+  border-left-color: var(--sch-sub);
+  background: color-mix(in srgb, var(--sch-sub) 13%, var(--bg2));
+}
+
+.sch-ev:hover {
+  box-shadow: var(--shadow-1);
+}
+
+.sch-ev.is-drag {
+  opacity: 0.85;
+  cursor: grabbing;
+  z-index: 3;
+}
+
+.sch-ev__time {
+  flex: none;
+  color: var(--fg3);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sch-ev__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 地点（课表的教室）：第三行小字，块矮的时候前端不画它 */
+.sch-ev__where {
+  min-width: 0;
+  color: var(--fg3);
+  font-size: 10.5px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 半小时及以下：竖排放不下两行，改成一行「10:00 标题」 */
+.sch-ev.is-tight {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.sch-ev.is-tight .sch-ev__time {
+  flex: none;
+}
+
+/* 底边那一条：拖它改时长（上下各留 2px 温热区，光标才对得上） */
+.sch-ev__resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+/* 拖条目进来时的落点线 */
+.sch-dropline {
+  position: absolute;
+  right: 0;
+  left: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--pri);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pri) 18%, transparent);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* 日视图右侧那一列 */
+.sch-day {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 0 0 14px;
+  min-width: 0;
+  overflow-y: auto;
+}
+
+.sch-day__h {
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.sch-day__sub {
+  margin: 6px 0 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg3);
+  letter-spacing: 0.03em;
+}
+
+.sch-day__empty {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--fg3);
+  line-height: 1.6;
+}
+
+.sch-day__row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 12px;
+}
+
+.sch-day__row.is-done {
+  color: var(--fg3);
+  text-decoration: line-through;
+}
+
+.sch-day__plan,
+.sch-day__time {
+  flex: none;
+  color: var(--fg3);
+  font-size: 10.5px;
+}
+
+/* 标题与备注上下两行：备注只在日视图展开（周视图那一格没有它的位置） */
+.sch-day__main {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sch-day__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sch-day__note {
+  color: var(--fg3);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 教室 / 会议室：写在右侧，不抢标题的位置 */
+.sch-day__where {
+  flex: none;
+  color: var(--fg3);
+  font-size: 10.5px;
+}
+
+/* ---------------------------------------------------------------- 编辑浮层 */
+
+.sch-editor {
+  position: absolute;
+  z-index: 20;
+  /* 320 而不是 284：一行里要放「日期 + 起 + 止」，284 时日期框只剩 86px，
+     年份被截成 "11/02/20"。 */
+  width: 320px;
+}
+
+.sch-editor[hidden] {
+  display: none;
+}
+
+.sch-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-2);
+}
+
+.sch-edit__title {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.sch-edit__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sch-edit__date,
+.sch-edit__time {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--fg2);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.sch-edit__date {
+  flex: 1;
+  min-width: 0;
+}
+
+.sch-edit__time {
+  width: 74px;
+  flex: none;
+}
+
+/* 地点与备注：与日期/时间同一档输入框，只是各占一整行 */
+.sch-edit__where,
+.sch-edit__note {
+  width: 100%;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.sch-edit__where {
+  height: 26px;
+}
+
+.sch-edit__note {
+  min-height: 46px;
+  padding: 6px 8px;
+  line-height: 1.45;
+  resize: none;
+}
+
+.sch-edit__where::placeholder,
+.sch-edit__note::placeholder {
+  color: var(--fg3);
+}
+
+.sch-edit__dash {
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.sch-edit__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* ---------------------------------------------------------------- 重排 */
+
+.sch-replan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sch-replan__icon {
+  flex: none;
+  opacity: 0.75;
+}
+
+.sch-replan[disabled] {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* 排的时候图标转起来："排…" 这两个字看不出还在不在动 */
+.sch-replan[disabled] .sch-replan__icon {
+  animation: sch-spin 900ms linear infinite;
+}
+
+@keyframes sch-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 重排完成 / 撤销：贴着日历底部居中的一条（像系统提示条）。
+ * 六秒淡出；不挡工具条，也不挡周几表头 —— 它只临时压住一点空白处。 */
+.sch-note {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, calc(100% - 32px));
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  box-shadow: var(--shadow-1);
+  color: var(--fg2);
+  font-size: 12px;
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: none;
+}
+
+.sch-note.is-in {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
+}
+
+.sch-note__action {
+  flex: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--pri);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 重排的差异：新排的淡入并留 4 秒描边；挪过去的用更淡的一圈，与"新排的"区分 */
+.sch-ev.is-new {
+  animation: sch-fresh 200ms ease both;
+  box-shadow: 0 0 0 1px var(--pri);
+}
+
+.sch-ev.is-moved {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pri) 50%, transparent);
+}
+
+@keyframes sch-fresh {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 被挪走的块留在旧位置的幽灵：一圈虚线，不参与交互 */
+.sch-ghost {
+  position: absolute;
+  left: 2px;
+  width: calc(100% - 4px);
+  padding: 3px 6px;
+  border: 1px dashed color-mix(in srgb, var(--fg3) 55%, transparent);
+  border-radius: 6px;
+  color: var(--fg3);
+  font-size: 10px;
+  overflow: hidden;
+  pointer-events: none;
+  animation: sch-ghost-in 160ms ease both;
+}
+
+@keyframes sch-ghost-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 0.7;
+  }
+}
+
+/* ---------------------------------------------------------------- 门禁浮层 */
+
+/* 与 `.sch-editor` 同一套投影、圆角与宽度（320px）：两个浮层是同一个家族。 */
+.sch-gate {
+  position: absolute;
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 320px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  box-shadow: var(--shadow-2);
+}
+
+.sch-gate__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sch-gate__title {
+  min-width: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sch-gate__tag {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--fg3);
+  font-size: 10px;
+}
+
+.sch-gate__hint {
+  margin: 0;
+  color: var(--fg3);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.sch-gate__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 58vh;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.sch-gate__q {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sch-gate__stem {
+  margin: 0;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sch-gate__opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--fg2);
+  font-family: inherit;
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sch-gate__opt:hover {
+  background: var(--bg2);
+}
+
+.sch-gate__opt.is-on {
+  border-color: var(--pri);
+  background: color-mix(in srgb, var(--pri) 8%, transparent);
+  color: var(--fg);
+}
+
+.sch-gate__radio {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  margin-top: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+.sch-gate__radio.is-on {
+  border-color: var(--pri);
+  box-shadow: inset 0 0 0 3px var(--pri);
+}
+
+.sch-gate__optkey {
+  flex: none;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+.sch-gate__area {
+  width: 100%;
+  min-height: 96px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg2);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.sch-gate__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sch-gate__label {
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.sch-gate__note {
+  color: var(--fg3);
+  font-size: 10.5px;
+}
+
+.sch-gate__rating {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sch-gate__star {
+  border: 0;
+  padding: 2px;
+  background: none;
+  color: var(--line-strong);
+  cursor: pointer;
+}
+
+.sch-gate__star.is-on {
+  color: var(--sch-amber);
+}
+
+.sch-gate__error {
+  margin: 0;
+  min-height: 14px;
+  color: var(--sch-bad);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.sch-gate__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* ---------------------------------------------------------------- 窄屏 */
+
+@media (max-width: 1100px) {
+  /* 窄屏收一点：320 会让日历只剩六列宽 */
+  .sch-side {
+    width: 288px;
+  }
+}
+
+@media (max-width: 860px) {
+  .sch-grid.is-day {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .sch-day {
+    display: none;
+  }
+}

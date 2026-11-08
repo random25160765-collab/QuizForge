@@ -31,8 +31,8 @@
     access: [],
     groups: [],
     mounted: [],
-    //: 「滤镜」那份清单（服务端 `app/skills.py` 的 `catalog` 发来）
-    skills: [],
+    //: 「滤镜」那份清单（服务端 `app/lens.py` 的 `catalog` 发来）
+    lens: [],
     minimal: false,
     declared: 0,
     failed: ''
@@ -191,10 +191,14 @@
         role: 'option',
         'data-mode': one.key,
         'aria-selected': on ? 'true' : 'false',
+        // 四个格子**平铺**（不是"图标 + 一个两行的小块"）：图标要跟名字那一行对齐，
+        // 而不是跟"名字 + 说明"整块的中心对齐 —— 后者正是它看上去偏上的原因
+        // （用户："这里的图标和旁边的文字也是不对齐的"）。
+        // 位置由 CSS 的 `grid-template-areas` 决定，DOM 顺序按读的顺来：名字、说明、工具数。
         html:
           '<span class="modepick__ico">' + icon(one.key, 15, on ? 2.1 : 1.8) + '</span>' +
-          '<span class="modepick__main"><span class="modepick__name"></span>' +
-          '<span class="modepick__hint"></span></span>' +
+          '<span class="modepick__name"></span>' +
+          '<span class="modepick__hint"></span>' +
           '<span class="modepick__meta"></span>',
         onclick: function () {
           closePick();
@@ -296,9 +300,9 @@
     state.access = data.access || [];
     state.groups = data.groups || [];
     state.mounted = data.mounted || [];
-    // 「滤镜」那份清单（`app/skills.py` 的 `catalog`）：跟着这一份一起发，界面**不抄名字** ——
-    // 加了新 skill，输入框旁那颗「滤镜」药丸的清单自动就有（抄成两份必然漂，这条吃过一次）。
-    state.skills = data.skills || [];
+    // 「滤镜」那份清单（`app/lens.py` 的 `catalog`）：跟着这一份一起发，界面**不抄名字** ——
+    // 加了新滤镜，输入框旁那颗药丸的清单自动就有（抄成两份必然漂，这条吃过一次）。
+    state.lens = data.lens || [];
     state.minimal = !!data.minimal;
     state.declared = (data.declared || []).length;
     // 颜色跟着一起来：色号只存在服务端那一处

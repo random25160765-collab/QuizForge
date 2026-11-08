@@ -347,7 +347,7 @@ def _quote_of(material, start_line: int) -> dict:  # noqa: ANN001
     """只被向量找到的那个窗口：给它配一句引言。
 
     取**窗口第一行**就够 —— 目的是让模型看见"这一段讲的什么"，而不是把整窗塞进
-    上下文。真要读，它该去调 `read_material` 按行区间读（那才是引用同源的那条路）。
+    上下文。
     """
     blank = {"firstMatch": start_line, "quote": "", "text": "", "matched": 0}
     try:

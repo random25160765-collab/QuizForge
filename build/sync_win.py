@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -36,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 #: 不进镜像的目录（相对仓库根）。理由写在每一项后面。
 SKIP_DIRS = (
     ".git",             # 版本库不进镜像：Windows 侧那份不提交任何东西
+    ".git-rewrite",     # 历史重写留下的整份副本（几千个文件，且不是当前代码）
     ".codebuddy",       # CodeBuddy 的开发 skill：打包版用不到（出题机那几份契约在 pipeline/ 下，会跟着走）
     "api/.venv",        # venv 是平台专属的，Windows 侧自己建一个
     "build/dist",       # 产物：Windows 侧自己出，不从这边搬
@@ -51,7 +54,15 @@ SKIP_DIRS = (
 
 #: 不进镜像的文件（相对仓库根）
 SKIP_FILES = (
-    "api/.env",         # 本机配置：Windows 侧的运行环境由包自己决定（通道说了算）
+    "api/.env",         # 本机配置：Windows 侧的运行环境由包自己决定
+    # 本机配置与密钥**一律不进镜像**：`settings.local.json` 里有 Turso token 与
+    # 明文 API 密钥，`snapshot.key` 能解开对话密文，`db/*.enc` 是对话全量快照。
+    # 构建镜像只该有代码与样例（`settings.example.json`）。
+    "config/settings.local.json",
+    "config/ai.local.json",
+    "config/embed.local.json",
+    "config/snapshot.key",
+    "db/quizforge.db.gz.enc",
     "bank.json",        # `make bank-export` 的产物（按需生成），不该进构建镜像
     # 开发库的 WAL 附属文件：**它们是活的**（本地跑着服务时一直在变），
     # 同步它们既没意义，还会让"镜像期间源被改了"这类误报变多。
@@ -111,6 +122,28 @@ def _skipped(rel: str) -> bool:
     return rel.endswith(".pyc")
 
 
+#: 镜像根下这份清单记着"上次同步时每个文件的 sha256"。有了它，目标端不必再读文件
+#: 就能判断"要不要拷"（目标在 `/mnt/c`，每次读都跨 VM，这是慢的根源）。
+MANIFEST_NAME = ".qf-sync-manifest.json"
+
+
+def _load_manifest(target: Path) -> dict[str, str]:
+    try:
+        data = json.loads((target / MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _save_manifest(target: Path, payload: dict[str, str]) -> None:
+    try:
+        (target / MANIFEST_NAME).write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
 def _source_files() -> dict[str, Path]:
     """镜像里该有的文件：`相对路径 → 绝对路径`。"""
     out: dict[str, Path] = {}
@@ -125,7 +158,7 @@ def _source_files() -> dict[str, Path]:
 
 
 def _windows_src_dir() -> Path | None:
-    """Windows 侧的镜像目录：`%USERPROFILE%\\qf-build\\src`。
+    """Windows 侧的镜像目录：`%USERPROFILE%\\Desktop\\QF_dist\\src`。
 
     从 WSL 里问 Windows 拿它 —— 不猜用户名（`C:\\Users\\<谁>` 这件事只有 Windows 自己知道）。
     """
@@ -151,7 +184,22 @@ def _windows_src_dir() -> Path | None:
         base = ""
     if not base:
         return None
-    return Path(base) / "qf-build" / "src"
+    return Path(base) / "Desktop" / "QF_dist" / "src"
+
+
+def _to_windows_path(wsl_path: str) -> str:
+    """WSL 路径 → Windows 路径（`wslpath -w`）。拿不到就返回空串。
+
+    robocopy 要的是 Windows 视角的源路径（`\\\\wsl.localhost\\Ubuntu\\home\\...`），
+    不能把 `/home/...` 直接喂给它。
+    """
+    try:
+        proc = subprocess.run(
+            ["wslpath", "-w", wsl_path], capture_output=True, text=True, timeout=10
+        )
+        return (proc.stdout or "").strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
 
 
 def _to_wsl_path(windows_path: str) -> str:
@@ -166,68 +214,85 @@ def _to_wsl_path(windows_path: str) -> str:
 
 
 def sync(target: Path) -> int:
+    """把仓库镜像到 Windows 的构建目录，用 **robocopy /MIR**。
+
+    ## 为什么不是 Python 逐文件拷
+
+    实测：逐文件 `read_bytes()` + `write_bytes()` 同步一次要 **3 分钟**，而
+    `time` 显示 CPU 只用了 3.6s —— 时间全花在跨 VM 的每文件 IO 上（`/mnt/c` 是 9p）。
+    改成 robocopy：Windows 原生、多线程、/MIR 只看大小+时间戳（不读内容），
+    增量通常 **1-3 秒**。
+
+    ## 排除项有两类
+
+    * **不该进镜像**的：版本库、历史重写副本、vendor（76M）、venv、node_modules、
+      测试缓存、构建产物；
+    * **密钥与本机配置**：`settings.local.json`（Turso token + 明文密钥）、
+      `snapshot.key`（能解开对话密文）、`db/*.enc`（对话全量）。这些一旦进了
+      Windows 侧的镜像目录，就等于"构建机上也有一份"。
+    """
     if not target.is_dir():
         print(f"目标目录不存在：{target}")
         print("（先跑 `build/package.py` 的前置准备：在 Windows 上建一个 venv，见 docs/分发工作流.md）")
         return 2
 
-    source = _source_files()
-    print(f"源（唯一事实）：{ROOT}")
-    print(f"目标（构建镜像）：{target}")
-
-    copied: list[str] = []
-    removed: list[str] = []
-
-    # ① 拷贝有差异的（先比大小，再比哈希 —— 大文件不必每次全读）
-    for rel, src in sorted(source.items()):
-        dest = target / rel
-        if dest.is_file():
-            if dest.stat().st_size == src.stat().st_size and _sha256(dest) == _sha256(src):
-                continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(src.read_bytes())
-        copied.append(rel)
-
-    # ② 删掉目标里多出来的（镜像语义：删除要传播）
-    for path in sorted(target.rglob("*")):
-        if not path.is_file():
+    # **逐个目录同步**，不做"整仓一次 /MIR + 排除"。
+    #
+    # 为什么改：整仓那次 `/MIR` 会莫名其妙跳过某些子树（实测 `api/web` 882 个文件
+    # 一个都没拷、`desktop` 也没拷），表现就是"代码改了、包里没变"，而且不报错。
+    # 白名单逐目录跑，每个 0.1-1 秒，总共几秒，但**结果可预测**。
+    targets = ["api", "theme", "build", "tools", "pipeline", "desktop", "config"]
+    for name in targets:
+        src = ROOT / name
+        if not src.is_dir():
             continue
-        rel = str(path.relative_to(target)).replace(os.sep, "/")
-        if _skipped(rel) or rel in source:
-            continue
-        path.unlink()
-        removed.append(rel)
+        win_src = _to_windows_path(str(src))
+        win_dst = _to_windows_path(str(target / name))
+        if not win_src or not win_dst:
+            print(f"拿不到 {name} 的 Windows 路径（wslpath 不可用）")
+            return 2
+        cmd = [f"robocopy", f'"{win_src}"', f'"{win_dst}"', "/MIR", "/R:1", "/W:1",
+               "/NFL", "/NDL", "/NP", "/NJH", "/NJS",
+               "/XD", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache",
+               ".venv", "dist", ".pyinstaller", "work",
+               "/XF", ".env", "settings.local.json", "ai.local.json", "embed.local.json",
+               "snapshot.key", "quizforge.db.gz.enc"]
+        try:
+            proc = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", " ".join(cmd)],
+                capture_output=True, text=True, timeout=300,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"{name}: robocopy 起不来（{exc}）")
+            return 2
+        if proc.returncode >= 8:
+            print(f"{name}: robocopy 失败（退出码 {proc.returncode}）")
+            err = (proc.stderr or "").strip()
+            if err:
+                print(err[:800])
+            return 1
 
-    # ③ 校验：逐文件比哈希（"同步过了"不等于"真的一样"）
-    source.pop("data/quizforge.db", None)  # 样本库 22M，单独说明，但不参与逐字节校验的噪声
-    mismatched: list[str] = []
-    for rel, src in sorted(source.items()):
-        dest = target / rel
-        if not dest.is_file() or _sha256(dest) != _sha256(src):
-            mismatched.append(rel)
+    print(f"镜像已同步：{', '.join(targets)}")
 
-    print(f"\n拷贝 {len(copied)} 个 · 删除 {len(removed)} 个 · 其余一致")
-    if copied[:6]:
-        for rel in copied[:6]:
-            print(f"  + {rel}")
-        if len(copied) > 6:
-            print(f"  … 还有 {len(copied) - 6} 个")
-    if removed[:6]:
-        for rel in removed[:6]:
-            print(f"  - {rel}")
-        if len(removed) > 6:
-            print(f"  … 还有 {len(removed) - 6} 个")
+    # 样本库单独拷（`data/` 整体被排除，但打包自检要读题库）
+    sample = ROOT / "data" / "quizforge.db"
+    if sample.is_file():
+        (target / "data").mkdir(parents=True, exist_ok=True)
+        shutil.copy2(sample, target / "data" / "quizforge.db")
 
-    if mismatched:
-        print("\n**校验没过**：下面这些文件同步完两边还不一样：")
-        for rel in mismatched[:10]:
-            print(f"  ✗ {rel}")
-        print(
-            "  最常见的原因是**同步期间源仓库被改了**（编辑、跑构建、切分支都会）。\n"
-            "  镜像本身没问题，重新跑一次这条命令即可（把改动一起带过去）。"
+    # **`api/web` 必须再单独同步一次**：整仓那次 `/MIR` 会把它整个跳过（实测 882 个文件
+    # 一个都没拷，镜像里还是几周前的旧前端），而它正是打进包里的界面 —— 跳过它等于
+    # "改了前端但包里没变"。单独跑只花 0.5 秒。
+    web_src = _to_windows_path(str(ROOT / "api" / "web"))
+    web_dst = _to_windows_path(str(target / "api" / "web"))
+    if web_src and web_dst:
+        subprocess.run(
+            [
+                "powershell.exe", "-NoProfile", "-Command",
+                f'robocopy "{web_src}" "{web_dst}" /MIR /R:1 /W:1 /NFL /NDL /NP /NJH /NJS',
+            ],
+            capture_output=True, text=True, timeout=120,
         )
-        return 1
-    print("校验通过：两边逐文件哈希一致 ✓")
     return 0
 
 

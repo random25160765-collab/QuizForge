@@ -1,0 +1,142 @@
+"""Android 侧的启动器：把后端在 APK 里拉起来。
+
+与 `build/launcher.py` 的差别只有三件事，其余（ensure_schema、uvicorn 参数）
+刻意保持一致：
+
+1. **数据目录由 Java 传进来**（`context.getFilesDir()` 在 Android 上才是可写且
+   备份策略正确的位置），不是 `~/quizforge`；
+2. **不开浏览器**，也没有终端 —— 日志写进数据目录，Java 侧失败时读它；
+3. **web 根是 Java 解压出来的**（APK 的 assets 不能直接当静态目录挂载）。
+
+本模块只做「配置 + 起服务」，不碰任何业务逻辑，也不 import `app` 之外的仓库代码：
+这样它既能在设备上跑，也能在桌面用同一份仓库调试（见 `assemble-python.sh` 的说明）。
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import threading
+import traceback
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+#: tools 的 4 个模块（check / question_parser / topics / dataset）就在同级目录，
+#: `toolkit.py` 会把这个路径插进 sys.path 再 `from check import …`。
+TOOLS_DIR = HERE / "tools"
+
+_state: dict[str, str] = {"phase": "idle", "detail": ""}
+
+
+def _log(message: str) -> None:
+    _state["detail"] = message
+    try:
+        target = Path(os.environ.get("QF_DATA_DIR", ".")) / "android_boot.log"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(message + "\n")
+    except OSError:
+        pass
+
+
+def configure(data_dir: str, web_dir: str) -> None:
+    """在 import `app.config` **之前**设好环境变量 —— Settings 是模块级单例。"""
+    data = Path(data_dir)
+    os.environ["QF_DATA_DIR"] = str(data)
+    os.environ["QF_WEB_DIR"] = str(web_dir)
+    os.environ["QF_TOOLS_DIR"] = str(TOOLS_DIR)
+    # 设置文件的默认路径是「仓库根/config/settings.local.json」；在 APK 里那个根是
+    # 只读的 AssetFinder，必须显式指到数据目录，否则设置页写不进去。
+    os.environ["QF_SETTINGS_FILE"] = str(data / "config" / "settings.local.json")
+    # 对话同步的端到端口令：有就带上（由 BootHelper 从 assets 拷来），没有就只在
+    # 启用同步时报错 —— 与桌面端"没有口令时拒绝同步"是同一条规则。
+    key = data / "snapshot.key"
+    if key.is_file():
+        os.environ.setdefault("QF_SYNC_KEY_FILE", str(key))
+    # 手机上不预取 Pyodide（76M），用到了再说；失败也只是"跑 Python"这一项不可用。
+    os.environ.setdefault("QF_HEAVY_PREFETCH", "0")
+    if str(HERE) not in sys.path:
+        sys.path.insert(0, str(HERE))
+
+
+def ensure_database() -> str:
+    """建库 / 补表。首次启动时 Java 已经把内置的 bank.db 拷成 quizforge.db。"""
+    from app.db import ensure_schema, get_engine  # noqa: PLC0415 —— 必须在设完环境变量之后
+
+    engine = get_engine()
+    ensure_schema(engine)
+    return f"db ok: {engine.url}"
+
+
+def crypto_check() -> str:
+    """自检加密后端：Android 上不是 `cryptography`，而 Turso 同步的密文必须两端一致。
+
+    这些输入固定，桌面侧用一段同样的代码就能对拍（见 mobile/README.md）。
+    派生慢是正常的：手机上 scrypt 走 hashlib，n 比生产值小一档（2**14 vs 2**15）
+    只为把启动自检控制在毫秒级，算法本身没有差别。
+    """
+    from app.crypto_compat import AESGCM, BACKEND, Scrypt  # noqa: PLC0415
+
+    salt = bytes(range(16))
+    key = Scrypt(salt=salt, length=32, n=2**14, r=8, p=1).derive(b"quizforge-probe")
+    nonce = b"\x00" * 12
+    blob = AESGCM(key).encrypt(nonce, b"quizforge", b"aad")
+    back = AESGCM(key).decrypt(nonce, blob, b"aad")
+    return (
+        f"crypto backend={BACKEND} roundtrip={back == b'quizforge'} "
+        f"key={key.hex()[:16]} blob={blob.hex()[:24]}"
+    )
+
+
+def status() -> str:
+    """给 Java 侧轮询用的一行状态（不含异常栈，栈在日志里）。"""
+    return f"{_state['phase']}: {_state['detail']}"
+
+
+def start(data_dir: str, web_dir: str, port: int = 8731) -> str:
+    """起服务。返回可读状态；任何失败都写进 _state，不向 Java 抛异常。"""
+    _state["phase"] = "starting"
+    try:
+        configure(data_dir, web_dir)
+        _log(f"configured data={data_dir} web={web_dir} tools={TOOLS_DIR}")
+
+        message = ensure_database()
+        _log(message)
+        _log(crypto_check())
+
+        import uvicorn  # noqa: PLC0415
+
+        from app.main import create_app  # noqa: PLC0415
+
+        application = create_app()
+        config = uvicorn.Config(
+            application,
+            host="127.0.0.1",
+            port=int(port),
+            log_level="warning",
+            # Android 上没有 reload、没有多进程；worker 线程里装信号处理器会抛。
+            workers=1,
+        )
+        server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None
+        _state["phase"] = "serving"
+        _log(f"serving on 127.0.0.1:{port}")
+        server.run()  # 阻塞 —— 由 Java 侧的线程承载
+    except BaseException as exc:  # noqa: BLE001 —— 启动失败必须留痕，不能静默
+        _state["phase"] = "failed"
+        _state["detail"] = f"{type(exc).__name__}: {exc}"
+        _log("FAILED\n" + traceback.format_exc())
+        return status()
+    return status()
+
+
+def start_in_thread(data_dir: str, web_dir: str, port: int = 8731) -> str:
+    """Chaquopy 从 Java 调进来时用这个：立刻返回，服务在后台线程跑。"""
+    thread = threading.Thread(
+        target=start,
+        args=(data_dir, web_dir, port),
+        name="quizforge-server",
+        daemon=True,
+    )
+    thread.start()
+    return f"thread started, data={data_dir}"

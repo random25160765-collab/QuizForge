@@ -21,7 +21,7 @@ body[data-page='graph'] .view {
      拿不到时退回按设计变量算。
      这个 display/flex-direction 不能省：下面的 .graph-stage 靠 flex: 1 吃掉
      剩余高度，改成块级之后画布会退化成「自己撑自己」（实测高度 720 而非 812）。 */
-  height: var(--graph-h, calc(100dvh - var(--topbar-h, 58px)));
+  height: var(--graph-h, calc(100dvh - var(--topbar-h, 58px) - var(--tabbar-h, 0px)));
   min-height: 320px;
 }
 

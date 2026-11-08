@@ -1,0 +1,53 @@
+<!--
+  日程页：左边是**计划**（待办清单），右边是**日历**（时间块）。
+
+  两者刻意分开 —— 计划可以一直没有日期，日历上占时段的是另一件事
+  （见 `api/app/models.py` 顶部那段）。这一页只负责把它们并排摆出来，
+  逻辑全在 `runtime/schedule.js`。
+
+  2026-11-08：左栏与日历各自是一条**整栏**（各自有顶带），中间一条竖线从上贯到底。
+  原先日期标题横在上方、压在计划列头顶上，看着像"计划的标题"，其实是日历的。
+-->
+<div id="app-root" data-page="schedule" class="sch-root">
+  <aside class="sch-side" id="sch-side" aria-label="计划"></aside>
+
+  <div class="sch-calwrap">
+    <header class="sch-bar">
+      <h1 class="sch-bar__title" id="sch-title"></h1>
+
+      <div class="sch-bar__nav">
+        <button class="icon-btn" id="sch-prev" type="button" title="往前" aria-label="往前">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+               stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M14.5 6 8.5 12l6 6"></path>
+          </svg>
+        </button>
+        <button class="btn btn--ghost btn--sm" id="sch-today" type="button">今天</button>
+        <button class="icon-btn" id="sch-next" type="button" title="往后" aria-label="往后">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+               stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9.5 6l6 6-6 6"></path>
+          </svg>
+        </button>
+      </div>
+
+      <div class="sch-seg" id="sch-views" role="tablist" aria-label="视图"></div>
+
+      <button class="btn btn--ghost btn--sm sch-replan" id="sch-replan" type="button"
+              title="按精力曲线重排未来七天">
+        <svg class="sch-replan__icon" viewBox="0 0 24 24" width="14" height="14" fill="none"
+             stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 11.5a8 8 0 1 0-2.6 6.4"></path>
+          <path d="M20 5.5v6h-6"></path>
+        </svg>
+        <span class="sch-replan__label">重排</span>
+      </button>
+      <button class="btn btn--primary btn--sm" id="sch-new" type="button">新建</button>
+    </header>
+
+    <section class="sch-cal" id="sch-cal" aria-label="日历"></section>
+  </div>
+
+  <div class="sch-editor" id="sch-editor" hidden></div>
+</div>

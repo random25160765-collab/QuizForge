@@ -108,7 +108,7 @@ def health(db: Session = Depends(get_db)) -> dict:
         "build": _build_info(),
         # 这条是给"我手上这个包是哪个通道"用的（内测包与正式包长得一样，
         # 只有这里能一眼看出来）。界面据此自称"内测"，用户也知道自己在试哪一版。
-        "channel": settings.channel,
+        # 2026-11-08：只有一个版本，不再报告"通道"
         "database": {"ok": database_ok, "detail": detail},
         "bank": bank,
         # AI 的接口与密钥属于**每个用户自己的设置**，服务端不持有，

@@ -38,47 +38,31 @@ def _resource_root() -> Path:
 RESOURCE_ROOT = _resource_root()
 
 
-#: 分发通道：`beta`（试用包）或 `release`（正式包）。
-#:
-#: 它现在只管两件事：**数据目录选哪个**（`~/quizforge-beta` vs `~/quizforge`）、
-#: 打包产物叫什么。**不再与 AI 额度有关** —— 内测通道（共享密钥那一套）已于
-#: 2026-11-08 整块删除，两种包都只认 `config/settings.local.json` 里那份密钥。
-CHANNELS = ("beta", "release")
+#: 2026-11-08：**分发通道（beta / release）整块删除** —— 只有一个版本。
+#: 原先它管两件事（数据目录 `~/quizforge-beta` vs `~/quizforge`、产物名），
+#: 现在数据目录固定 `~/quizforge`，产物名固定 `quizforge`（见 `frozen_data_dir`）。
 
 
-def _default_channel() -> str:
-    """通道从哪来：环境变量 > 包里带的 `channel.json` > 开发机默认。
-
-    `channel.json` 是打包时写进包里的（见 `build/package.py`）—— 冻结之后没有
-    环境变量可读，只能把"这是哪个通道的包"写在一个跟着包走的小文件里。
-    """
-    raw = os.environ.get("QF_CHANNEL", "").strip().lower()
-    if raw in CHANNELS:
-        return raw
-    bundled = RESOURCE_ROOT / "channel.json"
-    if bundled.is_file():
-        try:
-            payload = json.loads(bundled.read_text(encoding="utf-8"))
-            value = str((payload or {}).get("channel") or "").strip().lower()
-        except ValueError:
-            value = ""
-        if value in CHANNELS:
-            return value
-    # 开发机默认 beta：与打包产物一致，数据落在 `~/quizforge-beta`
-    return "beta"
-
-
-def frozen_data_dir(channel: str) -> Path:
-    """打包后数据放哪：**用户主目录**下，且**按通道分开**。
+def frozen_data_dir() -> Path:
+    """打包后数据放哪：`~/quizforge`。
 
     为什么不能沿用 `<根>/data`：单文件模式里那个"根"是解包出来的临时目录
     （`%TEMP%`），数据攒在那儿既不好找，又随时可能被清理工具当垃圾收走 ——
     用户的东西不该住在临时目录里。
 
-    为什么按通道分：用户原话"内测和正式要分开"。同一台机器上跑内测包与正式包，
-    库、作答记录、以后的笔记与资料互不干扰。
+    **老用户迁移**：内测包时代数据在 `~/quizforge-beta`，这里顺手搬到新位置。
+    只搬一次；搬不动（被占用/权限）就继续用老目录 —— 宁可路径难看，也不能让
+    人家打开应用是一片空白。
     """
-    return Path.home() / ("quizforge-beta" if channel == "beta" else "quizforge")
+    home = Path.home()
+    target = home / "quizforge"
+    legacy = home / "quizforge-beta"
+    if legacy.is_dir() and not target.exists():
+        try:
+            legacy.rename(target)
+        except OSError:
+            return legacy
+    return target
 
 
 def _default_tools_dir() -> Path:
@@ -109,12 +93,6 @@ class Settings(BaseSettings):
     # 早期从 JWT 方案沿袭下来的 QF_SECRET_KEY 是一条假需求：它从未被读取过，
     # 却让运维多做一个无用步骤、还以为不设会出错。宁可删掉也不要留误导。
 
-    # ------------------------------------------------------------ 通道
-    # `beta`（内测，用站长的额度）或 `release`（正式，用各人自己的密钥）。
-    # 分发的 exe **默认 beta**；开发机也默认 beta（仓库里就放着内测配置）。
-    # 它决定三件事：内测额度能不能用、打包后数据放哪个目录、以及界面上怎么自称。
-    channel: str = _default_channel()
-
     # ------------------------------------------------------------ 数据
     # **local-first**：应用自己的东西（数据库，以后还有笔记与资料的索引）都落在这个
     # 数据目录里，不依赖任何外部服务 —— 双击即用，没有"先把数据库起起来"这一步。
@@ -142,10 +120,10 @@ class Settings(BaseSettings):
         放在这里而不是写成字段默认值：默认值要引用**别的字段**（`channel` / `data_dir`），
         而字段默认值在类定义时就求值了 —— 那样 `QF_DATA_DIR` 也会被忽略。
         """
-        # ① 打包后：数据目录搬进用户主目录，并按通道分开。
+        # ① 打包后：数据目录搬进用户主目录（固定 `~/quizforge`，老目录会自动迁过来）。
         #    显式给了 `QF_DATA_DIR` 就不动（测试与打包自检都靠它指临时目录）。
         if getattr(sys, "frozen", False) and not os.environ.get("QF_DATA_DIR"):
-            self.data_dir = frozen_data_dir(self.channel)
+            self.data_dir = frozen_data_dir()
 
         # ② 没显式给连接串就用数据目录下的 SQLite 文件
         if not self.database_url:
@@ -202,7 +180,7 @@ class Settings(BaseSettings):
     # （2026-11-07：`ai_beta_enabled` / `beta_active` 随内测通道一起删除）
     # 走 `RESOURCE_ROOT` 而不是 `ROOT`：打包后后者是解包目录的上一级（`%TEMP%`），
     # 会把"内测配置在不在"问到一个临时目录里去。打包时这个文件被放进包里
-    # （`build/package.py --channel beta`），所以冻结之后它是**跟着包走**的。
+    # （`build/package.py` 把它打进包里），所以冻结之后它是**跟着包走**的。
     ai_beta_config_file: Path = RESOURCE_ROOT / "config" / "ai.local.json"
 
     # ------------------------------------------------------------ 导入器

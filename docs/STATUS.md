@@ -159,13 +159,15 @@ Postgres 里的那种场合）；为此它补了两处容错：源库缺表时�
 `test_ai_per_user` 的 4+1 条断言要求"连不上上游时提示里带『内测通道』"，而当前网络下
 那个"死地址"返回了 5xx、走的是"上游返回了错误"那条分支）。
 
-**三个上下文**（别混 —— `make dev` 是开发通道，两个包是给人下载的）：
+**两个上下文**（别混 —— `make dev` 是开发，`make dist` 是给人下载的包）：
 
 | 上下文 | 怎么起 | 数据在哪 | 给谁 |
 |---|---|---|---|
 | 开发 | `make dev`（本机 uvicorn，热重载） | 仓库 `data/` | 只有开发者 |
-| 内测包 | `make dist`（Win）· `make dist-linux`（Linux） | `~/quizforge-beta/` | 试用的人（带站长的额度） |
-| 正式包 | `make dist-release` · `make dist-linux-release` | `~/quizforge/` | 正式用户（自填密钥） |
+| 桌面包 | `make dist`（Win）· `make dist-linux`（Linux） | `~/quizforge/` | 用户（自己的密钥） |
+
+2026-11-08：**分发通道（内测 / 正式）已删除** —— 只有一个版本：产物固定 `quizforge`，
+数据固定 `~/quizforge`；老的 `~/quizforge-beta/` 首次启动会自动搬过去。
 
 **双击之后看到什么**：Windows 的包是 `--noconsole`（**不弹终端**），浏览器打开
 **启动页**（`starting.html`：品牌标记 + 进度条 + 6 条启动检查 —— 数据目录 / 库与表 /
@@ -181,8 +183,7 @@ Windows 的系统错误对话框。
 
 ```bash
 make win-setup     # 首次（一次）：在 Windows 上装 Python + venv + 依赖，幂等
-make dist          # 出**内测**包（默认通道）
-make dist-release  # 出正式包
+make dist          # 出桌面包（唯一版本，Windows）
 make dist-linux    # 出 Linux 的包（开发机就是 Linux，不用绕 Windows）
 make smoke         # 发版前：对**真 exe** 跑一次真实对话（会走一次模型）
 ```
@@ -191,12 +192,11 @@ make smoke         # 发版前：对**真 exe** 跑一次真实对话（会走�
 （单向镜像同步 + 逐文件校验，删掉多出来的文件）。打包必须在 Windows 上跑 ——
 PyInstaller **不能交叉编译**。
 
-| 项 | 内测（默认） | 正式 |
-|---|---|---|
-| 产物（约 **26.6 MB**） | `quizforge-beta.exe` | `quizforge.exe` |
-| 内测密钥 | **打进包里**（试用的人不用自备） | **不带**，且通道层保证永不读取 |
-| 数据目录 | `%USERPROFILE%\quizforge-beta\` | `%USERPROFILE%\quizforge\` |
-| 界面自称 | 启动打印"内测版"；`/api/health` 的 `channel=beta` | "正式版" |
+| 项 | 值 |
+|---|---|
+| 产物（约 **26.6 MB**） | `quizforge.exe` |
+| 密钥 | 不带：用户在设置里填自己的（或写 `config/settings.local.json`） |
+| 数据目录 | `%USERPROFILE%\quizforge\` |
 
 自检（每次出包自动跑）：接口通 · 静态页在 · **读出真实题库 1623 题 / 454 主题** ·
 首启建库 ✓ · **通道对不对**（内测包必须密钥真在包里；正式包若内测额度可用直接判不通过）。
@@ -364,6 +364,22 @@ SQLite 逼出来的六件事（都不是"换个驱动"那么简单，逐条都�
 
 ## 十、最近的决策
 
+- **2026-11-08** —— **第二段：谁决定放在哪（自动排程 + 健康策略 + 门禁）。**
+  ① **三方事实各守边界**：订阅块（`sub_id`）/ 用户手动与钉住（`locked`、`detached`）/ 求解器产出（`run_id`）。
+  重排只回收 `run_id` 非空且未锁的块；撤销只回滚这一次的 `schedule_runs` 快照，不做全库回滚。
+  设计与词汇表在 `docs/日程调度.md`。
+  ② **健康是框架不是公式**：`app/wellbeing/` 四个注册表（Metric / Profile / Advisory / Regime），
+  曲线 48 槽、睡眠债与深度预算都由策略算。对话侧催睡**只读 `chat_intervention`**
+  （`severity=hard` 才允许要求"只回一句"），`chat.py` 里不出现"几点该睡"的判断。
+  ③ **健康与求解通过约束 IR 解耦**（`app/schedule_ir.py`）：新增一条健康策略 = 多吐一条 IR，
+  求解器一行不改；用例现场注册假指标 + 假建议，断言 `/api/wellbeing/today` 与 IR 都出现它。
+  ④ **长任务按周铺**：一条待办切成 30–240 分钟的块，一轮最多看 `天数 × 3` 块；**能排几块排几块**，
+  剩下的以"这周排下 12h，还差 8h"进 `unscheduled`。旧规则是"要么整条、要么一条不排"，
+  于是最长的活儿反而排不上 —— 用户 2026-11-08 当场纠正。
+  ⑤ **门禁是协议**（`app/gates.py`）：`prepare` / `verify` 五个策略；没通过也落 `gate_runs`，
+  **不勾完成**，下次重排给它 `priority_boost`。
+  ⑥ 界面：日程页工具条「重排」+ 4 秒差异高亮 + 撤销；**精力带与睡眠打卡在首页**
+  （2026-11-08 从日程左栏挪过去，`runtime/wellbeing.js` 一份代码）。
 - **2026-10-02** —— **两类数据分开搬：用户包（新）+ 题库包（补了个洞）。**
   用户的要求："异地拷贝一份源码，构建完成后，导入用户的数据包就可以像在本地一样使用。
   一个是用户数据，一个是题库数据 —— 出题机出的是题库包，用户可以选择性导入。"

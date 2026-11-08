@@ -65,10 +65,20 @@ def _lower(path: str) -> tuple[str, ...]:
     return tuple(line.lower() for line in _lines(path))
 
 
-#: 相对路径按**仓库根**解析，而不是按进程的 cwd：后端是从 `api/` 起的
-#:（`make api-dev` 就是 `cd api && uvicorn …`），同一个 `data/library/.text/x.md`
-#: 在两个 cwd 下指向不同文件。
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+def _base() -> str:
+    """相对路径的基准：**数据目录的上一级**，不是进程的 cwd。
+
+    为什么不按 cwd：后端是从 `api/` 起的（`make api-dev` 就是 `cd api && uvicorn …`），
+    同一个 `data/library/.text/x.md` 在两个 cwd 下指向不同文件。
+
+    为什么不是仓库根：库里存的相对路径形如 `data/library/.text/<键>.md`
+    —— 那个 `data/` 是**数据目录**（开发时正好在仓库里，打包后是 `~/quizforge`）。
+    冻结之后仓库根这个概念不存在（`__file__` 在解包临时目录里），
+    按它拼出来的路径一份材料都读不到。
+    """
+    from .config import get_settings  # noqa: PLC0415
+
+    return os.path.abspath(os.path.join(str(get_settings().data_dir), ".."))
 
 
 def source_file(material: Material) -> str:
@@ -77,13 +87,13 @@ def source_file(material: Material) -> str:
     为什么不能只认绝对路径（原先那条 `isabs` 检查）：库里既有绝对路径的材料，也有相对的
     —— 网站抓的页与抽出来的书存的就是 `data/library/.text/<键>.md`。差别不是风格问题，
     是**这一批材料在服务端彻底读不出来**：`_checked` 抛错 → 词法检索把它整份跳过
-    （`scanned` 里没有它）、检索结果里 `quote`/`text` 全是空的、`read_material` 直接报
+    （`scanned` 里没有它）、检索结果里 `quote`/`text` 全是空的、取原文直接报
     "路径不是绝对路径"。实测就是用户看到的那样：问 zartbot 的博客，四条线上一条都取不到正文。
     """
     raw = str(getattr(material, "source_path", "") or "")
     if not raw or os.path.isabs(raw):
         return raw
-    return os.path.join(REPO_ROOT, raw)
+    return os.path.join(_base(), raw)
 
 
 def _checked(material: Material) -> None:

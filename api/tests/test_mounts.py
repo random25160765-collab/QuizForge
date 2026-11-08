@@ -127,7 +127,9 @@ def test_modes_are_group_times_access():
     assert one["minimal"].groups == () and one["minimal"].access == ("read",)
     # 查询那一档挂着 `trees`（对话树）："我上次是不是钻过这个"是查询类需求，
     # 与查笔记、查资料同类（`docs/对话树.md` §三 的推论）。
-    assert one["query"].groups == ("notes", "library", "graph", "trees")
+    # `plan` 也挂在这里，但这一档只有 `read` —— 查询模式看得见计划与日程，
+    # 订不了也排不了（那两个是 propose 档，`specs()` 不会把它们声明出去）。
+    assert one["query"].groups == ("notes", "library", "graph", "trees", "plan")
     assert one["query"].access == ("read",)
     assert set(one["study"].access) == set(tools.ACCESS_LEVELS)
 

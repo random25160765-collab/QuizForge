@@ -170,6 +170,29 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("material_slices", "windows", "INTEGER NOT NULL DEFAULT 0"),
     # 这条跑单跑在哪块芯片上（ORT 的实际 provider）。空 = 还没写（刚开跑，或老行）。
     ("embed_runs", "device", "VARCHAR(48) NOT NULL DEFAULT ''"),
+    # 排期卡片的幂等键（见 `app/routers/plans.py` 的 `POST /schedule`）。
+    # 计划表是新建的，用不着补；这一列是在"表已经建出来之后"才加的，所以在这里。
+    ("schedule_events", "proposal_id", "VARCHAR(64)"),
+    # 日历订阅（iCalendar）进来的块：来源、稳定身份、地点、以及"用户动过"的标记。
+    # 全是可空的加法列，老行照旧是"手动事件"。
+    ("schedule_events", "sub_id", "VARCHAR(32)"),
+    ("schedule_events", "uid", "VARCHAR(200) NOT NULL DEFAULT ''"),
+    ("schedule_events", "occurrence", "VARCHAR(40) NOT NULL DEFAULT ''"),
+    ("schedule_events", "location", "VARCHAR(200) NOT NULL DEFAULT ''"),
+    ("schedule_events", "detached", "BOOLEAN NOT NULL DEFAULT 0"),
+    # 自动排程：`locked` = 用户钉住（求解器不许动），`run_id` = 哪一次重排排的
+    # （重排只回收自己排的块）。默认值与加列之前的行为一致：没钉、不归任何 run。
+    ("schedule_events", "locked", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("schedule_events", "run_id", "VARCHAR(32)"),
+    # 自动排程要的条目元数据：专注度、学科、可拆、单块上限、最早可开始、门禁、知识点。
+    # 默认值让老条目落在"中等 / 其它 / 可拆 / 无门禁指定"，行为与加列之前一致。
+    ("plan_items", "focus", "VARCHAR(12) NOT NULL DEFAULT 'medium'"),
+    ("plan_items", "domain", "VARCHAR(12) NOT NULL DEFAULT 'other'"),
+    ("plan_items", "splittable", "BOOLEAN NOT NULL DEFAULT 1"),
+    ("plan_items", "max_chunk_min", "INTEGER NOT NULL DEFAULT 0"),
+    ("plan_items", "earliest_date", "DATE"),
+    ("plan_items", "gate", "VARCHAR(32) NOT NULL DEFAULT ''"),
+    ("plan_items", "points", "JSON NOT NULL DEFAULT '[]'"),
 )
 
 #: 补完列之后要跑**一次**的回填：`(表, 列) → SQL`，只在那一列**刚补上**时跑。

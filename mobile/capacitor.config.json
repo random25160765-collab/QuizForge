@@ -1,0 +1,12 @@
+{
+  "appId": "com.quizforge.app",
+  "appName": "QuizForge",
+  "webDir": "www",
+  "server": {
+    "url": "http://127.0.0.1:8731",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  }
+}

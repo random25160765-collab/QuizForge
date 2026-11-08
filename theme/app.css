@@ -117,6 +117,7 @@ html[data-theme='light'] {
   /* 三个模式的指认色**不在这里**：色号只有一处来源 —— 后端 `mounts.py` 的
    * `Mode.color`（设置里的 `mode_colors` 可覆盖），由 mounts.js 注入成
    * `--mode-<key>`。用户："注意不要硬编码颜色 —— 未来如果我想改颜色呢？那应该是一键式的。" */
+  --shadow-1: 0 1px 2px rgba(15, 26, 36, 0.12);
   --shadow-2: 0 12px 30px -20px rgba(15, 26, 36, 0.4);
   --shadow-3: 0 26px 56px -30px rgba(15, 26, 36, 0.45);
 }
@@ -325,12 +326,15 @@ svg { display: block; }
   margin: 0 auto;
   /* 顶部间距收紧（用户："上面的这个间距收紧一点"） */
   padding: clamp(12px, 2vw, 20px) var(--shell-pad) 40px;
-  min-height: calc(100vh - var(--topbar-h));
+  /* 手机上还要让出底部 Tab 栏（mobile.css 把 --tabbar-h 设成 56px + 安全区）；
+     桌面上它是 0，这一行与改动前完全等价。fallback 0px 是为了离线单文件构建 ——
+     那种构建不带 mobile.css，变量不存在，calc 会整条失效。 */
+  min-height: calc(100vh - var(--topbar-h) - var(--tabbar-h, 0px));
 }
 /* 底部出现状态栏时，给内容让出它占的高度 */
 body[data-sb='on'] .view {
   padding-bottom: calc(var(--statusbar-h) + 40px);
-  min-height: calc(100vh - var(--topbar-h) - var(--statusbar-h));
+  min-height: calc(100vh - var(--topbar-h) - var(--statusbar-h) - var(--tabbar-h, 0px));
 }
 .view--narrow { max-width: calc(var(--content-max) + 2 * var(--shell-pad)); }
 
@@ -1528,6 +1532,80 @@ html[data-theme='light'] .modal-root { background: color-mix(in srgb, #0F1A24 42
   background: color-mix(in srgb, var(--bg3) 45%, transparent);
 }
 
+/* =========================================================== 弹出菜单
+ *
+ * 右键菜单只有这一份（`ui.menu`）：会话树的"重命名 / 置顶 / 删除"和资料页
+ * 的"删除"共用同一套视觉，不存在第二份长得像的。 */
+
+.popmenu {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  min-width: 178px;
+  padding: 4px;
+  background: var(--bg2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+}
+
+/* 每条 = 图标 + 文字 +（可选）靠右的快捷键 */
+.popmenu__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--fg2);
+  background: none;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.popmenu__item:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.popmenu__ico {
+  flex: none;
+  display: inline-flex;
+  width: 15px;
+  color: var(--fg3);
+}
+
+.popmenu__item:hover .popmenu__ico { color: inherit; }
+
+.popmenu__text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 快捷键靠右：`margin-left: auto` 而不是只靠上面那个 flex —— 前者在
+ * 文字很短时也把提示顶到右边（实测只给 flex 时它贴在字上）。 */
+.popmenu__hint {
+  flex: none;
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+/* 删除：红的。悬停的底也偏红，别让它看着跟别的项一样。 */
+.popmenu__item.is-danger,
+.popmenu__item.is-danger .popmenu__ico {
+  color: var(--bad, #e5484d);
+}
+
+.popmenu__item.is-danger:hover {
+  background: color-mix(in srgb, var(--bad, #e5484d) 14%, transparent);
+  color: var(--bad, #e5484d);
+}
+
 /* ====================================================== 练习中心（quiz 模块）
  *
  * 这一族的页面（个人中心 / 练习 / 组卷 / 复习 / 错题本）原先套的是「阅读列」：
@@ -1821,6 +1899,35 @@ body[data-sb='on'][data-page='wrongbook'] .view {
 
 @media (max-width: 900px) {
   .brand-text { display: none; }
+}
+
+/* ---- 平板竖屏（601–1023）：结构仍是桌面那套，只补几处"窄一档就散架"的地方 ----
+
+   这一档夹在两次改版之间：>1080 是栏并排，≤720 有一套自己的两列兜底，
+   721–1023 一直是空的 —— 768 的竖屏平板正好落在里面。
+   768 下练习页的内容宽是 690（.view 内距归零 + 窗格左右各 16），
+   下面每一条都是"按 690 算会多出半格/半行"的那一类问题，1024 横屏不受影响。 */
+
+@media (min-width: 601px) and (max-width: 1023px) {
+  /* 摘要条是六张卡：auto-fit 在 690 宽只容得下五列，于是排成 5+1，
+     第二行右边露出一大块 `.today` 的底色（它就是 --line 本身，是一条实色块）。
+     三列正好两行，没有空槽。 */
+  .today { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  /* 统计卡是四张，同理走两列（720 那一档也是两列，这里只是把它提前到 768） */
+  .statgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  /* 主题卡：auto-fill 会保留空轨道，学科卡只有一张时右半行永远是空的。
+     两列 + 落单的那张占满整行 —— 奇数张也不会留半行空白。 */
+  .topicgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .topiccard { min-width: 0; }
+  .topiccard:last-child:nth-child(odd) { grid-column: 1 / -1; }
+
+  /* 热力图右侧的同期统计：桌面那条 `flex: 0 1 380px; margin-left: auto`
+     是要把数字贴到最右，可在 690 里 369 + 24 + 380 = 773 装不下，换行之后
+     margin 仍把它顶到最右，左边空出三百来像素，它的 border-left 还留着一条竖线，
+     看上去像一整列空白。这一档让它回到基础规则（跟图并排、吃掉剩下的宽）。 */
+  .heat__side { flex: 1 1 190px; margin-left: 0; }
 }
 
 @media (max-width: 720px) {

@@ -70,6 +70,44 @@ def _data_dir_step() -> Step:
     return Step("data", "数据目录", OK, str(target))
 
 
+def _resource_step() -> Step:
+    """**跟着包走的只读资源**：`pipeline/`、演示套件；外加"滤镜"那份用户数据的情况。
+
+    这一条是拿一次"桌面包里少东西"补上的：`pipeline/` 不在 `api/` 下，而是仓库根的
+    兄弟目录 —— 开发时永远找得到，打包后只有 `--add-data` 带进去的才在。缺了不会白屏，
+    症状是**界面上少一块**（资料页的"抓正文"点不动），而接口一切都正常 ——
+    最难往"打包漏了目录"上想。
+
+    **滤镜不在这条判据里**：它是用户自己的数据（`<数据目录>/lens/*.md`），
+    桌面包第一次启动**本来就是 0 条**（用户要的默认）。这里只把它报出来，方便看。
+    """
+    from . import lens as lens_lib  # noqa: PLC0415
+    from .config import get_settings  # noqa: PLC0415
+
+    problems: list[str] = []
+    try:
+        lenses = len(lens_lib.all_lenses())
+    except Exception as exc:  # noqa: BLE001
+        lenses = 0
+        problems.append(f"滤镜目录读不出（{type(exc).__name__}）")
+
+    # 资料页那两个按钮走的是**延迟导入**（`pipeline/` 不在 `api/` 下）。
+    # 延迟导入的好处是不拖慢启动，坏处是"漏打包"要到点了才炸 —— 这里先试一次。
+    for name in ("pipeline.htmlmd", "pipeline.doc_classify"):
+        try:
+            __import__(name)
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"{name} 导入不了（{type(exc).__name__}）→ 资料页对应按钮会报错")
+
+    kit = Path(get_settings().web_dir) / "assets" / "demo-kit" / "qf-kit.js"
+    if not kit.is_file():
+        problems.append("演示套件不在 web/assets/demo-kit/ → 演示图打不开")
+
+    if problems:
+        return Step("assets", "只读资源", WARN, "；".join(problems))
+    return Step("assets", "只读资源", OK, f"pipeline 可用 · 演示套件在 · 滤镜 {lenses} 条")
+
+
 def checks() -> list[Step]:
     """跑一遍启动检查。**每次都重新算**（除了表结构那一条，它是进程内不会变的）。"""
     from .config import get_settings  # noqa: PLC0415
@@ -116,6 +154,8 @@ def checks() -> list[Step]:
             "" if index.is_file() else f"缺 {index}（先 make web）",
         )
     )
+
+    steps.append(_resource_step())
 
     # 密钥：只看设置里那份（2026-11-07 起没有内测通道）
     try:

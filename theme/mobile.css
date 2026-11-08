@@ -1,0 +1,537 @@
+/* theme/mobile.css —— 手机（≤600px）专用的外壳与页面版式。
+ *
+ * 为什么单开一份而不是继续往 app.css 里塞：
+ *   1. 手机规则全部包在一条断点里，"桌面有没有被改到"只看这一个文件就够；
+ *   2. build_web 按 APP_CSS 顺序拼接，放末尾天然覆盖；
+ *   3. 手机版式以后还会长（它跟桌面是两套密度），集中一处才好改。
+ *
+ * 断点选 600 而不是 480/560：竖屏手机最宽 480 上下，600 给输入框与按钮留余量，
+ * 又不会把 768 的小平板误判成手机（那一档要的是桌面结构，见 docs）。
+ *
+ * 一条贯穿全文件的约定：凡是要让页面"矮一截"的地方，都减 `var(--tabbar-h)`，
+ * 而桌面把它定义为 0 —— 于是同一行 calc 在桌面上是恒等变换。这是"桌面零变化"
+ * 能一句话说清的原因（app.css 里 `.view` 的 min-height 也是这么改的）。
+ */
+
+:root {
+  /* 底栏占的高度。桌面上为 0，手机上由下面的媒体查询接管。 */
+  --tabbar-h: 0px;
+}
+
+/* 底栏只在手机上存在。这条放在媒体查询之前：同优先级规则里后写的赢，
+   把"隐藏"写在前面，"显示"才盖得住它。 */
+.tabbar {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  :root {
+    /* 56 是内容高度，safe-area 是刘海屏底部那条横杠 —— 两者相加才是"看不见"的总高 */
+    --tabbar-h: calc(56px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* ---------------------------------------------------------------- 外壳 */
+
+  /* 两列（活动栏 + 舞台）→ 单列。活动栏的入口搬到下面那条底栏里。
+     第二行是给底栏预留的一条空行：底栏自己是 fixed（不参与栅格），
+     但舞台必须真的矮掉 56px —— 只改 `.view` 的 height 没用，它是 flex 子项，
+     `flex-grow` 会把它重新拉满整屏（实测 844 而不是 788，输入框被底栏盖住）。 */
+  body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) var(--tabbar-h);
+  }
+
+  .rail,
+  .statusbar {
+    display: none;
+  }
+
+  /* 舞台必须回到第 1 列：app.css:2371 有一句 `.stage { grid-column: 2 }`
+     （写着的时候外壳是「活动栏 + 资源栏 + 舞台」三列）。手机上单列之后，
+     它仍去占第 2 列 —— 浏览器于是补一条隐式列，舞台被挤成右半屏的窄条
+     （实测 390 宽下舞台只有 182px，主页内容整体偏右）。 */
+  .stage {
+    grid-column: 1;
+  }
+
+  /* 有顶栏的页面（练习/错题本/图谱）在手机上仍保留顶栏，但主导航项多，
+     窄屏只能横滑 —— 换行会把顶栏撑成两行，比横向滑动更难用。 */
+  .topbar-inner {
+    padding: 0 12px;
+  }
+
+  .mainnav {
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mainnav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mainnav > * {
+    flex: none;
+  }
+
+  /* 内容列在手机上铺满：桌面那套 1280 上限与收紧的内距在这儿只会浪费宽度。 */
+  body[data-page] .view {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  /* ---------------------------------------------------------------- 底栏 */
+
+  .tabbar {
+    display: flex;
+    align-items: stretch;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    height: var(--tabbar-h);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--bg2);
+    /* 一条 1px 分隔线代替阴影：底栏与内容同色系，阴影会显得"浮起来" */
+    border-top: 1px solid var(--line);
+  }
+
+  /* 点击热区是整格（≥64×56），不是图标本身 —— 触控目标按格算才够 */
+  .tabbar__btn {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 2px 2px 0;
+    color: var(--fg3);
+    font-size: 11px;
+    line-height: 1.1;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .tabbar__btn svg {
+    display: block;
+  }
+
+  .tabbar__btn.is-active {
+    color: var(--pri);
+  }
+
+  /* 选中态只加一条 2px 指示条，不改背景 —— 底栏背景一变色就会与内容区断开 */
+  .tabbar__btn.is-active::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 50%;
+    width: 22px;
+    height: 2px;
+    margin-left: -11px;
+    border-radius: 0 0 2px 2px;
+    background: var(--pri);
+  }
+
+  /* 按下时只降透明度：底栏没有可移动的空间，位移会显得廉价 */
+  .tabbar__btn:active {
+    opacity: 0.55;
+  }
+}
+
+/* ================================================================ 对话页 */
+/* 手机上只调三处密度：左右内距 14→12、顶栏与输入区跟着收、会话抽屉按屏宽给。
+   结构一条不动 —— 对话页的栅格（会话栏 + 主区）在 860 那档已经是抽屉，
+   手机只是把抽屉再放宽一点。 */
+
+@media (max-width: 600px) {
+  body[data-page='chat'] .chat__main {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  /* 顶栏与输入区的负外边距要跟着主区的内距一起改，否则那条分隔线会短 2px */
+  body[data-page='chat'] .chat__bar {
+    margin: 0 -12px;
+    padding: 0 12px;
+  }
+
+  body[data-page='chat'] .chat__composer {
+    margin: 6px -12px 0;
+    padding: 6px 12px;
+  }
+
+  body[data-page='chat'] .chat__thread {
+    padding-right: 0;
+  }
+
+  /* 会话抽屉：手机上宽度按屏宽算，并给一层遮罩 ——
+     遮罩用超大 box-shadow 而不是新增 DOM：抽屉是 absolute 在 .chat 里的，
+     这一层跟着它一起滑出/收回，不需要额外的显隐状态要维护。 */
+  body[data-page='chat'] .chat__aside {
+    width: min(86vw, 320px);
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.38);
+  }
+}
+
+/* ============================================================ 对话树（手机） */
+/* 大屏那张"圆角矩形连接图"在手机上不成立：390 宽里把一支 45 条摆开，横向要滑三四屏、
+   字得缩到 8px 才装得下。这里换成就地滚动的大纲列表 —— 同一棵树、同一份收起状态、
+   同一个"你在这儿"，只是按行读（见 chat.js 的 renderOutline 那段说明）。 */
+
+@media (max-width: 600px) {
+  /* 面板别把底栏盖住：底栏是壳的一部分，开着树也还能换页。
+     （`.tabbar` 与面板同为 z-index 60、DOM 上底栏在后，本来就压在上面；
+     把面板下边缘收到底栏上沿，最后一行才不会被压在下面。）
+     带上 `body[data-page='chat']` 不是保险：页面专属的 chat.css 在 app.css **之后**
+     加载，同优先级的 `inset: 0` 会反过来盖掉这条 —— 实测踩过一次。 */
+  body[data-page='chat'] .chattree__screen {
+    bottom: var(--tabbar-h);
+  }
+
+  body[data-page='chat'] .chattree__bar {
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  /* 这句话在大屏上是一整行，手机上放不下：让它省略，别把两颗按钮挤出屏幕 */
+  body[data-page='chat'] .chattree__sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 列表外面这层不滚动：书签抽屉（`.chatmarks`，absolute inset:0）挂在它上面，
+     直接挂进滚动容器的话，`inset: 0` 是相对内容算的 —— 一滚抽屉就跟着滚走了。 */
+  .ctoutline__shell {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+  }
+
+  .ctoutline {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px 0 calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .ctoutline__empty {
+    padding: 24px 16px;
+    color: var(--fg3);
+    font-size: 13px;
+  }
+
+  /* 一行 = 收起三角 + 正文 + 「⋯」。缩进只动内距（`--ind` 由 JS 给 0–4），
+     不做嵌套 DOM —— 收起时要重排的只是几行，不是整棵树。 */
+  .ctrow {
+    position: relative;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) 30px;
+    align-items: center;
+    padding-left: calc(8px + var(--ind, 0) * 14px);
+  }
+
+  /* 缩进的那条轨：同一层连续几行会连成一条线，层级才看得出来 */
+  .ctrow.is-indented::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: calc(8px + var(--ind, 0) * 14px - 7px);
+    width: 1px;
+    background: var(--line);
+    pointer-events: none;
+  }
+
+  /* 触控目标是整行 40px 高，不是那枚 10px 的三角 */
+  .ctrow__caret {
+    width: 22px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg3);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .ctrow__caret--leaf {
+    pointer-events: none;
+  }
+
+  .ctrow__main {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    padding: 8px 2px 8px 0;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .ctrow__main:active {
+    background: var(--bg3);
+  }
+
+  /* 角色标签：我 = 主色，AI = 中性（与正文那一侧的标记同一套配色） */
+  .ctrow__who {
+    flex: none;
+    margin-top: 1px;
+    padding: 0 5px;
+    border-radius: 5px;
+    background: var(--bg3);
+    color: var(--fg3);
+    font-size: 10px;
+    line-height: 16px;
+    letter-spacing: 0.02em;
+  }
+
+  .ctrow.is-user .ctrow__who {
+    background: color-mix(in srgb, var(--pri) 14%, transparent);
+    color: var(--pri);
+  }
+
+  .ctrow__body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* 两行封顶：一行认不出是哪一条，三行一屏就只剩五六条 */
+  .ctrow__text {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: var(--fg3);
+    word-break: break-word;
+  }
+
+  /* 当前分支提亮。旁支留在 --fg3 —— "哪条是我在读的"靠这个差，不靠缩进 */
+  .ctrow.is-onpath .ctrow__text {
+    color: var(--fg);
+  }
+
+  .ctrow.is-error .ctrow__text {
+    color: var(--bad);
+  }
+
+  .ctrow__mode {
+    font-size: 10.5px;
+    color: var(--fg3);
+  }
+
+  /* 角标：⑂ = 这儿有分叉；＋ = 这一支收着、藏了多少条（与地图上同一个记号） */
+  .ctrow__badge {
+    flex: none;
+    margin-top: 2px;
+    color: var(--amber);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .ctrow.is-folded .ctrow__badge {
+    color: var(--pri);
+  }
+
+  .ctrow__mark {
+    flex: none;
+    margin-top: 2px;
+    color: var(--amber);
+    display: grid;
+    place-items: center;
+  }
+
+  .ctrow__more {
+    width: 30px;
+    height: 40px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--fg3);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .ctrow__more:active {
+    opacity: 0.55;
+  }
+
+  /* "你在这儿"：地图上是节点外围那一圈 --ok，这里是一行底色 + 左边一道 --ok。
+     9% 太淡（浅色档上几乎看不出来），12% 恰好"一眼扫到、又不抢正文"。 */
+  .ctrow.is-reading {
+    background: color-mix(in srgb, var(--ok) 12%, transparent);
+    box-shadow: inset 3px 0 var(--ok);
+  }
+}
+
+/* ================================================================ 日程页 */
+/* 手机上把「计划 | 日历」从左右两栏改成上下两段，整页一条滚动路径：
+   计划清单在前（它是"今天要做什么"的答案），日历在后（时间轴在 390 宽下
+   只剩一百来像素，独占了也没有信息量）。
+   不引入视图切换控件 —— 切换要记状态、要有选中态、要处理返回，
+   而"往下滚一屏"零成本，且两种信息同时可见。 */
+
+@media (max-width: 600px) {
+  body[data-page='schedule'] .sch-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'title title new'
+      'nav seg replan';
+    align-items: center;
+    height: auto;
+    gap: 8px 10px;
+    padding: 10px 12px;
+  }
+
+  body[data-page='schedule'] .sch-bar__title {
+    grid-area: title;
+    font-size: 17px;
+    /* 标题是"11月8日 周六"这种，允许换行而不是省略成"11 月…" */
+    white-space: normal;
+  }
+
+  body[data-page='schedule'] .sch-bar__nav {
+    grid-area: nav;
+  }
+
+  body[data-page='schedule'] .sch-seg {
+    grid-area: seg;
+    justify-self: end;
+  }
+
+  /* 重排是低频操作，手机上只留图标（文字收进 title 提示） */
+  body[data-page='schedule'] .sch-replan {
+    grid-area: replan;
+    padding: 0 8px;
+  }
+
+  body[data-page='schedule'] .sch-replan__label {
+    display: none;
+  }
+
+  body[data-page='schedule'] #sch-new {
+    grid-area: new;
+    justify-self: end;
+  }
+
+  /* 两栏 → 上下两段，整页一条滚动路径（.view 是 overflow:hidden，滚动交给根节点） */
+  body[data-page='schedule'] .sch-root {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  body[data-page='schedule'] .sch-side {
+    width: auto;
+    flex: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  /* 外层已经在滚，这一段不能再自己滚（否则内层滚到底才轮到外层） */
+  body[data-page='schedule'] .sch-side__body {
+    overflow: visible;
+  }
+
+  /* 上下堆叠时高度由内容决定，日历自己给固定高度（见下） */
+  body[data-page='schedule'] .sch-calwrap {
+    flex: none;
+  }
+
+  /* 日历给一个固定高度：它内部是虚拟滚动的网格，高度 auto 会塌成 0。
+     `flex: none` 不能省 —— 桌面那条 `flex: 1` 会让它去撑满父级，而父级高度
+     又是它撑出来的（实测 68vh 被算成 1204px）。 */
+  body[data-page='schedule'] .sch-cal {
+    flex: none;
+    height: 68vh;
+    min-height: 380px;
+    padding: 0 10px 12px;
+  }
+}
+
+/* ================================================================ 设置页 */
+/* 设置页不是首批重设计的两页，但它在手机上会横向溢出：输入框右边缘被裁、
+   说明文字只剩半句。根因是 `.form__grid` 的 `minmax(220px, 1fr)` 加上
+   栅格子项默认 `min-width: auto` —— 长 placeholder（一个 URL）把列撑到
+   420px，比容器宽 54px。两行就能修好，不值得留到下一轮。 */
+
+@media (max-width: 600px) {
+  body[data-page='settings'] .form__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 整条链都要放开 min-width：`.form` 与 `.form__section` 都是栅格，
+     默认的 `min-width: auto` 会按内容最小宽度撑破列（实测 section 466 > 容器 366），
+     只给最里层的 input 加是没用的 —— 撑破发生在父级。 */
+  body[data-page='settings'] .form,
+  body[data-page='settings'] .form__section,
+  body[data-page='settings'] .form__grid,
+  body[data-page='settings'] .field,
+  body[data-page='settings'] .input,
+  body[data-page='settings'] .textarea,
+  body[data-page='settings'] .select {
+    min-width: 0;
+  }
+}
+
+/* ================================================================== 主页 */
+/* 设置入口在主页底部。桌面上活动栏已经有齿轮，这一行隐藏 ——
+   同一件事不摆两个入口（"一块内容只挂一个开关"）。 */
+
+.home__settings {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .home__settings {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    /* 与上面那块精力带留出与卡片间距同一档的呼吸，不另起一个数字 */
+    margin-top: 18px;
+    padding: 15px 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--bg2);
+    color: var(--fg);
+    font-size: 15px;
+    text-decoration: none;
+  }
+
+  .home__settings:active {
+    background: var(--bg3);
+  }
+
+  .home__settings__arrow {
+    color: var(--fg3);
+    font-size: 18px;
+    line-height: 1;
+  }
+}

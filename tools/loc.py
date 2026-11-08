@@ -15,6 +15,8 @@
 * 只数仓库里自己写的源码。**不算**：`vendor/`（第三方库、字体、Pyodide）、
   `api/web`（前端构建产物）、`api/var`（用户附件）、`data/`、`db/`、`build/dist`、
   `reference/`（仓库外的只读软链）、`.git-rewrite/`（整份仓库的副本）、
+  `mobile/android/app/build`（Gradle/Chaquopy 的构建树，进去就是整套 Python 运行时）、
+  `mobile/android/app/src/main/{python,assets}`（`api/app` 与 `api/web` 的同步副本）、
   仓库根的 `share-*.html`（`make share` 的产物）—— 列在 `SKIP_PATHS` /
   `SKIP_FILE_GLOBS` / `SKIP_NAMES` 里。**判断依据是"人写的还是生成的"**，
   不是"在不在 git 里"（`meta/topics.yaml` 在 git 里但只是配置，默认不数）。
@@ -113,6 +115,13 @@ SKIP_PATHS = (
     ".codebuddy/teams",
     ".codebuddy/integration",
     ".codebuddy/sandbox",
+    # ---- mobile/：安卓壳。这里面**除了脚本，几乎全是拷贝与产物** ----
+    # 实测漏掉这四条时，一次 `make loc` 数出 2,738 个 Python 文件 / 138 万行 ——
+    # 全是 Chaquopy 把 pip、sqlalchemy、pydantic 装进 build/ 之后再数一遍。
+    "mobile/android/app/build",             # Gradle + Chaquopy 的构建树（含整套 Python 运行时）
+    "mobile/android/app/src/main/python",   # `api/app` 的同步副本（`scripts/inject-sync-assets.py` 拷过来的）
+    "mobile/android/app/src/main/assets",   # 前端构建产物（`api/web` 的拷贝）+ Cordova 胶水脚本
+    "mobile/wheels",                        # 第三方 wheel
 )
 
 #: 按**文件名**跳过的产物（`make share` 生成的单会话页面，几 MB 一个，在仓库根）。

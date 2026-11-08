@@ -1,68 +1,63 @@
-<!--
-  资料：只读的资料来源库（对标 Zotero 的那一层界面）。
+<!-- 资料页（2026-11-08）：云端资料管理台。
 
-  为什么是独立一页而不是塞进笔记页：
-  * 笔记页是**写作台**（左树 / 中正文 / 右面板），资料页是**查资料**（左列表 / 中条目 / 右引用）；
-    两件事的操作方式不同，挤在一起会让两边都别扭。
-  * 三栏主界面（计划 A7）落地时，左栏复用这一页的列表模块（`runtime/library.js` 暴露 mount），
-    所以这里不是"做两个界面"，是同一块东西换宿主 —— 与画布（`canvas.js`）的做法一致。
+     布局照对话页的左右分栏：
+       左栏：动作图标 · 上传 · 流水线 · 账目（区与区之间只有一条分割线，没有卡片）
+       右栏（看板）：矩阵树 / 列表 两个视图
 
-  这一页是应用面，宽度交给浏览器：`library.css` 里显式取消 `app.css` 的居中容器约束。
-  `data-page` 必须写：页面级样式与顶栏图标隐藏都靠它。
--->
-<div id="app-root" data-page="library">
-  <div class="lib" id="library-root">
-    <!-- 左：资料根 → 条目列表 -->
-    <aside class="lib__list" aria-label="资料条目">
-      <header class="lib__head">
-        <select class="lib__root" id="library-root-pick" title="资料根" aria-label="资料根"></select>
-        <button class="lib__icon" id="library-addroot" type="button"
-                title="添加一个资料目录（会弹出系统的文件夹选择器）"
-                aria-label="添加资料目录">＋</button>
-        <!-- 上传：**用户自己就能把文件丢进来**，然后这一页自动抓正文 + 让模型判元数据 -->
-        <button class="lib__icon" id="library-upload" type="button"
-                title="上传文件（可以一次选多个）：传完自动抽正文、并由模型判元数据"
-                aria-label="上传资料">↑</button>
-        <input class="lib__file" id="library-file" type="file" multiple hidden>
-      </header>
-      <div class="lib__searchrow">
-        <input class="lib__search" id="library-search" type="search"
-               placeholder="搜索…（title: / authors: / kind: / -词）" autocomplete="off"
-               spellcheck="false" aria-label="检索资料">
-        <button class="lib__icon lib__icon--mini" id="library-clear" type="button" title="清空检索"
-                aria-label="清空检索" hidden>×</button>
-      </div>
-      <!-- 计数与「待补」固定成面板的一部分，不放进滚动区（滚动的行会从缝隙里透出来） -->
-      <div class="lib__bar" id="library-bar"></div>
-      <div class="lib__scroll" id="library-items" role="listbox" aria-label="资料条目列表"></div>
-      <footer class="lib__foot">
-        <!-- 进度条：抓正文与判元数据都是分批循环，没有它就只能盯着一个数字猜
-             （用户："卡死了……做个进度条吧"）。空闲时整条隐藏，不占视觉。 -->
-        <div class="lib__progress" id="library-progress" hidden>
-          <div class="lib__progressfill" id="library-progressfill"></div>
+     正文由 `runtime/library.js` 渲染，样式在 `library.css`。 -->
+<div class="view">
+  <div class="libsplit">
+    <aside class="libaside">
+      <!-- 上传放在最上面，一层虚线框就是它自己的边界 -->
+      <section class="libblock">
+        <div class="libdrop" id="lib-drop" role="button" tabindex="0">
+          <span class="libdrop__icon" aria-hidden="true">＋</span>
+          <span class="libdrop__text">拖入文件，或点击选择</span>
+          <input type="file" id="lib-file" multiple hidden>
         </div>
-        <span class="lib__count" id="library-count">—</span>
-        <span class="lib__footbtns">
-          <button class="lib__btn" id="library-classify" type="button"
-                  title="让模型判类型与主题（它给建议、你复核）">模型归类</button>
-          <button class="lib__btn" id="library-index" type="button"
-                  title="抽正文（PDF 抽取较慢，分批推进，可随时停下）">抓正文</button>
-          <button class="lib__btn" id="library-meta" type="button"
-                  title="让模型判每一份的标题/作者/年份/类型/主题（并发问，可以随时停下）">判元数据</button>
-        </span>
-      </footer>
+      </section>
+
+      <section class="libblock">
+        <div class="libblock__head">
+          <h2 class="libblock__title">流水线</h2>
+          <button class="libblock__act" id="lib-toggle" type="button" title="暂停流水线"></button>
+        </div>
+        <div class="libflow" id="lib-flow"></div>
+        <div class="libqueue" id="lib-queue"></div>
+      </section>
+
+      <section class="libblock">
+        <div class="libfacts" id="lib-kpi" aria-label="库存"></div>
+      </section>
+
+      <!-- 两个动作沉在左下角：顶部就别再占一行（页面名在活动栏上写着） -->
+      <div class="libaside__acts">
+        <button class="icon-btn libact" id="lib-refresh" type="button" title="刷新" aria-label="刷新"></button>
+        <button class="icon-btn libact libact--pri" id="lib-push" type="button" title="同步到云端" aria-label="同步到云端"></button>
+      </div>
+
+      <!-- 右边界可拖：压在 1px 边框上，平时隐形，悬停/拖动时才亮一道 -->
+      <div class="libgrip" id="lib-grip" role="separator" aria-orientation="vertical"
+           aria-label="调整左栏宽度"></div>
     </aside>
 
-    <!-- 中：条目详情（元数据可补，正文只读）。
-         外面裹一层是因为左右两栏的**开合按钮必须常驻**：把按钮放进各栏自己头上，
-         栏一收起来按钮就跟着没了 —— 用户明确要求"注意收起要做收起+展开还有图标变换"，
-         所以按钮得在主区这一侧（它两边都不收）。 -->
-    <section class="lib__col">
-      <div class="lib__tools" id="library-tools"></div>
-      <main class="lib__main" id="library-main"></main>
-    </section>
+    <main class="libmain">
+      <div class="libmain__head">
+        <!-- 开关放在主区最左：左栏收起后它仍在，才收得回来（与对话页同一处位置） -->
+        <button class="icon-btn libact libfold" id="lib-fold" type="button"
+                title="收起左栏（⌘/Ctrl+B）" aria-label="收起左栏" aria-expanded="true"></button>
+        <h2 class="libmain__title">资料看板</h2>
+        <!-- 选中的那一份就地显示在标题行里，不再单独占一条（那一条与左栏的账重复） -->
+        <div class="libpicked" id="lib-pick" hidden></div>
+        <div class="libviews" id="lib-views">
+          <button type="button" data-view="tree">矩阵树</button>
+          <button type="button" data-view="list" class="is-on">列表</button>
+        </div>
+      </div>
 
-    <!-- 右：引用与出处 -->
-    <aside class="lib__side" id="library-side" aria-label="引用与出处"></aside>
+      <div class="libtree" id="lib-tree" hidden></div>
+      <div class="libtree__legend" id="lib-legend" hidden></div>
+      <div class="liblist" id="lib-list"></div>
+    </main>
   </div>
 </div>

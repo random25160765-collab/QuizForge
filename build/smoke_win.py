@@ -11,7 +11,7 @@
 
 它**会花钱**（走一次模型），所以不挂进 `make dist`，发版前手动跑一次。
 
-    make smoke                       # 对 %USERPROFILE%\\qf-build\\dist\\quizforge-beta.exe
+    make smoke                       # 对 %USERPROFILE%\\qf-build\\dist\\quizforge.exe
     build/smoke_win.py --exe <路径>   # 指定别的包
 
 ## 为什么 HTTP 请求要在 Windows 那边发
@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
                 pass
 
     parser = argparse.ArgumentParser(prog="build/smoke_win.py", description="对 exe 做真实对话烟测")
-    parser.add_argument("--exe", help="可执行文件路径（默认 qf-build\\dist\\quizforge-beta.exe）")
+    parser.add_argument("--exe", help="可执行文件路径（默认 qf-build\\dist\\quizforge.exe）")
     parser.add_argument("--text", default="你好", help="发什么")
     args = parser.parse_args(argv)
 
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         exe_windows = args.exe
         exe_wsl = sync_win._to_wsl_path(args.exe)  # noqa: SLF001
     else:
-        exe_windows = f"{WIN_HOME}\\dist\\quizforge-beta.exe"
+        exe_windows = f"{WIN_HOME}\\dist\\quizforge.exe"
         code, out = _powershell(f"Write-Output (Resolve-Path \"{exe_windows}\").Path")
         exe_wsl = sync_win._to_wsl_path(out.strip().splitlines()[-1].strip()) if out.strip() else ""
     if not exe_wsl or not Path(exe_wsl).is_file():
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
             start_new_session=True,
         )
     # 注意 `_powershell` 返回的是 (退出码, 输出) 二元组
-    _, profile_out = _powershell("Write-Output \"$env:USERPROFILE\\quizforge-beta\\quizforge.log\"")
+    _, profile_out = _powershell("Write-Output \"$env:USERPROFILE\\quizforge\\quizforge.log\"")
     profile_line = profile_out.strip().splitlines()[-1].strip() if profile_out.strip() else ""
     app_log = sync_win._to_wsl_path(profile_line) if profile_line else ""  # noqa: SLF001
     url = ""
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             return code
         return 0
     finally:
-        _powershell("taskkill /F /T /IM quizforge-beta.exe | Out-Null; taskkill /F /T /IM quizforge.exe | Out-Null")
+        _powershell("taskkill /F /T /IM quizforge.exe | Out-Null; taskkill /F /T /IM quizforge.exe | Out-Null")
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:

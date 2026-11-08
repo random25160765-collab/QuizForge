@@ -33,14 +33,14 @@ import re
 import sys
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import heavy_deps, mastery, materials, recursion, semantic
+from . import heavy_deps, mastery, materials, recursion, schedule_view, semantic, slice_text
 from .models import (
     Concept,
     ConceptEdge,
@@ -48,10 +48,13 @@ from .models import (
     KnowledgePoint,
     Material,
     Message,
+    Plan,
+    PlanItem,
     PointSource,
     Question,
     QuestionPoint,
     Record,
+    ScheduleEvent,
 )
 
 
@@ -2020,9 +2023,12 @@ def _search_by_depth(db, args, depth: str) -> dict:  # noqa: ANN001
         "used": depth,
         "other": "检索" if depth == "出题" else "出题",
         "note": (
-            "这次查的是「%s」层。资料分两个书架：出题层（我在学的）与检索层（我查的），"
-            "检索方式一样、只差一个档位 —— 在这里没有满意的答案时，换 %s 再问一次，"
-            "别据此断定「材料里没有」。" % (depth, "search_library" if depth == "出题" else "search_material")
+            # 2026-11-08：不再有"书架 / 资料库"这层概念（只有材料与切片），所以
+            # 只说"换个档位再查一次"，不再把人往另一个工具上引。
+            "这次查的是「%s」这一档。材料按用途分两档：出题（我在学的）与检索（我查的），"
+            "检索方式一样，只差这个档位 —— 这里没有满意的答案时，用 depth=%s 再问一次"
+            "（还是这个工具），别据此断定「材料里没有」。"
+            % (depth, "检索" if depth == "出题" else "出题")
         ),
     }
     return result
@@ -2081,33 +2087,15 @@ def list_materials(db, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
-def search_library(db, args, ctx=None) -> dict:  # noqa: ANN001
-    """在**资料库**里检索（`depth=检索` 的那一档）—— 和 `search_material` 是一对。
-
-    ## 和 `search_material` 的分工，只看一件事：**这份资料要不要出题**
-
-    * `search_material` → `depth=出题`：**我在学的**（值得精读、抽知识点、进图谱、
-      出成题的语料）。技术报告、手册这一档。
-    * `search_library` → `depth=检索`：**我查的**（拿来读、拿来引用、拿来对照，
-      但"灌水论文我也要出成题目做吗"）。论文、白皮书、别人的资料这一档。
-
-    两边的正文与检索方式**完全一样**（都是切片 + 向量 + 字面 RRF 融合，
-    都能点回原文行区间），**差别只有这一个档位**。
-
-    ## 一条使用规矩
-
-    **在一个里没找到，就去另一个里再问一次** —— 它们不是"同一个库的两种搜法"，
-    而是两个书架。只搜一个就下结论（"材料里没有"），是这里最容易犯的错。
-    """
-    return _search_by_depth(db, args, "检索")
-
-
 def read_material(db, args, ctx=None) -> dict:  # noqa: ANN001
     """按 (slug, 行区间) 读材料原文。
 
     这是"引用能点回原文"的服务端一半：前端点开引用时读的是同一个函数，
     所以模型看到的那几行与用户看到的那几行**逐字一致**。
     默认读 60 行；想接着往下看就把 startLine 往后挪。
+
+    2026-11-08：**切片就是正文**（`material_slices.text`，随 `make library-push`
+    上云）。本机有原文件就读文件（快），没有就从切片读 —— 换一台机器照样能读。
     """
     slug = str(args.get("slug") or "").strip()
     if not slug:
@@ -2119,8 +2107,13 @@ def read_material(db, args, ctx=None) -> dict:  # noqa: ANN001
 
     try:
         lines = materials.read_lines(material, args.get("startLine") or 1, args.get("endLine") or 0)
-    except materials.MaterialError as exc:
-        return {"error": str(exc)}
+    except materials.MaterialError:
+        # 本机没有原文件：从切片正文读（拉过 `make library-pull` 就有）
+        lines = slice_text.read_lines(
+            db, material, args.get("startLine") or 1, args.get("endLine") or 0
+        )
+        if not lines:
+            return {"error": "这份材料在本机既没有原文件、也没有切片正文（先 `make library-pull`）。"}
 
     first, last = lines[0]["line"], lines[-1]["line"]
     return {
@@ -2139,9 +2132,6 @@ def read_material(db, args, ctx=None) -> dict:  # noqa: ANN001
             }
         ],
     }
-
-
-# ---------------------------------------------------------------- 大题批改写回
 
 
 def grade_problem(db, args, ctx=None) -> dict:  # noqa: ANN001
@@ -2975,6 +2965,10 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
     #（关系靠解析、靠查，不靠标注）。它白拿两样现成的：挂载开关与权限档。
     # **排在末尾**：前面几组的既有位置一个都不动（`web` 当初也是这么来的）。
     ("trees", "对话树", "翻别的对话：找哪一段、看它的形状、取原文"),
+    # 「计划」这一组：订计划、看日程（`app/routers/plans.py` 是它的数据面）。
+    # 与 `quiz` 那组的分界：那边管**题**（推题、判分、掌握度），这边管**什么时候做什么**。
+    # 仍然排在末尾，前面几组的既有位置一个都不动。
+    ("plan", "计划", "订计划、看日程、把待办排进日历"),
 )
 
 GROUP_LABELS: dict[str, str] = {key: label for key, label, _ in GROUPS}
@@ -3166,6 +3160,571 @@ def read_tree_nodes(db, args, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+# ---------------------------------------------------------------- 计划与日程
+#
+# 这一组的分工要先说清：**计划是计划，日程是日程**（用户原话）。
+#
+# * 计划：一份目标 + 若干**待办条目**。条目可以一直没有日期（"把 tt-metal 那章
+#   读完"），有日期也只是"这天该做"（`dueDate`，一个日历日，不是时刻）。
+# * 日程：时间轴上的**时间块**（`startAt`/`endAt`）。它可以由某条待办排期而来，
+#   也可以凭空排一件事。
+#
+# 所以"给这条待办写个日期"与"把它排到周三下午三点"是两回事 ——
+# 把前者说成后者，用户在日历上找不到它，就会以为你没做。
+#
+# 三个写操作**全是 propose 档**：计划是他自己的东西，AI 只能提；界面上出一张卡片，
+# 他点了按钮才落库（`proposalId` 是幂等键 —— 重复点也只建一份）。
+
+
+#: 与 `routers/plans.py` 同一份闭集：拼错会让求解器当成"没指定"，宁可在这里拒
+_FOCUS_LEVELS = ("light", "medium", "deep")
+_DOMAINS = ("art", "science", "skill", "other")
+
+
+def _item_brief(item: PlanItem) -> dict:
+    return {
+        "id": item.id,
+        "title": item.title,
+        "dueDate": item.due_date.isoformat() if item.due_date else None,
+        "earliestDate": item.earliest_date.isoformat() if item.earliest_date else None,
+        "done": bool(item.done),
+        "important": bool(item.important),
+        "estimateMin": int(item.estimate_min or 0),
+        # 这三项决定求解器怎么排（重活往上午、文理交替、门禁怎么验）
+        "focus": item.focus or "medium",
+        "domain": item.domain or "other",
+        "gate": item.gate or "",
+        "points": list(item.points or []),
+    }
+
+
+def _iso_at(value: datetime | None) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z") if value else ""
+
+
+def _read_at(raw) -> datetime | None:  # noqa: ANN001
+    """ISO 时刻 → UTC；认不出来就 None（调用方负责报错，不在这里抛）。
+
+    **不带偏移的按本地时间理解**：模型写 `2026-11-09T14:00:00` 时想的是
+    "他那边下午两点"，按 UTC 理解会整整错开一个时区（实测把课排到半夜）。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        one = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if one.tzinfo is None:
+        one = one.replace(tzinfo=schedule_view.local_tz())
+    return one.astimezone(UTC)
+
+
+def _read_day(raw) -> tuple[str | None, str]:  # noqa: ANN001
+    """`2026-11-09` → (`2026-11-09`, "")；空 → (None, "")；坏 → (None, 为什么)。"""
+    text = str(raw or "").strip()
+    if not text:
+        return None, ""
+    try:
+        return date.fromisoformat(text[:10]).isoformat(), ""
+    except ValueError:
+        return None, text
+
+
+def list_plans(db, args=None, ctx=None) -> dict:  # noqa: ANN001
+    """看他的计划清单：每份计划下有哪些条目、哪天到期、做完没有。
+
+    只读。要聊"你那份计划现在到哪了"之前先看它 ——
+    凭印象说"你的计划里有三条"是会被当场对上的。
+    """
+    status = str((args or {}).get("status") or "active").strip()
+    query = select(Plan)
+    if status in ("active", "archived"):
+        query = query.where(Plan.status == status)
+    plans = db.scalars(query.order_by(Plan.created_at.desc())).all()
+    out = []
+    for plan in plans:
+        items = db.scalars(
+            select(PlanItem)
+            .where(PlanItem.plan_id == plan.id)
+            .order_by(PlanItem.sort, PlanItem.created_at)
+        ).all()
+        out.append(
+            {
+                "id": plan.id,
+                "title": plan.title,
+                "status": plan.status,
+                "done": sum(1 for one in items if one.done),
+                "items": [_item_brief(one) for one in items],
+            }
+        )
+    return {
+        "plans": out,
+        "note": "`dueDate` 是「这天该做」，不代表它已经排进日程；"
+        "日程要用 list_schedule 看。",
+    }
+
+
+def list_schedule(db, args=None, ctx=None) -> dict:  # noqa: ANN001
+    """看日程上已经排了哪些时间块（可给时间窗）。
+
+    不给 `from`/`to` 时看**从今天起 14 天**。每块同时给 UTC（`startAt`）与
+    本地（`startLocal`）两种写法 —— **跟他说时间用 `startLocal`**，别自己换算。
+    """
+    start = _read_at((args or {}).get("from")) or datetime.now(UTC)
+    end = _read_at((args or {}).get("to")) or (start + timedelta(days=14))
+    if end <= start:
+        return {"error": "to 要晚于 from。"}
+    rows = db.execute(
+        select(ScheduleEvent, PlanItem.title, PlanItem.plan_id)
+        .outerjoin(PlanItem, ScheduleEvent.item_id == PlanItem.id)
+        .where(ScheduleEvent.start_at < end, ScheduleEvent.end_at > start)
+        .order_by(ScheduleEvent.start_at, ScheduleEvent.id)
+    ).all()
+    return {
+        "timezone": schedule_view.tz_brief(),
+        "events": [
+            {
+                "id": event.id,
+                "title": event.title,
+                "startAt": _iso_at(event.start_at),
+                "endAt": _iso_at(event.end_at),
+                # 本地时刻：直接说这个，不要再自己加/减时区
+                "startLocal": schedule_view.iso_local(event.start_at),
+                "endLocal": schedule_view.iso_local(event.end_at),
+                "location": event.location or "",
+                "note": event.note or "",
+                "itemId": event.item_id or "",
+                "itemTitle": item_title or "",
+                "planId": plan_id or "",
+                "subId": event.sub_id or "",
+            }
+            for event, item_title, plan_id in rows
+        ],
+        "from": _iso_at(start),
+        "to": _iso_at(end),
+        "note": "`startLocal` / `endLocal` 是**他那边的时间**，直接照这个说（别换算）。"
+        "`itemId` 非空说明这一块是从某条待办排出来的；`subId` 非空是课表订阅读进来的。",
+    }
+
+
+def propose_plan(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """提案：给他订一份计划。**不写任何东西**。
+
+    界面上会长出一张计划卡（条目可就地改、可就地删），他点「加入」才落库。
+    所以在那之前**不要说「已经排好了」** —— 那时候库里什么都没有。
+    """
+    items = []
+    for index, raw in enumerate((args or {}).get("items") or []):
+        if isinstance(raw, str):
+            raw = {"title": raw}
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or "").strip()[:300]
+        if not title:
+            continue
+        due, bad = _read_day(raw.get("dueDate"))
+        if bad:
+            return {"error": f"第 {index + 1} 条的日期认不出来：{bad}（要 2026-11-09 这种）"}
+        # 排程要用的元数据：不写的话求解器只能按"中等 / 其它 / 可拆"猜
+        focus = str(raw.get("focus") or "medium").strip().lower()
+        if focus not in _FOCUS_LEVELS:
+            return {"error": f"第 {index + 1} 条的 focus 只能是 {'/'.join(_FOCUS_LEVELS)}"}
+        domain = str(raw.get("domain") or "other").strip().lower()
+        if domain not in _DOMAINS:
+            return {"error": f"第 {index + 1} 条的 domain 只能是 {'/'.join(_DOMAINS)}"}
+        points = [str(one) for one in (raw.get("points") or []) if str(one).strip()][:32]
+        items.append(
+            {
+                "title": title,
+                "note": str(raw.get("note") or "")[:2000],
+                "dueDate": due,
+                "important": bool(raw.get("important")),
+                "estimateMin": _clamp(raw.get("estimateMin"), 0, 24 * 60, 0),
+                "focus": focus,
+                "domain": domain,
+                "splittable": bool(raw.get("splittable", True)),
+                "gate": str(raw.get("gate") or "").strip()[:32],
+                "points": points,
+            }
+        )
+    if not items:
+        return {"error": "一份计划至少要有条目：items 里每条给一个 title。"}
+
+    title = str((args or {}).get("title") or "").strip()[:200] or "学习计划"
+    return {
+        "proposal": {
+            "kind": "plan.create",
+            "proposalId": uuid.uuid4().hex,
+            "title": title,
+            "note": str((args or {}).get("note") or "")[:2000],
+            "items": items,
+        },
+        "note": "界面上已经放了一张**待确认**的计划卡，他点了「加入」才落库。"
+        "在那之前别声称计划已经建好；也别顺手说「已经排进日程」——"
+        "计划与日程是两件事。",
+    }
+
+
+def propose_plan_edit(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """提案：改一份已有计划的条目（改标题 / 改日期 / 勾完成 / 删）。**不写**。
+
+    条目要用 `list_plans` 给的真 id —— 猜一个 id 只会被拒（那样比改错一条好）。
+    """
+    plan_id = str((args or {}).get("planId") or "").strip()
+    plan = db.get(Plan, plan_id) if plan_id else None
+    if plan is None:
+        return {"error": "没有这份计划（planId 不对）。先用 list_plans 看 id。"}
+
+    changes = []
+    for raw in (args or {}).get("changes") or []:
+        if not isinstance(raw, dict):
+            continue
+        item_id = str(raw.get("itemId") or "").strip()
+        item = db.get(PlanItem, item_id) if item_id else None
+        if item is None or item.plan_id != plan.id:
+            return {"error": f"这份计划里没有条目 {item_id or '（空）'}；条目 id 从 list_plans 拿。"}
+        change: dict = {"itemId": item.id, "current": _item_brief(item)}
+        if "title" in raw:
+            title = str(raw.get("title") or "").strip()[:300]
+            if title:
+                change["title"] = title
+        if "dueDate" in raw:
+            due, bad = _read_day(raw.get("dueDate"))
+            if bad:
+                return {"error": f"日期认不出来：{bad}（要 2026-11-09 这种）"}
+            change["dueDate"] = due
+        if "done" in raw:
+            change["done"] = bool(raw.get("done"))
+        if "important" in raw:
+            change["important"] = bool(raw.get("important"))
+        if raw.get("remove"):
+            change["remove"] = True
+        changes.append(change)
+
+    if not changes:
+        return {"error": "changes 是空的：要改哪几条？"}
+    return {
+        "proposal": {
+            "kind": "plan.edit",
+            "proposalId": uuid.uuid4().hex,
+            "planId": plan.id,
+            "planTitle": plan.title,
+            "changes": changes,
+        },
+        "note": "界面上出了一张待确认的改动卡，他点了才生效。别提前说改好了。",
+    }
+
+
+#: 循环排期认的星期写法：数字（1=周一 … 7=周日）与中文都收
+_WEEKDAY_NAMES = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7, "天": 7}
+
+
+def _read_weekdays(raw) -> list[int]:  # noqa: ANN001
+    """`[2, "周四", "日"]` → `[2, 4, 7]`（升序去重）。认不出的直接丢掉。"""
+    out: set[int] = set()
+    for one in raw or []:
+        text = str(one).strip()
+        if text.isdigit():
+            number = int(text)
+            if 1 <= number <= 7:
+                out.add(number)
+            continue
+        for word in ("星期", "礼拜", "周"):
+            text = text.replace(word, "")
+        if text and text[0] in _WEEKDAY_NAMES:
+            out.add(_WEEKDAY_NAMES[text[0]])
+    return sorted(out)
+
+
+def _expand_series(
+    start: datetime, end: datetime, weekdays: list[int], count: int
+) -> list[tuple[datetime, datetime]]:
+    """从 `start` 那天起，按星期几展开 `count` 次，**保持本地钟点不变**。
+
+    例：周二 19:00–21:00、`weekdays=[2,4]`、`count=4` → 周二/周四各两次，
+    每次都是当地 19:00。这里不能用"每 7 天加一次"，否则跨夏令时会漂一小时。
+    """
+    local_start = start.astimezone(schedule_view.local_tz())
+    local_end = end.astimezone(schedule_view.local_tz())
+    span = local_end - local_start
+    out: list[tuple[datetime, datetime]] = []
+    day = local_start.date()
+    for _ in range(count * 7 + 14):  # 上限：够扫完一整年里的这几次
+        if day.isoweekday() in weekdays:
+            begin = datetime.combine(day, local_start.timetz())
+            out.append((begin.astimezone(UTC), (begin + span).astimezone(UTC)))
+            if len(out) >= count:
+                break
+        day += timedelta(days=1)
+    return out
+
+
+def propose_schedule(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """提案：把某条待办排进某个时段，或者把已有的一块改期。**不写**。
+
+    带 `eventId` 就是**改**那一块（`list_schedule` 里拿 id）；不带就是**新排**一块。
+    想排某条待办就带上 `itemId`，这样日历上能看出它来自哪条。
+    带 `repeat`（`{"weekdays": [2, 4], "count": 8}`）则一次排成一串 —— 别再提八张卡。
+    """
+    event_id = str((args or {}).get("eventId") or "").strip()
+    event = db.get(ScheduleEvent, event_id) if event_id else None
+    if event_id and event is None:
+        return {"error": "没有这一块日程（eventId 不对）。先用 list_schedule 看 id。"}
+
+    item_id = str((args or {}).get("itemId") or "").strip()
+    item = db.get(PlanItem, item_id) if item_id else None
+    if item_id and item is None:
+        return {"error": "没有这条待办（itemId 不对）。先用 list_plans 看 id。"}
+
+    start = _read_at((args or {}).get("startAt"))
+    end = _read_at((args or {}).get("endAt"))
+    if start is None or end is None:
+        return {"error": "startAt 与 endAt 都要给，形如 2026-11-09T09:00:00+08:00。"}
+    if end <= start:
+        return {"error": "结束时间要晚于开始时间。"}
+
+    title = str((args or {}).get("title") or "").strip()
+    if not title:
+        title = (item.title if item is not None else "") or (event.title if event else "") or "学习"
+
+    location = str((args or {}).get("location") or "")[:200].strip()
+    note = str((args or {}).get("note") or "")[:2000].strip()
+    brief = schedule_view.tz_brief()
+
+    # ---- 循环：一次提案排一串（"每周二四晚读两小时"不该要他点八次）
+    repeat = (args or {}).get("repeat")
+    if isinstance(repeat, dict) and not event_id:
+        weekdays = _read_weekdays(repeat.get("weekdays"))
+        if not weekdays:
+            weekdays = [start.astimezone(schedule_view.local_tz()).isoweekday()]
+        if repeat.get("count") is not None:
+            count = _clamp(repeat.get("count"), 1, 52, 8)
+        elif repeat.get("weeks") is not None:
+            # "连着四周、每周二和周四" → 4 × 2 = 8 次（不是 4 次）
+            count = _clamp(repeat.get("weeks"), 1, 52, 4) * max(1, len(weekdays))
+        else:
+            count = 8
+        spans = _expand_series(start, end, weekdays, count)
+        if not spans:
+            return {"error": "repeat 展开之后一次都没有；检查 weekdays（1=周一 … 7=周日）。"}
+
+        base = uuid.uuid4().hex
+        hit: dict[str, dict] = {}
+        for one_start, one_end in spans:
+            for row in schedule_view.conflicts_of(db, one_start, one_end):
+                hit.setdefault(row["id"], row)
+        events = [
+            {
+                # 每一块单独一个幂等键：连点两次也不会排出十六块
+                "proposalId": base + str(index),
+                "startAt": _iso_at(one_start),
+                "endAt": _iso_at(one_end),
+                "startLocal": schedule_view.iso_local(one_start),
+                "endLocal": schedule_view.iso_local(one_end),
+            }
+            for index, (one_start, one_end) in enumerate(spans)
+        ]
+        return {
+            "timezone": brief,
+            "proposal": {
+                "kind": "plan.scheduleSeries",
+                "proposalId": base,
+                "itemId": item.id if item is not None else "",
+                "itemTitle": item.title if item is not None else "",
+                "title": title[:300],
+                "location": location,
+                "note": note,
+                "count": len(events),
+                "events": events,
+                "conflicts": list(hit.values()),
+            },
+            "note": "界面上出了一张**一串**排期卡（" + str(len(events)) + " 次）。"
+            "时刻用 `startLocal` 跟他说，别自己换算。"
+            + ("有撞车：照实说撞了哪几块。" if hit else "")
+            + "在他点「全部排上」之前，不要说已经排好。",
+        }
+
+    # ---- 单块
+    conflicts = schedule_view.conflicts_of(db, start, end, exclude=[event_id])
+    return {
+        "timezone": brief,
+        "proposal": {
+            "kind": "plan.schedule",
+            "proposalId": uuid.uuid4().hex,
+            "eventId": event_id,
+            "itemId": item.id if item is not None else "",
+            "itemTitle": item.title if item is not None else "",
+            "title": title[:300],
+            "startAt": _iso_at(start),
+            "endAt": _iso_at(end),
+            "startLocal": schedule_view.iso_local(start),
+            "endLocal": schedule_view.iso_local(end),
+            "location": location,
+            "note": note,
+            "allDay": bool((args or {}).get("allDay")),
+            "conflicts": conflicts,
+        },
+        "note": "界面上出了一张待确认的排期卡，他点了才写进日程。"
+        "在他点之前不要说「已经排进去了」。"
+        + (
+            "**这段时间已经撞着 " + "、".join(one["title"] for one in conflicts) + "** —— 先跟他说一句，"
+            "再问要不要换个时间。"
+            if conflicts
+            else ""
+        ),
+    }
+
+
+def propose_unschedule(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """提案：取消日程上的块（一块，或一整串）。**不写**。
+
+    为什么要单独一个工具：改期是"挪"，取消是"没有这回事了" ——
+    用改期的口子表达取消，只能靠把时长改成 0，那会留下一条 0 分钟的脏块。
+    """
+    raw = (args or {}).get("eventIds") or (args or {}).get("eventId") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    ids = [str(one).strip() for one in raw if str(one).strip()]
+    if not ids:
+        return {"error": "eventIds 要给：先用 list_schedule 看 id。"}
+
+    rows = []
+    missing = []
+    for one in ids:
+        row = db.get(ScheduleEvent, one)
+        if row is None:
+            missing.append(one)
+        else:
+            rows.append(row)
+    if missing:
+        return {"error": f"这些 id 不存在：{', '.join(missing)}。先用 list_schedule 看 id。"}
+
+    return {
+        "proposal": {
+            "kind": "plan.unschedule",
+            "proposalId": uuid.uuid4().hex,
+            "events": [
+                {
+                    "id": row.id,
+                    "title": row.title,
+                    "startAt": _iso_at(row.start_at),
+                    "endAt": _iso_at(row.end_at),
+                    "startLocal": schedule_view.iso_local(row.start_at),
+                    "endLocal": schedule_view.iso_local(row.end_at),
+                    "subId": row.sub_id or "",
+                }
+                for row in rows
+            ],
+        },
+        "note": "界面上出了一张待确认的取消卡。他点了才真删；在那之前不要说「已经删了」。"
+        "课表订阅读进来的块删掉之后，下次同步还会回来 —— 这一点要如实告诉他。",
+    }
+
+
+def get_energy(db, args=None, ctx=None) -> dict:  # noqa: ANN001
+    """他**今天**的身体状态：精力三段、深度预算、睡眠债、以及今天该怎么对自己。
+
+    为什么值得单独一个工具：排多少、安排在几点，本来就该看这个，而不是看他"想学多久"。
+    """
+    from . import wellbeing  # noqa: PLC0415 —— 避免模块级循环导入
+
+    body = wellbeing.today(db)
+    slots = list(body["curve"]["slots"])
+
+    def band(left: int, right: int) -> float:
+        chunk = slots[left:right] or [0.0]
+        return round(sum(chunk) / len(chunk), 2)
+
+    now = wellbeing.local_now()
+    now_slot = min(47, max(0, (now.hour * 60 + now.minute) // 30))
+    return {
+        "today": body["today"],
+        "now": now.isoformat(),
+        "timezone": schedule_view.tz_brief(),
+        "profile": body["profile"],
+        "profileLabel": body["profileLabel"],
+        "regime": (body.get("regime") or {}).get("title") or "",
+        "sleep": {
+            "lastNightMin": body["sleep"]["lastNightMin"],
+            "debtHours": body["sleep"]["debtHours"],
+            "nights": body["sleep"]["nights"],
+        },
+        # 早 = 07:00–12:00，午 = 12:00–18:00，晚 = 18:00–23:00，now = 眼前这半小时
+        "energy": {
+            "morning": band(14, 24),
+            "afternoon": band(24, 36),
+            "evening": band(36, 46),
+            "now": round(slots[now_slot], 2),
+        },
+        "deepBudgetMin": body["curve"]["deepBudgetMin"],
+        "headline": body["curve"]["headline"],
+        "advice": [one["text"] for one in body["advice"] if one["kind"] != "schedule_constraint"],
+        "checkIn": {
+            "sleeping": body["active"] is not None,
+            "lastBedAt": (body.get("lastSleep") or {}).get("bedAt"),
+        },
+        "targets": body["targets"],
+        "note": "这是**他今天**的状态。别把 0.42 这种数字念给他；用它决定「排多少、排在几点」，"
+        "然后只说结论（比如「上午适合啃硬的，晚上只排轻的」）。",
+    }
+
+
+def schedule_week(db, args=None, ctx=None) -> dict:  # noqa: ANN001
+    """按未来几天自动排一版（**提案，不落库**）。
+
+    界面上会长出一张整周排程卡；他点了「应用」才写进日历（走 `/api/schedule/replan`）。
+    所以在那之前不要说"已经排好了"。
+    """
+    from . import scheduler  # noqa: PLC0415 —— 求解器是可选依赖
+
+    days = _clamp((args or {}).get("horizonDays"), 1, 14, 7)
+    si = scheduler.build_input(db, days=days)
+    if not si.tasks:
+        return {"error": "现在没有待办可排：先用 `propose_plan` 立一份计划，再回来排。"}
+    solution = scheduler.solve(si)
+    blocks = [
+        {
+            "itemId": one.task_id,
+            "title": one.title,
+            "startAt": _iso_at(one.start),
+            "endAt": _iso_at(one.end),
+            "startLocal": schedule_view.iso_local(one.start),
+            "endLocal": schedule_view.iso_local(one.end),
+            "focus": one.focus,
+            "domain": one.domain,
+            "reason": one.reason,
+        }
+        for one in solution.blocks
+    ]
+    unscheduled = [
+        {"itemId": one["taskId"], "title": one["title"], "minutes": one["minutes"], "reason": one.get("reason", "")}
+        for one in solution.unscheduled
+    ]
+    if not blocks:
+        return {
+            "error": "这两天一条都排不进去。",
+            "unscheduled": unscheduled,
+            "note": "把原因照实告诉他（缺精力窗口 / 截止太近 / 块太长），别自己编个时间塞进去。",
+        }
+    return {
+        "timezone": schedule_view.tz_brief(),
+        "proposal": {
+            "kind": "plan.scheduleBatch",
+            "proposalId": uuid.uuid4().hex,
+            "horizonDays": days,
+            "profile": si.profile,
+            "blocks": blocks,
+            "unscheduled": unscheduled,
+        },
+        "engine": solution.engine,
+        "stats": dict(solution.stats),
+        "note": "界面上放了一张**待确认**的整周排程卡。他点「应用」才写进日历；"
+        "在那之前别说「已经排好了」。正文只说一两句：为什么这样排、哪块是关键。"
+        "`reason` 是每一块排在那里的依据，卡片上已经展示，不用逐条抄。",
+    }
+
+
 REGISTRY = {
     "list_notes": {
         "access": "read",
@@ -3283,6 +3842,27 @@ REGISTRY = {
             },
         },
     },
+    "read_material": {
+        "access": "read",
+        "group": "library",
+        "fn": read_material,
+        "description": "读材料原文的某几行（默认从 startLine 起 60 行）。"
+        "要用原文支撑结论时：先 search_material 拿到行号，再用它把上下文读全；"
+        "也可以顺着刚读到的区间继续往下读。本机没有原文件时自动改读切片正文。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "材料 slug"},
+                "startLine": {"type": "integer", "description": "起始行（从 1 起）"},
+                "endLine": {
+                    "type": "integer",
+                    "description": "结束行（含；可省略，默认往下读 60 行）",
+                },
+            },
+            "required": ["slug"],
+        },
+    },
+
     "search_knowledge": {
         "access": "read",
         "group": "graph",
@@ -3575,8 +4155,8 @@ REGISTRY = {
         "**字面**（你给的原词在原文里出现过）与**向量**（你换个说法问同一件事 —— "
         "「上三角屏蔽」与 causal mask 也算命中，不要求词一样）。"
         "被两路都找到的排在只被一路找到的前面，每条结果的 `via` 写着它是被哪条找到的。"
-        "**另一个书架（论文 / 白皮书 / 别人的资料）用 `search_library`** —— 两边检索方式完全一样，"
-        "**在一个里没找到就去另一个里再问一次**，别只搜一个就说「没有」。"
+        "**这一档没找到，就用 `depth=检索` 再问一次**（还是这个工具，只换档位），"
+        "别只搜一档就说「没有」。"
         "想知道概念/点在图谱里的位置，用 `search_knowledge`。"
         "词要给得特别（exp_approx_mode、circular buffer 这种原词最灵）—— "
         "字面那一路要求所有词在**同一行**同时出现才算命中，放宽就少给一个词。"
@@ -3598,51 +4178,8 @@ REGISTRY = {
             "required": ["query"],
         },
     },
-    "search_library": {
-        "access": "read",
-        "group": "library",
-        "fn": search_library,
-        "description": "在**资料库**里检索，返回命中的行区间与原文片段。"
-        "和 search_material 的**唯一区别是看哪个书架**："
-        "这个查 `depth=检索` 的那一档（论文 / 白皮书 / 别人的资料 —— 拿来读、拿来引用，"
-        "但不必出成题），那个查 `depth=出题` 的那一档（我在学的、值得精读与出题的材料）。"
-        "**两边的检索方式完全一样**（字面 + 向量融合，`via` 会说清是哪条找到的）。"
-        "**在一个里没找到，就去另一个里再问一次** —— 它们是两个书架，不是同一堆东西的两种搜法；"
-        "只搜一个就说「没有」，是这里最容易犯的错。"
-        "**每条带三个数**：`cosine`（真实余弦，硬数）、`score`（排序分）、"
-        "`titleMatch`（问句与标题的亲密度，≥0.5 通常就是它）。"
-        "向量那一路**没有下限、总会返回东西**：明显低于首位的那几条是**弱匹配**，"
-        "别当成答案用。同一份材料最多占 2 格。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "问一句话或给关键词都行：原词走字面，换个说法走向量"},
-                "slug": {"type": "string", "description": "只在这一条资料里找（引用键，可省略）"},
-                "limit": {"type": "integer", "description": "最多几段，默认 5"},
-            },
-            "required": ["query"],
-        },
-    },
-    "read_material": {
-        "access": "read",
-        "group": "library",
-        "fn": read_material,
-        "description": "读材料原文的某几行（默认从 startLine 起 60 行）。"
-        "要用原文支撑结论时：先 search_material 拿到行号，再用它把上下文读全；"
-        "也可以顺着刚读到的区间继续往下读。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "slug": {"type": "string", "description": "材料 slug"},
-                "startLine": {"type": "integer", "description": "起始行（从 1 起）"},
-                "endLine": {
-                    "type": "integer",
-                    "description": "结束行（含；可省略，默认往下读 60 行）",
-                },
-            },
-            "required": ["slug"],
-        },
-    },
+
+
     "grade_problem": {
         "access": "write",
         "group": "quiz",
@@ -3995,6 +4532,232 @@ REGISTRY = {
                 },
             },
             "required": ["task"],
+        },
+    },
+    # ---- 计划与日程 ------------------------------------------------------
+    # 三个写操作都是 `propose`：计划是他自己的东西，界面上出一张卡片，
+    # 他点了才落库。这里**没有** write 档的口子 —— 那是刻意的。
+    "list_plans": {
+        "access": "read",
+        "group": "plan",
+        "fn": list_plans,
+        "description": "看他的**计划**：每份计划下面挂着哪些待办、哪天该做、做完没有。"
+        "要聊「你那份计划现在到哪了」「还有几条没做」，先看它再开口 —— "
+        "凭印象说数字是会被当场对上的。"
+        "**`dueDate` 只说明「这天该做」，不代表它已经排进日程**；"
+        "日历上真正占着时段的东西在 `list_schedule` 里。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "active（默认，在用的）/ archived（收起来的）/ all（都要）",
+                },
+            },
+        },
+    },
+    "list_schedule": {
+        "access": "read",
+        "group": "plan",
+        "fn": list_schedule,
+        "description": "看**日程**：时间轴上已经排了哪些块（谁的时间、多长、来自哪条待办）。"
+        "不给时间窗就看他从今天起的两周。说「你明天下午三点在做什么」之前先看它。\n"
+        "每块都同时给 `startAt`（UTC）与 `startLocal`（他那边的时间）—— **说人话用 "
+        "`startLocal`**，不要再自己加/减时区；`timezone` 里有「现在几点、周几、偏移多少」。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "from": {"type": "string", "description": "从什么时候开始（ISO，可省）"},
+                "to": {"type": "string", "description": "到什么时候为止（ISO，可省）"},
+            },
+        },
+    },
+    "propose_plan": {
+        "access": "propose",
+        "group": "plan",
+        "fn": propose_plan,
+        "description": "给他**订一份计划**（提案）。界面上会长出一张计划卡，条目他可就地改、就地删；"
+        "他点「加入」才真的存下来。\n"
+        "**这是「计划」不是「日程」**：条目可以没有日期；有日期也只是「这天该做」，"
+        "不会自己出现在日历上 —— 要占时段，之后再 `propose_schedule`。\n"
+        "**什么时候该提**：他说「帮我排一下」「接下来怎么走」「我两周内要考过」这类，"
+        "或者他自己也说不清下一步 —— 你就把路线摊成几条具体的待办（每条一个动作，"
+        "别写「加强理解」这种没有落点的话）。\n"
+        "**不许**在正文里再抄一遍这份清单当总结：卡片上已经有了，抄一遍是让他读两遍。"
+        "也别声称「已经建好了」—— 他还没点。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "计划名（一句话，比如「两周吃透 attn 那篇」）"},
+                "note": {"type": "string", "description": "这份计划要达到什么（可省）"},
+                "items": {
+                    "type": "array",
+                    "description": "待办条目。每条一个具体动作，按该做的顺序排",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "做什么（动词开头）"},
+                            "note": {"type": "string", "description": "要点 / 出处（可省）"},
+                            "dueDate": {
+                                "type": "string",
+                                "description": "哪天该做，形如 2026-11-09（可省 —— 没想好就别填）",
+                            },
+                            "estimateMin": {"type": "integer", "description": "预计多少分钟（可省）"},
+                            "important": {"type": "boolean", "description": "是不是要紧的一条"},
+                            "focus": {
+                                "type": "string",
+                                "enum": ["light", "medium", "deep"],
+                                "description": "要多费脑：deep = 推导/新概念，light = 复习/整理（可省，默认 medium）",
+                            },
+                            "domain": {
+                                "type": "string",
+                                "enum": ["art", "science", "skill", "other"],
+                                "description": "文科 / 理科 / 技能 / 其它。排程靠它交替，门禁靠它取默认（可省）",
+                            },
+                            "splittable": {
+                                "type": "boolean",
+                                "description": "能不能拆成几段排（「听完这一讲」不能拆；默认能拆）",
+                            },
+                            "gate": {
+                                "type": "string",
+                                "description": "质量门禁：quiz / recall / explain / artifact / none（可省 = 按学科默认）",
+                            },
+                            "points": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "关联的知识点 key（题库门禁按它抽题；可省）",
+                            },
+                        },
+                        "required": ["title"],
+                    },
+                },
+            },
+            "required": ["title", "items"],
+        },
+    },
+    "propose_plan_edit": {
+        "access": "propose",
+        "group": "plan",
+        "fn": propose_plan_edit,
+        "description": "改一份**已有计划**里的条目（改标题 / 改日期 / 勾完成 / 删）。同样是提案，"
+        "他点了才生效。\n"
+        "条目 id 必须来自 `list_plans`（别猜）；要删一条就把 `remove` 设成 true。"
+        "只想清掉日期（回到「哪天做还没定」）就给 `dueDate: \"\"`。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "planId": {"type": "string", "description": "哪份计划（list_plans 里的 id）"},
+                "changes": {
+                    "type": "array",
+                    "description": "要改的条目，一条一项",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "itemId": {"type": "string", "description": "条目 id（list_plans 里的 id）"},
+                            "title": {"type": "string", "description": "新的标题（要改才给）"},
+                            "dueDate": {"type": "string", "description": "新的日期；空串 = 清掉"},
+                            "done": {"type": "boolean", "description": "勾上 / 取消勾"},
+                            "important": {"type": "boolean", "description": "星标"},
+                            "remove": {"type": "boolean", "description": "true = 删掉这条"},
+                        },
+                        "required": ["itemId"],
+                    },
+                },
+            },
+            "required": ["planId", "changes"],
+        },
+    },
+    "propose_schedule": {
+        "access": "propose",
+        "group": "plan",
+        "fn": propose_schedule,
+        "description": "把他**排进日程**：给某条待办占一个时段，或者把已有的一块改期。提案，他点了才写。\n"
+        "**带 `eventId` 就是改期**（`list_schedule` 里拿 id）；不带就是新排一块。"
+        "排的是某条待办时带上 `itemId`，日历上才看得出这一块是从哪条来的。\n"
+        "**重复的排期一次性给**：带 `repeat`（`{\"weekdays\": [2, 4], \"weeks\": 4}`）"
+        "就一次排成一串卡片 —— 别为「每周二四晚」提八次。`weekdays` 1=周一 … 7=周日。\n"
+        "时刻用 ISO；不带偏移的按**他那边的时间**理解（`2026-11-09T14:00:00` = 当地两点）。"
+        "结果里给了 `startLocal` 与 `conflicts`（撞了哪几块）—— 撞了就先说一句。\n"
+        "排期不是必修：他说「先别排」就只留计划。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "eventId": {"type": "string", "description": "要改的那一块（可省；给了就是改期）"},
+                "itemId": {"type": "string", "description": "从哪条待办排出来（可省）"},
+                "title": {"type": "string", "description": "日历上显示的名字（可省，默认用条目名）"},
+                "startAt": {"type": "string", "description": "开始时刻（ISO；不带偏移按本地时间）"},
+                "endAt": {"type": "string", "description": "结束时刻（ISO；不带偏移按本地时间）"},
+                "allDay": {"type": "boolean", "description": "是不是全天（可省）"},
+                "location": {"type": "string", "description": "在哪：教室 / 线上 / 图书馆（可省）"},
+                "note": {"type": "string", "description": "备注（可省，长了的不进块上，只进详情）"},
+                "repeat": {
+                    "type": "object",
+                    "description": "循环排期（可省）。给了就是把这一串一次排出来",
+                    "properties": {
+                        "weekdays": {
+                            "type": "array",
+                            "items": {"type": "integer"},
+                            "description": "周几：1=周一 … 7=周日（可省 = 跟 startAt 同一天）",
+                        },
+                        "weeks": {"type": "integer", "description": "连着几周（与 count 二选一）"},
+                        "count": {"type": "integer", "description": "总共几次（最多 52）"},
+                    },
+                },
+            },
+            "required": ["startAt", "endAt"],
+        },
+    },
+    "propose_unschedule": {
+        "access": "propose",
+        "group": "plan",
+        "fn": propose_unschedule,
+        "description": "**取消日程上的块**（提案）：一块或一整串。他点了才真删。\n"
+        "这就是「删除」的入口 —— 改期的口子只能挪，不能删。`eventIds` 从 `list_schedule` 拿。\n"
+        "课表订阅读进来的块删掉之后，下次同步还会回来：删之前把这一点说清。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "eventIds": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要取消的块（可以给一串）",
+                }
+            },
+            "required": ["eventIds"],
+        },
+    },
+    "get_energy": {
+        "access": "read",
+        "group": "plan",
+        "fn": get_energy,
+        "description": "看他**今天**的身体状态：精力曲线（早/午/晚/现在）、深度用脑预算、"
+        "昨晚睡了多久、睡眠债、今天该怎么对自己。\\n"
+        "**什么时候该先看它**：他说「我今天很累」「没睡好」「今天能学多少」，"
+        "或者你要安排一整天的量时。它比他的主观描述更准（曲线是按睡眠与课表算的），"
+        "但他喊累就是累 —— 两者冲突时听他的。\\n"
+        "**别把数值念给他**（0.42 这种对他没意义）：用它决定「排多少、排在几点」，"
+        "只说结论。",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    "schedule_week": {
+        "access": "propose",
+        "group": "plan",
+        "fn": schedule_week,
+        "description": "按他的精力曲线与作息，把待办**自动排进未来几天**（提案，不落库）。\\n"
+        "**什么时候用**：他说「帮我排这周」「接下来怎么安排」「我两周内要考过 X」——"
+        "先把路线摊成计划（`propose_plan`），再用它排。\\n"
+        "排不进去的会带 `reason`（没精力窗口 / 截止太近 / 块太长）：照实告诉他，"
+        "**别自己编一个时间塞进去**。\\n"
+        "界面上出一张整周排程卡，他点「应用」才写进日历；在那之前别说「已经排好了」。"
+        "每一块都带「为什么排在这」的依据，正文别逐条抄。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "horizonDays": {
+                    "type": "integer",
+                    "description": "往后排几天（1–14，默认 7）",
+                }
+            },
         },
     },
 }

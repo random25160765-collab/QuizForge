@@ -119,9 +119,29 @@ BOUNDARY: dict[str, str] = {
     "attempts": "user",           # 逐次作答流水
     "days": "user",               # 每日聚合（热力图）
     "ai_usage": "user",           # 按天的 AI 用量（自己的账）
+    # 计划与日程（2026-11-08）：AI 订的计划要跟着用户走，换台机器打开还得在
+    # —— 所以三张表都是 user。日程不加密：它们是"什么时候做什么"，
+    # 与对话正文那种私密内容不是一回事（加密表见 `sync.PRIVATE_TABLES`）。
+    "plans": "user",
+    "plan_items": "user",
+    "schedule_events": "user",
+    # 健康（2026-11-08）：睡得怎么样、哪段日子身体是什么状态。这是用户自己的
+    # 记录，换台机器要看得见，所以归 user（求解器用的精力曲线是现算的，不落库）。
+    "sleep_logs": "user",
+    "health_regimes": "user",
+    # 门禁记录（含**没通过**的）：它是"下面先补哪一条"的依据，得跟着用户走。
+    "gate_runs": "user",
+    # 重排快照（撤销用）。它是"用户数据"而不是派生：撤销要靠它把行还原回去，
+    # 换台机器也得能撤上一次重排。
+    "schedule_runs": "user",
     # ---- 派生：能重算的，谁的包都不带 ----
     "slice_embeddings": "derived",  # 窗口向量（本机 168MB，占库 82%；`make embed` 重建）
     "embed_runs": "derived",        # 向量化跑单（运维账，可丢）
+    "library_jobs": "derived",      # 资料流水线的队列（存的是本机文件路径，换机器无意义）
+    # 日历订阅地址里常带**能力令牌**（学校课表的地址就是一串 JWT，拿到地址
+    # 就能读到整个人的课表），所以它不上云、也不进用户包：换台机器重新订阅一次。
+    # 同步下来的时间块是普通 `schedule_events`（user），照常跟着走。
+    "calendar_subscriptions": "derived",
 }
 
 

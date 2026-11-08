@@ -1,0 +1,247 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - navigation "活动栏" [ref=e3]:
+      - generic [ref=e4]:
+        - link "主页" [ref=e5] [cursor=pointer]:
+          - /url: workbench.html
+        - link "日程" [ref=e8] [cursor=pointer]:
+          - /url: schedule.html
+        - link "对话" [ref=e12] [cursor=pointer]:
+          - /url: chat.html
+        - link "练习中心" [ref=e16] [cursor=pointer]:
+          - /url: quiz.html
+        - link "资料" [ref=e19] [cursor=pointer]:
+          - /url: library.html
+      - button "切换主题" [ref=e23] [cursor=pointer]
+      - button "设置" [ref=e26] [cursor=pointer]
+    - main [ref=e31]:
+      - generic [ref=e32]:
+        - generic [ref=e33]:
+          - heading "11月2日 – 11月8日" [level=1] [ref=e34]
+          - generic [ref=e35]:
+            - button "往前" [ref=e36] [cursor=pointer]
+            - button "今天" [ref=e39] [cursor=pointer]
+            - button "往后" [ref=e40] [cursor=pointer]
+          - tablist "视图" [ref=e43]:
+            - tab "日" [ref=e44] [cursor=pointer]
+            - tab "周" [selected] [ref=e45] [cursor=pointer]
+            - tab "月" [ref=e46] [cursor=pointer]
+          - button "重排" [ref=e47] [cursor=pointer]
+          - button "新建" [ref=e52] [cursor=pointer]
+        - generic [ref=e53]:
+          - complementary "计划" [ref=e54]:
+            - generic [ref=e55]:
+              - generic [ref=e56]:
+                - generic [ref=e57]: 早
+                - generic [ref=e60]: 午
+                - generic [ref=e63]: 晚
+              - generic [ref=e66]:
+                - generic "精力高 · 深度预算 3h10m" [ref=e67]: 昨晚没记 · 深度预算 3h10m · 标准
+                - generic [ref=e68]:
+                  - button "睡了" [ref=e69] [cursor=pointer]
+                  - button "起床了" [ref=e70] [cursor=pointer]
+            - generic [ref=e71]:
+              - generic [ref=e72]: 计划
+              - button "新建一份计划" [ref=e73] [cursor=pointer]
+            - generic [ref=e77]:
+              - generic [ref=e78]:
+                - generic [ref=e79]: 验收：这一周
+                - generic [ref=e80]: 0/3
+                - button "删掉这份计划" [ref=e81] [cursor=pointer]
+              - generic [ref=e85]:
+                - generic "拖到右边日历里排期" [ref=e86]:
+                  - button "标成完成" [ref=e87] [cursor=pointer]
+                  - generic [ref=e91]: 推导 attention
+                  - button "哪天" [ref=e92] [cursor=pointer]
+                  - button "要紧" [ref=e93] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e97]:
+                  - button "标成完成" [ref=e98] [cursor=pointer]
+                  - generic [ref=e102]: 读综述
+                  - button "哪天" [ref=e103] [cursor=pointer]
+                  - button "要紧" [ref=e104] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e108]:
+                  - button "标成完成" [ref=e109] [cursor=pointer]
+                  - generic [ref=e113]: 写个小工具
+                  - button "哪天" [ref=e114] [cursor=pointer]
+                  - button "要紧" [ref=e115] [cursor=pointer]
+              - textbox "添加一条待办" [ref=e119]:
+                - /placeholder: ＋ 添加一条
+            - generic [ref=e120]:
+              - generic [ref=e121]:
+                - generic [ref=e122]: 两天：弄明白 QKV 各管什么
+                - generic [ref=e123]: 0/6
+                - button "删掉这份计划" [ref=e124] [cursor=pointer]
+              - generic [ref=e128]:
+                - generic "拖到右边日历里排期" [ref=e129]:
+                  - button "标成完成" [ref=e130] [cursor=pointer]
+                  - generic [ref=e134]: 读 LLMs in TT-NN §2.4.1 第 1–2 步，抄下 Q/K/V 三路形状
+                  - button "11月9日" [ref=e135] [cursor=pointer]
+                  - button "要紧" [ref=e136] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e140]:
+                  - button "标成完成" [ref=e141] [cursor=pointer]
+                  - generic [ref=e145]: 用大白话写下 Q 和 K 各自在干嘛，为什么「匹配」用点积
+                  - button "11月9日" [ref=e146] [cursor=pointer]
+                  - button "要紧" [ref=e147] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e151]:
+                  - button "标成完成" [ref=e152] [cursor=pointer]
+                  - generic [ref=e156]: 手算一个 2×2 的小例子：q·k → softmax → 对 V 加权求和
+                  - button "11月9日" [ref=e157] [cursor=pointer]
+                  - button "要紧" [ref=e158] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e162]:
+                  - button "标成完成" [ref=e163] [cursor=pointer]
+                  - generic [ref=e167]: 单独写 V 的职责：为什么输出是 V 的加权和，K 去哪了
+                  - button "11月10日" [ref=e168] [cursor=pointer]
+                  - button "要紧" [ref=e169] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e173]:
+                  - button "标成完成" [ref=e174] [cursor=pointer]
+                  - generic [ref=e178]: 做三个反向检验：把 Q 和 K 对调、让 Wq=Wk、只改一个 token 的输入
+                  - button "11月10日" [ref=e179] [cursor=pointer]
+                  - button "要紧" [ref=e180] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e184]:
+                  - button "标成完成" [ref=e185] [cursor=pointer]
+                  - generic [ref=e189]: 收成一页笔记：Q/K/V 各一句话职责 + 形状表 + 那个手算例子
+                  - button "11月10日" [ref=e190] [cursor=pointer]
+                  - button "要紧" [ref=e191] [cursor=pointer]
+              - textbox "添加一条待办" [ref=e195]:
+                - /placeholder: ＋ 添加一条
+            - generic [ref=e196]:
+              - generic [ref=e197]:
+                - generic [ref=e198]: 两周吃透 attention
+                - generic [ref=e199]: 0/3
+                - button "删掉这份计划" [ref=e200] [cursor=pointer]
+              - generic [ref=e204]:
+                - generic "拖到右边日历里排期" [ref=e205]:
+                  - button "标成完成" [ref=e206] [cursor=pointer]
+                  - generic [ref=e210]: 读 attn 那篇 3.1 节
+                  - button "11月9日" [ref=e211] [cursor=pointer]
+                  - button "要紧" [ref=e212] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e216]:
+                  - button "标成完成" [ref=e217] [cursor=pointer]
+                  - generic [ref=e221]: 手推一遍 scaled dot-product
+                  - button "11月10日" [ref=e222] [cursor=pointer]
+                  - button "要紧" [ref=e223] [cursor=pointer]
+                - generic "拖到右边日历里排期" [ref=e227]:
+                  - button "标成完成" [ref=e228] [cursor=pointer]
+                  - generic [ref=e232]: 写一页笔记，讲清 QKV 各自的角色
+                  - button "哪天" [ref=e233] [cursor=pointer]
+                  - button "要紧" [ref=e234] [cursor=pointer]
+              - textbox "添加一条待办" [ref=e238]:
+                - /placeholder: ＋ 添加一条
+            - generic [ref=e239]:
+              - generic [ref=e240]: 订阅
+              - link "福州大学课程表 [852502407] 176 块" [ref=e242] [cursor=pointer]:
+                - /url: settings.html#set-calendar
+                - generic [ref=e243]: 福州大学课程表 [852502407]
+                - generic [ref=e244]: 176 块
+              - paragraph [ref=e245]: 在「设置 → 日历」里同步或退订。
+          - region "日历" [ref=e246]:
+            - generic [ref=e247]:
+              - generic [ref=e248]:
+                - generic [ref=e251]: 01:00
+                - generic [ref=e252]: 02:00
+                - generic [ref=e253]: 03:00
+                - generic [ref=e254]: 04:00
+                - generic [ref=e255]: 05:00
+                - generic [ref=e256]: 06:00
+                - generic [ref=e257]: 07:00
+                - generic [ref=e258]: 08:00
+                - generic [ref=e259]: 09:00
+                - generic [ref=e260]: 10:00
+                - generic [ref=e261]: 11:00
+                - generic [ref=e262]: 12:00
+                - generic [ref=e263]: 13:00
+                - generic [ref=e264]: 14:00
+                - generic [ref=e265]: 15:00
+                - generic [ref=e266]: 16:00
+                - generic [ref=e267]: 17:00
+                - generic [ref=e268]: 18:00
+                - generic [ref=e269]: 19:00
+                - generic [ref=e270]: 20:00
+                - generic [ref=e271]: 21:00
+                - generic [ref=e272]: 22:00
+                - generic [ref=e273]: 23:00
+              - generic [ref=e274]:
+                - generic [ref=e275]:
+                  - generic [ref=e276]:
+                    - generic [ref=e277]: 周一
+                    - generic [ref=e278]: "2"
+                  - generic [ref=e279]:
+                    - generic "面向对象程序设计 · 14:00 – 15:40 · A512" [ref=e280]:
+                      - generic [ref=e281]: 14:00
+                      - generic [ref=e282]: 面向对象程序设计
+                    - generic "大学英语（四） · 15:50 – 17:30 · A518" [ref=e284]:
+                      - generic [ref=e285]: 15:50
+                      - generic [ref=e286]: 大学英语（四）
+                - generic [ref=e288]:
+                  - generic [ref=e289]:
+                    - generic [ref=e290]: 周二
+                    - generic [ref=e291]: "3"
+                  - generic [ref=e292]:
+                    - generic "模拟电路 · 10:20 – 12:00 · A412" [ref=e293]:
+                      - generic [ref=e294]: 10:20
+                      - generic [ref=e295]: 模拟电路
+                    - generic "模拟电路 · 14:00 – 16:35 · A412" [ref=e297]:
+                      - generic [ref=e298]: 14:00
+                      - generic [ref=e299]: 模拟电路
+                    - generic "大学物理A（下） · 19:00 – 20:40 · A414" [ref=e301]:
+                      - generic [ref=e302]: 19:00
+                      - generic [ref=e303]: 大学物理A（下）
+                - generic [ref=e305]:
+                  - generic [ref=e306]:
+                    - generic [ref=e307]: 周三
+                    - generic [ref=e308]: "4"
+                  - generic "科学计算与仿真 · 19:00 – 21:35 · A407" [ref=e310]:
+                    - generic [ref=e311]: 19:00
+                    - generic [ref=e312]: 科学计算与仿真
+                - generic [ref=e314]:
+                  - generic [ref=e315]:
+                    - generic [ref=e316]: 周四
+                    - generic [ref=e317]: "5"
+                  - generic [ref=e318]:
+                    - generic "大学物理A（下） · 08:20 – 10:00 · A414" [ref=e319]:
+                      - generic [ref=e320]: 08:20
+                      - generic [ref=e321]: 大学物理A（下）
+                    - generic "毛泽东思想和中国特色社会主义理论体系概论 · 14:00 – 17:30 · A412" [ref=e323]:
+                      - generic [ref=e324]: 14:00
+                      - generic [ref=e325]: 毛泽东思想和中国特色社会主义理论体系概论
+                    - generic "写 attn 的推导笔记 · 17:45 – 18:45" [ref=e327]:
+                      - generic [ref=e328]: 17:45
+                      - generic [ref=e329]: 写 attn 的推导笔记
+                    - generic "信号与系统A · 19:00 – 20:40 · A512" [ref=e331]:
+                      - generic [ref=e332]: 19:00
+                      - generic [ref=e333]: 信号与系统A
+                - generic [ref=e335]:
+                  - generic [ref=e336]:
+                    - generic [ref=e337]: 周五
+                    - generic [ref=e338]: "6"
+                  - generic [ref=e339]:
+                    - generic "信号与系统A · 08:20 – 10:00 · A512" [ref=e340]:
+                      - generic [ref=e341]: 08:20
+                      - generic [ref=e342]: 信号与系统A
+                    - generic "手推一遍 scaled dot-product · 10:00 – 10:45" [ref=e344]:
+                      - generic [ref=e345]: 10:00
+                      - generic [ref=e346]: 手推一遍 scaled dot-product
+                    - generic "毛泽东思想和中国特色社会主义理论体系概论 · 10:20 – 12:00 · A412" [ref=e348]:
+                      - generic [ref=e349]: 10:20
+                      - generic [ref=e350]: 毛泽东思想和中国特色社会主义理论体系概论
+                    - generic "面向对象程序设计 · 14:00 – 15:40 · A515" [ref=e352]:
+                      - generic [ref=e353]: 14:00
+                      - generic [ref=e354]: 面向对象程序设计
+                    - generic "信号与系统A · 15:50 – 17:30 · A514" [ref=e356]:
+                      - generic [ref=e357]: 15:50
+                      - generic [ref=e358]: 信号与系统A
+                - generic [ref=e361]:
+                  - generic [ref=e362]: 周六
+                  - generic [ref=e363]: "7"
+                - generic [ref=e365]:
+                  - generic [ref=e366]:
+                    - generic [ref=e367]: 周日
+                    - generic [ref=e368]: "8"
+                  - generic [ref=e369]:
+                    - generic "自测：手推 softmax(QKᵀ/√d)V · 09:30 – 10:30" [ref=e370]:
+                      - generic [ref=e371]: 09:30
+                      - generic [ref=e372]: 自测：手推 softmax(QKᵀ/√d)V
+                    - generic "组会：讲这周的进展 · 16:00 – 17:00" [ref=e374]:
+                      - generic [ref=e375]: 16:00
+                      - generic [ref=e376]: 组会：讲这周的进展
+  - iframe [aria-hidden] [ref=e378]

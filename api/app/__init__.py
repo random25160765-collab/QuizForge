@@ -14,8 +14,14 @@ from __future__ import annotations
 import sys as _sys
 from pathlib import Path as _Path
 
-#: 仓库根（`api/app/__init__.py` → 上三级）。
-REPO_ROOT = _Path(__file__).resolve().parents[2]
+#: 只读资源的根：开发时是仓库根（`api/app/__init__.py` → 上两级），
+#: **打包后是解包目录**（单文件模式下的 `%TEMP%\\_MEIxxxx`）。
+#:
+#: 为什么必须区分：`pipeline/` 这些"跟着包走的东西"都按它定位。
+#: 冻结之后 `parents[2]` 会指到解包目录的**上一级**（`%TEMP%`）—— 找不到就静默少东西，
+#: 而症状是"界面上某个东西不出现"，根本联想不到路径（实测：桌面包里「滤镜」药丸
+#: 整个没了、资料页的"抓正文"点不动，而开发端一切正常）。
+REPO_ROOT = _Path(getattr(_sys, "_MEIPASS", "") or _Path(__file__).resolve().parents[2])
 if str(REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(REPO_ROOT))
 

@@ -51,6 +51,9 @@
   // 主页暂时是一个空白页 —— 这颗入口留着，内容后面再填。
   var RAIL = [
     { href: 'workbench.html', label: '主页', icon: 'grip', page: 'workbench' },
+    // 日程排在主页之后、对话之前：它是"今天要做什么"那一层，
+    // 与"跟 AI 说话"是两条不同的入口（用户："主页之外再加一颗日程图标，主页继续留白"）。
+    { href: 'schedule.html', label: '日程', icon: 'calendar', page: 'schedule' },
     { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
     { href: 'quiz.html', label: '练习中心', icon: 'play', pages: ['quiz', 'graph'],
       hint: '练习 · 组卷 · 复习 · 图谱' },
@@ -74,6 +77,35 @@
     var page = document.body.dataset.page || '';
     ui.clear(box);
     RAIL.forEach(function (item) { box.appendChild(railButton(item, page)); });
+  }
+
+  /* ------------------------------------------------------------ 手机底栏 */
+  /* 与 RAIL 的去处一致，只是顺序按拇指可达性排：对话 → 练习 → 资料 → 主页 → 日程。
+     * 图谱**不单列**：它一直是"练什么"的一部分（桌面上练习中心就兼着图谱页），
+       手机上更不能为它再占一格 —— 练习项用 `pages` 让图谱页也高亮。
+     * 设置也不在底栏：它归主页，见 runtime/home.js 的 `home__settings`。 */
+  var TABS = [
+    { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
+    { href: 'quiz.html', label: '练习', icon: 'play', pages: ['quiz', 'graph'] },
+    { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
+    { href: 'workbench.html', label: '主页', icon: 'grip', page: 'workbench' },
+    { href: 'schedule.html', label: '日程', icon: 'calendar', page: 'schedule' },
+  ];
+
+  function renderTabbar() {
+    var box = document.getElementById('tabbar');
+    if (!box) return;
+    var page = document.body.dataset.page || '';
+    ui.clear(box);
+    TABS.forEach(function (item) {
+      // 与 railButton 同一套判定：一个入口可以对应多个页面
+      var on = item.pages ? item.pages.indexOf(page) >= 0 : page === item.page;
+      var node = h('a.tabbar__btn' + (on ? '.is-active' : ''),
+        { href: item.href, 'aria-label': item.label });
+      if (on) node.setAttribute('aria-current', 'page');
+      node.innerHTML = ui.icon(item.icon, 22) + '<span>' + item.label + '</span>';
+      box.appendChild(node);
+    });
   }
 
   function hrefFor(view) {
@@ -680,6 +712,421 @@
 
     refreshSync();
 
+    /* ---- 日历订阅（iCalendar）----
+     *
+     * 课表、会议邀请都是一串 .ics 地址，贴进来由后端拉取并按 RFC 5545 展开
+     * （见 `app/ics.py`）。为什么放在设置里而不是日历页：**地址是凭据** ——
+     * 学校课表的订阅地址就是一串 JWT，拿到地址等于拿到整个人的课表。
+     * 它属于"这台机器的配置"，不属于"今天的日程"，所以只在设置里出现一次，
+     * 日历页只显示"课表来自哪份订阅"。 */
+    var calUrlInput = h('input.input.input--mono', {
+      type: 'url',
+      spellcheck: 'false',
+      autocomplete: 'off',
+      placeholder: 'https://…/calendar.ics',
+    });
+    var calList = h('div.calsubs');
+    var calNote = h('p', {
+      text: '',
+      style: { margin: '8px 0 0', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+    });
+
+    function calSyncWhen(iso) {
+      if (!iso) return '';
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      var pad = function (n) { return n < 10 ? '0' + n : String(n); };
+      return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    function calRow(one) {
+      var sync = h('button.btn.btn--sm', { type: 'button', text: '同步' });
+      var drop = h('button.btn.btn--ghost.btn--sm', { type: 'button', text: '退订' });
+
+      sync.addEventListener('click', function () {
+        sync.disabled = true;
+        sync.textContent = '同步中…';
+        api.post('/schedule/subscriptions/' + encodeURIComponent(one.id) + '/sync', {}).then(
+          function (res) {
+            calNote.textContent = '已同步 ' + ((res && res.total) || 0) + ' 块'
+              + (res && res.removed ? '，去掉 ' + res.removed + ' 块' : '');
+            refreshCalendars();
+          },
+          function (err) {
+            sync.disabled = false;
+            sync.textContent = '同步';
+            calNote.textContent = (err && err.message) || '同步失败';
+            ui.toast(calNote.textContent, 'bad', 4200);
+          }
+        );
+      });
+
+      drop.addEventListener('click', function () {
+        ui.confirm('退订「' + (one.title || '这份订阅') + '」？它同步进来的 '
+          + one.events + ' 块会一起删掉。', { okLabel: '退订', danger: true })
+          .then(function (yes) {
+            if (!yes) return;
+            api.del('/schedule/subscriptions/' + encodeURIComponent(one.id)).then(
+              function () {
+                calNote.textContent = '已退订。';
+                refreshCalendars();
+              },
+              function (err) {
+                calNote.textContent = (err && err.message) || '没退掉';
+                ui.toast(calNote.textContent, 'bad', 3200);
+              }
+            );
+          });
+      });
+
+      var meta = one.events + ' 块';
+      if (one.lastSyncAt) meta += ' · 上次 ' + calSyncWhen(one.lastSyncAt);
+
+      return h('div.calsub', null,
+        h('div.calsub__main', null,
+          h('span.calsub__name', { text: one.title || one.host || '订阅', title: one.url }),
+          h('span.calsub__meta', { text: meta, title: one.lastResult || '' })),
+        h('div.calsub__ops', null, sync, drop));
+    }
+
+    function refreshCalendars() {
+      api.get('/schedule/subscriptions').then(function (out) {
+        var items = (out && out.subscriptions) || [];
+        ui.clear(calList);
+        if (!items.length) {
+          calList.appendChild(h('p.calsubs__empty', { text: '还没有订阅。贴一个地址，下面的框里点「订阅」。' }));
+          return;
+        }
+        items.forEach(function (one) { calList.appendChild(calRow(one)); });
+      }, function (err) {
+        ui.clear(calList);
+        calList.appendChild(h('p.calsubs__empty', {
+          text: '读不到订阅：' + ((err && err.message) || '本地服务没响应'),
+        }));
+      });
+    }
+
+    function subscribeCalendar() {
+      var url = String(calUrlInput.value || '').trim();
+      if (!url) {
+        calUrlInput.focus();
+        return;
+      }
+      calNote.textContent = '正在拉取…';
+      api.post('/schedule/subscriptions', { url: url }).then(function (res) {
+        calUrlInput.value = '';
+        calNote.textContent = '已导入 ' + ((res && res.total) || 0) + ' 块。';
+        ui.toast(calNote.textContent, 'ok', 2600);
+        refreshCalendars();
+      }, function (err) {
+        calNote.textContent = (err && err.message) || '订阅失败';
+        ui.toast(calNote.textContent, 'bad', 4200);
+      });
+    }
+
+    calUrlInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        subscribeCalendar();
+      }
+    });
+
+    refreshCalendars();
+
+    var calendarForm = h('div.form__section', null,
+      h('div.form__sectiontitle', { text: '日历订阅（iCalendar）' }),
+      h('p', {
+        text: '课表、会议邀请都是一串 .ics 地址：贴进来、点「订阅」，它就排进日程页。'
+          + '之后课程有调整，回来点一次「同步」即可。'
+          + '地址里通常带着令牌（拿到地址就能读到整份课表），所以它只存本机、不跟同步走，'
+          + '界面上也只显示抹掉值的样子。',
+        style: { margin: '-2px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      h('div.form__grid', null,
+        field('订阅地址', 'https:// 开头；学校给的 webcal:// 把前缀换成 https://', calUrlInput)),
+      h('div.btnrow', { style: { marginTop: '10px' } },
+        h('button.btn', { type: 'button', onClick: subscribeCalendar },
+          h('span', { html: ui.icon('plus', 15) }), h('span', { text: '订阅' }))),
+      calNote,
+      calList);
+
+    /* ------------------------------------------------------ 作息与健康策略
+     *
+     * 这一段的选项**全部来自后端注册表**（`/wellbeing/profiles`、`/gates`）：
+     * 以后加一个精力档位或一种门禁，这里不改代码，下拉里自动就有。
+     * 存的都是 `settings.health` 这个块（随同步走，不含秘密）。
+     */
+    var healthConf = conf.health || {};
+    var healthOptions = [];   // 档位注册表（异步填）
+    var gateOptions = [];     // 门禁注册表（异步填）
+
+    function saveHealth(patch) {
+      store.saveSettings({ health: patch });
+    }
+
+    var bedInput = h('input.input', {
+      type: 'time',
+      value: healthConf.targetBedtime || '23:00',
+      onInput: function (event) {
+        saveHealth({ targetBedtime: event.target.value });
+      },
+    });
+    var wakeInput = h('input.input', {
+      type: 'time',
+      value: healthConf.targetWake || '07:00',
+      onInput: function (event) {
+        saveHealth({ targetWake: event.target.value });
+      },
+    });
+    var graceInput = h('input.input', {
+      type: 'number',
+      min: '0',
+      max: '180',
+      step: '5',
+      value: healthConf.curfewGraceMin == null ? 0 : healthConf.curfewGraceMin,
+      onInput: function (event) {
+        var value = parseInt(event.target.value, 10);
+        saveHealth({ curfewGraceMin: isNaN(value) ? 0 : Math.max(0, Math.min(180, value)) });
+      },
+    });
+
+    var profileSelect = h('select.input', {
+      onChange: function (event) {
+        saveHealth({ defaultProfile: event.target.value });
+      },
+    });
+    var deepSelect = h('select.input', {
+      onChange: function (event) {
+        saveHealth({ deepPref: event.target.value });
+      },
+    });
+    [['morning', '上午（默认）'], ['evening', '傍晚'], ['both', '都行']].forEach(function (one) {
+      deepSelect.appendChild(h('option', { value: one[0] }, one[1]));
+    });
+    deepSelect.value = healthConf.deepPref || 'morning';
+
+    var gateSelects = {};
+    ['art', 'science', 'skill'].forEach(function (domain) {
+      var select = h('select.input', {
+        onChange: function (event) {
+          var next = Object.assign({}, healthConf.gateDefaults || {});
+          next[domain] = event.target.value;
+          healthConf = Object.assign({}, healthConf, { gateDefaults: next });
+          saveHealth({ gateDefaults: next });
+        },
+      });
+      gateSelects[domain] = select;
+    });
+
+    var regimeRows = h('div');
+
+    function fillProfileOptions(select, value) {
+      ui.clear(select);
+      healthOptions.forEach(function (one) {
+        select.appendChild(h('option', { value: one.key }, one.label));
+      });
+      if (value) select.value = value;
+    }
+
+    function fillGateOptions(select, value) {
+      ui.clear(select);
+      // 注册表里本来就有 `none`（"不设门禁"），别再塞一个占位项 —— 两个同名选项
+      // 长得一样、存的值却不同（'' 与 'none'），看着像 bug。
+      gateOptions.forEach(function (one) {
+        select.appendChild(h('option', { value: one.key }, one.label));
+      });
+      select.value = value || 'none';
+    }
+
+    function patchRegime(id, patch) {
+      api.patch('/wellbeing/regimes/' + encodeURIComponent(id), patch).then(
+        function () {
+          refreshRegimes();
+        },
+        function (err) {
+          ui.toast((err && err.message) || '改不了', 'bad', 2600);
+        }
+      );
+    }
+
+    function regimeRow(one) {
+      var start = h('input.input', {
+        type: 'date',
+        value: one.startDate || '',
+        onChange: function (event) {
+          patchRegime(one.id, { startDate: event.target.value });
+        },
+      });
+      var end = h('input.input', {
+        type: 'date',
+        value: one.endDate || '',
+        onChange: function (event) {
+          patchRegime(one.id, { endDate: event.target.value || null });
+        },
+      });
+      var pick = h('select.input', {
+        onChange: function (event) {
+          patchRegime(one.id, { profile: event.target.value });
+        },
+      });
+      fillProfileOptions(pick, one.profile);
+      var note = h('input.input', {
+        type: 'text',
+        value: one.note || '',
+        placeholder: '备注（可省）',
+        onChange: function (event) {
+          patchRegime(one.id, { note: event.target.value });
+        },
+      });
+      var del = h(
+        'button.btn.btn--ghost.btn--sm',
+        {
+          type: 'button',
+          onClick: function () {
+            api.del('/wellbeing/regimes/' + encodeURIComponent(one.id)).then(refreshRegimes, function () {
+              ui.toast('删不掉', 'bad', 2400);
+            });
+          },
+        },
+        '删除'
+      );
+      return h(
+        'div.form__grid',
+        { style: { alignItems: 'end', marginBottom: '8px' } },
+        field('起', null, start),
+        field('止（空 = 一直）', null, end),
+        field('档位', null, pick),
+        field('备注', null, note),
+        h('div.btnrow', null, del)
+      );
+    }
+
+    function refreshRegimes() {
+      api.get('/wellbeing/regimes').then(
+        function (res) {
+          ui.clear(regimeRows);
+          var rows = (res && res.regimes) || [];
+          if (!rows.length) {
+            regimeRows.appendChild(
+              h('p.form__note', { text: '还没有档位时间线：每天都用上面的默认档位。' })
+            );
+            return;
+          }
+          rows.forEach(function (one) {
+            regimeRows.appendChild(regimeRow(one));
+          });
+        },
+        function () {
+          ui.clear(regimeRows);
+        }
+      );
+    }
+
+    var addRegime = h(
+      'button.btn.btn--ghost.btn--sm',
+      {
+        type: 'button',
+        onClick: function () {
+          var now = new Date();
+          var iso =
+            now.getFullYear() +
+            '-' +
+            ('0' + (now.getMonth() + 1)).slice(-2) +
+            '-' +
+            ('0' + now.getDate()).slice(-2);
+          api
+            .post('/wellbeing/regimes', {
+              title: '恢复期',
+              startDate: iso,
+              profile: profileSelect.value || healthConf.defaultProfile || 'standard',
+            })
+            .then(refreshRegimes, function (err) {
+              ui.toast((err && err.message) || '加不了', 'bad', 2600);
+            });
+        },
+      },
+      h('span', { html: ui.icon('plus', 15) }),
+      h('span', { text: '加一段' })
+    );
+
+    var healthForm = h('div.form__section', null,
+      h('div.form__sectiontitle', { text: '作息与健康策略' }),
+      h('p', {
+        text: '自动排程按这套作息算「今天还剩多少脑力」：先看睡眠（睡前/起床两个打卡），'
+          + '再看课表负荷与时段节律，折成一条 24 小时曲线与「深度用脑预算」。'
+          + '身体状态可以按日期分段（备考期 / 恢复期），排程会按当天的档位算。',
+        style: { margin: '-2px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      h('div.form__grid', null,
+        field('目标入睡', '睡前留一小时不排深度任务', bedInput),
+        field('目标起床', '起床后半小时内不排任务', wakeInput),
+        field('催睡宽限（分钟）', '到点后多少分钟开始劝睡', graceInput)),
+      switchRow(
+        '到点催睡',
+        '只在对话里提醒一句，不硬锁任何功能；你说继续就继续，下一轮还会提。',
+        healthConf.curfewEnabled !== false,
+        function (value) {
+          healthConf = Object.assign({}, healthConf, { curfewEnabled: value });
+          saveHealth({ curfewEnabled: value });
+        }
+      ),
+      h('div.form__grid', null,
+        field('默认精力档位', '某天没有命中下面的时间线时用它', profileSelect),
+        field('深度用脑偏好', '决定「硬活」往哪半天放', deepSelect)),
+      h('p', {
+        text: '档位时间线',
+        style: { margin: '16px 0 6px', fontSize: '12px', fontWeight: '600', color: 'var(--fg2)' },
+      }),
+      regimeRows,
+      h('div.btnrow', { style: { marginTop: '6px' } }, addRegime),
+      h('p', {
+        text: '学习块门禁（默认按学科；逐条也可以在计划里指定）',
+        style: { margin: '16px 0 6px', fontSize: '12px', fontWeight: '600', color: 'var(--fg2)' },
+      }),
+      h('div.form__grid', null,
+        field('文科', null, gateSelects.art),
+        field('理科', null, gateSelects.science),
+        field('技能', null, gateSelects.skill)));
+
+    refreshRegimes();
+    api.get('/wellbeing/profiles').then(
+      function (res) {
+        healthOptions = (res && res.profiles) || [];
+        fillProfileOptions(profileSelect, healthConf.defaultProfile || (res && res.defaultProfile));
+        // 设置里没写的项，显示**后端正在用的值**：不写默认值而显示 23:00，
+        // 会让人以为"我改了"——其实改的是另一个数（这类假象最难查）。
+        if (!healthConf.targetBedtime && res && res.targets && res.targets.bed) {
+          bedInput.value = res.targets.bed;
+        }
+        if (!healthConf.targetWake && res && res.targets && res.targets.wake) {
+          wakeInput.value = res.targets.wake;
+        }
+        if (healthConf.curfewGraceMin == null && res && res.curfew) {
+          graceInput.value = res.curfew.graceMin;
+        }
+        if (!healthConf.deepPref && res && res.deepPref) {
+          deepSelect.value = res.deepPref;
+        }
+        // 时间线行是在 profiles 到位之前画的：填完再重画一遍
+        refreshRegimes();
+      },
+      function () {}
+    );
+    api.get('/gates').then(
+      function (res) {
+        gateOptions = (res && res.gates) || [];
+        api.get('/wellbeing/profiles').then(function (info) {
+          var mine = healthConf.gateDefaults || {};
+          var effective = (info && info.gateDefaults) || {};
+          ['art', 'science', 'skill'].forEach(function (domain) {
+            // 逐条指定的优先，否则显示系统默认（文科复述 / 理科测验 / 技能交产出物）
+            fillGateOptions(gateSelects[domain], mine[domain] || effective[domain] || 'none');
+          });
+        }, function () {});
+      },
+      function () {}
+    );
+
     var dataForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '数据' }),
       h('div.statline', null, h('span', { text: '本地数据体积' }), h('b', { text: ui.fmtBytes(stats.storageBytes) })),
@@ -737,7 +1184,8 @@
           },
         }, h('span', { html: ui.icon('trash', 15) }), h('span', { text: '清空进度' }))));
 
-  return h('div.form', null, aiForm, searchForm, obsForm, appearanceForm, syncForm, dataForm);
+  return h('div.form', null, aiForm, searchForm, obsForm, appearanceForm, syncForm,
+    calendarForm, healthForm, dataForm);
   }
 
   /* 数据被导入或清空之后广播一次：页面各自的反应不一样
@@ -795,6 +1243,7 @@
   function mount(opts) {
     opts = opts || {};
     renderRail();
+    renderTabbar();
     if (!bound) {
       bound = true;
       bindTheme();

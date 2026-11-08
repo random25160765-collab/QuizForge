@@ -148,11 +148,18 @@ def _isolate_user_data(engine) -> Iterator[None]:  # noqa: ANN001
     """
     from sqlalchemy import text
 
+    from app import models  # noqa: F401 —— 让 Base.metadata 里表都在（排序要用到）
     from app.datapack import USER_TABLES
-    from app.db import get_engine
+    from app.db import Base, get_engine
+
+    # **先删孩子再删父母**。SQLite 的外键是真在的：`schedule_events.item_id`
+    # 指着 `plan_items`，按名字字典序清就会先删 `plan_items` 而撞上约束
+    # （实测：用例里一旦留下"排好的块"，下一条用例的隔离就红在这里）。
+    # `sorted_tables` 是父在前，反过来就是孩子在前。
+    order = [one.name for one in reversed(Base.metadata.sorted_tables) if one.name in set(USER_TABLES)]
 
     with get_engine().begin() as conn:
-        for table in USER_TABLES:
+        for table in order:
             conn.execute(text(f'DELETE FROM "{table}"'))
     yield
 

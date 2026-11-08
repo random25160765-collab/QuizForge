@@ -98,9 +98,14 @@
   }
 
   function replaceState(options) {
-    // 已经有内容时（例如已经渲染出应用）不要再覆盖
+    // 已经有内容时（例如已经渲染出应用）不要再覆盖。
+    //
+    // 看的是**元素子节点**（`children`），不是 `childNodes`：页面源码里 `#app-root`
+    // 中间那个换行与注释也是子节点，用 `childNodes.length` 判断等于"永远都有内容"，
+    // 于是这里把每一屏状态（正在载入 / 题库为空 / 启动失败）全挡掉了 ——
+    // 表现就是**一片空白**（用户："chat 页面还是纯白的"）。实测就是这么空白的。
     var el = root();
-    if (el && el.querySelector('.bootstate') === null && el.childNodes.length) return;
+    if (el && el.querySelector('.bootstate') === null && el.children.length) return;
     showState(options);
   }
 
@@ -112,18 +117,38 @@
 
   /* ---------------------------------------------------------------- 装载 */
 
+  /** 题库为空时这一页还能不能起来。
+   *
+   *  对话**不依赖题库** —— "新对话"是一段聊天，不是一道题。而打包版的首次启动里
+   *  数据目录还是空的（题库要另外导入），若把它也拦在门外，用户第一眼看到的就是
+   *  一片空白（原话："chat 页面还是纯白的，至少要有那个新对话的界面"）。
+   *  练习中心 / 错题本靠题库吃饭，那里照旧把"去导入题库"摆出来。
+   */
+  function worksWithoutBank() {
+    return page === 'chat';
+  }
+
   function loadBank() {
     return api.get('/bank').then(function (bank) {
-      if (!bank || !bank.questions || !bank.questions.length) {
+      var empty = !bank || !bank.questions || !bank.questions.length;
+      if (empty && !worksWithoutBank()) {
         replaceState({
           icon: 'book',
           title: '题库还没有题目',
-          message: '服务端已经连上了，但题库是空的。在服务器上导入 questions/ 下的题目，然后刷新本页。',
-          code: 'docker compose exec api python -m app.cli.import_bank\n# 或本地：python3 -m tools.import_bank',
+          message:
+            '服务端已经连上了，但库里一道题也没有。桌面包用的是它自己的数据目录'
+            + '（Windows：%USERPROFILE%\\quizforge），和你开发机上那份不是同一个库 ——'
+            + '题目得先导进来，这一页才有东西可练。',
+          code:
+            'python -m app.cli.import_bank        # 在仓库里：从 questions/ 导进库\n'
+            + '# 桌面包要这些题：把导好的 data/quizforge.db 拷到 %USERPROFILE%\\quizforge\\',
           actions: [{ label: '刷新', onClick: function () { location.reload(); } }],
         });
         return false;
       }
+      // 空题库也要**装进去**：对话页本身只看会话与进度，但它会读题库的元信息
+      // （`QF.data.meta` / `QF.data.topics`）来画侧栏 —— 没装过就一个都没有。
+      if (!bank) bank = { questions: [] };
       // 公共题库打上来源标记。
       //
       // 字段名刻意**不叫 `source`**：题目自己的 `source` 是"出处"（材料与行号），

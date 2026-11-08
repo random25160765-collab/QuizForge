@@ -22,7 +22,7 @@ body[data-page='chat'] .view {
   overflow: hidden;
   /* 高度必须**确定**：`.chat` 用的是 height:100%，父级高度是 auto 的话百分比落空，
      它会按内容长高（实测高度 5148px），底部于是又出现一条会变的空白。 */
-  height: calc(100vh - var(--topbar-h));
+  height: calc(100vh - var(--topbar-h) - var(--tabbar-h, 0px));
   min-height: 0;
 }
 
@@ -349,10 +349,23 @@ body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
   }
 }
 
+/* 一行 = 2×3 的网格（与滤镜那几行同一套几何）：
+ *
+ *     🔍  名字        15 个工具
+ *         说明
+ *
+ * 为什么不是 flex：flex 里那个图标只能跟"名字 + 说明"整块对齐（居中或顶对齐），
+ * 而它该跟**名字那一行**对齐 —— 用户："这里的图标和旁边的文字也是不对齐的"。
+ * 网格按行放，图标落进第一行，跟名字同一行居中，几何上是重合的。
+ */
 .modepick__row {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "ico  name meta"
+    ".    hint meta";
+  column-gap: 9px;
+  row-gap: 2px;
   width: 100%;
   padding: 8px 9px;
   border: 0;
@@ -374,23 +387,22 @@ body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
 }
 
 .modepick__ico {
-  flex: none;
+  grid-area: ico;
+  /* 在第一行里居中 = 与名字那一行严格重合（不靠 `margin-top` 凑像素） */
+  align-self: center;
   display: inline-flex;
-  margin-top: 1px;
   /* 选择栏里每行的图标用**那个模式自己的颜色** —— 三种颜色摆在一起，
    * 与药丸上看到的那个色是同一个（不会"在列表里是蓝的、选完变绿"）。 */
   color: var(--mode-color);
 }
 
-.modepick__main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
 .modepick__name {
+  grid-area: name;
+  align-self: baseline;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 13px;
   color: var(--fg);
 }
@@ -400,17 +412,26 @@ body[data-page='chat'] .chat[data-aside='closed'] .chat__aside {
 }
 
 .modepick__hint {
+  grid-area: hint;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--fg3);
 }
 
 .modepick__meta {
-  flex: none;
-  margin-top: 1px;
+  grid-area: meta;
+  justify-self: end;
+  /* 与名字压在同一条基线上（11px 与 13px 按基线才齐） */
+  align-self: baseline;
   font-size: 11px;
   color: var(--fg3);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .modepick__err {
@@ -2136,6 +2157,9 @@ body.is-colresize {
    * 这条线与上边框之间的正中**偏高 4px**（实测图标上 13 / 下 17）。
    * 用户："三个图标都要做到和这条线与上边框上下对齐"。 */
   height: 44px;
+  /* 不许被压：`.chat__main` 是 flex 列，高度紧张时 height 会被 flex-shrink 吃掉 ——
+     手机上实测这条栏被压到 18px，三颗图标挤成一条线（桌面空间够，一直没露出来）。 */
+  flex: none;
   border-bottom: 1px solid var(--line);
 }
 
@@ -2604,6 +2628,186 @@ body.is-colresize {
 .chatreceipt__go {
   padding: 3px 10px;
   font-size: 12px;
+}
+
+/* ---------------------------------------------------------------- 计划凭条 */
+
+/* 计划卡是**实线**边框、题卡那种凭条是虚线：两者的分量不同 ——
+   一个是要落进库里的一整份计划，一个只是给某道题打个标记。 */
+.chatplan {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 560px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+  font-size: 12.5px;
+}
+
+.chatplan--done {
+  gap: 8px;
+  border-style: dashed;
+  border-color: var(--line);
+}
+
+.chatplan__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chatplan__tag {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  color: var(--fg3);
+}
+
+.chatplan__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.chatplan__meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--fg3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.chatplan__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chatplan__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 整周排程卡的一行：时刻 / 标题 / 为什么排在这（依据压在下面一列，小一号字） */
+.chatplan__slot {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 1px 8px;
+  align-items: baseline;
+}
+
+.chatplan__slotTitle {
+  min-width: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chatplan__slotWhy {
+  grid-column: 2;
+  color: var(--fg3);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.chatplan__input,
+.chatplan__date {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.chatplan__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.chatplan__input:focus,
+.chatplan__date:focus {
+  outline: none;
+  border-color: var(--pri);
+}
+
+.chatplan__date {
+  width: 132px;
+  flex: none;
+  color: var(--fg2);
+}
+
+.chatplan__del {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--fg3);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chatplan__del:hover {
+  background: var(--bg3);
+  color: var(--bad);
+}
+
+.chatplan__change {
+  padding: 2px 0;
+  color: var(--fg2);
+  font-size: 12.5px;
+}
+
+.chatplan__when {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chatplan__time {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.chatplan__from {
+  font-size: 11.5px;
+  color: var(--fg3);
+}
+
+/* 原始 ISO：留一行小字给"到底存的是哪个时刻"，但别让它抢视线 */
+.chatplan__raw {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--fg3);
+  opacity: 0.7;
+}
+
+.chatplan__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.chatplan__hint {
+  font-size: 11.5px;
+  color: var(--fg3);
 }
 
 /* ---------------------------------------------------------------- 图片放大 */
@@ -3904,77 +4108,8 @@ details[open] > .pyrun__outsum::before {
   color: var(--fg3);
 }
 
-.chattree__menu {
-  position: fixed;
-  z-index: 60;
-  display: flex;
-  flex-direction: column;
-  min-width: 178px;
-  padding: 4px;
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
-}
-
-/* 每条 = 图标 + 文字 +（可选）靠右的快捷键。
- * 用户要的是"重命名，置顶，删除，都是图标 + 文字，删除做成红色"。 */
-.chattree__menuitem {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  padding: 7px 9px;
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  color: var(--fg2);
-  background: none;
-  border: 0;
-  border-radius: 7px;
-  cursor: pointer;
-}
-
-.chattree__menuitem:hover {
-  background: var(--bg3);
-  color: var(--fg);
-}
-
-.chattree__menuico {
-  flex: none;
-  display: inline-flex;
-  width: 15px;
-  color: var(--fg3);
-}
-
-.chattree__menuitem:hover .chattree__menuico {
-  color: inherit;
-}
-
-.chattree__menutext {
-  flex: 1;
-  min-width: 0;
-}
-
-/* 快捷键靠右：`margin-left: auto` 而不是只靠上面那个 flex —— 前者在
- * 文字很短时也把提示顶到右边（实测只给 flex 时它贴在字上）。 */
-.chattree__menuhint {
-  flex: none;
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--fg3);
-}
-
-/* 删除：红的（用户要求）。悬停的底也偏红，别让它看着跟别的项一样。 */
-.chattree__menuitem.is-danger,
-.chattree__menuitem.is-danger .chattree__menuico {
-  color: var(--bad, #e5484d);
-}
-
-.chattree__menuitem.is-danger:hover {
-  background: color-mix(in srgb, var(--bad, #e5484d) 14%, transparent);
-  color: var(--bad, #e5484d);
-}
+/* 右键菜单的样式**不在这里**：它已提成通用组件（`ui.menu`，视觉在 app.css 的
+ * `.popmenu`），对话树与资料页共用同一份 —— 两处各写一套迟早会走样。 */
 
 .chattree__ask {
   display: flex;
@@ -5270,7 +5405,7 @@ body.is-colresize .panes__host > .chat {
 /* 清单本体借 `.modepick` 的壳（定位、边框、阴影、淡入淡出都在那边，定位值由 JS 写）。
  * 这里只补它自己的三件事：颜色跟赭红、长了要能滚、每一行是"勾选框 + 名字 + 说明 + 形态"。
  * 用户："点击后跳出来的菜单栏也一样的样式（现在是对话框上顶出来一个框）"。 */
-.chatskill {
+.chatlens {
   /* 滤镜不是三种模式里的任何一种：整张清单用赭红（`--ochre`），不跟模式色走 */
   --mode-color: var(--ochre);
   /* 滤镜比模式多得多：限高、自己滚，别把屏幕顶穿（`.modepick` 是 fixed，滚的是它自己） */
@@ -5278,34 +5413,107 @@ body.is-colresize .panes__host > .chat {
   overflow-y: auto;
 }
 
-/* 一行（`.modepick__row` 已经给了 flex / 间距 / 悬浮底色 / 圆角）。
- * 滤镜那几行是个 `<label>`：点整行 = 点勾选框。别让双击选中文字打断它。 */
-.chatskill__item {
-  /* `.modepick__row` 把 `--mode-color` 定成了灰（那三种模式的兜底）：这里按文件先后
-   * 压回赭红 —— 否则"装着"那条的亮色与图标都变成中性的灰。 */
+/* 一行 = **2×3 的网格**：
+ *
+ *     ☐  名字        形态
+ *        说明        铅笔 垃圾桶
+ *
+ * 为什么不借 `.modepick__row` 那个 flex 行：它只能一排铺开，右边那两样（形态、两个图标）
+ * 就会全挤在第一行字上 —— 而左边是两行，怎么调 `margin` 都对不齐
+ *（用户："形态和两个图标在一行里，改成两行。注意分别对齐"）。
+ * 网格按**行**对齐：名字 ↔ 形态 同一行、说明 ↔ 图标 同一行，各自居中即可，
+ * 不靠凑数值。
+ *
+ * 它仍是个 `<label>`：点整行 = 点勾选框。`user-select: none` 免得双击选中文字。
+ */
+.chatlens__item {
   --mode-color: var(--ochre);
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "check name kind"
+    ".     hint ops";
+  column-gap: 9px;
+  row-gap: 3px;
+  padding: 8px 9px;
+  border-radius: 8px;
+  color: var(--fg2);
+  cursor: pointer;
   user-select: none;
+}
+
+.chatlens__item:hover {
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--fg);
+}
+
+/* 名字与说明：与 `.modepick__name/__hint` 同一套字号色号，只是各自落在格子里 */
+.chatlens__name {
+  grid-area: name;
+  /* 与右边那行形态**按基线对齐**：两边字号不同（13 / 11），按行居中会让小的那个
+   * 视觉上浮起来一点；压在一条基线上才像"同一行字"。 */
+  align-self: baseline;
+  /* 名字再长也不许把行撑开：一行 + 省略号（长度在写的时候就有上限，见 `app/lens.py`
+   * 与编辑器里的 `maxlength`；这里再兜一道，防的是手写 md 那种情况）。 */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--fg);
+}
+
+.chatlens__item.is-on .chatlens__name {
+  color: var(--mode-color);
+}
+
+.chatlens__hint {
+  grid-area: hint;
+  /* 说明最多两行（再多就截断）：一行长一句、十行叠起来会把整张清单撑成一条长龙，
+   * 而它的作用只是"扫一眼知道这条是干什么的"。长英文词也照样折，不许把格子顶宽。 */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg3);
+}
+
+/* 形态（流程 / 口吻 / 纪律）：右对齐，与上面的名字同一行 */
+.chatlens__kind {
+  grid-area: kind;
+  justify-self: end;
+  align-self: baseline;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg3);
 }
 
 /* 入口那颗药丸（挨着「模式」药丸）—— 用户："常驻药丸要做，这个是状态的指示和取消药丸。
  * skill 另外做一个药丸放在模式旁边。" 长相就是 `.modepill`（用户："样式和左边的'模式'
  * 药丸一样"），颜色用赭红（用户："滤镜这个药丸换个颜色。换成赭红色吧。"）。 */
-.modepill.chatskill__open {
+.modepill.chatlens__open {
   --mode-color: var(--ochre);
 }
 
-/* 清单里每条滤镜的勾选框 —— "装没装"的指示器与开关 */
-.chatskill__check {
-  flex: none;
+/* 清单里每条滤镜的勾选框 —— "装没装"的指示器与开关。
+ * 它占第一行的格子并**在这一行里居中**（不是拿 `margin-top` 凑）：名字那一行的行高
+ * 由字号定，方框 14px，居中之后与那行字的视觉中线重合
+ *（用户："方框没有和旁边的字对齐"）。 */
+.chatlens__check {
+  grid-area: check;
+  align-self: center;
   width: 14px;
   height: 14px;
-  /* 与名字那一行的头一个字对齐（`.modepick__row` 是 flex-start；图标那边是 1px） */
-  margin: 2px 0 0;
+  margin: 0;
   accent-color: var(--ochre);
   cursor: pointer;
 }
 
-.chatskill__chip {
+.chatlens__chip {
   padding: 1px 7px;
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -5316,10 +5524,148 @@ body.is-colresize .panes__host > .chat {
   cursor: pointer;
 }
 
-.chatskill__chip.is-on {
+.chatlens__chip.is-on {
   border-color: color-mix(in srgb, var(--pri) 45%, var(--line));
   background: color-mix(in srgb, var(--pri) 10%, transparent);
   color: color-mix(in srgb, var(--pri) 88%, var(--fg));
+}
+
+/* 一行右侧那两个小动作（改 / 删）。
+ * 不做"悬停才出现"：手指点不到悬停，而且这东西藏起来就没人知道能改 ——
+ * 常驻、但压得很淡（`--fg3`），悬浮才提亮。 */
+.chatlens__ops {
+  grid-area: ops;
+  justify-self: end;
+  /* 贴着这一格的**底边**：说明可能折成两三行，用户要的是
+   * "两个图标和最下面一行对齐"（不是永远咬在说明的第一行上）。 */
+  align-self: end;
+  display: inline-flex;
+  gap: 2px;
+  /* 右边界与上面的形态字**对齐到同一条线**（不额外外推）—— 用户要的是"分别对齐"。 */
+  margin: 0 0 -3px;
+}
+
+.chatlens__op {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--fg3);
+  cursor: pointer;
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+
+.chatlens__op:hover {
+  background: rgba(127, 127, 127, 0.16);
+  color: var(--fg);
+}
+
+.chatlens__op:focus-visible {
+  outline: 2px solid var(--pri);
+  outline-offset: 1px;
+}
+
+/* 底部那行"新建滤镜"：用一条细线隔开（它不是一条滤镜，是"再加一条"）。
+ *
+ * 它是个**单行**（说明那行删了 —— 用户："'写一段自己的要求'那段字是冗余"），
+ * 所以只要"一列 14px 的加号 + 一行字"，用 flex 就够：加号占的正是上面那些方框那一列，
+ * 竖直居中之后它与字、与上面整列方框都在同一条线上。
+ *
+ * 为什么不用 grid：`<button>` 上 `display: grid` 算出来的轨道数不对
+ *（实测：声明两列，计算出来四列，字被挤到第二行）—— 一行东西用 flex 更省事。
+ */
+.chatlens__new {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 上面**有**滤镜时，才拉一条分隔线（一条都没有时它是第一行，
+ * 顶上多一条横线会像"这里缺了什么"）。 */
+.chatlens__new:not(:first-child) {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 8px 8px;
+}
+
+.chatlens__new:hover {
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--fg);
+}
+
+.chatlens__plus {
+  flex: none;
+  /* 与勾选框同宽同列：上面那一列方框 14px，这里也是 14px */
+  width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ochre);
+}
+
+/* ------------------------------------------------------------------ 滤镜编辑器（弹层）
+ *
+ * 与设置页那批表单同一个口径：一行一个字段、左标签、控件撑满；
+ * 正文用等宽字（它是**提示词**，改一个词就差一层意思，等宽更容易看出断行）。 */
+.lenseditor {
+  display: grid;
+  gap: 14px;
+}
+
+.lenseditor__row {
+  display: grid;
+  gap: 6px;
+}
+
+.lenseditor__key {
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.lenseditor__input,
+.lenseditor__area {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.lenseditor__input:focus,
+.lenseditor__area:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--pri) 55%, var(--line));
+}
+
+.lenseditor__area {
+  min-height: 200px;
+  resize: vertical;
+  line-height: 1.65;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.lenseditor__error {
+  font-size: 12px;
+  color: var(--bad);
 }
 
 /* 清单的展开 / 回收动效不在这里做 —— 它借的是 `.modepick` 的 `.is-in` / `.is-out`

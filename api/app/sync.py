@@ -93,13 +93,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session as OrmSession
 
 from . import models as _models  # noqa: F401 —— 先让 Base.metadata 长齐
+# 加密原语在 Android 上要换实现（没有 cp314 wheel），取用点收在 crypto_compat。
+from .crypto_compat import AESGCM, InvalidTag, Scrypt
 from . import settings_file
 from .datapack import USER_TABLES
 from .db import Base, get_engine
@@ -127,6 +126,19 @@ PULL_ORDER: tuple[str, ...] = (
     "records",
     "attempts",
     "ai_usage",
+    # 外键先父后子：条目要挂计划，日程要挂条目（虽然删父行是本机显式删的，
+    # 但远端按 pk 顺序回放时子行先到会插不进去）。
+    "plans",
+    "plan_items",
+    "schedule_events",
+    # 健康：睡眠记录与身体状态档位。没有外键依赖，放在日程之后只是为了读起来顺。
+    "sleep_logs",
+    "health_regimes",
+    # 重排快照（撤销用）：它引用 `schedule_events.id`（存在 JSON 里，不是外键），
+    # 所以必须排在时间块之后。
+    "schedule_runs",
+    # 门禁记录：挂在条目上（`item_id` 也是软引用），排在条目之后。
+    "gate_runs",
     "app_settings",
 )
 _ORDER_INDEX = {name: i for i, name in enumerate(PULL_ORDER)}
@@ -191,7 +203,26 @@ CREATE TABLE IF NOT EXISTS qf_sync_state (
   k TEXT PRIMARY KEY,
   v TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS qf_sync_parents (
+  child_uid  TEXT PRIMARY KEY,
+  parent_uid TEXT NOT NULL
+);
 """
+
+#: 按 `qf_sync_parents` 补 `messages.parent_id`。
+#:
+#: 为什么要把映射**落盘**：拉取按 `at` 排序，父消息完全可能在后面的页、甚至后面的
+#: 轮次才到。原先只在"同一页内"回填一次，跨页的就永远补不上 —— 实测一篇 53 条的
+#: 对话里 23 条 `parent_id` 为空，对话树整个散掉（用户看到的就是"结构乱了"）。
+_BACKFILL_PARENTS_SQL = (
+    "UPDATE messages SET parent_id = ("
+    "  SELECT p.id FROM messages p"
+    "  JOIN qf_sync_parents r ON r.parent_uid = p.uid"
+    "  WHERE r.child_uid = messages.uid"
+    ")"
+    " WHERE parent_id IS NULL"
+    "   AND uid IN (SELECT child_uid FROM qf_sync_parents)"
+)
 
 #: 触发器版本：改了触发器 SQL 就把 1 改成 2（`IF NOT EXISTS` 不会更新旧定义）。
 _TRIGGER_VERSION = 1
@@ -275,6 +306,13 @@ _TIMESTAMPS: dict[str, tuple[str, ...]] = {
     "records": ("updated_at",),
     "attempts": ("at", "created_at"),
     "ai_usage": ("updated_at",),
+    "plans": ("updated_at",),
+    "plan_items": ("updated_at",),
+    "schedule_events": ("updated_at", "start_at"),
+    "sleep_logs": ("updated_at", "bed_at"),
+    "health_regimes": ("updated_at",),
+    "schedule_runs": ("updated_at",),
+    "gate_runs": ("updated_at",),
 }
 
 SPECS: dict[str, TableSpec] = _build_specs()
@@ -637,8 +675,31 @@ class TursoClient:
     def execute(self, sql: str, args: tuple[Any, ...] = ()) -> None:
         self.pipeline([{"type": "execute", "stmt": {"sql": sql, "args": [_arg(a) for a in args]}}])
 
+    #: 一批最多多少字节。实测：首次同步一次塞了 6.9MB（202 条 execute），
+    #: 请求被中途断掉（先是 `Connection reset by peer`，再试是
+    #: `SSL: UNEXPECTED_EOF_WHILE_READING`）—— 走代理与直连都一样。
+    #: 512KB 在代理与 WSL loopback 上都稳，多切几批的代价可以忽略。
+    BATCH_BYTES = 512 * 1024
+
     def batch(self, statements: list[tuple[str, tuple[Any, ...]]]) -> None:
-        """一个事务里跑完；任何一条失败就整体不落。"""
+        """按字节切成若干事务跑；每条都是幂等的（INSERT OR REPLACE），
+        所以中途断了重推也不会写重。"""
+        chunk: list[tuple[str, tuple[Any, ...]]] = []
+        size = 0
+        for sql, args in statements:
+            one = len(sql.encode("utf-8")) + 64
+            for value in args:
+                one += len(json.dumps(_arg(value), ensure_ascii=False).encode("utf-8"))
+            if chunk and size + one > self.BATCH_BYTES:
+                self._batch_one(chunk)
+                chunk, size = [], 0
+            chunk.append((sql, args))
+            size += one
+        if chunk:
+            self._batch_one(chunk)
+
+    def _batch_one(self, statements: list[tuple[str, tuple[Any, ...]]]) -> None:
+        """一个事务里跑完这一批；任何一条失败就整批不落。"""
         requests: list[dict] = [{"type": "execute", "stmt": {"sql": "BEGIN"}}]
         requests += [
             {"type": "execute", "stmt": {"sql": sql, "args": [_arg(a) for a in args]}}
@@ -1079,12 +1140,15 @@ def _apply_page(engine: Engine, rows: list[dict], key: bytes | None, origin: str
 
         # 消息的 parent_id / 附件的 message_id 按 uid 二次解析：
         # 同一页里父消息可能排在子消息后面，插的时候还查不到。
+        # 映射**落盘**（`qf_sync_parents`）：跨页、跨轮次到的父消息也能在之后补上。
         for child_uid, parent_uid in message_parents:
             conn.exec_driver_sql(
-                "UPDATE messages SET parent_id = (SELECT id FROM messages WHERE uid = ?)"
-                " WHERE uid = ?",
-                (parent_uid, child_uid),
+                "INSERT INTO qf_sync_parents(child_uid, parent_uid) VALUES(?, ?)"
+                " ON CONFLICT(child_uid) DO UPDATE SET parent_uid = excluded.parent_uid",
+                (child_uid, parent_uid),
             )
+        if message_parents:
+            conn.exec_driver_sql(_BACKFILL_PARENTS_SQL)
         for attachment_pk, message_uid in attachment_messages:
             attachment_key = json.loads(attachment_pk)
             conn.exec_driver_sql(
@@ -1167,6 +1231,22 @@ def _apply_row(conn, spec: TableSpec, values: list[Any], data: dict, at: float) 
                 (*updates.values(), *values),
             )
         return
+
+    if spec.name == "conversation_folders" and row_values.get("path"):
+        # 分组在**本机**按 path 唯一（`UNIQUE(path)`），但同步身份是 uid ——
+        # 两台机器各建了一个同名分组时，两边 uid 不同，按 uid 查不到就会 INSERT，
+        # 然后撞 path 唯一约束（实测：`UNIQUE constraint failed: conversation_folders.path`）。
+        # 分组身份本来就是路径（`Conversation.folder` 存的就是路径字符串，不引用 uid），
+        # 所以这里认成同一个：把本机那行的 uid 对齐成远端这份，跳过插入。
+        seen = conn.exec_driver_sql(
+            "SELECT uid FROM conversation_folders WHERE path = ?", (row_values["path"],)
+        ).fetchone()
+        if seen is not None and str(seen[0]) != str(row_values.get("uid") or ""):
+            conn.exec_driver_sql(
+                "UPDATE conversation_folders SET uid = ? WHERE uid = ?",
+                (row_values["uid"], seen[0]),
+            )
+            return
 
     names = ", ".join(_q(col) for col in row_values)
     marks = ", ".join("?" for _ in row_values)
@@ -1440,6 +1520,9 @@ def run_once(engine: Engine | None = None, remote: Any | None = None) -> dict:
         baseline = _baseline(engine)
         pushed = _push(engine, remote, key, origin)
         pulled = _pull(engine, remote, key, origin)
+        # 父指针最后再补一次：跨页/跨轮次才到的父消息在这里接上（页内已经补过一次）
+        with engine.begin() as conn:
+            conn.exec_driver_sql(_BACKFILL_PARENTS_SQL)
         result = {
             "ok": True,
             "at": _now_iso(),

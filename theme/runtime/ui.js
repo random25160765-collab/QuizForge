@@ -290,6 +290,7 @@
    */
   var ICONS = {
     play: '<path d="M7 4.5 19 12 7 19.5Z"/>',
+    pause: '<path d="M9 5v14M15 5v14"/>',
     check: '<path d="M4 12.5 9.5 18 20 6.5"/>',
     close: '<path d="M6 6l12 12M18 6 6 18"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
@@ -302,6 +303,11 @@
     shuffle: '<path d="M4 7.5h3.5l3 5M4 19.5h3.5l3-5"/><path d="M14 7.5h6v0M20 7.5l-3-3M20 7.5l-3 3"/>',
     list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/>',
+    // 日历：活动栏「日程」那颗。与 `list`（三行小点）要一眼分得开 —— 所以只画
+    // 一个方块加两条"订书钉"，不画里面的格子。
+    calendar:
+      '<rect x="3.6" y="5.6" width="16.8" height="14.8" rx="2.4"/>'
+      + '<path d="M3.6 10.2h16.8M8.2 3.4v4M15.8 3.4v4"/>',
     // 回溯：一面小旗（趁手的位置标记）
     flag: '<path d="M6.5 3.6v17"/><path d="M6.5 4.8h10.4l-2 3.9 2 3.9H6.5z"/>',
     trash: '<path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/>',
@@ -585,6 +591,88 @@
         ],
       });
     });
+  }
+
+  /* ------------------------------------------------------------- 弹出菜单 */
+
+  /**
+   * 右键菜单（会话树、资料页共用这一份，样式见 app.css 的 `.popmenu`）。
+   *
+   * 关旧菜单必须早于开新菜单：`contextmenu` 同时是"关"与"开" —— 目标元素的
+   * 监听先把新菜单画出来，事件再冒泡到 document，挂在 document 上的"点外面就关"
+   * 会把**刚画出来的这张**撤掉，菜单只闪一瞬。所以关的监听用 `mousedown`（比
+   * `contextmenu` 先到，于是关旧的、随后再开新的，两件事互不打扰），并且挂载
+   * 推到下一拍：开菜单这一下自己也会派发 mousedown。
+   */
+  var menuNode = null;
+  var menuHooks = null;
+
+  function closeMenu() {
+    if (menuNode) menuNode.remove();
+    menuNode = null;
+    if (!menuHooks) return;
+    document.removeEventListener('mousedown', menuHooks.away, true);
+    document.removeEventListener('keydown', menuHooks.key, true);
+    menuHooks = null;
+  }
+
+  /**
+   * `items`：`{ label, icon, hint, danger, run }`，或 `{ node }` 塞任意节点
+   * （会话树里那根思考强度滑杆就是这么用的）。
+   * `at`：`{ x, y }`，通常是 `contextmenu` 事件的 clientX / clientY。
+   */
+  function menu(items, at) {
+    closeMenu();
+    var node = h('div.popmenu', { id: 'popmenu', role: 'menu' });
+    (items || []).forEach(function (item) {
+      if (item.node) {
+        node.appendChild(item.node);
+        return;
+      }
+      var row = h('button.popmenu__item' + (item.danger ? '.is-danger' : ''), {
+        type: 'button',
+        role: 'menuitem',
+        onClick: function () {
+          closeMenu();
+          if (item.run) item.run();
+        },
+      });
+      row.appendChild(
+        h('span.popmenu__ico', { html: item.icon && ICONS[item.icon] ? icon(item.icon, 15) : '' })
+      );
+      row.appendChild(h('span.popmenu__text', { text: item.label || '' }));
+      if (item.hint) row.appendChild(h('span.popmenu__hint', { text: item.hint }));
+      node.appendChild(row);
+    });
+    document.body.appendChild(node);
+
+    var x = at && typeof at.x === 'number' ? at.x : 0;
+    var y = at && typeof at.y === 'number' ? at.y : 0;
+    var box = node.getBoundingClientRect();
+    node.style.left = Math.min(x, window.innerWidth - box.width - 8) + 'px';
+    node.style.top = Math.min(y, window.innerHeight - box.height - 8) + 'px';
+
+    menuNode = node;
+    var hooks = {
+      away: function (ev) {
+        if (menuNode && !menuNode.contains(ev.target)) closeMenu();
+      },
+      key: function (ev) {
+        if (ev.key !== 'Escape') return;
+        // 菜单是"最上面那一层"：Esc 只该关它，不该顺手把底下的面板也关掉
+        ev.stopPropagation();
+        closeMenu();
+      },
+    };
+    menuHooks = hooks;
+    setTimeout(function () {
+      // 这一拍之内已经关了或换了新菜单：旧的那对监听不该再挂上去
+      if (menuNode !== node) return;
+      document.addEventListener('mousedown', hooks.away, true);
+      document.addEventListener('keydown', hooks.key, true);
+    }, 0);
+
+    return { node: node, close: closeMenu };
   }
 
   /* ------------------------------------------------------------- 主题 */
@@ -915,6 +1003,8 @@
     toast: toast,
     modal: modal,
     confirm: confirmDialog,
+    menu: menu,
+    closeMenu: closeMenu,
     theme: theme,
     statusbar: statusbar,
     progressBar: progressBar,

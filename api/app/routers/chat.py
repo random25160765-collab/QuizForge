@@ -60,7 +60,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from .. import agent_loop, share, skills as skill_lib, tools
+from .. import agent_loop, lens as lens_lib, share, tools
 from .. import ai_gateway as gateway
 from .. import attachments as attach
 from .. import parts as msgparts
@@ -84,11 +84,11 @@ def mounts_state(db: DbSession) -> dict:
     "图标亮着"与"模型看得到几个工具"必须能对得上，而这是唯一能证明它俩一致的办法
     （改完在界面上量一下 `declared` 的条数，就知道开关有没有真的接上）。
 
-    `skills` 是「滤镜」那份清单（`app/skills.py`）—— 它跟着这一份一起发，是为了让输入框旁
-    那颗药丸的勾选清单**不用自己抄一份名字**：加了新 skill，界面自动就有（抄成两份必然漂，这条吃过）。
+    `lens` 是「滤镜」那份清单（`app/lens.py`）—— 它跟着这一份一起发，是为了让输入框旁
+    那颗药丸的勾选清单**不用自己抄一份名字**：加了新滤镜，界面自动就有（抄成两份必然漂，这条吃过）。
     """
     out = mounts.describe(db)
-    out["skills"] = skill_lib.catalog()
+    out["lens"] = lens_lib.catalog()
     return out
 
 
@@ -350,11 +350,11 @@ GROUP_PROMPTS = {
         "写前自动留快照、能撤回，写完把那句原文念给他听。"
     ),
     "library": (
-        "资料：`attach_material` 按标题找条目、把正文节选读进上下文，`read_material` 精读某几十行。"
-        "**找段落有两条**：`search_material` 搜**我在学的材料**（值得精读与出题的那一档），"
-        "`search_library` 搜**资料库**（论文 / 白皮书这类「看看就好」的）。"
-        "两边检索方式完全一样（字面 + 向量融合），**在一个里没找到就去另一个里再问一次** ——"
-        "它们是两个书架，不是同一堆东西的两种搜法；只搜一个就说「没有」是最容易犯的错。"
+        # 2026-11-08：`search_library` 删掉 —— "资料库 / 书架"这层概念没了（只有材料与
+        # 切片）。`read_material` 保留：切片本身就是正文，本机没原文件时它也读得到。
+        "资料：`attach_material` 按标题找条目、把正文节选读进上下文，"
+        "`read_material` 把某几行原文调出来（本机没有原文件时它读的是切片正文）。"
+        "**找段落用 `search_material`**（字面 + 向量融合，`via` 会说清是哪条找到的）。"
         "**盘点「有没有 / 有几份」用 `list_materials`**（列 slug 与标题，没有盲区），"
         "别拿检索结果反推。"
         "`slug` 只是编号（`gpusgi`、`gpu-3926` 这种是文件名残片）—— **名字看 `title`**。"
@@ -424,6 +424,29 @@ GROUP_PROMPTS = {
         "`read_web_page`。引用时**把网址或 DOI 写上**，让他能点开核对；读不到就说读不到，"
         "不要拿摘要凑，也不要因为没搜到就改口编。"
     ),
+    "plan": (
+        "**计划与日程是两件事**，这一组两件都管，但别混着说：\n"
+        "* **计划**（`propose_plan` / `propose_plan_edit`）：一份目标 + 若干待办。"
+        "条目可以一直没有日期；有日期也只是「这天该做」，**不会自己出现在日历上**。"
+        "立计划时把 `focus`（deep/medium/light）与 `domain`（art/science/skill/other）带上 —— "
+        "自动排程靠它们决定排在上午还是晚上、文理怎么交替。\n"
+        "* **日程**（`propose_schedule` / `schedule_week`）：日历上的时间块，有起止时刻。"
+        "单块用 `propose_schedule`；**整周自动排用 `schedule_week`** —— 它会按精力曲线、"
+        "课表与作息一次排完，并给每块写上「为什么排在这」。\n"
+        "* **`get_energy`**：他今天还剩多少脑力（早/午/晚/现在）与深度预算。"
+        "他说累、没睡好、问「今天还能学多少」时先看它。**别把数值念给他**，只说结论。\n"
+        "**你只能提案。** 三个写工具都是 `propose` 档：界面上出一张卡片，"
+        "他点了「加入」/「应用」才真的落库（`proposalId` 保证点两次也只建一份）。"
+        "所以**在那之前不要说「已经排好了」「已经建好了」「已经加进去了」** —— "
+        "那时候库里什么都没有。要说「要不要我把它排进去」，而不是「我排好了」。\n"
+        "**卡片上已经有清单了，正文别再把同一份清单抄一遍** —— 那是让他读两遍。"
+        "正文只说一两句：为什么这样排、最要紧的是哪条。\n"
+        "**时间要换算**：他跟你说「明天下午两点」是**他那边的**时间，"
+        "`startAt`/`endAt` 要给带偏移的 ISO（`2026-11-09T14:00:00+08:00`）；"
+        "而 `list_schedule` 回来的时刻是 UTC —— 讲之前换算回去，别把 UTC 当本地时间说。\n"
+        "**先看再改**：动已有计划/日程之前先 `list_plans` / `list_schedule` 拿真 id，"
+        "猜一个 id 只会被拒。他不让排就先只留计划 —— 计划本来就可以不排期。"
+    ),
     "trees": (
         "**别的对话**在这一组。注意与你头顶那份「他的学习轨迹」的分工：那份是**这一条**"
         "对话的轨迹，每轮自动带上、不用你查；这一组管的是**别的**对话 —— "
@@ -445,7 +468,7 @@ GROUP_PROMPTS = {
 # 组名 → 中文，未挂时用来告诉模型"别提这些"。
 GROUP_LABELS = {
     "notes": "笔记", "library": "资料", "graph": "知识图谱", "quiz": "题库与进度",
-    "sandbox": "沙箱", "web": "联网", "trees": "对话树",
+    "sandbox": "沙箱", "web": "联网", "trees": "对话树", "plan": "计划与日程",
 }
 
 
@@ -463,8 +486,7 @@ GROUP_TOOLS = {
     # 兜底一旦被用到（`declared` 没传），模型会被告知"你只有那两个工具"。
     # 2026-11-07：`write_note` 并入 `edit_note`，写档只剩一个。
     "notes": ("list_notes", "read_note", "search_notes", "edit_note"),
-    "library": ("list_materials", "attach_material", "search_material", "search_library",
-                "read_material"),
+    "library": ("list_materials", "attach_material", "search_material", "read_material"),
     "graph": ("search_knowledge", "get_point_detail", "explore_graph"),
     # `read_learning_tree` **不再是工具**：轨迹是每轮自动带上的仪表盘
     #（见 `recursion.dashboard` 与 `build_prompt(..., dashboard=...)`）。
@@ -475,6 +497,9 @@ GROUP_TOOLS = {
     "web": ("web_search", "search_papers", "read_web_page"),
     # 森林那一层（`docs/对话树.md` §三）：翻**别的**对话。四个全是只读档。
     "trees": ("list_conversations", "search_conversations", "read_tree", "read_tree_nodes"),
+    # 计划与日程：两读三提案。**没有 write 档** —— 落库永远由他点那一下触发。
+    "plan": ("list_plans", "list_schedule", "get_energy", "propose_plan",
+             "propose_plan_edit", "propose_schedule", "schedule_week"),
 }
 
 
@@ -534,8 +559,37 @@ def mode_notice(previous, mounted, declared=None) -> str:
     )
 
 
+def wellbeing_notice(advice) -> str:  # noqa: ANN001
+    """把 `chat_intervention` 建议拼成交给模型的一段话。
+
+    **这里不判断"现在是不是 bedtime"**：劝睡只是众多建议之一，以后加
+    "病了就别学了"也走这条路。`severity == "hard"` 表示"这一条压过话题"。
+    """
+    lines: list[str] = []
+    hard = False
+    for one in advice:
+        if getattr(one, "kind", "") != "chat_intervention":
+            continue
+        lines.append(f"- {one.text}")
+        hard = hard or str(getattr(one, "severity", "")) == "hard"
+    if not lines:
+        return ""
+    out = "【身体状态（每轮都算，以本条为准）】\n" + "\n".join(lines)
+    if hard:
+        out += (
+            "\n**这一条压过话题**：先只回一句劝他去睡，不要再讲题、不要追问、不要给下一步安排。"
+            "他坚持要继续时，可以答，但每一轮都要先把这句提醒放在开头，而且答得越短越好。"
+        )
+    return out
+
+
 def build_prompt(
-    mounted, previous=None, declared=None, dashboard: str = "", skill_block: str = ""
+    mounted,
+    previous=None,
+    declared=None,
+    dashboard: str = "",
+    lens_block: str = "",
+    health: str = "",
 ) -> str:
     """按这一版挂载的组拼提示词。空集 = 极简模式（见 MINIMAL_PROMPT）。
 
@@ -546,9 +600,12 @@ def build_prompt(
     它不是工具（用户："对话轨迹是 llm 长期可见的用户信息仪表盘"），不受挂载影响 ——
     极简模式只是"没有工具"，不是"不认识这位用户"。
 
-    `skill_block` 是他从「滤镜」清单里装上的那些（`app/skills.py`），两种模式都带 ——
+    `lens_block` 是他从「滤镜」清单里装上的那些（`app/skills.py`），两种模式都带 ——
     它与挂载无关：那是"他要求我这一段怎么陪他"，不是"我能查什么"。放在靠后的位置：
     它是**这一轮的行为约束**，与 `mode_notice` 一样属于"现在最要紧的"。
+
+    `health` 是健康模块给的对话劝告（`wellbeing.chat_lines` 的同源数据，见
+    `wellbeing_notice`）。**两种模式都带**：极简模式只是"没有工具"，不是"看不见他现在该睡了"。
     """
     keys = [k for k in GROUP_PROMPTS if k in set(mounted or ())]
     if not keys:
@@ -562,8 +619,10 @@ def build_prompt(
                 out += "\n" + note
         if dashboard:
             out += "\n\n" + dashboard
-        if skill_block:
-            out += "\n\n" + skill_block + "\n\n" + SKILL_TAIL
+        if health:
+            out += "\n\n" + health
+        if lens_block:
+            out += "\n\n" + lens_block + "\n\n" + LENS_TAIL
         return out
     off = [GROUP_LABELS[k] for k in GROUP_PROMPTS if k not in set(mounted or ())]
     parts = [
@@ -578,8 +637,10 @@ def build_prompt(
         )
     if dashboard:
         parts.append(dashboard)       # 「他是谁、走到哪儿了」：每轮都带（见 recursion.dashboard）
-    if skill_block:
-        parts.append(skill_block + "\n\n" + SKILL_TAIL)
+    if health:
+        parts.append(health)          # 「他现在身体怎么样」：与工具挂载无关
+    if lens_block:
+        parts.append(lens_block + "\n\n" + LENS_TAIL)
     notice = mode_notice(previous, mounted, declared)
     if notice:
         parts.append(notice)          # 放最后：这是"现在"最要紧的一条
@@ -588,7 +649,7 @@ def build_prompt(
 
 #: 带着流程时，末尾那句提醒。放在**最靠后**（紧挨 `mode_notice`）是因为它压过一切：
 #: 一条"要不要换种讲法"的风格建议，不该把"讲的人是他"这件事盖掉。
-SKILL_TAIL = (
+LENS_TAIL = (
     "**上面这个流程压过别的风格要求**：它管的是这一轮**谁在做主**。"
     "与他平时的偏好（口吻、详细程度）冲突时，以流程为准。"
 )
@@ -2364,14 +2425,23 @@ def _stream(  # noqa: ANN001
         except Exception:  # noqa: BLE001
             trail = ""
 
-        # 他装上的滤镜（skill）：沿这条链从根往下取最近的那条记录（见 `app/skills.py`）。
+        # 他装上的滤镜（lens）：沿这条链从根往下取最近的那条记录（见 `app/lens.py`）。
         # 同样兜底 —— 一段加成性质的行为约束，不该让整轮生成失败。
         try:
-            from .. import skills as skill_lib
+            from .. import lens as lens_lib
 
-            flow = skill_lib.block(skill_lib.resolve(db, conv, user_msg))
+            flow = lens_lib.block(lens_lib.resolve(db, conv, user_msg))
         except Exception:  # noqa: BLE001
             flow = ""
+
+        # 他**现在**的身体状态（到点该睡了 / 今天只该学一小段）。
+        # 同样兜底：一条提示不该让整轮对话失败；算不出来就当没有。
+        try:
+            from .. import wellbeing as wellbeing_lib
+
+            health = wellbeing_notice(wellbeing_lib.evaluate(db, None)[3])
+        except Exception:  # noqa: BLE001
+            health = ""
 
         for event in agent_loop.run(
             db,
@@ -2380,7 +2450,7 @@ def _stream(  # noqa: ANN001
             # 它不该知道用户有笔记/资料/题库，见 build_prompt 的说明）
             # 仪表盘与流程都不受挂载影响 —— 它们不是工具，见 build_prompt 的说明。
             # 思考强度接在最末尾：它管的是"这一轮想多深"，与模式、口吻都无关。
-            system=build_prompt(turn_mounts, prev_mounts, turn_declared, trail, flow)
+            system=build_prompt(turn_mounts, prev_mounts, turn_declared, trail, flow, health)
             + thinking_line(thinking),
             history=history,
             tools=tools,

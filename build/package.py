@@ -143,37 +143,27 @@ def make_manifest() -> int:
 # --------------------------------------------------------------------- build
 
 
-#: 内测配置（**不进版本库**，见 .gitignore）：beta 通道的包把它带进去，
-#: 于是"没有自带密钥的人也能聊"。正式通道**不带**。
-BETA_CONFIG = ROOT / "config" / "ai.local.json"
+# 2026-11-08：`BETA_CONFIG`（内测配置）已随内测通道/分发通道一起删除。
 
 
 def build(
     verify_after: bool = True,
     dist: Path | None = None,
     work: Path | None = None,
-    channel: str = "beta",
+    clean: bool = False,
 ) -> int:
-    """出包。`dist` / `work` 可换到别处，`channel` 决定通道（默认内测）。
+    """出包。`dist` / `work` 可换到别处。
+
+    2026-11-08：**分发通道删除**，只有一个版本 —— 产物固定叫 `quizforge`，
+    包里不再写 `channel.json`，也不再带内测配置（那份早随内测通道一起没了）。
 
     为什么 `dist` / `work` 需要能换：仓库如果在 WSL 里，Windows 侧看到的是 UNC 路径
     （`\\\\wsl.localhost\\…`），而 PyInstaller 在 UNC 上写工作目录不稳。
     把工作目录与产物落到本机盘上、源码仍从 UNC 读，就绕开了这件事。
 
-    ## 通道怎么进包（内测和正式要分开）
-
-    冻结之后读不到环境变量，所以把通道**写进包**：
-
-    * `channel.json`（包根）—— 应用启动时靠它认自己是哪条通道（见 `config._default_channel`）；
-    * `config/ai.local.json`（内测配置）—— **只有 beta 包带**，正式包连文件都没有，
-      所以正式包不可能用到站长的额度；
-    * 产物名字也分开：`quizforge-beta` / `quizforge`。
     """
     dist_dir = dist or DIST_DIR
     work_dir = work or WORK_DIR
-    if channel not in ("beta", "release"):
-        print(f"通道只认识 beta / release，收到的是 {channel!r}")
-        return 2
     if not LAUNCHER.is_file():
         print(f"找不到入口 {LAUNCHER}")
         return 2
@@ -193,33 +183,41 @@ def build(
     if staging.is_dir():
         shutil.rmtree(staging, ignore_errors=True)
     (staging / "config").mkdir(parents=True, exist_ok=True)
-    (staging / "channel.json").write_text(
-        json.dumps(
-            {"channel": channel, "builtAt": time.strftime("%Y-%m-%dT%H:%M:%S")},
-            ensure_ascii=False,
-            indent=1,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    # 只带**样例**：新用户照着它写 `%USERPROFILE%\quizforge\config\settings.local.json`，
+    # 或者干脆在设置页里填（界面写的也是同一个位置）。真实配置与密钥绝不进包。
+    example = ROOT / "config" / "settings.example.json"
+    if example.is_file():
+        shutil.copy2(example, staging / "config" / "settings.example.json")
 
-    if channel == "beta":
-        if not BETA_CONFIG.is_file():
-            print(f"beta 通道要带内测配置，但 {BETA_CONFIG} 不在 —— 先把它放好再打内测包")
-            return 2
-        shutil.copy2(BETA_CONFIG, staging / "config" / "ai.local.json")
-        print("通道：beta（内测）—— 带上内测配置，试用的人不用自带密钥")
-    else:
-        print("通道：release（正式）—— **不带**内测配置，用各人自己的密钥")
+    # `pipeline/`（延迟导入的那几个模块 + 它们的提示词）也必须进包：
+    # 资料页的"抓正文""模型归类"走的是 `from pipeline import htmlmd / doc_classify`。
+    # 只挑 `.py` 与 `prompts/` —— 那颗 38M 的 `state.sqlite3` 是出题机的状态库，
+    # 跟运行期无关，打进去只会把包撑大一倍。
+    pipeline_out = staging / "pipeline"
+    pipeline_src = ROOT / "pipeline"
+    copied = 0
+    if pipeline_src.is_dir():
+        pipeline_out.mkdir(parents=True, exist_ok=True)
+        for src in sorted(pipeline_src.glob("*.py")):
+            shutil.copy2(src, pipeline_out / src.name)
+            copied += 1
+        prompts = pipeline_src / "prompts"
+        if prompts.is_dir():
+            shutil.copytree(prompts, pipeline_out / "prompts")
+            copied += sum(1 for _ in (pipeline_out / "prompts").rglob("*") if _.is_file())
+        print(f"· 只读资源：pipeline {copied} 个文件")
 
-    name = "quizforge-beta" if channel == "beta" else "quizforge"
+    name = "quizforge"
     separator = os.pathsep  # Windows 是 ';'，POSIX 是 ':' —— 别写死
     args = [
         sys.executable,
         "-m",
         "PyInstaller",
         "--noconfirm",
-        "--clean",
+        # `--clean` 每次清掉 PyInstaller 的缓存 → 重新分析所有模块，多花 1-2 分钟。
+        # 日常出包不需要它（依赖没变时增量分析 20-40 秒就够）；只有改了依赖、
+        # 或排查"明明装了却没进包"这类问题时才加。
+        *(["--clean"] if clean else []),
         "--onefile",
         "--name",
         name,
@@ -241,9 +239,7 @@ def build(
         # 哈希清单要跟着包走，否则打包后校验不了（会退化成"每次都下"）
         "--add-data",
         f"{MANIFEST_FILE}{separator}build",
-        # 通道声明与内测配置：冻结后读不到环境变量，通道只能靠包里的文件认
-        "--add-data",
-        f"{staging / 'channel.json'}{separator}.",
+        # 本地设置目录锚点：`config/` 里放 `settings.example.json` 等只读样例
         "--add-data",
         f"{staging / 'config'}{separator}config",
         # 题库解析器与校验器（352K）。**不能省**：出题流水线用它
@@ -251,6 +247,11 @@ def build(
         # 而 A 段的"资料即入库口"会让桌面应用去跑那条流水线
         "--add-data",
         f"{ROOT / 'tools'}{separator}tools",
+        # `pipeline/`：资料页两个按钮的延迟导入（见上面 staging 那段）。
+        # **滤镜（`lens/`）不带**：它是用户自己的数据，桌面包第一次启动就是 0 条
+        #（用户："打包的应用默认没有滤镜"）—— 仓库里那份只是开发机上的预置。
+        "--add-data",
+        f"{pipeline_out}{separator}pipeline",
         # Windows 上**不要终端窗口**（用户原话："双击之后会跳出来一个终端"）：
         # 启动进度改由启动页显示，日志落在数据目录的 `quizforge.log`，
         # 起不来的话弹一个系统对话框（见 build/launcher.py 的 `_ensure_streams` / `_fatal`）。
@@ -280,11 +281,11 @@ def build(
         return 1
 
     size_mb = artifact.stat().st_size / 1024 / 1024
-    print(f"\n产物：{artifact}（{size_mb:.1f} MB）· 通道 {channel}")
+    print(f"\n产物：{artifact}（{size_mb:.1f} MB）")
     print("  包外的东西：Pyodide 运行时（76M）—— 第一次打开时取一次进本机缓存")
 
     if verify_after:
-        return verify(artifact, expected_channel=channel)
+        return verify(artifact)
     return 0
 
 
@@ -360,9 +361,7 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def verify(
-    artifact: Path, timeout_s: float = 120.0, expected_channel: str | None = None
-) -> int:
+def verify(artifact: Path, timeout_s: float = 120.0) -> int:
     """把产物**真的跑起来**，看它能不能读出一个真实题库。
 
     这一步验的是打包最容易坏、又最晚才被发现的三件事：
@@ -417,6 +416,7 @@ def verify(
     page_ok = False
     splash_ok = False
     startup_report: dict | None = None
+    mounts: dict | None = None
     write_ok = False
     write_detail = ""
     deadline = time.time() + timeout_s
@@ -442,6 +442,11 @@ def verify(
                 # 启动检查接口本身也要能答（启动页靠它画进度）
                 with urllib.request.urlopen(f"{base}/api/startup", timeout=5) as response:
                     startup_report = json.loads(response.read().decode("utf-8"))
+                # 滤镜那份清单（`mounts.lens`）：它是"界面上少一块"的那一类 ——
+                # 接口全绿、页面不报错，只是药丸里空着。新装的包本来就 0 条，
+                # 所以只验"取得到、是数组"。
+                with urllib.request.urlopen(f"{base}/api/chat/mounts", timeout=5) as response:
+                    mounts = json.loads(response.read().decode("utf-8"))
                 break
             except (urllib.error.URLError, TimeoutError, OSError, ValueError):
                 time.sleep(0.5)
@@ -490,13 +495,25 @@ def verify(
     bank = (health or {}).get("bank") or {}
     ai = (health or {}).get("ai") or {}
     questions = int(bank.get("questions") or 0)
-    channel = str((health or {}).get("channel") or "")
     schema_problems = _schema_problems(db_file)
+    # 滤镜是**用户数据**（`<数据目录>/lens/*.md`）：新装的包本来就该是 0 条，
+    # 所以这里只看"这份清单取得到、格式对"，**不比条数**。
+    lens_rows = (mounts or {}).get("lens")
+    lens_ok = isinstance(lens_rows, list)
+    lens_count = len(lens_rows) if lens_ok else 0
+    # 启动检查里那一条"只读资源"（pipeline / 演示套件）的结论
+    assets_step = next(
+        (step for step in (startup_report or {}).get("steps") or [] if step.get("key") == "assets"),
+        None,
+    )
     print(f"  接口：{'通了' if health else '没通'} · 静态页面：{'在' if page_ok else '没拿到'}")
     print(f"  启动页与图标：{'在' if splash_ok else '没拿到'} · 启动检查：{'有 %d 条' % len((startup_report or {}).get('steps') or []) if startup_report else '没应答'}")
+    print(f"  滤镜清单：{'取得到' if lens_ok else '**取不到**'}（{lens_count} 条 —— 新装就是 0 条）"
+          + (" · 只读资源 ✓" if (assets_step or {}).get("status") == "ok"
+             else " · **只读资源有问题**：" + str((assets_step or {}).get("detail") or "没这条检查")))
     print(f"  题库：{questions} 题 · 主题 {bank.get('topics', 0)}")
-    print(f"  通道：{channel or '（没报）'} · 内测额度：{'可用' if ai.get('betaEnabled') else '不可用'}"
-          f"（密钥{'已带' if ai.get('betaConfigured') else '未带'}）")
+    print(f"  AI：{'开着' if ai.get('enabled') else '关着'}"
+          f"（模式 {ai.get('mode') or '—'}）")
     print(f"  库文件：{'在' if db_file.is_file() else '不在（有问题）'}（{db_file.name}）")
     print(f"  写一次库：{'成功' if write_ok else '失败 —— ' + (write_detail or '没试成')}")
     print(f"  库结构体检：{'没问题' if not schema_problems else '**有问题**'}")
@@ -519,16 +536,16 @@ def verify(
         problems.append(f"写库失败（能启动能读、但写不进去）：{write_detail}")
     if schema_problems:
         problems.append("库结构体检没过：" + "；".join(schema_problems))
-    if expected_channel and channel != expected_channel:
-        problems.append(f"通道不对：期望 {expected_channel}，包自称 {channel or '（空）'}")
-    if expected_channel == "beta":
-        # 内测包的立身之本：**不带密钥也能聊**。密钥没进包 = 这个包是废的
-        if not ai.get("betaEnabled"):
-            problems.append("内测包里内测额度不可用（通道没认成 beta？）")
-        if not ai.get("betaConfigured"):
-            problems.append("内测包里没有内测密钥（config/ai.local.json 没打进去？）")
-    if expected_channel == "release" and ai.get("betaEnabled"):
-        problems.append("正式包里内测额度却是可用的 —— 内测和正式没分开")
+    # 这一类症状是"界面上少一块"，接口与页面本身都正常 —— 不这么盯就查不出来。
+    # 滤镜的**条数不比**（新装就是 0 条），但那份清单必须**取得到**：
+    # 取不到说明 `/api/lens` 那组路由或 `mounts.lens` 字段没接上，药丸里会是一片空。
+    if not lens_ok:
+        problems.append("/api/chat/mounts 里没有 lens 清单（滤镜药丸会空着）")
+    if (assets_step or {}).get("status") != "ok":
+        problems.append(
+            "只读资源那条启动检查不是 ok：" + str((assets_step or {}).get("detail") or "（没这条检查）")
+        )
+    # 2026-11-08：通道删除后这里不再有"包属于哪条通道"的检查
     if problems:
         print("自检没过：")
         for item in problems:
@@ -549,17 +566,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("manifest", help="从 vendor/pyodide 生成哈希清单")
     build_parser = sub.add_parser("build", help="出单文件可执行程序")
     build_parser.add_argument("--no-verify", action="store_true", help="不出包后自检")
+    build_parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="清掉 PyInstaller 缓存再打（改了依赖或排查缺模块时才加，会多花 1-2 分钟）",
+    )
     build_parser.add_argument("--dist", help="产物目录（默认 build/dist）")
     build_parser.add_argument("--work", help="PyInstaller 工作目录（默认 build/.pyinstaller）")
-    build_parser.add_argument(
-        "--channel",
-        choices=("beta", "release"),
-        default="beta",
-        help="通道：beta（内测，带走内测配置，默认）/ release（正式，不带）",
-    )
     verify_parser = sub.add_parser("verify", help="把产物跑起来自检")
     verify_parser.add_argument("artifact", help="可执行文件路径")
-    verify_parser.add_argument("--channel", choices=("beta", "release"), help="期望的通道")
 
     args = parser.parse_args(argv)
     if args.cmd == "manifest":
@@ -569,10 +584,10 @@ def main(argv: list[str] | None = None) -> int:
             verify_after=not args.no_verify,
             dist=Path(args.dist) if args.dist else None,
             work=Path(args.work) if args.work else None,
-            channel=args.channel,
+            clean=args.clean,
         )
     if args.cmd == "verify":
-        return verify(Path(args.artifact), expected_channel=args.channel)
+        return verify(Path(args.artifact))
     return 2
 
 

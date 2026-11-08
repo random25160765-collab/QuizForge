@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -35,9 +36,23 @@ EXAMPLE_PATH = REPO_ROOT / "config" / "settings.example.json"
 _cache: dict[str, Any] = {"path": "", "mtime": 0.0, "data": None}
 
 
+def _default_path() -> Path:
+    """设置文件默认在哪。
+
+    **打包后必须跟数据目录走**（`~/quizforge/config/settings.local.json`）。
+    冻结时 `__file__` 落在 PyInstaller 的解包临时目录（`%TEMP%\\_MEIxxxx`），
+    照 `DEFAULT_PATH` 走的话，设置会写进那个每次启动都不同的临时目录 ——
+    用户改完重启就没了（实测：安装版的 `/api/settings` 报的正是
+    `C:\\...\\AppData\\Local\\Temp\\config\\settings.local.json`）。
+    """
+    if getattr(sys, "frozen", False):
+        return Path.home() / "quizforge" / "config" / "settings.local.json"
+    return DEFAULT_PATH
+
+
 def path() -> Path:
     raw = os.environ.get("QF_SETTINGS_FILE", "").strip()
-    return Path(raw).expanduser() if raw else DEFAULT_PATH
+    return Path(raw).expanduser() if raw else _default_path()
 
 
 def exists() -> bool:

@@ -10,13 +10,17 @@
   var ui = QF.ui;
   var h = ui.h;
 
-  // key 与 buildSettings() 里各段的顺序一一对应（第 i 段配第 i 组）
+  // key 与 buildSettings() 里那几段的顺序一一对应（第 i 段配第 i 组）。
+  // 加段/挪段时**两边要一起改** —— 对不上时导航会滚到邻段（加"同步"那段时就漂过一次，
+  // 点「数据」落到了同步上）。
   var GROUPS = [
     { key: 'ai', label: 'AI', hint: '密钥 / 模型 / 上下文' },
     { key: 'search', label: '联网搜索', hint: '服务商与密钥' },
     { key: 'obsidian', label: 'Obsidian', hint: 'vault 路径与连接' },
     { key: 'appearance', label: '外观', hint: '主题 / 字号 / 宽度' },
-    { key: 'sync', label: '同步', hint: 'Turso 地址与令牌' },
+    { key: 'sync', label: '同步', hint: 'Turso 跨机器' },
+    { key: 'calendar', label: '日历', hint: '课表 / iCalendar 订阅' },
+    { key: 'health', label: '作息与健康', hint: '入睡 / 精力 / 门禁' },
     { key: 'data', label: '数据', hint: '导入 / 导出 / 清空' },
   ];
 
@@ -24,6 +28,10 @@
   var navEl = null;
   var sections = [];
   var scrollRaf = 0;
+  //: `#set-*` 只认一次：重画（导入/清空之后）不该把人拽回原来那一段
+  var hashDone = false;
+  //: 刚做过程序化跳转的时刻：这段时间内不按滚动位置改高亮
+  var jumpUntil = 0;
 
   /** 真正在滚的是舞台里那个 `.view`（见 app.css 的 `.stage > .view`），不是 window。 */
   function viewEl() {
@@ -62,19 +70,28 @@
     if (scrollRaf) return;
     scrollRaf = window.requestAnimationFrame(function () {
       scrollRaf = 0;
+      if (Date.now() < jumpUntil) return;
       markActive(activeKeyNow());
     });
   }
 
-  /** 点分类：滚到那一段（留 12px 顶部余量；`.view` 自己有内距，别顶死）。 */
-  function scrollToKey(key) {
+  /** 点分类：滚到那一段（留 12px 顶部余量；`.view` 自己有内距，别顶死）。
+   *
+   *  `instant` 给"带锚点进来"那一次用：页面刚拼好时字体、图标还在落位，
+   *  平滑滚动会停在一个过时的偏移上（实测停在上一段，导航却已经跳过去了）。
+   *
+   *  跳完要**压住**滚动位置驱动的重算几百毫秒：靠后的那几段本来就顶不到视口上方，
+   *  或者栈底时按"最后一段"算，于是刚点亮的那一项会立刻被旁边那段抢走高亮。
+   */
+  function scrollToKey(key, instant) {
     var view = viewEl();
     if (!view) return;
     for (var i = 0; i < sections.length; i++) {
       if (sections[i].dataset.setKey !== key) continue;
       var delta = sections[i].getBoundingClientRect().top - view.getBoundingClientRect().top;
-      view.scrollTo({ top: view.scrollTop + delta - 12, behavior: 'smooth' });
+      view.scrollTo({ top: view.scrollTop + delta - 12, behavior: instant ? 'auto' : 'smooth' });
       markActive(key);
+      jumpUntil = Date.now() + 600;
       return;
     }
   }
@@ -124,6 +141,20 @@
     }
     markActive(activeKeyNow());
     if (view && keep) view.scrollTop = keep;
+
+    /* 从别处带 `#set-calendar` 过来（日程页那条"课表来自哪份订阅"）：
+     * 直接落到那一段，而不是让人自己在一列分类里找。只做一次 —— 之后的重画
+     * 是用户自己动出来的，再跳回去就成了"点了别处又被拽回来"。 */
+    if (!hashDone) {
+      hashDone = true;
+      var want = String(window.location.hash || '').replace(/^#set-/, '');
+      if (want && want !== window.location.hash) {
+        // 等一帧多的余量再跳：字体与图标落位之后 `getBoundingClientRect` 才是终值
+        window.setTimeout(function () {
+          scrollToKey(want, true);
+        }, 120);
+      }
+    }
   }
 
   function boot() {

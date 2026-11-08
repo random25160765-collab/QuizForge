@@ -33,6 +33,13 @@ PyYAML>=6.0
 # --- 服务端调用模型 ---
 httpx>=0.28
 
+# --- 自动排程（**可选**）---
+# 装了走 CP-SAT（排得细，7 天 × 48 槽约 1–2 秒）；没装自动降级成纯 Python 后备
+# （贪心 + 局部交换，硬约束一样、软约束粗一点，见 app/scheduler.py）。
+# 所以这里**默认不装**：某些 Python 版本还没有 wheel，装不上不该阻断整个项目。
+# 想开就手动一句：api/.venv/bin/pip install ortools
+# ortools>=9.10
+
 # --- 测试 ---
 pytest>=8.3
 

@@ -32,7 +32,12 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from sync_win import _decode, _powershell  # noqa: E402  （共用：GBK 解码与 PowerShell 调用）
-VENV_DIR = "qf-build/.venv"          # 相对 Windows 的 %USERPROFILE%
+#: 构建目录（相对 Windows 的 `%USERPROFILE%`）。**必须与 `dist_win.py` 的 `WIN_HOME`
+#: 一致**：一个说 `qf-build`、另一个说 `Desktop\QF_dist` 时，venv 与镜像会各建一份，
+#: 症状只是"打包时找不到 python"（实测为它白查过一轮）。
+WIN_HOME_REL = "Desktop\\QF_dist"
+VENV_DIR = WIN_HOME_REL + "\\.venv"
+MIRROR_REL = WIN_HOME_REL + "\\src"
 PYTHON_VERSION = "3.12"
 WINGET_ID = f"Python.Python.{PYTHON_VERSION}"
 
@@ -46,7 +51,7 @@ def _windows_venv_python() -> str:
     必须是双引号：PowerShell 里单引号不做变量展开，`& '$env:USERPROFILE\\…'`
     会当成一个名叫 `$env:USERPROFILE\…` 的程序去找（实测报 CommandNotFoundException）。
     """
-    return '"$env:USERPROFILE\\' + VENV_DIR.replace("/", "\\\\") + '\\Scripts\\python.exe"'
+    return '"$env:USERPROFILE\\' + VENV_DIR + '\\Scripts\\python.exe"'
 
 
 
@@ -111,20 +116,20 @@ def main(argv: list[str] | None = None) -> int:
         if code != 0:
             print("· 建 venv…")
             code, out = _powershell(
-                f"& \"{python_exe}\" -m venv \"$env:USERPROFILE\\qf-build\\.venv\""
+                f"& \"{python_exe}\" -m venv \"$env:USERPROFILE\\{VENV_DIR}\""
             )
             if code != 0:
                 problems.append(f"建 venv 失败：{out.strip()[-300:]}")
         if code == 0:
-            print("✓ venv：%USERPROFILE%\\qf-build\\.venv")
+            print(f"✓ venv：%USERPROFILE%\\{VENV_DIR}")
 
     # ③ 依赖（判据：能不能 import 那几样，而不是"跑没跑过 pip"）
     #
-    # 从**镜像**里读 requirements（`%USERPROFILE%\qf-build\src\…`）：
+    # 从**镜像**里读 requirements（`%USERPROFILE%\Desktop\QF_dist\src\…`）：
     # 那是 Windows 本地路径，pip 读得稳；从 WSL 仓库读要走 UNC，
     # 而 UNC 在 pip / PyInstaller 这类工具上时好时坏（踩过）。所以顺序是
     # `win-sync` 再 `win-setup`——镜像没有就如实说。
-    mirror = "$env:USERPROFILE\\qf-build\\src"
+    mirror = "$env:USERPROFILE\\" + MIRROR_REL
     if not problems:
         code, out = _powershell(
             f"if (Test-Path \"{mirror}\\api\\requirements.txt\") {{ exit 0 }} else {{ exit 1 }}"
@@ -153,6 +158,23 @@ def main(argv: list[str] | None = None) -> int:
                         problems.append(f"依赖装完仍然 import 不了：{out.strip()[-300:]}")
             if code == 0 and not problems:
                 print("✓ 依赖 + PyInstaller")
+
+    # ④ 桌面外壳要的 Node —— 装包那一步（electron-builder）跑在它上面
+    #
+    # 不装它：那是**用户机器上的全局软件**，不该由这个脚本悄悄装（也说不清装哪个版本）。
+    # 只如实报出来，缺了给出安装命令。
+    code, out = _powershell(
+        'if (Test-Path "C:\\Program Files\\nodejs\\node.exe") { '
+        '& "C:\\Program Files\\nodejs\\node.exe" -v } else { "MISSING" }'
+    )
+    node = out.strip().splitlines()[-1].strip() if out.strip() else "MISSING"
+    if "MISSING" in node or code != 0:
+        problems.append(
+            "Windows 上没有 Node —— 外壳的安装包要它：`winget install --id OpenJS.NodeJS.LTS "
+            "--exact --accept-package-agreements --accept-source-agreements`"
+        )
+    else:
+        print(f"✓ Node：{node}")
 
     if problems:
         print("\n没准备好：")

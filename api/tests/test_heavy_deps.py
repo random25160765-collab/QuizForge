@@ -90,40 +90,22 @@ def test_manifest_file_is_valid_json() -> None:
     assert payload["bytes"] > 0
 
 
-def test_data_dir_is_out_of_the_bundle_and_per_channel() -> None:
-    """打包后数据目录：在**用户主目录**下，且**按通道分开**。
+def test_data_dir_is_out_of_the_bundle() -> None:
+    """打包后数据目录：在**用户主目录**下（`~/quizforge`）。
 
-    两条都是定下来的取舍：
+    不能用 `<根>/data` —— 单文件模式里那个"根"是 `%TEMP%`，用户的库会住在
+    临时目录里（既不好找，也可能被清理工具收走）。
 
-    ① 不能用 `<根>/data` —— 单文件模式里那个"根"是 `%TEMP%`，用户的库会住在
-       临时目录里（既不好找，也可能被清理工具收走）；
-    ② 内测与正式必须分开（用户原话"内测和正式要分开"）—— 同一台机器上跑两个包，
-       库、作答记录、以后的笔记与资料互不干扰。
+    2026-11-08：分发通道删除后只有一个位置；老包留下的 `~/quizforge-beta`
+    会被一次性搬到这儿（见 `frozen_data_dir`）。
     """
     from pathlib import Path
 
     from app import config
 
-    assert config.frozen_data_dir("beta") == Path.home() / "quizforge-beta"
-    assert config.frozen_data_dir("release") == Path.home() / "quizforge"
-    assert config.frozen_data_dir("beta") != config.frozen_data_dir("release")
+    assert config.frozen_data_dir() == Path.home() / "quizforge"
 
 
 # 2026-11-07：内测通道（`beta_active` / `is_beta` / `ai_beta_enabled`）整块删除。
-# 原来这里那两条用例测的是"正式包不会用到站长的额度" —— 现在连"站长那份"都没有了，
-# 用例随之作废。`ai_beta_config_file` 这个路径字段还在，但它只是"本地配置目录"的锚点
-# （`local_embed.py` 用它找同目录的 `embed.local.json`）。
-
-
-def test_channel_comes_from_env_then_bundle(monkeypatch) -> None:  # noqa: ANN001
-    """通道的来源顺序：环境变量 > 包里带的 `channel.json` > 默认。
-
-    冻结之后没有环境变量可读，所以打包时会把通道写进包里 —— 这条用例验的是
-    "包里的声明能被读到"这条路径。
-    """
-    from app import config
-
-    monkeypatch.setenv("QF_CHANNEL", "release")
-    assert config._default_channel() == "release"  # noqa: SLF001
-    monkeypatch.setenv("QF_CHANNEL", "whatever")  # 不认识的取值不该被当真
-    assert config._default_channel() == "beta"  # noqa: SLF001
+# 2026-11-08：分发通道（`beta` / `release`）也删除 —— 只有一个版本，`frozen_data_dir()`
+# 不再收参数、包里也不再带 `channel.json`。原来那两条各自验通道的用例随之作废。

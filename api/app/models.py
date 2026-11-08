@@ -643,6 +643,10 @@ class MaterialSlice(Base):
     tokens: Mapped[str] = mapped_column(String(32), default="", nullable=False)
     figures: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     summary: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 切片**正文**（2026-11-08 加）：原先只有行区间指针，正文留在原文件里；
+    #: 用户要"换一台机器也能访问材料库"，所以正文必须跟着切片走。
+    #: 由 `make library-texts` 从原文件按行区间截取填入（切片覆盖 625333 行 ≈ 全文）。
+    text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     #: 这一片**该有几个窗口**（向量化时写进来；0 = 还不知道）。
     #:
     #: 它是给**对账**用的缓存，不是权威：真正的答案是拿正文重算（`pipeline/ops.py` 的
@@ -1019,4 +1023,342 @@ class Attachment(Base):
     text: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), nullable=False
+    )
+
+
+class LibraryJob(Base):
+    """资料流水线里的一条任务：`queued → running → done`（可暂停 / 取消 / 重试）。
+
+    为什么进库而不是放内存：拖一批文件进来，页面关掉再打开还得看得见队列；
+    暂停、继续、取消都要跨请求活着。执行器是 `app/jobs.py` 那条单线程 ——
+    解析与向量化都是 CPU 活，并发只会互相抢。
+
+    进度只在**阶段边界**写（`parse` → `slice` → `embed` → `done`），不是每写一片
+    就更新一次：一条切片写到一半被打断就是半个材料。
+    """
+
+    __tablename__ = "library_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    #: 相对资料根的路径（页面就显示这个，拖进来时与上传接口的 `rel` 同一套）
+    rel: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 绝对路径：`ingest.ingest_file` 直接吃它
+    path: Mapped[str] = mapped_column(Text, default="", nullable=False, index=True)
+    #: queued / running / canceled / done / failed（`paused` 是全局开关，不落在这列）
+    status: Mapped[str] = mapped_column(String(16), default="queued", nullable=False, index=True)
+    #: 空串 = 还没开始；parse / slice / embed / done
+    stage: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    #: 给人看的一句话（阶段名、完成摘要、失败原因截断 400 字）
+    message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 跑完写进来的材料 slug；失败或取消时为空
+    material_slug: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ============================================================================ 计划与日程
+#
+# **计划与日程是两件事，这是这一块唯一的硬约束。**
+#
+# * 计划（`plans` + `plan_items`）是"要做什么"：一份计划下挂若干条目，条目可以
+#   没有日期（"把 tt-metal 那章读完"），有了日期也只是**日历日**（`due_date`）——
+#   它表示"这天该做"，不表示"这天下午三点到四点做"。
+# * 日程（`schedule_events`）是"哪个时段做什么"：有起止时刻，落在时间轴上。
+#   它可以由某个条目排期而来（`item_id`），也可以是凭空排的一件事（`item_id` 为空）。
+#
+# 所以：**条目带 due_date 不等于它进了日程**，反过来**日程也不要求先有条目**。
+# 合并成一张表最省事，但那样就再也表达不了"这个计划我还没排期" ——
+# 而这正是用户立计划时最常见的状态。
+#
+# 主键用 `uuid4().hex` 而不是自增整数：自增 id 在两台机器上必然撞号，
+# 而 `sync._build_specs()` 只给 `messages` / `conversation_folders` 开了
+# "用 uid 当同步身份"的特例；文本主键天然可跨机，不必再改那段。
+def _plan_uid() -> str:
+    return uuid.uuid4().hex
+
+
+class Plan(Base):
+    """一份计划：AI 在对话里订的，或者自己在日程页建的。
+
+    `proposal_id` 是**凭条幂等键**：对话里那张卡片被点两次、断网重试、
+    或者前后端各存了一份，都只会落到同一份计划上（唯一索引兜底）。
+    """
+
+    __tablename__ = "plans"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    proposal_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    title: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: active / archived（归档只是收起来，不删条目）
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False, index=True)
+    #: chat（AI 订的，用户确认过）/ manual（自己建的）—— 只影响界面上的来源标记
+    source: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class PlanItem(Base):
+    """计划里的一条待办。
+
+    `due_date` 是 **Date 不是 DateTime**：它表示日历上的一天。
+    存成时刻就必须先决定"几点"，而那个几点会随机器时区漂 ——
+    "周三做完"跨时区不该变成"周二晚上"。
+    """
+
+    __tablename__ = "plan_items"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    plan_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("plans.id"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(300), default="", nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 哪一天该做（可空 = 还没排日子）
+    due_date: Mapped[date_type | None] = mapped_column(Date, nullable=True, index=True)
+    important: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 预计要花多少分钟（0 = 没估）。排期时用它当默认时长。
+    estimate_min: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # ---- 自动排程要用的元数据（2026-11-08）----
+    #: 专注度需求：light / medium / deep。`deep` 只能落在高精力时段（见 wellbeing）
+    focus: Mapped[str] = mapped_column(String(12), default="medium", nullable=False)
+    #: 学科归类：art / science / skill / other。文理交替与门禁默认映射都看它
+    domain: Mapped[str] = mapped_column(String(12), default="other", nullable=False)
+    #: 能不能拆成几块。不能拆的（"听完这一讲"）整块排，装不下就不排
+    splittable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: 单块上限（0 = 用求解器默认的 90 分钟）
+    max_chunk_min: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: 最早哪天可以开始（和 `due_date` 一起夹出可用窗口）
+    earliest_date: Mapped[date_type | None] = mapped_column(Date, nullable=True)
+    #: 质量门禁策略 key（空 = 按 domain 的默认映射，见 `app/gates.py`）
+    gate: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    #: 关联的知识点 key（测验门禁按它抽题；空列表 = 不指定）
+    points: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    done_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    sort: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ScheduleEvent(Base):
+    """日程上的一个时间块。
+
+    三处来源，**互不依赖**：
+
+    * `item_id` 非空 —— 从某条待办排过来的（标题仍存在本行，排期时可以改叫别的）；
+    * `sub_id` 非空 —— 从一份日历订阅（iCalendar）同步来的；
+    * 两者都为空 —— 在日历上直接新建的。
+
+    订阅来的块带 `uid` / `occurrence`：同一条 ICS 事件会展开成很多块（每周一次），
+    `(uid, occurrence)` 是其中一块的**稳定身份**，重新同步时靠它认"还是那一块"，
+    而不是按标题时间瞎猜（课表里同名同时间的两节课是有的）。
+    """
+
+    __tablename__ = "schedule_events"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    #: 凭条幂等键（与 `plans.proposal_id` 同一个用途）：同一张排期卡点两次
+    #: 不该在日历上排出两块一样的。手动新建的事件这里为空。
+    proposal_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    item_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("plan_items.id"), nullable=True, index=True
+    )
+    #: 来自哪份订阅（见下面 `CalendarSubscription`）。为空 = 不是订阅读进来的。
+    sub_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    #: ICS 的 UID + 这一次发生的原始开始时刻（UTC，`20261109T060000Z`）。
+    uid: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    occurrence: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    title: Mapped[str] = mapped_column(String(300), default="", nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 地点（ICS 的 LOCATION）：课表的教室就写在这里，悬停与日视图那栏会读它
+    location: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    start_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False, index=True)
+    end_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+    #: 全天事件：起止落在同一日历日的 00:00–24:00，渲染时不占时间轴的高度
+    all_day: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 用户动过这一块（拖过 / 改过标题）。重新同步时**跳过**它：
+    #: 订阅是"别处的事实"，但用户把一节课挪到晚上这件事也是事实，不该被抹掉。
+    detached: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 用户钉住了这一块：求解器不许挪它（与"订阅块不动"是两套理由，一起生效）
+    locked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: 哪一次重排产生的（`schedule_runs.id`）。重排只回收**自己排的**，不动别人
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class CalendarSubscription(Base):
+    """一份日历订阅：一个 iCalendar 地址（http/https），同步成日历上的块。
+
+    用户的原话是"我们的日历需要支持标准协议"，所以这里不认识"课表"：
+    地址给什么（课表、会议、节假日）就同步什么，解析见 `app/ics.py`。
+
+    `url` 里常常带着**能力令牌**（学校课表的地址就是一串 JWT，拿到地址就能读到
+    整个人的课表）。因此这张表在 `datapack.BOUNDARY` 里归 `derived`：
+    不上云、不进用户包 —— 换台机器重新订阅一次即可，而同步下来的时间块
+    （`schedule_events`）本身是用户数据，照常同步。
+    """
+
+    __tablename__ = "calendar_subscriptions"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    url: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 显示名：优先取 ICS 的 `X-WR-CALNAME`，没有就用主机名
+    title: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_sync_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    #: 给人看的一句话：`已同步 342 块` / 失败原因（截断）
+    last_result: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class SleepLog(Base):
+    """一条睡眠记录：只记**两端**，时长是算出来的。
+
+    为什么不让用户填"昨晚睡了 7 小时"：那样就丢掉了"几点睡"。而作息漂移
+    （凌晨三点睡够八小时）与规律作息的差别，正是健康模块要看的 —— 睡眠债
+    算的是"该睡的时候没睡"，不是"总时长够不够"。
+
+    打卡是"开一条 / 合上一条"：
+
+    * 「睡了」→ 建一行，`wake_at` 空着（`bed_at` 是那一刻）；
+    * 「起床了」→ 把最近那条没合上的补上 `wake_at`。
+
+    所以任何时候最多只有一条开口的记录。两端都可空：先按了"起床"、没按"睡了"
+    的那天也要能记下来（不能因为缺一端就丢掉"我 7 点起了"这件事）。
+    """
+
+    __tablename__ = "sleep_logs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    bed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    wake_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    #: 主观质量 0 未填 / 1..5
+    quality: Mapped[int] = mapped_column(SmallInteger, default=0, nullable=False)
+    #: manual（打卡）/ inferred（以后从活跃时间推断，落库时标明来历）
+    source: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class HealthRegime(Base):
+    """身体状态档位的**时间线**：某段日期里按哪套精力策略算。
+
+    "不同时期我的身体机能在变"（用户原话）不是靠改代码表达，而是靠这张表：
+    比如 `2026-11-06 ~ 2026-11-20 / recovery`（病后恢复），其余日子走设置里的
+    默认档位。`profile` 指向 `app/wellbeing` 注册表里的策略 key，`params` 覆盖
+    那套策略的默认参数（不同的恢复期可以松紧不同）。
+
+    查询规则：覆盖该日的档位里**开始日最晚**的那条赢；没有就用默认。
+    """
+
+    __tablename__ = "health_regimes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    title: Mapped[str] = mapped_column(String(100), default="", nullable=False)
+    start_date: Mapped[date_type] = mapped_column(Date, nullable=False, index=True)
+    #: 空 = 一直有效（不设结束日）
+    end_date: Mapped[date_type | None] = mapped_column(Date, nullable=True)
+    profile: Mapped[str] = mapped_column(String(40), default="standard", nullable=False)
+    #: 覆盖该 profile 的默认参数（只存差异，不存整份）
+    params: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
+    note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class ScheduleRun(Base):
+    """一次重排的**快照**：撤销靠它，不靠全库回滚。
+
+    重排要做三件事：删掉上一轮自己排的块、写下新的块、有时还要挪动已有的块。
+    这些都发生在同一张 `schedule_events` 上，而且用户可能在这之间手动改过别的东西 ——
+    整库回滚会连手动改动一起抹掉。所以只记这一次**动过的行**：
+
+    * `before` —— 被删/被挪之前的整行原值（JSON），撤销时按原 id 写回去；
+    * `created` —— 这次新建的行 id，撤销时按 id 删掉。
+
+    再加 `profile` / `regime_id`，事后能回答"那天为什么只排了两小时"：
+    求解器当时看到的是哪套精力策略、哪一档身体状态。
+    """
+
+    __tablename__ = "schedule_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    #: replan（重排）/ manual（以后"手动应用一次提案"也记一条）
+    kind: Mapped[str] = mapped_column(String(16), default="replan", nullable=False)
+    #: 被删 / 被挪之前的整行（字段名与 `schedule_events` 一致）
+    before: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    #: 这次新建的行 id
+    created: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    #: 求解时的精力档位与生效的身体状态档位（空 = 用默认）
+    profile: Mapped[str] = mapped_column(String(40), default="", nullable=False)
+    regime_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    #: 撤销过就置上时刻；一条 run 只能撤一次（再撤是 409，不是静默成功）
+    undone_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class GateRun(Base):
+    """一次质量门禁的作答记录。
+
+    **没过也要落库**：不通过的记录是"下一次重排该优先补偿它"的唯一依据
+    （`scheduler.build_input` 会把最近一次没过的条目加进 `priority_boost`）。
+    只记通过的话，没过的块就静默地留在原地，第二天照旧排在最后。
+
+    `payload` 存判分依据（对了哪几题、错在哪、是不是走了自评降级）——
+    门禁的价值在于"能回看当时凭什么判它过了"。
+    """
+
+    __tablename__ = "gate_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    #: 门禁是给**条目**上的（块是条目的一次排期，条目才是"这件事做完了没"）
+    item_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    event_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    gate: Mapped[str] = mapped_column(String(32), default="none", nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )

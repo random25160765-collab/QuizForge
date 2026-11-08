@@ -764,38 +764,90 @@
   }
 
   /** 把 `root` 里的占位换成真图（异步）。 */
+  /* 编译是**按需**的：占位先摆着，图滚到（或接近）视口才真正跑 TeX。
+   *
+   * 为什么非改不可：一张图要拉 300 多个 `tex_files/*.gz`（TeX 的宏包与字体）。
+   * 原先 `fill()` 见到占位就编 —— 打开一条历史里有图的长对话，首屏会连着编十几张，
+   * 几百上千个请求把页面堵死，`did-finish-load` 十几秒不触发（实测：安装版白屏，
+   * 开发环境因为本地缓存命中才显得正常）。现在首屏没图就一个请求都不发。
+   *
+   * 同时 `ensureFonts()`（fonts.css）也挪进真正编译那一刻 —— 光加载它就会拉全套字体。
+   */
+
+  var io = null;
+
+  function ensureObserver() {
+    if (io || !window.IntersectionObserver) return io;
+    io = new IntersectionObserver(
+      function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          var entry = entries[i];
+          if (!entry.isIntersecting) continue;
+          io.unobserve(entry.target);   // 编一次就够，滚回来不再重编
+          compileInto(entry.target);
+        }
+      },
+      // 提前一屏开始编：滚到的时候已经好了，又不会把首屏之外的都拖起来
+      { rootMargin: '800px 0px' }
+    );
+    return io;
+  }
+
+  /** 真正把一个占位换成图（会跑 TeX；缓存命中时是同步的）。 */
+  function compileInto(place) {
+    var tex = place.__qfTex;
+    if (tex === undefined) return;
+    place.__qfTex = undefined;
+    ensureFonts();
+
+    var key = cacheKey(tex);
+    var hit = cacheGet(key);
+    if (hit) {
+      // 命中：同步摆上，刷新页面时图是"一打开就在"（不闪、不跑 WASM）
+      place.className = 'diagram-wrap';
+      place.innerHTML = hit;
+      return;
+    }
+
+    place.className = 'diagram-wrap is-loading';
+    render(tex).then(
+      function (html) {
+        place.className = 'diagram-wrap';
+        place.innerHTML = html;
+        cachePut(key, html);
+      },
+      function (err) {
+        place.className = 'diagram-wrap is-failed';
+        place.textContent =
+          '这段 LaTeX 没编出来：' +
+          ((err && err.message) || '未知原因') +
+          String.fromCharCode(10) +
+          tex;
+      }
+    );
+  }
+
   function fill(root) {
     if (!root || !root.querySelectorAll) return;
     var places = root.querySelectorAll('[data-latex]');
+    var observer = ensureObserver();
     for (var i = 0; i < places.length; i++) {
       (function (place) {
         var tex = slots[Number(place.getAttribute('data-latex'))];
         if (tex === undefined) return;
         place.removeAttribute('data-latex');
-        ensureFonts();
-        var key = cacheKey(tex);
-        var hit = cacheGet(key);
+        place.__qfTex = tex;
+
+        // 缓存命中就不必等视口：直接摆，代价是一次 innerHTML
+        var hit = cacheGet(cacheKey(tex));
         if (hit) {
-          // 命中：同步摆上，刷新页面时图是"一打开就在"（不闪、不跑 WASM）
           place.className = 'diagram-wrap';
           place.innerHTML = hit;
+          place.__qfTex = undefined;
           return;
         }
-        render(tex).then(
-          function (html) {
-            place.className = 'diagram-wrap';
-            place.innerHTML = html;
-            cachePut(key, html);
-          },
-          function (err) {
-            place.className = 'diagram-wrap is-failed';
-            place.textContent =
-              '这段 LaTeX 没编出来：' +
-              ((err && err.message) || '未知原因') +
-              String.fromCharCode(10) +
-              tex;
-          }
-        );
+        if (observer) observer.observe(place);
+        else compileInto(place);   // 老浏览器：退化成"立即编"
       })(places[i]);
     }
   }

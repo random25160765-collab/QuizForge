@@ -100,3 +100,25 @@ share-*.html
 # `git filter-branch` 的中间目录（整份仓库副本），永远不该进版本库
 .git-rewrite/
 config/settings.local.json
+desktop/node_modules/
+desktop/dist/
+
+# ---------------------------------------------------------------- Android 壳
+# 依赖与 Gradle 产物：按需重装/重建，体积都在几百 MB 量级
+mobile/node_modules/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/*.log
+
+# 装配产物：由 mobile/scripts/assemble-python.sh 从 api/ 与 tools/ 拷贝而来，
+# 源码才是唯一事实来源（README 里写了这条规矩）
+mobile/android/app/src/main/python/
+
+# 随包资源：前端产物与题库都是构建期生成（make web / export-bank-db.py）
+mobile/android/app/src/main/assets/web/
+mobile/android/app/src/main/assets/bank.db
+
+# **含密钥**：inject-sync-assets.py 写进来的 Turso 令牌与对话口令
+mobile/android/app/src/main/assets/sync/
