@@ -275,21 +275,16 @@ def test_domain_filter_is_local_and_over_fetches():
 # ------------------------------------------------------------------ 配置
 
 
-def _no_beta(monkeypatch) -> None:  # noqa: ANN001
-    """把内测通道那份配置按掉 —— 否则开发机上真配了搜索，用例结果就随机器变。"""
-    from app import ai_gateway
-
-    monkeypatch.setattr(ai_gateway, "beta_config", lambda: None)
-
-
-def test_no_config_says_configure_it(db_session, monkeypatch):
+def test_no_config_says_configure_it(db_session):
     """没配密钥现在**明说**"去配"。
 
     免密钥那条（必应的 RSS）删了 —— 它会回一份合法的 XML、内容是无关的
     （"看起来查过了"，比报错更糟）。所以"什么都没配"不再是"能用"，
     而是报一条指路的错，让用户去设置里选一家、填一把密钥。
+
+    配置只从**本机设置**来（内测通道 2026-11-07 整块删除）；每个用例的设置文件
+    由 conftest 隔离成空文件，所以这条不随开发机上真配了什么而变。
     """
-    _no_beta(monkeypatch)
     with pytest.raises(websearch.SearchUnavailable) as err:
         websearch.resolve(db_session)
     assert "没有配" in str(err.value)
@@ -302,9 +297,8 @@ def test_no_config_says_configure_it(db_session, monkeypatch):
     assert ok is True and "没有配" in payload["error"]
 
 
-def test_switched_off_says_so(db_session, monkeypatch):
+def test_switched_off_says_so(db_session):
     """显式关掉时才真的用不了 —— 那时要说清是"你关的"，别让人以为坏了。"""
-    _no_beta(monkeypatch)
     settings_store.put(db_session, search={"enabled": False})
     with pytest.raises(websearch.SearchUnavailable) as err:
         websearch.resolve(db_session)
@@ -318,11 +312,8 @@ def test_switched_off_says_so(db_session, monkeypatch):
     assert ok is True and "关掉" in payload["error"]
 
 
-def test_a_key_still_wins_and_a_broken_choice_says_so(db_session, monkeypatch):
-    """配了密钥（或内测通道给了）就按那个来；选了要密钥的一家却没填 → 报错而不是假装能搜。"""
-    from app import ai_gateway
-
-    _no_beta(monkeypatch)
+def test_a_key_still_wins_and_a_broken_choice_says_so(db_session):
+    """配了密钥就按那个来；选了要密钥的一家却没填 → 报错而不是假装能搜。"""
     settings_store.put(db_session, search={"kind": "bocha", "apiKey": "k1"})
     conf = websearch.resolve(db_session)
     assert (conf["kind"], conf["source"], conf["apiKey"]) == ("bocha", "user", "k1")
@@ -333,17 +324,15 @@ def test_a_key_still_wins_and_a_broken_choice_says_so(db_session, monkeypatch):
         websearch.resolve(db_session)
     assert "没有配" in str(err.value)
 
-    settings_store.put(db_session, search=None)  # 清掉
-    monkeypatch.setattr(
-        ai_gateway, "beta_config", lambda: {"search": {"kind": "serper", "apiKey": "sk-beta"}}
-    )
-    conf = websearch.resolve(db_session)
-    assert (conf["kind"], conf["source"]) == ("serper", "beta")
+    # 清掉之后就真的没有了 —— 没有第二条通道可以回落（内测整块删除）
+    settings_store.put(db_session, search=None)
+    with pytest.raises(websearch.SearchUnavailable) as err:
+        websearch.resolve(db_session)
+    assert "没有配" in str(err.value)
 
 
-def test_the_state_never_returns_the_key(db_session, monkeypatch):
+def test_the_state_never_returns_the_key(db_session):
     """设置面板读的那份状态：**不回密钥**。"""
-    _no_beta(monkeypatch)
     settings_store.put(db_session, search={"kind": "bocha", "apiKey": _FAKE_KEY})
     state = websearch.state(db_session)
     assert state["ready"] is True and state["keyless"] is False
@@ -351,9 +340,8 @@ def test_the_state_never_returns_the_key(db_session, monkeypatch):
     assert _FAKE_KEY not in json.dumps(state)
 
 
-def test_a_configured_key_goes_through_the_whole_chain(db_session, monkeypatch):
+def test_a_configured_key_goes_through_the_whole_chain(db_session):
     """走真链路：设置 → `resolve` → 请求 → 交回模型的那份结果。"""
-    _no_beta(monkeypatch)
     body = _bocha_body([{"name": "标题", "url": "https://example.com/x", "snippet": "摘要"}])
     with _serve(body) as (url, _h):
         settings_store.put(
@@ -471,7 +459,6 @@ def test_the_agent_loop_declares_it_and_feeds_the_result_back(db_session, monkey
     """
     from app import agent_loop
 
-    _no_beta(monkeypatch)
     page = (
         "<html><head><title>页面</title></head><body><article>"
         + "".join("<p>正文段落 %d。</p>" % i for i in range(40))
@@ -795,7 +782,7 @@ def test_a_filter_that_empties_the_results_hands_the_tally_back():
     assert stats == {"raw": 1, "kept": 0, "dropped": 1}
 
 
-def test_the_tool_says_filtered_instead_of_not_found(db_session, monkeypatch):  # noqa: ANN001
+def test_the_tool_says_filtered_instead_of_not_found(db_session):  # noqa: ANN001
     """**筛空要说成筛空。**
 
     实测踩到过：限定 arxiv / ACM / IEEE / Springer 之后拿回「零结果」，
@@ -803,7 +790,6 @@ def test_the_tool_says_filtered_instead_of_not_found(db_session, monkeypatch):  
     「这世上没有」的结论。这两种情况的下一步动作完全不同（去掉域名限制 vs 换词），
     所以工具必须把话说清。
     """
-    _no_beta(monkeypatch)
     body = _bocha_body([{"name": "别的站", "url": "https://other.test/a", "snippet": "x"}])
     with _serve(body) as (url, _h):
         settings_store.put(
@@ -823,7 +809,6 @@ def test_the_tool_says_filtered_instead_of_not_found(db_session, monkeypatch):  
 
 def test_the_paper_tool_is_declared_and_points_at_reading(db_session, monkeypatch):  # noqa: ANN001
     """走真链路：工具声明得到、学术通道解析得对、note 指向「摘要不是全文」。"""
-    _no_beta(monkeypatch)
     with _serve(_openalex_body([_paper()])) as (url, _h):
         monkeypatch.setattr(websearch, "SCHOLAR_ENDPOINT", url)
         ok, payload = tools.call(

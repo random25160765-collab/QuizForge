@@ -92,6 +92,16 @@ def _ensure_database() -> None:
 # 必须在 import app.* 之前落到环境里
 os.environ["QF_DATABASE_URL"] = TEST_URL
 os.environ["QF_DEBUG"] = "true"
+# 设置文件：**测试永远不碰开发机上那一份**。
+#
+# `settings_store.put()` 会把整份设置写回文件（2026-11-07 起文件是权威），而这里每个
+# 用例又把数据库那一行清掉 —— 不隔离的话，跑一次用例就会把用户真配的 AI / 搜索 /
+# 笔记全换成测试里的假值。文件在同一个进程里还是跨用例存在的：前一个用例写下的配置
+# 会经 `row()` 的"文件覆盖数据库"漏给后一个用例。所以逐用例换路径
+# （见 `_isolate_settings_file`）；这一行是 import 阶段的兜底。
+os.environ["QF_SETTINGS_FILE"] = str(
+    Path(tempfile.mkdtemp(prefix="qf-test-settings-")) / "settings.local.json"
+)
 # 不许在测试里去联网取重型运行时（Pyodide 76M）：跑一次用例不该下载几十兆
 os.environ["QF_HEAVY_PREFETCH"] = "false"
 # 实例级 AI 总开关保持打开，好让「每用户自带密钥」那条路径可测。
@@ -145,6 +155,12 @@ def _isolate_user_data(engine) -> Iterator[None]:  # noqa: ANN001
         for table in USER_TABLES:
             conn.execute(text(f'DELETE FROM "{table}"'))
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_settings_file(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """每个用例一份**空的**设置文件（理由见文件顶部 `QF_SETTINGS_FILE` 那段）。"""
+    monkeypatch.setenv("QF_SETTINGS_FILE", str(tmp_path / "settings.local.json"))
 
 
 @pytest.fixture(autouse=True)
