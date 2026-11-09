@@ -70,7 +70,7 @@ def test_the_figure_reaches_the_model_once(db_session, monkeypatch):
         `run_id`（另一个线程往那个信箱里送图）。
         """
         return True, {
-            "demo": {"title": "t", "runId": run_id},
+            "artifact": {"title": "t", "kind": "python", "runId": run_id},
             "await_run": True,
             "note": "会等它跑完",
         }
@@ -138,7 +138,7 @@ def test_a_model_that_cannot_see_gets_no_image(db_session, monkeypatch):
 
     def fake_call(db, name, args, ctx=None, **kwargs):  # noqa: ANN001
         return True, {
-            "demo": {"title": "t", "runId": run_id},
+            "artifact": {"title": "t", "kind": "python", "runId": run_id},
             "await_run": True,
             "note": "会等它跑完",
         }

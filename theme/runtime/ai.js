@@ -17,9 +17,8 @@
   var QF = (window.QF = window.QF || {});
 
   var DEFAULT_AI = {
-    enabled: false,
-    baseUrl: 'https://api.openai.com/v1',
-    model: 'gpt-4o-mini',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-flash',
     apiKey: '',
     timeoutMs: 60000,
     temperature: 0.2,

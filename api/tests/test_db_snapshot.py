@@ -10,6 +10,7 @@
 回退到明文旧快照的迁移路径。
 """
 
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -119,7 +120,13 @@ def test_wrong_passphrase_blocks_load(tmp_path: Path, monkeypatch):
 
 
 def test_genkey_refuses_to_overwrite(tmp_path: Path):
-    key_file = tmp_path / "snapshot.key"
-    assert db_snapshot.genkey(key_file) == 0
-    assert key_file.stat().st_mode & 0o077 == 0  # 只有本人可读写
-    assert db_snapshot.genkey(key_file) == 1  # 已有口令：不覆盖（两台机器会对不上）
+    """口令写进设置文件的 `syncPassphrase`；已有就不覆盖（两台机器对不上就解不开）。"""
+    settings = tmp_path / "settings.local.json"
+    settings.write_text('{"theme": "light"}\n', encoding="utf-8")
+
+    assert db_snapshot.genkey(settings) == 0
+    assert settings.stat().st_mode & 0o077 == 0  # 只有本人可读写
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert len(data["syncPassphrase"]) > 20
+    assert data["theme"] == "light"              # 不碰别的键
+    assert db_snapshot.genkey(settings) == 1     # 已有口令：不覆盖

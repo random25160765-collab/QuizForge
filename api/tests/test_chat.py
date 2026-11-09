@@ -88,7 +88,7 @@ def _stub(monkeypatch, gen) -> None:  # noqa: ANN001
 def _report_run(monkeypatch, text: str = "") -> None:  # noqa: ANN001
     """代替页面：沙箱输出**直接报回来**。
 
-    `run_python` / `render_demo` 的回合会停在 `runs.wait_blocking` 上等页面回报
+    `run_python` / `create_artifact` 的回合会停在 `runs.wait_blocking` 上等页面回报
     （见 `agent_loop` 里那段注释）。TestClient 里没有页面，真等就等满 90 秒 ——
     实测这两条用例合计 180 秒，占全量时长 77%。等待与放行本身由 `test_runs.py`
     用显式 timeout 覆盖，这里只把这条链路上的等待换成"页面已经报过了"。
@@ -1113,16 +1113,16 @@ def test_the_sandbox_output_comes_back_by_itself(client, monkeypatch) -> None:  
     events = dict(_events(_send(client, cid, content="算个 1+1").text))
 
     done = events["done"]
-    demo = next((part for part in done["parts"] if part["type"] == "demo"), None)
-    if demo is None:
+    run_part = next((part for part in done["parts"] if part["type"] == "artifact"), None)
+    if run_part is None:
         # 这条依赖**本机 Docker 沙箱**：沙箱没起来时 run_python 跑了但没有产出，
         # 于是这里原本抛一个看不懂的 StopIteration（全量跑偶发、单跑通常过）。
         # 但要分清两种情况 —— 连工具都没调用，那是真回归，必须响。
         called = "run_python" in json.dumps(done.get("parts") or [], ensure_ascii=False)
         if not called:
             pytest.fail("连 run_python 都没调用，这不是沙箱环境的问题")
-        pytest.skip("沙箱没起来（需要本机 Docker），零件里不会产出 demo")
-    run_id = demo.get("runId")
+        pytest.skip("沙箱没起来（需要本机 Docker），零件里不会产出作品")
+    run_id = run_part.get("runId")
     assert run_id, "零件要带上 runId，宿主才认得出是哪次运行"
 
     # 认错 runId 时不该悄悄写坏零件
@@ -1150,7 +1150,7 @@ def test_the_sandbox_output_comes_back_by_itself(client, monkeypatch) -> None:  
     stored = next(
         m for m in client.get(f"/api/chat/conversations/{cid}").json()["messages"] if m["id"] == done["id"]
     )
-    part = next(p for p in stored["parts"] if p["type"] == "demo")
+    part = next(p for p in stored["parts"] if p["type"] == "artifact")
     assert part["run"]["text"].startswith("numpy 1.26.4")
     assert part["run"]["ok"] is True
     assert part["run"]["images"] == [tiny_png], "图要跟着运行一起存下来（刷新后还在）"
@@ -1345,11 +1345,11 @@ def test_export_gives_markdown_for_reading_and_json_for_the_tree(client, monkeyp
     assert any(c["id"] == cid for c in every["conversations"])
 
 
-# ------------------------------------------------------------------ 演示沙箱
+# ------------------------------------------------------------------ 作品（artifact）
 
 
-def test_render_demo_becomes_a_sandbox_part(client, monkeypatch) -> None:  # noqa: ANN001
-    """演示沙箱：模型给一段自包含 HTML，消息里长出一个 demo 零件（前端塞进 sandbox iframe）。"""
+def test_create_artifact_becomes_a_sandbox_part(client, monkeypatch) -> None:  # noqa: ANN001
+    """html 作品：模型给一段自包含 HTML，消息里长出一个 artifact 零件（前端塞进 sandbox iframe）。"""
     html = "<html><body><canvas id='c'></canvas><script>1</script></body></html>"
 
     def fake(conf, messages, *, tools=None, params=None):
@@ -1359,8 +1359,10 @@ def test_render_demo_becomes_a_sandbox_part(client, monkeypatch) -> None:  # noq
                 [
                     {
                         "id": "c1",
-                        "name": "render_demo",
-                        "arguments": json.dumps({"title": "数据流", "html": html}),
+                        "name": "create_artifact",
+                        "arguments": json.dumps(
+                            {"kind": "html", "title": "数据流", "html": html}
+                        ),
                     }
                 ],
             )
@@ -1375,16 +1377,53 @@ def test_render_demo_becomes_a_sandbox_part(client, monkeypatch) -> None:  # noq
     cid = _new_conversation(client)
 
     events = _events(_send(client, cid, content="画个图讲数据怎么流").text)
-    assert "demo" in [name for name, _ in events], events
+    assert "artifact" in [name for name, _ in events], events
 
-    demo = next(data for name, data in events if name == "demo")["demo"]
-    assert demo["title"] == "数据流"
+    art = next(data for name, data in events if name == "artifact")["artifact"]
+    assert art["title"] == "数据流" and art["kind"] == "html"
     # 页面里带着模型写的东西，以及服务端注入的套件（它自己不必引库）
-    assert "<canvas id='c'>" in demo["html"] and "<script>1</script>" in demo["html"]
-    assert "__ORIGIN__/assets/demo-kit/react.js" in demo["html"]
+    assert "<canvas id='c'>" in art["html"] and "<script>1</script>" in art["html"]
+    assert "__ORIGIN__/assets/demo-kit/react.js" in art["html"]
 
-    part = next(p for p in dict(events)["done"]["parts"] if p["type"] == "demo")
-    assert part["title"] == "数据流" and "<canvas" in part["html"]
+    part = next(p for p in dict(events)["done"]["parts"] if p["type"] == "artifact")
+    assert part["title"] == "数据流" and part["kind"] == "html" and "<canvas" in part["html"]
+
+
+def test_create_artifact_writes_an_article(client, monkeypatch) -> None:  # noqa: ANN001
+    """markdown 作品：正文躺进零件、**不进沙箱**（没有 html），界面按正文排版读。"""
+    body = "# 竞态\n\n两个写者交错时，**最后写的赢**。\n\n$$x^2+y^2$$\n"
+
+    def fake(conf, messages, *, tools=None, params=None):
+        if not any(message.get("role") == "tool" for message in messages):
+            yield (
+                "tool_calls",
+                [
+                    {
+                        "id": "c1",
+                        "name": "create_artifact",
+                        "arguments": json.dumps(
+                            {"kind": "markdown", "title": "竞态与顺序", "markdown": body}
+                        ),
+                    }
+                ],
+            )
+            yield ("finish", "tool_calls")
+            return
+        yield ("delta", "写成了一篇。")
+        yield ("finish", "stop")
+
+    _ready(client)
+    _stub(monkeypatch, fake)
+    _report_run(monkeypatch)
+    cid = _new_conversation(client)
+
+    events = dict(_events(_send(client, cid, content="整理成一篇笔记").text))
+    art = events["artifact"]["artifact"]
+    assert art["kind"] == "markdown" and art["markdown"] == body.strip()
+
+    part = next(p for p in events["done"]["parts"] if p["type"] == "artifact")
+    assert part["kind"] == "markdown" and part["markdown"] == body.strip()
+    assert "html" not in part, "文章不进 iframe，没有那份 html"
 
 
 # ------------------------------------------------------------------ 消息序列
@@ -1933,3 +1972,63 @@ def test_the_trail_dashboard_rides_along_in_the_system_prompt(client, monkeypatc
     assert "缓存行" in system, "他自己刚说的那句要在上面（这是他的轨迹，不是泛泛的模板）"
     assert "read_learning_tree" not in system
     assert all("read_learning_tree" not in names for names in tool_names), "它不该再出现在工具声明里"
+
+
+def test_a_generated_title_is_long_enough_for_the_widest_column() -> None:
+    """自动标题不能按"最窄那一栏"截。
+
+    原先是 24 字 —— 而左栏最宽能拖到 520px（约 37 个汉字），于是拖宽之后标题
+    还停在同一个字数上，看着像"标题不随宽度变化"（用户 2026-11-09 报的）。
+    截断交给显示端的省略号（`.chatlist__title`），存储这边只防一整段贴进来的病态长标题。
+    """
+    from app.routers.chat import TITLE_MAX, _title_from
+
+    text = (
+        "把 attention 里的 QKV 各自负责什么、为什么这么分组、训练时三者的梯度怎么回传、"
+        "推理时为什么只需要 K 和 V 都讲清楚"
+    )
+    assert len(text) > TITLE_MAX
+    assert _title_from(text) == text[:TITLE_MAX] + "…"
+    assert TITLE_MAX > 24, "24 字那版在宽栏里显示不满一行"
+    # 空白（含换行）折成一个空格，首尾不留
+    assert _title_from("  短\n标题  ") == "短 标题"
+
+
+def test_the_model_names_the_conversation_after_the_first_turn(client, monkeypatch) -> None:  # noqa: ANN001
+    """第一轮答完之后，标题由模型起 —— 而人起过的名字不许被它盖掉。
+
+    时机在"答完"之后而不是发送那一刻：用户的第一句常常是"我准备要学的东西是……"
+    这类开场白，截出来的几个字里没有信息（见 `_title_from` 上面那段）。
+    """
+    from app.routers import chat as chat_router
+
+    monkeypatch.setattr(chat_router, "AUTO_TITLE", True)  # conftest 平时关着它
+    seen: list[str] = []
+
+    def fake(conf, messages, *, tools=None, params=None):  # noqa: ANN001, ARG001
+        system = messages[0]["content"] if messages else ""
+        seen.append(system)
+        if system == chat_router.TITLE_SYSTEM:
+            yield ("delta", "循环缓冲：生产者与消费者")
+            yield ("finish", "stop")
+            return
+        yield ("delta", "生产者与消费者队列")
+        yield ("finish", "stop")
+
+    _ready(client)
+    _stub(monkeypatch, fake)
+    cid = _new_conversation(client)
+    _send(client, cid, content="循环缓冲是什么？我想弄懂它和队列的关系")
+
+    body = client.get(f"/api/chat/conversations/{cid}").json()
+    assert body["conversation"]["title"] == "循环缓冲：生产者与消费者"
+    assert seen.count(chat_router.TITLE_SYSTEM) == 1, "第一轮答完之后真的问了一次模型"
+
+    # 人改过之后就是人的：再答一轮也不许盖回去
+    client.patch(
+        f"/api/chat/conversations/{cid}", json={"title": "我自己起的"}, headers=_headers(client)
+    )
+    _send(client, cid, content="那它是线程安全的吗？")
+    after = client.get(f"/api/chat/conversations/{cid}").json()
+    assert after["conversation"]["title"] == "我自己起的"
+    assert seen.count(chat_router.TITLE_SYSTEM) == 1, "人起过名字之后不该再问模型"

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
   <meta name="generator" content="QFStudio">
   <link rel="icon" type="image/svg+xml" href="mark.svg?v=2">
   <link rel="stylesheet" href="starting.css">
@@ -13,71 +14,53 @@
       if (saved && saved.theme) document.documentElement.dataset.theme = saved.theme;
     } catch (err) { /* 读不出来就用默认（深色） */ }
   </script>
-  <title>QFStudio · 正在启动</title>
+  <title>QFStudio</title>
 </head>
 <body>
-  <main class="stage" role="main">
-    <img class="mark" src="icon.svg" width="72" height="72" alt="QFStudio">
-    <h1 class="wordmark">QFStudio</h1>
-    <p class="lede" id="lede">正在准备…</p>
-
-    <div class="bar" role="progressbar" aria-labelledby="lede" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="bar">
-      <div class="bar__fill" id="fill"></div>
+  <!-- 只有三样东西：标、名、进度。没有清单、没有百分比、没有"仍然进入"——
+       检查没通过就停在这儿并说明是哪一项，不给人绕过检查的入口。 -->
+  <main class="stage">
+    <img class="mark" src="icon.svg" width="64" height="64" alt="">
+    <h1 class="name">QFStudio</h1>
+    <div class="track" id="track" role="progressbar" aria-labelledby="status"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="track__fill" id="fill"></div>
     </div>
-
-    <ul class="steps" id="steps"></ul>
-
-    <div class="note" id="note" hidden>
-      <span id="note-text"></span>
-      <button type="button" id="enter">仍然进入</button>
-    </div>
+    <p class="status" id="status" role="status" aria-live="polite">正在准备</p>
+    <p class="detail" id="detail" hidden></p>
+    <button class="retry" id="retry" type="button" hidden>重试</button>
   </main>
 
   <script>
     (function () {
       var fill = document.getElementById('fill');
-      var bar = document.getElementById('bar');
-      var lede = document.getElementById('lede');
-      var stepsBox = document.getElementById('steps');
-      var note = document.getElementById('note');
-      var noteText = document.getElementById('note-text');
-      var enter = document.getElementById('enter');
+      var track = document.getElementById('track');
+      var status = document.getElementById('status');
+      var detail = document.getElementById('detail');
+      var retry = document.getElementById('retry');
       var settled = false;
+      var misses = 0;
 
       function paint(payload) {
         var percent = Math.round((payload.progress || 0) * 100);
         fill.style.width = percent + '%';
-        bar.setAttribute('aria-valuenow', String(percent));
-        lede.textContent = percent >= 100 ? '就绪，正在进入…' : '正在准备… ' + percent + '%';
-
-        stepsBox.textContent = '';
-        (payload.steps || []).forEach(function (step) {
-          var li = document.createElement('li');
-          li.className = 'step step--' + (step.status || 'ok');
-          var dot = document.createElement('span');
-          dot.className = 'step__dot';
-          var label = document.createElement('span');
-          label.className = 'step__label';
-          label.textContent = step.label;
-          li.appendChild(dot);
-          li.appendChild(label);
-          if (step.detail) {
-            var detail = document.createElement('span');
-            detail.className = 'step__detail';
-            detail.textContent = step.detail;
-            li.appendChild(detail);
-          }
-          stepsBox.appendChild(li);
-        });
+        track.setAttribute('aria-valuenow', String(percent));
 
         var failures = (payload.steps || []).filter(function (s) { return s.status === 'fail'; });
         if (failures.length) {
-          note.hidden = false;
-          noteText.textContent = failures.map(function (s) { return s.label + '：' + (s.detail || '没通过'); }).join('；');
-        } else {
-          note.hidden = true;
+          status.textContent = failures.map(function (s) { return '「' + s.label + '」'; }).join('') + '没通过';
+          status.classList.add('status--bad');
+          detail.textContent = failures.map(function (s) { return s.detail; }).filter(Boolean).join('；');
+          detail.hidden = !detail.textContent;
+          retry.hidden = false;
+          return false;
         }
-        return payload.ok && percent >= 100;
+
+        status.textContent = percent >= 100 ? '就绪' : '正在准备';
+        status.classList.remove('status--bad');
+        detail.hidden = true;
+        retry.hidden = true;
+        return percent >= 100;
       }
 
       // `?stay=1` 停在启动页不跳 —— 想看检查结果、或截图留证时用（默认会自动进入）
@@ -89,6 +72,7 @@
         fetch('api/startup', { cache: 'no-store' })
           .then(function (r) { return r.json(); })
           .then(function (payload) {
+            misses = 0;
             if (paint(payload)) {
               if (!stay) {
                 settled = true;
@@ -97,14 +81,18 @@
               return;
             }
           })
-          .catch(function () { /* 继续轮询 */ })
+          .catch(function () {
+            misses += 1;
+            // 十几秒都没有回应：本机服务大概根本没起来。文字仍然只有一行。
+            if (misses >= 12) status.textContent = '正在等待本机服务';
+          })
           .then(function () {
             if (!settled) setTimeout(tick, 400);
           });
       }
 
-      // 有 fail 时也让人进 —— 少一个能力不该把人拦在门外（按钮点了就照样进）
-      enter.addEventListener('click', function () { location.replace('workbench.html'); });
+      // 失败只能重试，不能进 —— 检查没过就应该是没过
+      retry.addEventListener('click', function () { location.reload(); });
       tick();
     })();
   </script>

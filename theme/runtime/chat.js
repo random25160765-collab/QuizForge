@@ -68,6 +68,18 @@
   var deepBtn = null; // 输入框里那颗「深度思考」药丸：切换要反映在它身上
   var hintEl = null;
   var barEl = null;
+  //: 手机右面板（只有 `MOBILE_TREE` 那条断点以下才有）：顶栏那几颗工具（思考 / 对话树 /
+  //: 演示 / 分享）与输入区的三样（深度思考 / 模式 / 滤镜）都收在它里面
+  //:（用户 2026-11-09："做一个右划的界面，把顶栏这一大堆东西，还有模式和滤镜都收进来"
+  //: —— "这个右面板只有手机有，是专门给手机小屏幕设计的"）。
+  //:
+  //: 面板本身在宽屏也建着（只是不显示）：跨断点时不必重建，控件也就不用搬两遍。
+  var sheetEl = null;
+  var sheetScrimEl = null;
+  var sheetToolsEl = null;  //: 面板上半：那四颗工具
+  var sheetOptsEl = null;   //: 面板下半：深度思考 / 模式 / 滤镜（**真正的控件搬进来**，
+  //:                            不另做一套镜像按钮 —— 两份状态迟早打架）
+  var modesEl = null;       //: `#chat-modes`（模式药丸的槽），手机上搬进面板
   var chatEl = null;
   //: 会话管理栏开着没有。`open | closed` —— 收起来之后正文独占整宽，
   //: 与笔记页的文件面板、资料页的两栏是同一套做法（状态记本机）。
@@ -82,6 +94,8 @@
   var aiState = null;
 
   var state = {
+    //: 手机右面板开着没有。只有手机上能开（见 `setSheet`）。
+    sheetOpen: false,
     folders: [],        // 分组（后端一次给全，左栏那棵树要用）
     list: [], // 会话列表（服务端给的，含条数与预览）
     current: null, // 当前会话 id
@@ -113,7 +127,7 @@
     editing: 0, // 正在就地编辑的那条用户消息（0 = 没有）
     treeOpen: false, // 对话树面板开着没有
     pending: [], // 已上传、还没随消息发出去的附件
-    demo: null, // 正在右侧面板里跑的演示（{title, html}）
+    demo: null, // 面板里正在看的那件工件（{title, markdown, html, runId, run, full}）
     showThink: false, // 是否展开思考（顶栏那颗思考按钮；见 loadThink）
     // 「深度思考」：这一条消息要不要让模型先思考再答（输入框里那颗药丸）。
     // **默认开** —— 默认模型是 `deepseek-flash`，思考是它的常态；关掉时后端会给
@@ -278,13 +292,34 @@
    *
    * 第一次记录（前一条没有这个字段）也算"变了"：那是这套记录的开始，值得标出来。
    */
+  //: `modeChanged` 要的是"前一条用户消息"。原先每调一次就遍历整棵树的用户消息，
+  //: 而 `treeNodeHeight` 对每个节点要调两次、`drawTree` 又调一次 —— 209 条的一棵树
+  //: 就是十几万趟。按当前的 `state.messages` 建一次表，之后 O(1)。
+  var prevUserCache = { list: null, len: -1, map: null };
+
+  function prevUserMap() {
+    var messages = state.messages || [];
+    var cache = prevUserCache;
+    if (cache.list === messages && cache.len === messages.length) return cache.map;
+    var map = {};
+    var lastUser = null;
+    messages
+      .slice()
+      .sort(function (a, b) {
+        return a.id - b.id;
+      })
+      .forEach(function (one) {
+        if (one.role !== 'user' || !one.id) return;
+        map[one.id] = lastUser;
+        lastUser = one;
+      });
+    prevUserCache = { list: messages, len: messages.length, map: map };
+    return map;
+  }
+
   function modeChanged(message) {
     if (message.role !== 'user' || !Array.isArray(message.mounts)) return false;
-    var prev = null;
-    state.messages.forEach(function (one) {
-      if (one.role !== 'user' || !one.id || one.id >= message.id) return;
-      if (!prev || one.id > prev.id) prev = one;
-    });
+    var prev = prevUserMap()[message.id] || null;
     if (!prev || !Array.isArray(prev.mounts)) return true;
     return modeKeys(prev).join(',') !== modeKeys(message).join(',');
   }
@@ -303,47 +338,83 @@
     var text = String(message.content || '').replace(/\s+/g, ' ').trim();
     if (text) return text;
     var kinds = (message.parts || []).map(function (part) {
-      return part.type === 'card' ? '题卡' : part.type === 'file' ? '附件' : part.type === 'demo' ? '演示' : part.type === 'tool_call' ? '工具' : part.type === 'action' ? '凭条' : null;
+      return part.type === 'card' ? '题卡' : part.type === 'file' ? '附件' : isArtifact(part) ? (part.kind === 'markdown' ? '文章' : '工件') : part.type === 'tool_call' ? '工具' : part.type === 'action' ? '凭条' : null;
     }).filter(Boolean);
     return kinds.length ? '（' + kinds.join(' · ') + '）' : message.status === 'error' ? '（失败）' : '（空）';
   }
 
+  /** 量字宽用的 canvas —— **只建一次**。
+   *
+   * 原先每次 `treeLines` 都 `createElement('canvas').getContext('2d')`，
+   * 而 `treeNodeHeight` 对每个节点要调两次 `treeLines` —— 209 条的一棵树就是
+   * 四百多个 canvas（平板实测打开对话树 293ms，这是大头之一）。 */
+  var treeLineProbe = null;
+
+  function lineProbe() {
+    if (treeLineProbe !== null) return treeLineProbe;
+    try {
+      var probe = document.createElement('canvas').getContext('2d');
+      probe.font = '11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+      treeLineProbe = probe;
+    } catch (err) {
+      treeLineProbe = false;
+    }
+    return treeLineProbe;
+  }
+
+  /** 这一段里放得下几个字符。**二分**，不逐字试。
+   *
+   * 宽度随前缀单调不减（拼接不会产生负字距），所以可以二分；第一版是
+   * `while (量一下下一个字)` —— 一行 60 字量 60 次，三行两百次切片 + measureText。 */
+  function fitChars(probe, text, limit) {
+    if (!probe) return Math.max(1, Math.floor(limit / 11));
+    if (text.length <= 1) return Math.max(1, text.length);
+    if (probe.measureText(text).width <= limit) return text.length;
+    var lo = 1;
+    var hi = text.length;
+    while (lo + 1 < hi) {
+      var mid = (lo + hi) >> 1;
+      if (probe.measureText(text.slice(0, mid)).width <= limit) lo = mid;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  //: 同一节点在一次渲染里会被量好几遍（`treeGeometry` 的 measure 一趟、place 一趟）。
+  //: 按 id 缓存，**文字变了就作废** —— 流式回答的 content 一直在长。
+  var treeLineCache = {};
+
   function treeLines(message) {
     var text = treePreview(message);
+    var cached = treeLineCache[message.id];
+    if (cached && cached.text === text) return cached.lines;
     // 按**整行的实测宽度**切，不按字数 —— 字数治不了：中英混排、标点、
     // 系统字体各占多少宽都不一样，前两版都栽在这儿（用户两次都看到越界）。
     // 量不了（极老的浏览器）就退回按 11px 估一个保守值。
-    var font = '11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+    var probe = lineProbe();
     var limit = TREE.w - 40; // 左右各留 12px 内边距 + 右边一点余量
-    var widthOf = (function () {
-      var probe = null;
-      try {
-        probe = document.createElement('canvas').getContext('2d');
-        probe.font = font;
-      } catch (err) {
-        probe = null;
-      }
-      return function (line) {
-        if (!probe) return line.length * 11;
-        return probe.measureText(line).width;
-      };
-    })();
 
     var lines = [];
     var rest = text;
     while (rest && lines.length < 3) {
-      var take = 1;
-      while (take < rest.length && widthOf(rest.slice(0, take + 1)) <= limit) take++;
+      var take = fitChars(probe, rest, limit);
       lines.push(rest.slice(0, take));
       rest = rest.slice(take);
     }
     if (rest && lines.length) {
       // 还有剩的：最后一行收成省略号（省略号本身也要放得下）
       var last = lines[lines.length - 1];
+      var widthOf = function (value) {
+        return probe ? probe.measureText(value).width : value.length * 11;
+      };
       while (last.length > 1 && widthOf(last + '…') > limit) last = last.slice(0, -1);
       lines[lines.length - 1] = last + '…';
     }
-    return lines.length ? lines : ['（空）'];
+    if (!lines.length) lines = ['（空）'];
+    // 缓存不设上限会随会话堆积（每条消息一条）；过三千条就整块丢掉，重算很便宜。
+    if (Object.keys(treeLineCache).length > 3000) treeLineCache = {};
+    treeLineCache[message.id] = { text: text, lines: lines };
+    return lines;
   }
 
   function treeNodeHeight(message) {
@@ -514,11 +585,20 @@
     }
   }
 
-  /** 会话管理栏的开合。收/展两个朝向之间**转过去**，与笔记页那颗同一套。 */
-  function toggleAside() {
-    // 人按了就以他的选择为准：从这里起不再"自动回到宽屏时展开"
+  /** 会话栏开合的**唯一落点**：按钮与边缘手势都走它。
+   *
+   * 只认目标态（要开还是要关）而不是 toggle：连着划两下时 toggle 会跟状态赛跑。
+   * 收/展两个朝向之间**转过去**，与笔记页那颗同一套。 */
+  function setAside(open) {
+    // 人（或手指）动了就以这个为准：从这里起不再"自动回到宽屏时展开"
     autoFolded = false;
-    asideOpen = !asideOpen;
+    asideOpen = !!open;
+    // 同屏只开一个抽屉（见 `setSheet` 里那段）
+    if (asideOpen && state.sheetOpen) {
+      state.sheetOpen = false;
+      if (sheetEl) sheetEl.classList.remove('is-open');
+      if (sheetScrimEl) sheetScrimEl.classList.remove('is-open');
+    }
     if (chatEl) chatEl.setAttribute('data-aside', asideOpen ? 'open' : 'closed');
     try {
       window.localStorage.setItem('qf.chat.aside', asideOpen ? 'open' : 'closed');
@@ -526,6 +606,10 @@
       /* 存不下就只在这次生效 */
     }
     renderBar();
+  }
+
+  function toggleAside() {
+    setAside(!asideOpen);
   }
 
   /* ------------------------------------------------------ 会话栏宽度（可拖） */
@@ -603,69 +687,191 @@
     toggleAside();
   });
 
-  /* ---------------------------------------------------------- 演示清单
+  /* ---------------------------------------------------------- 工件清单
    *
-   * 一条对话里可能生成了好几张演示（HTML / canvas / Python 输出）。它们散在
-   * 各条消息中间，要回头看第 3 张得一路往下翻 —— 用户："历史的所有 canvas（html等）
+   * 一条对话里可能生成了好几件工件（能动的页面、文章）。它们散在
+   * 各条消息中间，要回头看第 3 件得一路往下翻 —— 用户："历史的所有 canvas（html等）
    * 弄一个列表，在这里统一访问。"
    *
    * 这里只做"清单 + 跳转"：点一条就滚到它所在的那条消息（不在当前分支上会明说）。
    */
-  function demoItems() {
+  /**
+   * 一件**工件**（artifact）：html 演示 / markdown 文章 / python 运行，同一个零件。
+   *
+   * 2026-11-09 改的名（用户："render demo 改成 create artifact，以后这个东西叫
+   * artifact"）：新消息写 `type: 'artifact'`，**旧消息里是 `demo`** —— 库里的老数据
+   * 不会自己改写法，所以两种都得认（读的一侧一律走这里，别各写一套）。
+   */
+  function isArtifact(part) {
+    return !!part && (part.type === 'artifact' || part.type === 'demo');
+  }
+
+  //: 清单里怎么称呼这一件（人看的是"页面 / 文章"，不是零件名）。
+  function artifactWord(part) {
+    return part && part.kind === 'markdown' ? '文章' : '页面';
+  }
+
+  function artifactItems() {
     var out = [];
     (state.messages || []).forEach(function (m) {
       (m.parts || []).forEach(function (part) {
-        if (!part || part.type !== 'demo') return;
-        // **只有 HTML 演示算**（用户："python 不算演示。只有 html 算演示。"）：
-        // Python 那一路是一次计算的结果，不是能再回访的演示页面。
-        // 判据与 `demoCard` 里分流用的那条一致，免得两处各认一套。
+        if (!isArtifact(part)) return;
+        // 跑脚本那一路不进清单：它是一次计算的结果，不是能再打开看的东西
+        //（用户："python 不算演示。只有 html 算演示。"）。
+        // **文章要算**：它正是"值得回头再读"的那一种（2026-11-09 用户报的漏项）。
         if (part.kind === 'python' || /pyodide/i.test(part.html || '')) return;
-        out.push({ mid: m.id, title: String(part.title || '演示') });
+        out.push({
+          mid: m.id,
+          part: part,
+          title: String(part.title || '工件'),
+          word: artifactWord(part),
+        });
       });
     });
     return out;
   }
 
-  /** 滚到某条消息并闪一下。切分支之后旧消息可能不在 DOM 里 —— 那时要说清楚。 */
-  function jumpToMessage(mid) {
-    var row = threadEl && threadEl.querySelector('.chatmsg[data-id="' + String(mid) + '"]');
-    if (!row) {
-      ui.toast('那张演示不在当前分支上（切到对应分支才能看）', 'info');
-      return false;
-    }
-    row.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    row.classList.add('is-focus');
-    window.setTimeout(function () { row.classList.remove('is-focus'); }, 1200);
-    return true;
+  /* ---------------------------------------------------------- 浮层
+   *
+   * 工件清单与工件正文共用这一块：贴着触发它的那颗按钮弹出来，点别处 / Esc 收起。
+   * 长相照「模式」选择栏（`.modepick`，见 mounts.js 与 chat.css 里那段说明）——
+   * **不要**做成整屏弹窗：读一件工件不该把对话遮住
+   *（用户："不要做成全屏弹窗，样式按照模式药丸点击之后跳出来的那个设计"）。
+   */
+  var popEl = null;      // 当前挂着的那块浮层
+  var popAnchor = null;  // 触发它的那颗按钮（同一次点击不能走两遍）
+  var popTimer = null;
+
+  function onPopAway(ev) {
+    if (!popEl || popEl.contains(ev.target)) return;
+    if (popAnchor && popAnchor.contains(ev.target)) return;
+    closePop();
   }
 
-  function openDemoList() {
-    var items = demoItems();
+  function onPopKey(ev) {
+    if (ev.key === 'Escape') closePop();
+  }
+
+  //: 页面一滚它就飘了（浮层是 fixed）—— 索性收起；浮层自己内部滚不算。
+  function onPopScroll(ev) {
+    if (popEl && ev.target && ev.target.nodeType === 1 && popEl.contains(ev.target)) return;
+    closePop();
+  }
+
+  //: 那几个"人在别处"的监听：开时挂、关时摘（同一个函数重复 add 是空操作）。
+  function popListen(on) {
+    var call = on ? 'addEventListener' : 'removeEventListener';
+    document[call]('mousedown', onPopAway, true);
+    document[call]('pointerdown', onPopAway, true);
+    document[call]('keydown', onPopKey, true);
+    document[call]('scroll', onPopScroll, true);
+    window[call]('resize', closePop);
+  }
+
+  function closePop() {
+    if (!popEl) return;
+    if (popTimer) {
+      window.clearTimeout(popTimer);
+      popTimer = null;
+    }
+    popListen(false);
+    var box = popEl;
+    popEl = null;
+    popAnchor = null;
+    box.classList.remove('is-in');
+    // 收起来也要有动效：先褪出去，过渡跑完再摘节点（同模式选择栏那一套）。
+    // 这 170ms 里它 `pointer-events: none`（见 CSS），不挡下面的点击。
+    box.classList.add('is-out');
+    popTimer = window.setTimeout(function () {
+      popTimer = null;
+      if (box.parentNode) box.parentNode.removeChild(box);
+    }, 170);
+  }
+
+  /** 立刻摘掉、不演淡出 —— 换一块打开时用（两块叠一瞬比没有动效更难看）。 */
+  function dropPop() {
+    if (!popEl) return;
+    if (popTimer) {
+      window.clearTimeout(popTimer);
+      popTimer = null;
+    }
+    popListen(false);
+    if (popEl.parentNode) popEl.parentNode.removeChild(popEl);
+    popEl = null;
+    popAnchor = null;
+  }
+
+  /** 把 `box` 贴在 `anchor` 旁边弹出来（下面放不下、上面更宽裕就向上弹）。 */
+  function openPop(box, anchor) {
+    dropPop();
+    document.body.appendChild(box);
+    // 宽高要**先量**：`.modepick` 是 fixed，宽由 CSS 定、高随内容（有上限）
+    var width = box.offsetWidth;
+    var height = box.offsetHeight;
+    var rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+    var left = rect
+      ? Math.min(rect.left, window.innerWidth - width - 12)
+      : window.innerWidth - width - 12;
+    box.style.left = Math.round(Math.max(12, left)) + 'px';
+    if (rect) {
+      var below = window.innerHeight - rect.bottom - 12;
+      var above = rect.top - 12;
+      if (height > below && above > below) {
+        box.style.bottom = Math.round(window.innerHeight - rect.top + 6) + 'px';
+      } else {
+        box.style.top = Math.round(rect.bottom + 6) + 'px';
+      }
+    } else {
+      // 没有锚（手机面板里点开的）：落在顶栏下面那一块
+      box.style.top = '56px';
+    }
+    popEl = box;
+    popAnchor = anchor || null;
+    // 逼一次布局再挂 `.is-in`：不这样浏览器会把两个状态并成一次计算，过渡那一帧根本不跑
+    void box.offsetHeight;
+    box.classList.add('is-in');
+    popListen(true);
+  }
+
+  /** 工件清单（顶栏那颗按钮 / 手机面板那一行）。 */
+  function openArtifactList(anchor) {
+    var items = artifactItems();
     if (!items.length) {
-      ui.toast('这条对话里还没有演示', 'info');
+      ui.toast('这条对话里还没有工件', 'info');
       return;
     }
-    var handle = ui.modal({
-      title: '演示（' + items.length + '）',
-      size: 'md',
-      body: h('div.demolist', null, items.map(function (one, index) {
-        return h('button.demolist__item', {
+    var box = h('div.modepick.artifactpick', { role: 'menu', 'aria-label': '工件' });
+    items.forEach(function (one) {
+      box.appendChild(
+        h('button.modepick__row', {
           type: 'button',
+          role: 'menuitem',
+          // 从清单里点开 = **全屏**：他是来重读的，给足版面（卡片那颗按钮才是半页）
           onClick: function () {
-            handle.close();
-            jumpToMessage(one.mid);
+            closePop();
+            openArtifact(one.part, true);
           },
         },
-          h('span.demolist__no', { text: String(index + 1) }),
-          h('span.demolist__title', { text: one.title }));
-      })),
-      actions: [{ label: '关闭' }],
+          h('span.modepick__ico', { html: ui.icon('list', 15) }),
+          h('span.modepick__name', { text: one.title }),
+          h('span.modepick__meta', { text: one.word })
+        )
+      );
     });
+    openPop(box, anchor);
   }
 
   function renderBar() {
     if (!barEl) return;
+    // 顶栏重画会把触发浮层的那颗按钮换掉 —— 锚没了，浮层就该跟着收（它自己不会飘走）
+    if (popEl && popAnchor && !document.body.contains(popAnchor)) closePop();
     ui.clear(barEl);
+
+    /* 手机：顶栏只留「会话栏」与「工具」两颗 —— 其余四颗（思考 / 对话树 / 工件 / 分享）
+     * 住进右面板（用户 2026-11-09："把顶栏这一大堆东西，还有模式和滤镜都收进来"）。
+     * 宽屏照旧全摆在顶栏上，一个像素都不动。 */
+    var mobile = MOBILE_TREE.matches;
+    var tools = barEl;
 
     // 会话栏的开合放在**最左边**：它管的就是左边那一栏（与笔记页的文件面板同一处位置）。
     barEl.appendChild(
@@ -692,11 +898,33 @@
       )
     );
 
+    /* 手机：顶栏只剩三样 —— 会话栏的开合（上面那颗）· **这条对话的标题** · 工具。
+     * 其余四颗进右面板（用户 2026-11-09："`>` 的右边放这个对话的标题"）。 */
+    if (mobile) {
+      barEl.appendChild(
+        h('div.chat__bartitle', { text: currentTitle(), title: currentTitle() })
+      );
+      paintSheetTools();
+      barEl.appendChild(
+        h('button.chat__asidefold.chat__sheetbtn' + (state.sheetOpen ? '.is-on' : ''), {
+          type: 'button',
+          title: '工具：思考 / 对话树 / 工件 / 分享 / 模式 / 滤镜',
+          'aria-label': '工具',
+          'aria-expanded': state.sheetOpen ? 'true' : 'false',
+          draggable: 'false',
+          onClick: function () {
+            setSheet(!state.sheetOpen);
+          },
+        }, iconNode('filter', 15))
+      );
+      return;
+    }
+
     // 思考开关：管思考折不折。默认收起（思考是过程，不是答案），
     // 但**正文空着时会自动展开**（见 thinkNode）—— 有的模型把答案整段塞进推理通道，
     // 那时不展开就等于这条回复没有内容（用户："模型之前都没有输出思维链，是被吞了？"）。
     loadThink();
-    barEl.appendChild(
+    tools.appendChild(
       h(
         'button.chat__asidefold.chat__thinkbtn' + (state.showThink ? '.is-on' : ''),
         {
@@ -754,24 +982,30 @@
     // 分享：把这一条会话装配成**一个自带数据的网页**（对话正文 + 那棵对话树），
     // 发给别人双击就能看。装配在服务端做（实测 158 条 37ms），所以**不做**"正在打包"
     // 那一套 —— 成功与失败都由 toast 说清楚（见 onShare）。
-    // 演示清单：这条对话里生成过的 HTML/Python 演示，一处集中看
-    var demos = demoItems();
-    barEl.appendChild(
+    // 工件清单：这条对话里生成过的页面与文章，一处集中看
+    var artifacts = artifactItems();
+    tools.appendChild(
       h(
         'button.chat__asidefold.chat__demobtn',
         {
           type: 'button',
-          title: demos.length ? '演示清单（' + demos.length + ' 张）' : '这条对话里还没有演示',
-          'aria-label': '演示清单',
+          title: artifacts.length
+            ? '工件（' + artifacts.length + ' 件）'
+            : '这条对话里还没有工件',
+          'aria-label': '工件清单',
           draggable: 'false',
-          onClick: openDemoList,
+          onClick: function (ev) {
+            // 再点一次收起（浮层不吃锚点那一下，见 `onPopAway`）
+            if (popEl && popAnchor === ev.currentTarget) closePop();
+            else openArtifactList(ev.currentTarget);
+          },
         },
         iconNode('list', 15),
-        demos.length ? h('span.chat__treebadge', { text: String(demos.length) }) : null
+        artifacts.length ? h('span.chat__treebadge', { text: String(artifacts.length) }) : null
       )
     );
 
-    barEl.appendChild(
+    tools.appendChild(
       h(
         'button.chat__asidefold.chat__sharebtn',
         {
@@ -784,6 +1018,127 @@
         iconNode('share', 15)
       )
     );
+
+  }
+
+  /* ---------------------------------------------------------- 手机右面板 */
+
+  /** 这条对话的名字（顶栏那颗用）。没选中任何会话时给"新对话"。 */
+  function currentTitle() {
+    var id = state.current;
+    var one = (state.list || []).filter(function (conv) {
+      return conv.id === id;
+    })[0];
+    return (one && one.title) || (id ? '对话' : '新对话');
+  }
+
+  /** 顶栏那颗标题跟着当前会话走。没有那个节点（宽屏）就什么都不做。
+   *
+   * 用"就地改文本"而不是重画顶栏：换会话时重画会把右边那颗工具按钮也重建一遍，
+   * 按着它的手指会落在已经脱离文档的旧节点上。 */
+  function paintBarTitle() {
+    var el = barEl && barEl.querySelector('.chat__bartitle');
+    if (!el) return;
+    var title = currentTitle();
+    el.textContent = title;
+    el.title = title;
+  }
+
+  /** 面板里的一行工具：图标 + 名字 + 右侧的当前值（灰色小字）。 */
+  function sheetRow(icon, name, value, onClick, on) {
+    return h('button.chat__sheetrow' + (on ? '.is-on' : ''), {
+      type: 'button',
+      onClick: onClick,
+    },
+      h('span.chat__sheetrowico', { html: ui.icon(icon, 16) }),
+      h('span.chat__sheetrowname', { text: name }),
+      value ? h('span.chat__sheetrowval', { text: value }) : null);
+  }
+
+  /** 手机右面板的上半：四行工具。
+   *
+   * 桌面那四颗是 24px 的小图标，塞进面板里既小又说不清是什么 —— 所以手机上换一种
+   * 长相（图标 + 名字 + 当前值）。动作仍是同一批函数（`toggleThink` / 树的开合 /
+   * `openArtifactList` / `onShare`），不另立一套状态。 */
+  function paintSheetTools() {
+    if (!sheetToolsEl) return;
+    ui.clear(sheetToolsEl);
+    var counts = {};
+    state.messages.forEach(function (message) {
+      var key = keyOf(message.parentId);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    var forks = Object.keys(counts).filter(function (key) {
+      return counts[key] > 1;
+    }).length;
+    var artifacts = artifactItems().length;
+
+    sheetToolsEl.appendChild(
+      sheetRow('bulb', '思考过程', state.showThink ? '展开' : '折叠', toggleThink, state.showThink)
+    );
+    sheetToolsEl.appendChild(
+      sheetRow('tree', '对话树',
+        state.messages.length + ' 个节点' + (forks ? ' · ' + forks + ' 处叉' : ''),
+        function () {
+          state.treeOpen = !state.treeOpen;
+          if (state.treeOpen) resetTreeView();
+          setSheet(false);
+          renderBar();
+          renderTree();
+        }, state.treeOpen)
+    );
+    sheetToolsEl.appendChild(
+      sheetRow('list', '工件', artifacts ? artifacts + ' 件' : '还没有', function () {
+        setSheet(false);
+        openArtifactList(document.querySelector('.chat__demobtn'));
+      })
+    );
+    sheetToolsEl.appendChild(
+      sheetRow('share', '分享', '生成网页', function () {
+        setSheet(false);
+        onShare();
+      })
+    );
+  }
+
+  /** 面板开合。**只在手机上存在**：宽屏里那四颗工具本来就摆在顶栏上，
+   *  面板没有存在的理由（`MOBILE_TREE` 变宽时若还开着，这里顺手关掉）。 */
+  function setSheet(open) {
+    var want = !!open && MOBILE_TREE.matches;
+    // 左栏与右面板不同时开着：两个抽屉都从屏幕边缘划出来，同时开着的话
+    // 手指往哪边划都像在开第三个东西。要开这个就先让那个让开。
+    if (want && asideOpen) {
+      asideOpen = false;
+      if (chatEl) chatEl.setAttribute('data-aside', 'closed');
+    }
+    state.sheetOpen = want;
+    if (sheetEl) sheetEl.classList.toggle('is-open', want);
+    if (sheetScrimEl) sheetScrimEl.classList.toggle('is-open', want);
+    if (want) placeQuickControls();   // 打开就把三样控件归位到面板里
+    renderBar();                      // 那颗按钮的按压态要跟上
+  }
+
+  /** 把输入区那三样（深度思考 / 模式 / 滤镜）搬到该在的地方。
+   *
+   * 搬的是**真正的控件**，不是另做一套镜像按钮：两份状态迟早会打架
+   *（`mounts.js` 画药丸、`updateComposer` 刷深度思考、`paintLensButton` 建滤镜，
+   * 它们都只认自己那一个节点）。所以面板里放的是同一个 DOM 节点，只是换了爹。
+   *
+   * 滤镜那颗由 `paintLensButton` 现建（插在模式后面），这里把它一起带走 ——
+   * 不带走的话，手机上它会孤零零留在输入行里。 */
+  function placeQuickControls() {
+    if (!chatEl) return;
+    var row = chatEl.querySelector('.chat__tools');
+    if (!row || !modesEl) return;
+    /* **深度思考留在输入行**（用户 2026-11-09："深度思考这个药丸还是留在原来的地方"）：
+     * 它管的是"这一条怎么发"，与输入框是一次动作，收进面板反而多一步。
+     * 进面板的只有模式与滤镜 —— 那两样是设定，不是每次发送都要摸。 */
+    if (deepBtn && deepBtn.parentNode !== row) row.appendChild(deepBtn);
+    var host = MOBILE_TREE.matches && sheetOptsEl ? sheetOptsEl : row;
+    var lens = modesEl.nextElementSibling;
+    if (lens && !lens.classList.contains('chatlens__open')) lens = null;
+    if (modesEl.parentNode !== host) host.appendChild(modesEl);
+    if (lens && lens.parentNode !== host) host.appendChild(lens);
   }
 
   function renderTree() {
@@ -1112,8 +1467,7 @@
       h('span.chattree__title', { text: '对话树' }),
       h('span.chattree__sub', {
         text:
-          state.messages.length + ' 个节点 · 亮的是当前分支 · 点节点切过去' +
-          ' · 图钉 = 标过的地点',
+          state.messages.length + ' 个节点',
       }),
       dirButton,
       h(
@@ -3145,8 +3499,9 @@
    * 用 Catmull-Rom 插值（转成三次贝塞尔）：它**穿过**每个控制点 —— 这条正是要的。
    * 折线太多拐角、普通贝塞尔又不过点，只有它既过点又光滑。
    *
-   * `limit` = 只画到哪个 id 为止（播放用；`null` = 全部）。整条仍是一个子路径
-   *（一个 `M` + 若干 `C`），虚线自画那套才成立。
+   * `limit` = **已经走到第几枚**（播放用，`null` = 全部），按下标算、不按 id：
+   * 顺序现在是创建时间（见 `playOrder`），id 不再单调，拿 id 当"画到哪儿"会漏段。
+   * 整条仍是一个子路径（一个 `M` + 若干 `C`），虚线自画那套才成立。
    */
   function trailD(limit) {
     var model = TREE.trailModel;
@@ -3156,18 +3511,20 @@
       at[String(one.message.id)] = one;
     });
     var pts = [];
-    // **所有节点**，按创建时间（id）—— 不是"当前分支"。
+    // **所有节点**，按**创建时间** —— 不是"当前分支"。
     //
     // 这一处改过一次，把话留清楚：第一版沿 `activePath()`（当前上下文那条线）走，
     // 用户当场否了 —— "它只指示了我目前所处的这一条线路，但实际上我在树的前后反复跳转…
     // 你要按照节点创建的时间顺序来，这个才是我真正的探索旅程"。
     // 对：树上每个节点都是那一刻真的长出来的（包括后来放弃的分支、来回跳的那些），
-    // 所以 **id 顺序 = 旅程本身**；当前分支只是最终留下的那条路，不是走过的路。
-    playOrder().forEach(function (m) {
-      if (limit !== null && limit !== undefined && m.id > limit) return;
-      var node = at[String(m.id)];
+    // 所以 **时间顺序 = 旅程本身**；当前分支只是最终留下的那条路，不是走过的路。
+    // 时间而不是 id：同步来的旧对话 id 是接收方重新发的，与创建时间无关（见 `playOrder`）。
+    var order = playOrder();
+    for (var i = 0; i < order.length; i++) {
+      if (limit !== null && limit !== undefined && i >= limit) break;
+      var node = at[String(order[i].id)];
       if (node) pts.push(trailPoint(node));
-    });
+    }
     if (pts.length < 2) return '';
     var round = function (v) {
       return Math.round(v * 10) / 10;
@@ -3238,7 +3595,7 @@
   function treeTrail(model) {
     if (!TREE.trail || !model) return null;
     TREE.trailModel = model;
-    var d = trailD(TREE.play.on ? TREE.play.limit : null);
+    var d = trailD(TREE.play.on ? TREE.play.at : null);
     var group = sv('g', { class: 'cttrail' });
     var glow = sv('path', { class: 'cttrail__glow', d: d });
     var line = sv('path', { class: 'cttrail__line', d: d });
@@ -3324,9 +3681,27 @@
   var PLAY_STEP = 260;                    // 1× 时每枚之间停多久（毫秒）
   var PLAY_SPEEDS = [0.5, 1, 2, 4];       // 速度四档
 
+  /** 轨迹与播放的时间顺序。
+   *
+   * **按创建时间排，不按 id**。原先这里写的是"id 就是时间（一条一条往上加的）"——
+   * 那在本机顺序长出来的对话里成立，但**同步来的旧对话不成立**：拉取时 `id` 是
+   * 接收方按到达顺序重新发的（见 `_apply_row`），与真实创建顺序无关。实测旧对话
+   * `dfd9863f` 61 条里有 42 条 id 与时间逆序 —— 轨迹于是按 id 在图上乱窜，
+   * 播放也一枚一枚跳着冒出来（用户："旧对话点轨迹和播放，变成散点出现"）。
+   *
+   * 时间取 `createdAtMs`（后端在 `_message_json` 里给的毫秒整数）；分享页那种
+   * 没有时间字段的，退回 id —— 至少是稳定的。
+   */
   function playOrder() {
-    return state.messages.slice().sort(function (a, b) {
-      return a.id - b.id;                 // id 就是时间（一条一条往上加的）
+    var list = state.messages.slice();
+    // 全都有时间才按时间排：有一条没有（本地刚发出、还没落库的乐观行）就整体退回
+    // id —— 混杂排会把那条甩到最前面去。分享页没有 `createdAtMs`，走的也是 id。
+    var timed = list.every(function (m) {
+      return typeof m.createdAtMs === 'number' && m.createdAtMs > 0;
+    });
+    return list.sort(function (a, b) {
+      if (timed && a.createdAtMs !== b.createdAtMs) return a.createdAtMs - b.createdAtMs;
+      return a.id - b.id;
     });
   }
 
@@ -3433,7 +3808,8 @@
     }
     var one = order[TREE.play.at];
     TREE.play.at += 1;
-    TREE.play.limit = one.id;
+    // 轨迹只认**走了几枚**：顺序按创建时间后 id 不再单调（见 `playOrder`）
+    TREE.play.limit = TREE.play.at;
     markNodeShown(one.id, true);
     // 轨迹与树**同时**长：这条路只画到刚长出来的那一枚为止
     if (TREE.trail) paintTrail(TREE.play.limit);
@@ -5152,12 +5528,37 @@
     noticeEl = h('div.chat__notice');
     barEl = h('div.chat__bar');
     treeEl = h('div.chattree', { role: 'dialog', 'aria-label': '对话树' });
-    demoEl = h('div.chatdemo', { role: 'dialog', 'aria-label': '演示' });
+    demoEl = h('div.chatdemo', { role: 'dialog', 'aria-label': '工件' });
     notesEl = h('div.chatnotes', { role: 'dialog', 'aria-label': '批注' });
     // 书签抽屉：**挂在对话树里**（每次 `renderTree` 塞进画布那一层）。所以这里只建一个
     // 常驻容器 —— 它在两棵树之间搬来搬去，但节点本身不重建，抽屉的滚动位置因此活得下来。
     marksEl = h('div.chatmarks', { role: 'dialog', 'aria-label': '书签' });
     problemEl = h('div.chatproblem', { role: 'dialog', 'aria-label': '大题' });
+    /* 手机右面板：顶栏那四颗与输入区的三样都住在这里。
+     *
+     * 形状是"右侧抽屉"（遮罩 + 贴右边的一列），手指从右边缘往左划就能拉出来
+     *（手势见文件末尾绑的那条，`QF.swipe`）。宽屏也建着但 CSS 里整块不显示 ——
+     * 跨断点时省得重建，控件也不用搬两遍（`placeQuickControls` 只管往哪边搬）。 */
+    sheetScrimEl = h('div.chat__scrim', {
+      onClick: function () {
+        setSheet(false);
+      },
+    });
+    sheetToolsEl = h('div.chat__sheettools');
+    sheetOptsEl = h('div.chat__sheetopts');
+    sheetEl = h('div.chat__sheet', { role: 'dialog', 'aria-label': '工具' },
+      h('div.chat__sheethead', null,
+        h('span.chat__sheettitle', { text: '工具' }),
+        iconButton('close', '收起面板', function () {
+          setSheet(false);
+        }, '.chat__sheetclose')),
+      h('div.chat__sheetbody', null,
+        h('div.chat__sheetgroup', null,
+          h('div.chat__sheetlabel', { text: '这一条对话' }),
+          sheetToolsEl),
+        h('div.chat__sheetgroup', null,
+          h('div.chat__sheetlabel', { text: '这一条消息' }),
+          sheetOptsEl)));
     try {
       var savedAside = window.localStorage.getItem('qf.chat.aside');
       if (savedAside === 'closed' || savedAside === 'open') asideOpen = savedAside === 'open';
@@ -5234,12 +5635,13 @@
                   h('span.chat__deeptext', { text: '深度思考' })
                 )),
                 // 模式药丸：三个模式收成一颗（内容由 mounts.js 画）。
-                // 它从"输入框紧左边"挪到了**第二行的深度思考右边**（同一句用户要求）。
-                h('div.chat__modes', {
+                // 它从"输入框紧左边"挪到了**第二行的深度思考右边**（同一句用户要求）；
+                // 手机上再往后搬一步 —— 进右面板（见 `placeQuickControls`）。
+                (modesEl = h('div.chat__modes', {
                   id: 'chat-modes',
                   role: 'group',
                   'aria-label': '这一版对话的模式',
-                }),
+                })),
                 sendBtn
               )
             ),
@@ -5251,7 +5653,9 @@
         treeEl,
         demoEl,
         notesEl,
-        problemEl
+        problemEl,
+        sheetScrimEl,
+        sheetEl
       )
     );
     // `.chat` 是刚建出来的（对话树 / 批注 / 大题那几个浮层是它的**兄弟**，
@@ -5281,10 +5685,32 @@
     applyNarrowAside();
     if (NARROW_ASIDE.addEventListener) NARROW_ASIDE.addEventListener('change', applyNarrowAside);
     else if (NARROW_ASIDE.addListener) NARROW_ASIDE.addListener(applyNarrowAside);   // 老 Safari
+    // 边缘手势：左边缘往右划展开、在抽屉上往左划收回（手机上手指比顶栏那颗按钮近）
+    if (QF.swipe) {
+      QF.swipe.bind({
+        edge: 'left',
+        enabled: function () { return NARROW_ASIDE.matches; },
+        isOpen: function () { return asideOpen; },
+        set: setAside,
+      });
+      // 右面板反过来：右边缘往左划拉出来、在面板上往右划收回去
+      QF.swipe.bind({
+        edge: 'right',
+        enabled: function () { return MOBILE_TREE.matches; },
+        isOpen: function () { return state.sheetOpen; },
+        set: setSheet,
+      });
+    }
+    setSheet(false);
+    placeQuickControls();
     // 跨过手机那条线时，开着的对话树要换一种画法（地图 ↔ 大纲）。状态是同一份，
     // 只重画 —— 不重画的话，转屏之后会留着一张按 1400 宽算好的图。
     function onTreeBreakpoint() {
       if (state.treeOpen) renderTree();
+      // 跨过手机那条线：右面板收掉，三样控件搬回（或搬进）该在的地方
+      setSheet(false);
+      placeQuickControls();
+      renderBar();
     }
     if (MOBILE_TREE.addEventListener) MOBILE_TREE.addEventListener('change', onTreeBreakpoint);
     else if (MOBILE_TREE.addListener) MOBILE_TREE.addListener(onTreeBreakpoint);   // 老 Safari
@@ -6309,6 +6735,8 @@
         state.folders = (res && res.folders) || [];
         readFolded();
         renderAside();
+        // 标题可能刚被改过名、或被模型起了一个（第一轮答完之后）—— 顶栏那颗跟着刷新
+        paintBarTitle();
         if (!wantedOnce) {
           wantedOnce = 1;
           var want = '';
@@ -7524,18 +7952,61 @@
   }
 
   /**
-   * 演示在消息里只是一张**卡片**：标题 + 说明 + 打开按钮。
+   * 一件工件的卡片。三种形态长相不同，判据是服务端给的 `kind`
+   * （见 `parts.artifact_part`）：
+   *
+   *   markdown —— 文章：贴在按钮旁边弹一块浮层，按正文排版读（不是整屏弹窗）
+   *   python   —— 跑一段脚本拿输出：长相像执行一条命令（用户："你回想一下你执行命令
+   *               的时候是怎么做的？做成那样的展示形式就够了"）
+   *   html     —— 演示：卡片 + 右侧整屏高的面板
+   *
+   * 回退判据：`kind` 是后加的字段，库里那些**旧消息**没带它 —— 但 python 那份的
+   * html 是 Pyodide 运行壳，认这个就能让旧消息也立刻换成长相（不必等它重跑）。
+   */
+  function artifactCard(part) {
+    if (part.kind === 'markdown') return docCard(part);
+    if (part.kind === 'python' || /pyodide/i.test(part.html || '')) return pythonRun(part);
+    return demoCard(part);
+  }
+
+  /**
+   * 文章在消息里也只是一张**卡片**：标题 + 打开按钮。
+   *
+   * 为什么不直接铺在消息流里：一篇可以上万字，铺开就把整条对话撑散了。
+   * 点开是**右侧半页**（与页面同一个面板）—— 消息就在眼前，够看；
+   * 「工件栏」里点开的那一份才是全屏（见 `openArtifact`）。
+   */
+  function docCard(part) {
+    return h(
+      'div.chatdemo__card',
+      null,
+      h(
+        'div.chatdemo__cardrow',
+        null,
+        h(
+          'div.chatdemo__cardmain',
+          null,
+          h('div.chatdemo__cardtitle', { text: part.title || '工件' }),
+          h('div.chatdemo__cardnote', { text: '一篇能读的文章' })
+        ),
+        h('button.btn.btn--ghost.chatdemo__open', {
+          type: 'button',
+          text: '打开工件',
+          onClick: function () {
+            openDemo(part);
+          },
+        })
+      )
+    );
+  }
+
+  /**
+   * 页面在消息里只是一张**卡片**：标题 + 说明 + 打开按钮。
    *
    * 真正跑它的是右侧那个整屏高的面板 —— 嵌在消息流里又窄又矮，
    * 稍微像样一点的可视化都会被框住（那是第一版的问题）。
    */
   function demoCard(part) {
-    // `run_python` 不是「演示」，它是**跑一段脚本拿输出** —— 长相该像执行一条命令，
-    // 而不是一张要打开面板的卡片（用户原话：你回想一下你执行命令的时候是怎么做的？
-    // 做成那样的展示形式就够了）。判据是服务端给的 `kind`（见 parts.demo_part）。
-    // 回退判据：`kind` 是后加的字段，库里那些**旧消息**没带它 —— 但 python 那份的
-    // html 是 Pyodide 运行壳，认这个就能让旧消息也立刻换成长相（不必等它重跑）。
-    if (part.kind === 'python' || /pyodide/i.test(part.html || '')) return pythonRun(part);
     // 离屏跑一次（见 `demoRunner`）：它跑完会 `postMessage` 回来，那一头是模型的画面。
     var runner = demoRunner(part);
     return h(
@@ -7550,12 +8021,12 @@
         h(
           'div.chatdemo__cardmain',
           null,
-          h('div.chatdemo__cardtitle', { text: part.title || '演示' }),
-          h('div.chatdemo__cardnote', { text: '在右侧面板里打开' })
+          h('div.chatdemo__cardtitle', { text: part.title || '工件' }),
+          h('div.chatdemo__cardnote', { text: '能动的页面（在右侧打开）' })
         ),
         h('button.btn.btn--ghost.chatdemo__open', {
           type: 'button',
-          text: '打开演示',
+          text: '打开工件',
           onClick: function () {
             openDemo(part);
           },
@@ -7611,7 +8082,7 @@
     var el = h('iframe.chatdemo__runner', {
       sandbox: 'allow-scripts',
       referrerpolicy: 'no-referrer',
-      title: part.title || '演示',
+      title: part.title || '工件',
       srcdoc: withCsp(part.html || ''),
     });
     demoRunners[part.runId] = el;
@@ -7641,7 +8112,7 @@
       var parts = message.parts || [];
       for (var j = 0; j < parts.length; j++) {
         var part = parts[j];
-        if (part && part.type === 'demo' && part.runId === runId) {
+        if (isArtifact(part) && part.runId === runId) {
           return { part: part, mid: message.id, cid: state.current };
         }
       }
@@ -7845,18 +8316,37 @@
     true
   );
 
-  function openDemo(part) {
+  /**
+   * 打开一件工件。
+   *
+   * 两个入口、两种规格（用户 2026-11-09 定的）：
+   *
+   *   * **卡片上那颗「打开工件」** —— 右侧弹出来的**半页**：消息就在眼前，够看；
+   *   * **工件栏（顶栏那颗按钮）** —— **全屏**：他是从一份清单里翻出来重看的，
+   *     给足版面。
+   *
+   * 两种形态走同一块面板：`markdown` 铺正文（与正文同一个渲染器 `QF.md`，
+   * 标题 / 表格 / `$$` 公式 / ```mermaid 都认），`html` 起沙箱 iframe。
+   */
+  function openArtifact(part, full) {
     // runId 要带过来：沙箱跑完会把输出 postMessage 回来，靠它认领到这次运行
     state.demo = {
-      title: part.title || '演示',
-      html: String(part.html || ''),
-      runId: String(part.runId || ''),
+      title: part.title || '工件',
+      markdown: part.kind === 'markdown' ? String(part.markdown || '') : '',
+      html: part.kind === 'markdown' ? '' : String(part.html || ''),
+      runId: part.kind === 'markdown' ? '' : String(part.runId || ''),
       // 有本次会话里跑出来的就用它；否则**用随零件存下来的那份**（`part.run`）——
       // 分享页、刷新之后 `demoRuns` 都是空的，不认存下来的那份，面板一开只会写
       // "沙箱还在跑…"，而那份输出（与截图）其实一直躺在零件里（见 `figsNode`）。
       run: demoRunOf(part.runId) || part.run || null,
+      full: !!full,
     };
     renderDemoPanel();
+  }
+
+  /** 卡片上那颗按钮：半页。 */
+  function openDemo(part) {
+    openArtifact(part, false);
   }
 
   /**
@@ -7893,6 +8383,8 @@
     // （重建 = 重新跑一遍 = 又回传一次，会打转）
     var runBox = h('div.chatdemo__run');
     demoRunEl = runBox;
+    // 文章与页面共用一个面板：有 markdown 就铺正文（不进沙箱），没有才起 iframe
+    var markdown = String(state.demo.markdown || '');
 
     demoEl.appendChild(
       h(
@@ -7903,7 +8395,7 @@
           },
         },
         h(
-          'div.chatdemo__panel',
+          'div.chatdemo__panel' + (state.demo.full ? '.is-full' : ''),
           null,
           h(
             'div.chatdemo__head',
@@ -7911,18 +8403,20 @@
             h('span.chatdemo__title', { text: state.demo.title }),
             iconButton('close', '关闭（Esc）', close)
           ),
-          h('iframe.chatdemo__frame', {
-            sandbox: 'allow-scripts',
-            referrerpolicy: 'no-referrer',
-            title: state.demo.title,
-            srcdoc: withCsp(state.demo.html),
-          }),
-          runBox
+          markdown
+            ? h('div.chatdemo__doc', null, QF.md.render(markdown))
+            : h('iframe.chatdemo__frame', {
+                sandbox: 'allow-scripts',
+                referrerpolicy: 'no-referrer',
+                title: state.demo.title,
+                srcdoc: withCsp(state.demo.html),
+              }),
+          markdown ? null : runBox
         )
       )
     );
 
-    paintDemoRun();
+    if (!markdown) paintDemoRun();
   }
 
   /* ------------------------------------------------------------ 题卡 */
@@ -9423,7 +9917,7 @@
     if (type === 'draft') return draftCard(part);
     if (type === 'action') return actionNode(part);
     if (type === 'file') return fileNode(part);
-    if (type === 'demo') return demoCard(part);
+    if (isArtifact(part)) return artifactCard(part);
     if (type === 'citation') return citationNode(part);
     if (type === 'summary') return h('div.chatmsg__note', { text: part.text || '' });
     if (type === 'error') return h('div.chatmsg__why', { text: part.message || '出错了' });
@@ -9716,6 +10210,12 @@
   function decorateAssistant(row, body, m) {
     if (m.role !== 'assistant') return;
     var foot = h('div.chatmsg__foot');
+    /* 这一条上的**按钮**（重答 / 复制 / 旗 / 丝带 / 镜片）先攒在这里，最后整组挂上。
+     * 为什么要成组：它们是同一类"对这条消息做的事"，手机端要整组换到第二行
+     * （用户 2026-11-09："四个按钮排布不对劲，手机端放不下，要重排。放在第二行吧"）。
+     * 散着 append 时换行点由剩余宽度决定，会断成 2 + 2 —— 两个挤在元信息右侧、
+     * 两个掉到下一行的行首，看着像两拨东西。 */
+    var acts = h('div.chatmsg__acts');
 
     // 助手这条的分支切换（"重新回答"出来的第几版/共几版）同样搬到脚注行里、
     // 放在最左端 —— 与右端的复制/重答同一行垂直居中（用户对用户消息那侧的要求，
@@ -9725,16 +10225,16 @@
 
     if (m.status === 'partial') {
       foot.appendChild(h('span.chatmsg__tag', { text: '已中断' }));
-      foot.appendChild(retryButton(m));
+      acts.appendChild(retryButton(m));
     } else if (m.status === 'error') {
       foot.appendChild(h('span.chatmsg__tag.is-bad', { text: '失败' }));
       if (m.error) foot.appendChild(h('span.chatmsg__why', { text: m.error }));
-      foot.appendChild(retryButton(m));
+      acts.appendChild(retryButton(m));
     } else if (m.status === 'streaming' && !state.busy) {
       // 打开页面时看到的「还在生成」= 上一轮没收到收尾信号（服务端会在读的时候自愈，
       // 这里是同一件事的前端一侧：给个出口，别让它静止地转圈）
       foot.appendChild(h('span.chatmsg__tag', { text: '这一轮没有收尾' }));
-      foot.appendChild(retryButton(m));
+      acts.appendChild(retryButton(m));
     }
 
     if (m.status === 'ok') {
@@ -9749,7 +10249,7 @@
       // 切换器也就永远只有 1 / 1（LibreChat 在每条回答下都放了这个入口）。
       // 显示为图标：页脚里已经有一行元信息（模型 · 耗时 · token），
       // 再加三个字就显得吵；图标与「复制」是同一套，安静且认得出来。
-      foot.appendChild(
+      acts.appendChild(
         iconButton('retry', '重新回答（会另开一条分支）', function () {
           if (state.busy) return;
           regenerate(m);
@@ -9761,7 +10261,7 @@
     // 放在状态分支之外 —— 中断的回答、失败的半截，同样值得能复制走。
     var prose = proseOf(m);
     if (prose) {
-      foot.appendChild(
+      acts.appendChild(
         iconButton('copy', '复制这条回答', function () {
           copyText(prose, '回答已复制');
         })
@@ -9783,15 +10283,17 @@
     // 落库那一步会重画这一行（`replaceMessage` → `decorateAssistant`），图标自然就出来了。
     if (m.id && String(m.id).indexOf('local-') !== 0 && m.status !== 'streaming') {
       placeButtons(m).forEach(function (btn) {
-        foot.appendChild(btn);
+        acts.appendChild(btn);
       });
     }
     // lens 标记：挂在**哪条消息**上就在哪一行显示（点一下取下）—— 它可能挂在用户那条，
     // 也可能挂在这一条（用 `/` 之后紧接着发的那一句在哪条上，就记在哪条上）。
     lensChips(m).forEach(function (chip) {
-      foot.appendChild(chip);
+      acts.appendChild(chip);
     });
 
+    // 整组按钮挂在元信息之后（桌面同一行；手机端整组换行，见 `.chatmsg__acts`）
+    if (acts.childNodes.length) foot.appendChild(acts);
     if (foot.childNodes.length) body.appendChild(foot);
   }
 
@@ -10555,20 +11057,21 @@
             citation: function (d) {
               if (state.live && d && d.citation) state.live.pushPart(d.citation);
             },
-            demo: function (d) {
-              if (!state.live || !d || !d.demo) return;
-              // 跑 Python 的那条：服务端会把 kind / code / runId 一起发过来（见
-              // chat.py 里那个 payload），照着长出来的零件才能被认成命令块、
-              // 才能把脚本交给常驻壳。演示那条只有 html。
+            artifact: function (d) {
+              if (!state.live || !d || !d.artifact) return;
+              // 三种形态走同一个事件：服务端把 kind / code / runId / markdown 一起发过来
+              // （见 chat.py 里那个 payload），照着长出来的零件才能被认成命令块或文章、
+              // 才能把脚本交给常驻壳。
               state.live.pushPart({
-                type: 'demo',
-                kind: d.demo.kind || '',
-                title: d.demo.title,
-                html: d.demo.html || '',
-                runId: d.demo.runId || '',
-                code: d.demo.code || '',
+                type: 'artifact',
+                kind: d.artifact.kind || '',
+                title: d.artifact.title,
+                html: d.artifact.html || '',
+                markdown: d.artifact.markdown || '',
+                runId: d.artifact.runId || '',
+                code: d.artifact.code || '',
                 // 点名要装的包（`packages` 参数，动态导入那种写法）——转发给壳
-                packages: d.demo.packages || [],
+                packages: d.artifact.packages || [],
               });
             },
             done: function (m) {
@@ -11371,7 +11874,11 @@
     var tools = document.querySelector('.chat__tools');
     if (!tools) return;
 
-    var btn = tools.querySelector('.chatlens__open');
+    // 这颗按钮是跟着**模式药丸**住的：手机上那颗搬进了右面板（`placeQuickControls`），
+    // 滤镜就得跟着搬 —— 还照旧只看输入行的话，会在输入行里多画一颗。
+    var modes = document.getElementById('chat-modes');
+    var host = (modes && modes.parentNode) || tools;
+    var btn = host.querySelector('.chatlens__open');
     if (!btn) {
       btn = h('button.modepill.chatlens__open', {
         type: 'button',
@@ -11396,11 +11903,11 @@
           inputEl.focus();
         },
       });
-      var modes = tools.querySelector('.chat__modes');
       if (modes && modes.parentNode) modes.parentNode.insertBefore(btn, modes.nextSibling);
-      else tools.appendChild(btn);
+      else host.appendChild(btn);
     }
-
+    // 刚建出来的这颗要跟**模式药丸**走：手机上它们一起住进右面板
+    placeQuickControls();
   }
 
   /** 这条消息上挂着的标记（点一下 = 取下 / 再装回去）。没有就返回 []。
@@ -11533,13 +12040,19 @@
    * 一起丢掉（用户："从一个对话转到另一个对话的切换过程不够丝滑"）。
    */
   function markCurrent() {
-    if (!listEl) return;
-    Array.prototype.forEach.call(listEl.querySelectorAll('.chatlist__item'), function (el) {
-      el.classList.toggle('is-on', el.getAttribute('data-conv') === String(state.current));
-    });
+    if (listEl) {
+      Array.prototype.forEach.call(listEl.querySelectorAll('.chatlist__item'), function (el) {
+        el.classList.toggle('is-on', el.getAttribute('data-conv') === String(state.current));
+      });
+    }
+    // 换会话了，顶栏那颗标题要跟着换（手机上"我在跟哪条对话"全靠它）
+    paintBarTitle();
   }
 
   function openConversation(id) {
+    // 手机上点一条 = "我去看这一条了"：抽屉要让开，否则正文还压在它底下
+    //（宽屏左栏是常驻的一列，这里什么都不用做）
+    if (NARROW_ASIDE.matches && asideOpen) setAside(false);
     // 离开这一条之前，先把**读到哪儿了**记下来（下一句 `state.current` 就变成新的了）
     saveReadAnchor();
     // 大题面板是**某一道题**，不是页面级的常驻物：不关掉的话，换一条对话它还杵在那儿
@@ -11749,6 +12262,25 @@
           });
       })
       .then(function (blob) {
+        // 打包版（Android）：WebView 里 `a[download]` 不会落盘 —— 没有
+        // DownloadListener 就等于点了个寂寞（2026-11-09 用户："移动端的 chat
+        // 页面分享，你需要换一个可行的方法"）。把字节交给原生：写进 cache，
+        // 再用 FileProvider + ACTION_SEND 弹系统分享（存到文件 / 发微信都行）。
+        var native = window.QFNative;
+        if (native && native.shareHtml) {
+          var reader = new FileReader();
+          reader.onload = function () {
+            var text = String(reader.result || '');
+            var comma = text.indexOf(',');
+            native.shareHtml(name, comma >= 0 ? text.slice(comma + 1) : '');
+            ui.toast('分享页已生成（' + (blob.size / 1048576).toFixed(1) + ' MB），正在打开系统分享…');
+          };
+          reader.onerror = function () {
+            ui.toast('分享页读不出来（文件太大？）', 'warn');
+          };
+          reader.readAsDataURL(blob);
+          return;
+        }
         var url = URL.createObjectURL(blob);
         var link = h('a', { href: url, download: name });
         document.body.appendChild(link);
@@ -11962,7 +12494,6 @@
     });
     var conf = QF.store.settings();
     document.documentElement.style.setProperty('--font-scale', String(conf.fontScale || 1));
-    document.documentElement.style.setProperty('--content-max', (conf.maxWidth || 880) + 'px');
 
     // 主题按钮、设置按钮、当前页图标都由 shell.js 统一接线（全站一份）
     QF.shell.mount({});

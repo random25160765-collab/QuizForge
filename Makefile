@@ -19,7 +19,7 @@
 #                        db/quizforge.db.with-vectors.gz  含向量
 #   make db-restore    db/quizforge.db.gz.enc → data/quizforge.db（先解密再解压；向量靠 make embed 重建）
 #                      要连向量一起搬：make db-restore ARGS="--path db/quizforge.db.with-vectors.gz"
-#   make snapshot-key  生成口令 config/snapshot.key（一台机器一次，复制到每台要同步的机器，绝不进 git）
+#   make snapshot-key  生成同步口令（写进 config/settings.local.json，一台机器一次，绝不进 git）
 #
 # **数据不进 git（2026-11-08 起）**：日常跨机器走 Turso（make sync），题库交换走
 # bank-export / bank-import。仓库里只有代码；干净克隆起来是个空库。
@@ -187,8 +187,8 @@ db-snapshot:
 	@$(VENV)/bin/python tools/db_snapshot.py save --out $(DB_VECTORS)
 	@$(VENV)/bin/python tools/db_snapshot.py encrypt --in $(DB_SNAPSHOT) --out $(DB_SNAPSHOT).enc
 
-# 生成快照口令。只该跑一次：之后把 config/snapshot.key 复制到每台要同步的机器
-#（它被 gitignore，绝不进仓库 —— 口令进了仓库，加密就是白做）。
+# 生成同步口令。只该跑一次：之后把同一个 syncPassphrase 带到每台要同步的机器
+#（写在 config/settings.local.json 里，那份被 gitignore —— 口令进了仓库，加密就是白做）。
 snapshot-key:
 	@$(VENV)/bin/python tools/db_snapshot.py genkey
 
@@ -388,8 +388,8 @@ images:
 
 # 生成 .env（本机跑服务时读它）
 # 已有 .env 时拒绝覆盖 —— 里面可能有按机器调整过的端口等设置。
-# 注意这里**没有密钥要填**：AI 密钥在 `config/ai.local.json`（已 gitignore），
-# 那是本机自己的那一份，不随仓库走。
+# 注意这里**没有密钥要填**：AI 密钥在 `config/settings.local.json` 的 `ai` 块
+# （界面里填，已 gitignore），不随仓库走。
 env-init:
 	@test -f .env && { echo ".env 已存在，未覆盖"; exit 0; } || cp .env.example .env
 	@echo "已生成 .env（按需修改端口 / 用量上限 / 内测通道开关）"
@@ -447,7 +447,7 @@ user-import:
 
 # ------------------------------------------------- 跨机器同步（Turso）
 # 本地 SQLite 仍是工作库；Turso 只做行级增量的中转。对话端到端加密，
-# 口令就是 `config/snapshot.key`（两台机器必须同一份，见 `make snapshot-key`）。
+# 口令就是设置里的 `syncPassphrase`（两台机器必须同一份，见 `make snapshot-key`）。
 # 配置：config/settings.local.json 的 `turso` 块（地址 + 令牌），设置页也能改。
 sync:
 	@(cd api && .venv/bin/python -m app.cli.sync $(if $(ARGS),$(ARGS),run))
@@ -583,7 +583,7 @@ help:
 # Android APK（Capacitor + Chaquopy）—— 说明见 mobile/README.md
 # 工具链只需装一次；keystore 在仓库外（~/.config/quizforge-android/）。
 # ============================================================================
-.PHONY: apk apk-debug apk-sync apk-toolchain apk-keystore apk-bank
+.PHONY: apk apk-debug apk-sync apk-toolchain apk-keystore
 
 apk:
 	@bash mobile/scripts/build-apk.sh
@@ -600,6 +600,3 @@ apk-toolchain:
 
 apk-keystore:
 	@bash mobile/scripts/keystore.sh
-
-apk-bank:
-	@$(PYTHON) mobile/scripts/export-bank-db.py

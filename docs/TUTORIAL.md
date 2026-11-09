@@ -49,7 +49,7 @@ make api-dev       # → http://127.0.0.1:8100
 **就是 SQLite 库本身**，gzip 压缩、口令加密。一条命令解密解压即用，不需要起任何服务：
 
 ```bash
-make snapshot-key          # 生成口令 config/snapshot.key（一台机器一次，复制到每台要同步的机器）
+make snapshot-key          # 生成口令并写进 config/settings.local.json（一台机器一次，把同一份带到每台）
 make db-restore            # db/quizforge.db.gz.enc → data/quizforge.db
 make db-restore ARGS=--force   # 覆盖已有的库（先删掉它再解压）
 ```
@@ -76,7 +76,7 @@ make sync ARGS=status   # 看状态（不会显示令牌）
 本地 SQLite 仍是唯一工作库，Turso 只中转 `(表, 主键)` 粒度的变化：
 
 * **对话四张表端到端加密**（`conversations` / `conversation_folders` / `messages` /
-  `attachments`），密钥由 `config/snapshot.key` 派生，两台机器必须同一份；
+  `attachments`），密钥由设置里的 `syncPassphrase` 派生，两台机器必须同一份；
 * 其余用户数据（进度、自出的题、设置、用量）明文上传，但 `ai.apiKey` /
   `search.apiKey` 和整个 `turso` 块会被抹掉，不会出本机；
 * 首次同步会把现有库补一遍（baseline），之后只推变化；两台机器都能写，按行的
@@ -210,7 +210,7 @@ base  = acc × (0.55 + 0.45 × fresh) × (0.6 + 0.4 × ev)
 ### 快照与备份
 
 ```bash
-make snapshot-key   # 一次性：生成口令（复制到每台要同步的机器）
+make snapshot-key   # 一次性：生成口令（把同一份带到每台要同步的机器）
 make db-snapshot    # 库里 → db/quizforge.db.gz.enc（冷备份 / 换机手动拷贝）
 make db-restore     # 从它恢复（解密解压即用）
 ```
@@ -327,7 +327,6 @@ make graph-export   # → graph.json（图谱页取不到接口时的降级快�
 | 变量 | 说明 |
 |---|---|
 | `API_PORT` | 宿主端口，默认 `8100` |
-| `QF_COOKIE_SECURE` | 上了 HTTPS 后改成 `true` |
 | `QF_AI_ENABLED` | 实例级 AI 总开关，设 `false` 后所有人都用不了 |
 | `QF_AI_DAILY_QUOTA` | **每人**每日调用上限，`0` 表示不限 |
 | `QF_AI_TIMEOUT_MS` | 超时上限（毫秒）|

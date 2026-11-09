@@ -44,12 +44,23 @@ def _say(db, conv, role, text, parent=None):  # noqa: ANN001
 
 
 def _hang(db, conv, node, key, on=True):  # noqa: ANN001
-    """把一条滤镜挂在某个节点上（前端 `QF.store` 那一侧平时就是这么写的）。"""
-    from app import settings_store
+    """把一条滤镜挂在某个节点上（前端 `QF.store.attachLens` 平时就是这么写的）。
 
-    rows = list((settings_store.load(db) or {}).get("lens") or [])
-    rows.append({"cid": str(conv.id), "mid": str(node.id), "key": key, "on": on})
-    settings_store.put(db, lens=rows)
+    2026-11-09 起它是**数据**：一条一行，住 `lens_records`，`message_uid` 是跨机身份。
+    """
+    from app.models import LensRecord
+
+    uid = str(node.uid or "") if node is not None else ""
+    one = (
+        db.query(LensRecord)
+        .filter_by(conversation_id=conv.id, message_uid=uid, lens_key=key)
+        .first()
+    )
+    if one is None:
+        one = LensRecord(conversation_id=conv.id, message_uid=uid, lens_key=key)
+        db.add(one)
+    one.enabled = on
+    db.flush()
 
 
 def test_lenses_come_from_the_folder_as_separate_markdown_files() -> None:
@@ -195,18 +206,19 @@ def test_records_from_another_conversation_do_not_leak(db_session) -> None:  # n
 
 
 def test_records_written_under_the_old_name_still_count(db_session) -> None:  # noqa: ANN001
-    """老数据还认：这批记录原先存在 `skills` 这个键上（那时它叫 skill）。
+    """老数据还认：这批记录原先存在设置里（键名 `skills`，那时它叫 skill）。
 
-    升级之后"我已经装上的那些"不该凭空消失 —— 读的时候两处都看，写只写 `lens`。
+    升级之后"我已经装上的那些"不该凭空消失：第一次读表时把它们搬进 `lens_records`
+    （`mid` 翻成 `Message.uid`），搬完就从设置里删掉。
     """
-    from app import settings_store
+    from app import settings_file
 
     conv = _conv(db_session)
     root = _say(db_session, conv, "user", "第一问")
     db_session.commit()
-    settings_store.put(
-        db_session,
-        skills=[{"cid": str(conv.id), "mid": str(root.id), "key": "feynman", "on": True}],
+    # 老设置文件里的原始写法（`mid` 是本机消息 id）—— 第一次读时搬进表
+    settings_file.save(
+        {"skills": [{"cid": str(conv.id), "mid": str(root.id), "key": "feynman", "on": True}]}
     )
     assert [one.key for one in lens.resolve(db_session, conv, root)] == ["feynman"]
 
@@ -224,3 +236,43 @@ def test_the_block_rides_along_in_both_modes() -> None:
     assert note in minimal, "极简模式同样带着它"
 
     assert lens.block([]) == ""
+
+
+def test_records_live_in_a_table_not_in_the_settings_file(client, db_session) -> None:  # noqa: ANN001
+    """2026-11-09 搬家验收：记录是**数据行**，不是设置。
+
+    `/api/lens/records` 装 / 取；`/api/chat/mounts` 一起带回（聊天页只拉一次就能
+    画勾选框）；设置文件里一个字节都不留。
+    """
+    from app import settings_file
+
+    conv = _conv(db_session)
+    root = _say(db_session, conv, "user", "第一问")
+    db_session.commit()
+
+    out = client.put(
+        "/api/lens/records",
+        json={"cid": str(conv.id), "mid": str(root.id), "key": "feynman", "on": True, "at": 1},
+    )
+    assert out.status_code == 200
+    assert out.json()["item"]["mid"] == str(root.id)
+
+    listed = client.get("/api/lens/records", params={"cid": str(conv.id)}).json()["items"]
+    assert [(one["key"], one["on"]) for one in listed] == [("feynman", True)]
+
+    mounts = client.get("/api/chat/mounts").json()
+    assert any(one["key"] == "feynman" for one in mounts["lensRecords"])
+
+    assert "lens" not in settings_file.load()
+    assert "skills" not in settings_file.load()
+
+    # 取下 = 同一行改 `on`，不新增
+    client.put(
+        "/api/lens/records",
+        json={"cid": str(conv.id), "mid": str(root.id), "key": "feynman", "on": False},
+    )
+    rows = client.get("/api/lens/records", params={"cid": str(conv.id)}).json()["items"]
+    assert len(rows) == 1 and rows[0]["on"] is False
+
+    db_session.expire_all()
+    assert [one.key for one in lens.resolve(db_session, conv, root)] == []

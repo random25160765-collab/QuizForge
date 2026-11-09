@@ -29,7 +29,8 @@ MAX_BYTES = 512 * 1024
 def read(db: DbSession) -> dict:
     data = settings_file.load()
     if data:
-        return {"file": str(settings_file.path()), "settings": data}
+        # 老文件里可能还有本机状态键（读到哪儿 / 面板位置），读出去之前滤掉
+        return {"file": str(settings_file.path()), "settings": settings_store.normalize(data)}
     # 文件还没建（第一次启动）：给数据库那份，前端照常能编辑
     return {"file": "", "settings": settings_store.load(db)}
 
@@ -52,12 +53,22 @@ def write(body: dict, db: DbSession) -> dict:
     if not isinstance(payload.get("ai"), (dict, type(None))):
         raise HTTPException(status_code=400, detail="ai 必须是对象")
 
+    # 本机状态键一概不落文件（前端已过滤；这里是第二道，curl / 旧客户端也挡得住）
+    payload = settings_store.normalize(payload)
+    if not payload:
+        raise HTTPException(status_code=400, detail="里面只有本机状态，没有设置")
+
     if replace:
-        data = dict(payload)
+        # 整份替换也过骨架：手写的、从剪贴板粘的、别的机器拷来的 JSON 都可能只有半份，
+        # 落盘的那份必须是完整可编辑的设置（缺的键走默认，而不是消失）。
+        data = settings_file.complete(payload)
     else:
         data = settings_file.merge(payload)
+    # 合并路会把旧文件里的状态键带出来，一起剔掉 —— 下一次写入就顺手把文件洗干净
+    data = settings_store.normalize(data)
 
     target = settings_file.save(data)
-    # 镜像到数据库：别的读 `settings_store.row()` 的老路径照样能看到（row 本身以文件为准）
-    settings_store.put(db, **data)
+    # 镜像到数据库：别的读 `settings_store.row()` 的老路径照样能看到（row 本身以文件为准）。
+    # 传 None = 删键：库里那份以前存过本机状态，这里一并清掉。
+    settings_store.put(db, **data, **{key: None for key in settings_store.LOCAL_ONLY})
     return {"ok": True, "file": str(target), "settings": data}

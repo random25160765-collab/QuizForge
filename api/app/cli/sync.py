@@ -10,7 +10,8 @@
 
     "turso": {"url": "libsql://…", "token": "…", "enabled": true}
 
-对话是端到端加密的：`config/snapshot.key` 必须两台机器**同一份**。
+对话是端到端加密的：口令（`config/settings.local.json` 的 `syncPassphrase`）
+必须两台机器**同一份**。
 没有它也能同步其余数据，但本机一旦有对话就会拒绝同步（而不是明文上传）。
 """
 

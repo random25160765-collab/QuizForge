@@ -669,10 +669,10 @@ def run(  # noqa: ANN001
             # 等到之后把输出并进工具结果：模型拿到的是**真跑出来的东西**，而不是
             # "我已经交进去跑了、下一轮再看"这种空话（实测它就是这么说的）。没人报
             # （页面没开、脚本死循环）就超时认输，并如实告诉它没等到 —— 不许它编。
-            demo = payload.get("demo") if isinstance(payload, dict) else None
+            artifact = payload.get("artifact") if isinstance(payload, dict) else None
             run_id = ""
-            if isinstance(demo, dict):
-                run_id = str(demo.get("runId") or "")
+            if isinstance(artifact, dict):
+                run_id = str(artifact.get("runId") or "")
             outcome = None
             if ok and run_id and isinstance(payload, dict) and payload.get("await_run"):
                 # 同步等待：只占住这一条请求的线程，页面那条上报由另一个线程接

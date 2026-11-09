@@ -115,6 +115,9 @@ BOUNDARY: dict[str, str] = {
     "conversation_folders": "user",  # 对话分组
     "messages": "user",           # 消息（parts 是真相）
     "attachments": "user",        # 对话附件
+    # 滤镜挂载记录（2026-11-09 从设置里搬出来）：挂在消息上、沿树继承，
+    # 属于用户自己的痕迹。跟着对话走 —— 同步与用户包都要带。
+    "lens_records": "user",
     "records": "user",            # 每题累计学习状态（掌握度就是它）
     "attempts": "user",           # 逐次作答流水
     "days": "user",               # 每日聚合（热力图）
@@ -122,6 +125,10 @@ BOUNDARY: dict[str, str] = {
     # 全局记忆（2026-11-09）：AI 跨对话带着的长期信息。换台机器要还在，
     # 所以归 user；同步时**端到端加密**（`sync.PRIVATE_TABLES` —— 与对话正文同一档）。
     "memories": "user",
+    # 笔记的**云副本**（2026-11-09）：桌面端的权威是 vault 里的 Markdown 文件，
+    # 这张表只为"没有 Obsidian 的手机"存在（LLM 读写它，靠 Turso 对齐）。
+    # 归 user：它是用户自己写的内容；同步时与对话同一档加密。
+    "notes": "user",
     # 计划与日程（2026-11-08）：AI 订的计划要跟着用户走，换台机器打开还得在
     # —— 所以三张表都是 user。`plans`（含计划书正文）加密；条目与日程不加密：
     # 它们是"什么时候做什么"，与对话正文那种私密内容不是一回事
@@ -141,6 +148,9 @@ BOUNDARY: dict[str, str] = {
     # ---- 派生：能重算的，谁的包都不带 ----
     "slice_embeddings": "derived",  # 窗口向量（本机 168MB，占库 82%；`make embed` 重建）
     "embed_runs": "derived",        # 向量化跑单（运维账，可丢）
+    # 资料正文块的本机缓存（2026-11-09）：懒加载的机器点开哪片才取哪块。
+    # 删了只是下次再取一次，不属于任何一份包、也不参与同步。
+    "library_text_cache": "derived",
     "library_jobs": "derived",      # 资料流水线的队列（存的是本机文件路径，换机器无意义）
     # 日历订阅地址里常带**能力令牌**（学校课表的地址就是一串 JWT，拿到地址
     # 就能读到整个人的课表），所以它不上云、也不进用户包：换台机器重新订阅一次。

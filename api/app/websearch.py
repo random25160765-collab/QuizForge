@@ -75,8 +75,8 @@
 两者分工写在 `search_papers` 的说明里：**问"哪篇论文 / 谁做的 / 哪一年的"走它，
 问"现在怎么做 / 这个型号的参数"走 `web_search`。**
 
-密钥那份配置仍然认（`user_settings.data.search`，以及内测通道
-`config/ai.local.json` 里的 `search` 块）：填了就用你填的，没填就明说
+密钥只认设置里那一份（`user_settings.data.search`，即
+`config/settings.local.json` 的 `search` 块）：填了就用你填的，没填就明说
 "去设置里选一家、填一把密钥"，而不是假装搜了。
 
 ## 第一条纪律：**不许卡住**
@@ -547,11 +547,10 @@ def _normalize(raw: dict, *, source: str) -> dict | None:
 
 
 def resolve(db) -> dict:  # noqa: ANN001
-    """这次该用哪套搜索配置，顺序是：
+    """这次该用哪套搜索配置：
 
     1. **用户自己填的**（`user_settings.data.search`，填了密钥就用他的）；
-    2. **内测通道那份**（`config/ai.local.json` 的 `search`，只在 beta 通道）；
-    3. 都没有 → 报一条说清楚的错，让用户去配。
+    2. 没填 → 报一条说清楚的错，让用户去配。
 
     没有"免密钥兜底"了：那条（必应的 RSS）删掉了 —— 它会回一份**合法的
     XML、内容是无关的**（"看起来查过了"，比报错更糟，见模块 docstring 第一节）。

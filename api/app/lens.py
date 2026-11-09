@@ -38,8 +38,10 @@
 
 ## 挂在哪、怎么回退
 
-与记号（`places`）同一套存法：一条 `{cid, mid, key, on}` 记录写进设置（前端 `QF.store`
-那一侧写，服务端只读 —— 和批注、书签完全一样）。
+一条记录一行，住 `lens_records` 表（2026-11-09 从设置里搬出来 —— 滤镜属于数据，
+不该占设置文件）：`{conversation_id, message_uid, lens_key, enabled, at}`，
+`message_uid` 为空 = 整条对话。前端 `QF.store.attachLens` 写、服务端只读；
+表随对话走 Turso 行级同步，也进用户数据包。
 
 于是"某个节点上现在挂着什么" = **沿这条链从根往下，每个 key 取最近的那条记录**：
 
@@ -287,38 +289,128 @@ def delete(key: str) -> bool:
 
 
 def _records(db) -> list[dict]:  # noqa: ANN001
-    """设置里那批挂载记录（前端写的，服务端只读）。坏数据一律当没有。
+    """库里那批挂载记录（前端写的，服务端只读）。坏数据一律当没有。
 
-    键从 `skills` 改成了 `lens`；**老数据还认**（读到 `skills` 就当 `lens`），
-    否则升级之后"我已经装上的那些"会全部消失。
+    2026-11-09 起住在 `lens_records` 表：它属于**数据**（挂在消息上、沿树继承），
+    随对话走 Turso 行级同步，也随用户数据包换机器。不再住设置。
     """
-    keys = {one.key for one in _load()}
-    try:
-        from . import settings_store
+    from .models import LensRecord
 
-        conf = settings_store.load(db) or {}
-    except Exception:  # noqa: BLE001  lens 是加成，不该让它拖垮一轮生成
+    try:
+        _migrate_from_settings(db)
+        rows = db.query(LensRecord).all()
+    except Exception:  # noqa: BLE001 - lens 是加成，不该拖垮一轮生成
         return []
+    keys = {one.key for one in _load()}
+    out = []
+    for one in rows:
+        key = str(one.lens_key or "").strip()
+        if key in keys:
+            out.append(
+                {
+                    "cid": str(one.conversation_id),
+                    "message_uid": str(one.message_uid or ""),
+                    "key": key,
+                    "on": bool(one.enabled),
+                    "at": int(one.at or 0),
+                }
+            )
+    return out
+
+
+def _migrate_from_settings(db) -> None:  # noqa: ANN001
+    """老数据一次性搬运：设置里的 `lens` / `skills` → `lens_records`。
+
+    只在表还是空的时候做。`mid`（本机消息 id）在这里翻成 `Message.uid` ——
+    记录一旦进表就只认跨机身份，换台机器照样对得上。
+    """
+    from . import settings_file, settings_store
+    from .models import AppSettings, Conversation, LensRecord, Message
+
+    if db.query(LensRecord).first() is not None:
+        return
+    # **读未过滤的那一份**：设置接口已经把 `lens` / `skills` 滤掉了，
+    # 这里要的恰恰是它们。
+    conf = settings_file.load()
+    if not conf:
+        found = db.get(AppSettings, 1)
+        raw = getattr(found, "data", None)
+        conf = dict(raw) if isinstance(raw, dict) else {}
     rows = conf.get("lens")
     if not isinstance(rows, list):
         rows = conf.get("skills")
-    if not isinstance(rows, list):
-        return []
-    out = []
+    if not isinstance(rows, list) or not rows:
+        return
+
+    moved = 0
     for one in rows:
         if not isinstance(one, dict):
             continue
         key = str(one.get("key") or "").strip()
-        if key in keys:
-            out.append(
-                {
-                    "cid": str(one.get("cid") or ""),
-                    "mid": str(one.get("mid") or ""),
-                    "key": key,
-                    "on": one.get("on") is not False,
-                    "at": int(one.get("at") or 0),
-                }
+        if not key:
+            continue
+        try:
+            conv_id = uuid.UUID(str(one.get("cid") or ""))
+        except (ValueError, AttributeError):
+            continue
+        if db.get(Conversation, conv_id) is None:
+            continue
+        message_uid = ""
+        mid = str(one.get("mid") or "").strip()
+        if mid:
+            try:
+                msg = db.get(Message, int(mid))
+            except (TypeError, ValueError):
+                msg = None
+            if msg is None or str(msg.conversation_id) != str(conv_id):
+                continue
+            message_uid = str(msg.uid or "")
+        db.add(
+            LensRecord(
+                conversation_id=conv_id,
+                message_uid=message_uid,
+                lens_key=key,
+                enabled=one.get("on") is not False,
+                at=int(one.get("at") or 0),
             )
+        )
+        moved += 1
+    db.commit()
+    if moved:
+        # 搬完就从设置里删掉（设置文件是给人复制的，不装用户痕迹）
+        settings_store.put(db, lens=None, skills=None)
+
+
+def records(db, cid: str = "") -> list[dict]:  # noqa: ANN001
+    """给前端的记录行（`mid` 是**本机消息 id**，空 = 整条对话）。
+
+    表里存的是 `message_uid`（跨机身份），这里按本机库翻回来；消息还没到本机
+    （同步只到了一半）的那些记录先不给 —— 给个空 `mid` 会被误读成"整条对话"。
+    """
+    rows = _records(db)
+    if cid:
+        rows = [one for one in rows if one["cid"] == str(cid)]
+    uids = {one["message_uid"] for one in rows if one["message_uid"]}
+    mapping: dict[str, str] = {}
+    if uids:
+        from .models import Message
+
+        for msg in db.query(Message).filter(Message.uid.in_(uids)).all():
+            mapping[str(msg.uid)] = str(msg.id)
+    out = []
+    for one in rows:
+        uid = one["message_uid"]
+        if uid and uid not in mapping:
+            continue
+        out.append(
+            {
+                "cid": one["cid"],
+                "mid": mapping.get(uid, ""),
+                "key": one["key"],
+                "on": one["on"],
+                "at": one["at"],
+            }
+        )
     return out
 
 
@@ -346,24 +438,24 @@ def resolve(db, conv, node) -> list[Lens]:  # noqa: ANN001
     if not mine:
         return []
 
-    by_mid: dict[str, list[dict]] = {}
+    by_uid: dict[str, list[dict]] = {}
     for one in mine:
-        by_mid.setdefault(one["mid"], []).append(one)
+        by_uid.setdefault(one["message_uid"], []).append(one)
 
-    # 从 node 往上走到根（只取 id —— 这里只需要知道路径上有没有这条记录，不必查正文）
+    # 从 node 往上走到根（只取 uid —— 这里只需要知道路径上有没有这条记录，不必查正文）
     stack: list[str] = []
     walker = node
     guard = 0
     while walker is not None and guard < _WALK_MAX:
-        stack.append(str(getattr(walker, "id", "")))
+        stack.append(str(getattr(walker, "uid", "") or ""))
         walker = _parent(db, walker)
         guard += 1
     stack.reverse()                     # 根 → 节点
-    stack.insert(0, "")                 # `mid` 为空 = 整条对话（排在根之前）
+    stack.insert(0, "")                 # `message_uid` 为空 = 整条对话（排在根之前）
 
     decided: dict[str, bool] = {}
-    for mid in stack:                   # 越靠近节点的记录越后写，天然覆盖前面的
-        for one in by_mid.get(mid, []):
+    for uid in stack:                   # 越靠近节点的记录越后写，天然覆盖前面的
+        for one in by_uid.get(uid, []):
             decided[one["key"]] = one["on"]
 
     order = {one.key: index for index, one in enumerate(_load())}

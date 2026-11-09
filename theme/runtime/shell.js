@@ -25,6 +25,32 @@
   var ai = QF.ai;
   var D = QF.data;
 
+  /* ---- 新设备的引导（2026-11-09） ----
+   *
+   * 只看**这一个标记**：`onboarding.done`。没有它就去 `welcome.html` 把三件事配完
+   * （AI / 同步 / 数据密码）。
+   *
+   * 从前判据是"有密钥或有同步地址就放行"，那是个洞：填完第一步就跑掉的人，
+   * 这辈子不会再被请回来补口令 —— 而缺口令的症状要到读旧对话时才炸。
+   * 现在填一半不算，必须走完（用户 2026-11-09：不可以跳过引导，必须要先输入）。
+   * 老设备升级也会走一次引导，但那三步都是预填好的（口令认 `keyReady`），点三下就完。
+   *
+   * 放在这里而不是各页 boot：所有页面都加载 shell.js，而它在页面脚本之前执行 ——
+   * 跳转时那些脚本还没跑，不会先白渲染一帧再跳走。
+   */
+  (function maybeOnboard() {
+    try {
+      var rootEl = document.getElementById('app-root');
+      var page = rootEl ? rootEl.getAttribute('data-page') : '';
+      if (page === 'welcome') return;
+      var settings = (store && store.settings && store.settings()) || {};
+      if (settings.onboarding && settings.onboarding.done) return;
+      window.location.replace('welcome.html');
+    } catch (err) {
+      /* 读设置失败就别拦路：正常进页面，比困在引导里强 */
+    }
+  })();
+
   /* ------------------------------------------------------------ 主导航 */
   /* 这四个是**视图**（刷题页内部的四种状态），不是四个页面。
      所以在刷题页点它是原地切换，在别的页面点是带着 hash 回刷题页。 */
@@ -293,11 +319,8 @@
       });
 
     var aiForm = h('div.form__section', null,
-      h('div.form__sectiontitle', { text: 'AI（批改与对话）' }),
+      h('div.form__sectiontitle', { text: 'AI' }),
       channelRow,
-      switchRow('启用 AI', '关闭时简答题提交后直接显示参考答案，由你自己判断对错；对话页也不再可用。', aiConf.enabled, function (value) {
-        store.saveSettings({ ai: { enabled: value } });
-      }),
       connectionBlock,
       switchRow('要求模型返回 JSON', '若供应商不支持 response_format=json_object，会自动去掉该参数重试。', aiConf.jsonMode !== false, function (value) {
         store.saveSettings({ ai: { jsonMode: value } });
@@ -639,28 +662,29 @@
       h('div', { style: { marginTop: '12px' } },
         field('API 密钥', '收费服务商才需要填。', searchKeyInput)));
 
+    /* 字号：滑条 + 右边那一格百分比 + 下面一行**同字号**的预览。
+     *
+     * 只有一根没有刻度的滑条时，"拖了它到底改了哪儿、现在是多少"都看不出来
+     *（用户 2026-11-09："外观这两个拖动条意义不明"）。百分比回答"多少"，
+     * 预览回答"哪儿"—— 设置页自己的字样大多是写死的 px，不预览就真的没有反馈。
+     *
+     * 原先并排还有一根「内容最大宽度」：`--content-max` 只被 `.view--narrow` 读，
+     * 而没有任何页面用过那个类（从初始提交起就没接上），拖它整站不会变一个字，
+     * 于是连变量一起删掉了（用户选的）。
+     */
+    var fontPct = h('span.setval', { text: Math.round((conf.fontScale || 1) * 100) + '%' });
     var fontScale = h('input.slider', {
       type: 'range',
       min: '0.85',
       max: '1.35',
       step: '0.05',
       value: String(conf.fontScale || 1),
+      'aria-label': '字号缩放',
       onInput: function (event) {
         var value = parseFloat(event.target.value);
         store.saveSettings({ fontScale: value });
         document.documentElement.style.setProperty('--font-scale', String(value));
-      },
-    });
-    var maxWidth = h('input.slider', {
-      type: 'range',
-      min: '680',
-      max: '1200',
-      step: '20',
-      value: String(conf.maxWidth || 880),
-      onInput: function (event) {
-        var value = parseInt(event.target.value, 10);
-        store.saveSettings({ maxWidth: value });
-        document.documentElement.style.setProperty('--content-max', value + 'px');
+        fontPct.textContent = Math.round(value * 100) + '%';
       },
     });
 
@@ -671,8 +695,11 @@
         // 和旁边那几行一样走设置仓库：只写本机的话，下次进页面会被服务端那份按回去
         if (store) store.saveSettings({ theme: ui.theme.current() });
       }),
-      field('字号缩放', null, fontScale),
-      field('内容最大宽度（像素）', null, maxWidth));
+      h('label.field', null,
+        h('span.field__label', { text: '字号缩放' }),
+        h('div.sliderrow', null, fontScale, fontPct),
+        h('span.field__hint', { text: '正文、题干、代码块的字号跟着变；侧栏与按钮不缩放。' }),
+        h('p.fontpreview', { text: '正文长这样：推导被外包之后，稀缺的是审读。' })));
 
     /* ------------------------------------------------------ Obsidian（笔记）
      *
@@ -757,32 +784,75 @@
       settingsFileRow.querySelector('b').textContent = '读不到';
     });
 
-    function copySettings() {
-      var text = JSON.stringify(store.settings(), null, 2);
+    // 剪贴板：Android 里 WebView 的 Clipboard API 要安全上下文 + 权限回调，
+    // 实测拿不到（2026-11-09 用户反馈"移动端的权限管理，要能读剪贴板"）。
+    // 打包版走原生 `QFNative`，浏览器里仍用 navigator.clipboard。
+    function nativeClip() {
+      return window.QFNative && window.QFNative.readClipboard ? window.QFNative : null;
+    }
+
+    function writeSettingsJson(data) {
+      // 只导"设置"那部分：读到哪儿、面板位置、选题篮这些是本机状态，别跟着走
+      var text = JSON.stringify(data, null, 2);
+      var native = window.QFNative;
+      if (native && native.writeClipboard) {
+        native.writeClipboard(text);
+        ui.toast('设置已复制（含同步口令，不含阅读位置等本机状态）', 'ok');
+        return;
+      }
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
         ui.toast('这个浏览器没有剪贴板接口', 'error');
         return;
       }
       navigator.clipboard.writeText(text).then(function () {
-        ui.toast('整份设置已复制（可直接给新用户）', 'ok');
+        ui.toast('设置已复制（含同步口令，不含阅读位置等本机状态）', 'ok');
       }, function () {
         ui.toast('复制失败：浏览器不给剪贴板权限', 'error');
       });
     }
 
+    function copySettings() {
+      // 口令借一次塞进这份 JSON（`syncPassphrase`）：新设备粘一次就把
+      // AI / 同步 / 密码都带走。它不会写回设置；服务端上传前也会抹掉这个键。
+      api.get('/sync/plugin-config').then(function (conf) {
+        var data = store.fileSettings();
+        if (conf && conf.passphrase) data.syncPassphrase = conf.passphrase;
+        writeSettingsJson(data);
+      }).catch(function () {
+        writeSettingsJson(store.fileSettings());   // 没配同步也照样能复制设置
+      });
+    }
+
     function importSettings() {
-      if (!navigator.clipboard || !navigator.clipboard.readText) {
-        ui.toast('这个浏览器读不了剪贴板：直接改设置文件更快', 'error');
-        return;
+      var native = nativeClip();
+      var reading;
+      var passphrase = '';
+      if (native) {
+        reading = Promise.resolve(String(native.readClipboard() || ''));
+      } else if (navigator.clipboard && navigator.clipboard.readText) {
+        reading = navigator.clipboard.readText();
+      } else {
+        reading = Promise.reject(new Error('这个浏览器读不了剪贴板：直接改设置文件更快'));
       }
-      navigator.clipboard.readText().then(function (text) {
+      reading.then(function (text) {
+        if (!String(text || '').trim()) throw new Error('剪贴板是空的');
         var data = JSON.parse(text);
         if (!data || typeof data !== 'object') throw new Error('不是 JSON 对象');
-        store.adoptSettings(data);
-        // 导入是**整份替换**（与平时的 patch 合并区分开）
-        return api.put('/settings', { settings: store.settings(), replace: true });
+        // 口令不留在设置里：取出来、删掉，落到本机 key 文件（见下面的 /sync/passphrase）
+        passphrase = String(data.syncPassphrase || '').trim();
+        delete data.syncPassphrase;
+        var imported = store.fileSettings(data);
+        if (!Object.keys(imported).length && !passphrase) {
+          throw new Error('里面只有本机状态，没有可导入的设置');
+        }
+        store.adoptSettings(data, { merge: true });   // 半份导入：没提到的键保持原样
+        // 导入是**整份替换**（与平时的 patch 合并区分开），但只替换设置那部分
+        return api.put('/settings', { settings: store.fileSettings(), replace: true });
       }).then(function () {
-        ui.toast('已用剪贴板里的设置覆盖', 'ok');
+        if (!passphrase) return null;
+        return api.post('/sync/passphrase', { passphrase: passphrase });
+      }).then(function () {
+        ui.toast(passphrase ? '已导入设置与同步口令' : '已用剪贴板里的设置覆盖', 'ok');
         window.setTimeout(function () { window.location.reload(); }, 400);
       }).catch(function (err) {
         ui.toast('导入失败：' + ((err && err.message) || err), 'error');
@@ -822,6 +892,41 @@
       },
     });
 
+    /* 口令**不存设置**（设置会同步到云，而口令是端到端加密的钥匙）：
+     * 只 POST 给本机后端，写进 data/snapshot.key。手机没有文件管理器，
+     * 这是新设备唯一的入口（2026-11-09 用户："手机只能看到对话列表"）。 */
+    var syncPassInput = h('input.input.input--mono', {
+      type: 'password',
+      autocomplete: 'off',
+      placeholder: '••••••••（与旧设备同一份）',
+    });
+    var syncPassNote = h('div');
+
+    function savePass() {
+      var value = String(syncPassInput.value || '').trim();
+      if (!value) {
+        ui.toast('先把口令填上', 'error');
+        return;
+      }
+      ui.clear(syncPassNote);
+      syncPassNote.appendChild(h('div.statline', null,
+        h('span.spinner'), h('span', { text: '正在保存…' })));
+      api.post('/sync/passphrase', { passphrase: value }).then(function (res) {
+        syncPassInput.value = '';
+        ui.clear(syncPassNote);
+        var text = res && res.envOverride
+          ? '已写入文件，但本机用环境变量里的口令（文件不生效）。'
+          : '口令已保存，正在重跑同步。';
+        syncPassNote.appendChild(h('div.statline', { style: { color: 'var(--ok)' } },
+          h('span', { text: text })));
+        pollSync(Date.now() + 10 * 60 * 1000);
+      }).catch(function (err) {
+        ui.clear(syncPassNote);
+        syncPassNote.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
+          h('span', { text: '保存失败：' + ((err && err.message) || err) })));
+      });
+    }
+
     function paintSync(st) {
       if (!st) {
         syncStatusLine.textContent = '读不到同步状态。';
@@ -838,7 +943,7 @@
       var bits = ['已配置', '待推送 ' + (st.pending || 0) + ' 行'];
       var auto = st.auto || {};
       if (auto.started) {
-        bits.push('自动同步：每 ' + Math.round(auto.interval || 0) + ' 秒');
+        bits.push('自动同步：有改动就同步（每 ' + Math.round(auto.poll || 5) + ' 秒探测）');
       } else if (auto.enabled === false) {
         bits.push('自动同步：已关闭');
       } else {
@@ -860,6 +965,8 @@
         }
       } else if (last && !last.ok) {
         bits.push('上次失败：' + last.error);
+      } else if (st.lastError) {
+        bits.push('上次失败：' + st.lastError);
       } else {
         bits.push('还没同步过');
       }
@@ -898,6 +1005,48 @@
       });
     }
 
+    /* ---- 笔记云同步：给 Obsidian 的**第二个**插件复制配置 ----
+     *
+     * 两个插件分工不同（bridge 管 QF ↔ 本地文件，sync 管本地文件 ↔ 云端），
+     * 所以这里只给 sync 那三样：地址、token、口令。口令来自 snapshot.key，
+     * 平时不显示；按下按钮才请求一次（与 token 同权限，不落日志）。
+     */
+    var pluginNote = h('div');
+    function copyPluginConfig() {
+      ui.clear(pluginNote);
+      pluginNote.appendChild(h('div.statline', null, h('span.spinner'),
+        h('span', { text: '正在读取配置…' })));
+      api.get('/sync/plugin-config').then(function (conf) {
+        var text = [
+          '地址：' + (conf.url || '（还没填 Turso 地址）'),
+          'token：' + (conf.token || '（还没填 Turso token）'),
+          '口令：' + (conf.passphrase || '（没有 config/snapshot.key）'),
+        ].join('\n');
+        var done = function () {
+          ui.clear(pluginNote);
+          pluginNote.appendChild(h('div.statline', { style: { color: 'var(--ok)' } },
+            h('span', { text: '已复制。粘到 Obsidian → 设置 → QFStudio Sync 的三栏里。' })));
+        };
+        var native = window.QFNative;
+        if (native && native.writeClipboard) {
+          native.writeClipboard(text);
+          done();
+          return;
+        }
+        if (!navigator.clipboard || !navigator.clipboard.writeText) {
+          ui.toast('这个浏览器没有剪贴板接口', 'error');
+          return;
+        }
+        navigator.clipboard.writeText(text).then(done, function () {
+          ui.toast('复制失败：浏览器不给剪贴板权限', 'error');
+        });
+      }).catch(function (err) {
+        ui.clear(pluginNote);
+        pluginNote.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
+          h('span', { text: '读不到配置：' + ((err && err.message) || err) })));
+      });
+    }
+
     var syncForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '同步（Turso）' }),
       h('p', {
@@ -914,6 +1063,13 @@
       h('div.form__grid', { style: { marginTop: '12px' } },
         field('数据库地址', null, syncUrlInput),
         field('数据库令牌', '在 Turso 控制台生成。', syncTokenInput)),
+      h('div.form__grid', { style: { marginTop: '12px' } },
+        field('同步口令',
+          '对话 / 记忆 / 计划书的端到端加密钥匙。新设备从旧设备的「复制给插件」里取，填一次即可。',
+          syncPassInput)),
+      h('div.btnrow', null,
+        h('button.btn', { type: 'button', onClick: savePass }, '保存口令')),
+      syncPassNote,
       h('div.btnrow', { style: { marginTop: '12px' } },
         h('button.btn', {
           type: 'button',
@@ -933,7 +1089,18 @@
             });
           },
         }, h('span', { html: ui.icon('refresh', 15) }), h('span', { text: '立即同步' }))),
-      syncResult);
+      syncResult,
+      h('div.form__sectiontitle', { text: '笔记云同步（Obsidian 插件）', style: { marginTop: '24px' } }),
+      h('p', {
+        text: '桌面有 Obsidian 时 QF 直接读写本地文件（bridge 插件）；手机没有 Obsidian，'
+          + '读写的是一份云端笔记副本，由 Obsidian 里的第二个插件 QFStudio Sync 双向对齐。'
+          + '插件装在 vault 的 .obsidian/plugins/quizforge-sync/，三栏配置从这里复制。',
+        style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      h('div.btnrow', null,
+        h('button.btn', { type: 'button', onClick: copyPluginConfig },
+          h('span', { text: '复制插件配置' }))),
+      pluginNote);
 
     refreshSync();
 
@@ -1463,8 +1630,15 @@
    */
   function mount(opts) {
     opts = opts || {};
-    renderRail();
-    renderTabbar();
+    // `bare`：引导页这类"还没资格去别处"的页面，不画活动栏与底栏 ——
+    // 画了也是点一下就弹回来（见 maybeOnboard），不如不给这个岔路。
+    // 标记挂到 body 上，样式那边连它占的那一列一起收掉（见 app.css）。
+    if (opts.bare) document.body.setAttribute('data-bare', '1');
+    else document.body.removeAttribute('data-bare');
+    if (!opts.bare) {
+      renderRail();
+      renderTabbar();
+    }
     if (!bound) {
       bound = true;
       bindTheme();

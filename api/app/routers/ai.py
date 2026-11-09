@@ -226,22 +226,20 @@ def usage(db: DbSession) -> dict:
     conf = ((row.data if row else {}) or {}).get("ai") or {}
 
     has_key = bool(str(conf.get("apiKey") or "").strip())
-    uses_own = bool(conf.get("enabled")) and has_key
 
-    # 2026-11-07：内测通道删除 —— 只有「填了」与「没填」两种状态
+    # 2026-11-07：内测通道删除 —— 只有「填了」与「没填」两种状态。
+    # 2026-11-09：「启用 AI」开关删除 —— 这是个 AI 应用，填了密钥就是能用。
     if not settings.ai_enabled:
         mode = "off"
-    elif uses_own:
-        mode = "user"
     else:
-        mode = "none"
+        mode = "user" if has_key else "none"
 
     return {
         "today": gateway.today_usage(db),
         "quota": settings.ai_daily_quota,
         "enabled": mode == "user",
         "mode": mode,
-        "label": "你自己的密钥" if uses_own else "",
+        "label": "你自己的密钥" if has_key else "",
         "model": str(conf.get("model") or "") or gateway.DEFAULT_MODEL,
         "hasKey": has_key,
     }

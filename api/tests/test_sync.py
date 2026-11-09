@@ -789,4 +789,280 @@ def test_sync_status_exposes_auto_mode(client) -> None:  # noqa: ANN001
     assert body["auto"]["enabled"] is False
     assert body["auto"]["started"] is False
     assert body["auto"]["interval"] >= 15
+    assert body["auto"]["poll"] >= 1.5
     assert autosync.start() is False
+
+
+# ============================================================================ 父指针
+# 2026-11-09 的事故：一台本地 `parent_id` 全空的机器整表重推，把远端 617 条已经
+# 带父的消息洗成 null；它自己再拉回来，两边的对话树一起散掉。下面三条各守一道：
+# 推送不降级、拉取不覆盖、坏掉的映射能从日志历史重建。
+
+
+def test_push_never_washes_a_parent_the_remote_already_knows(engine, remote) -> None:  # noqa: ANN001
+    """本地父指针空了之后重推，远端那份不能被 `null` 覆盖。"""
+    session = _session(engine)
+    conv = Conversation(title="断链现场")
+    session.add(conv)
+    session.commit()
+    first = Message(conversation_id=conv.id, role="user", content="第一问")
+    session.add(first)
+    session.commit()
+    second = Message(
+        conversation_id=conv.id, role="assistant", content="回答", parent_id=first.id
+    )
+    session.add(second)
+    session.commit()
+    uid_first, uid_second = first.uid, second.uid
+    session.close()
+
+    _configure(remote.url)
+    client = _client(remote)
+    sync.run_once(engine, client)
+
+    # 模拟"本机树被洗空"：断掉父，触发器会把这行标脏
+    with engine.begin() as conn:
+        conn.exec_driver_sql("UPDATE messages SET parent_id = NULL WHERE uid = ?", (uid_second,))
+    sync.run_once(engine, client)
+
+    key = sync._remote_key(client, need_private=True)
+    pk = json.dumps([uid_second], ensure_ascii=False, separators=(",", ":"))
+    row = remote.rows("SELECT enc, payload FROM qf_sync_rows WHERE tbl = 'messages' AND pk = ?", (pk,))[0]
+    data = sync._decrypt(key, "messages", pk, row["payload"]) if row["enc"] else json.loads(row["payload"])
+    assert data["parent_uid"] == uid_first, "拿空父覆盖了远端已经正确的父指针"
+
+
+def test_pull_does_not_clear_a_parent_it_cannot_resolve(engine) -> None:  # noqa: ANN001
+    """远端载荷里 `parent_uid` 为空（缺失或显式 null）时，保留本机已有的父。"""
+    session = _session(engine)
+    conv = Conversation(title="拉取覆盖")
+    session.add(conv)
+    session.commit()
+    first = Message(conversation_id=conv.id, role="user", content="问")
+    session.add(first)
+    session.commit()
+    second = Message(
+        conversation_id=conv.id, role="assistant", content="答", parent_id=first.id
+    )
+    session.add(second)
+    session.commit()
+    uid_second, answer_id, first_id = second.uid, second.id, first.id
+    session.close()
+
+    spec = sync.SPECS["messages"]
+    with engine.begin() as conn:
+        sync._apply_row(
+            conn,
+            spec,
+            [uid_second],
+            {"uid": uid_second, "content": "答（远端版本）", "parent_uid": None},
+            1.0,
+        )
+        kept = conn.exec_driver_sql(
+            "SELECT parent_id, content FROM messages WHERE id = ?", (answer_id,)
+        ).fetchone()
+    assert kept[0] == first_id, "一次空载荷把本机连好的父指针擦掉了"
+    assert kept[1] == "答（远端版本）", "其余列仍按远端更新（保护只针对父指针）"
+
+
+def test_broken_parent_mapping_is_rebuilt_from_the_log_history(engine, remote) -> None:  # noqa: ANN001
+    """镜像被洗空时，`_repair_parent_mapping` 要从 `qf_sync_log` 的历史里把父捞回来。"""
+    session = _session(engine)
+    conv = Conversation(title="日志兜底")
+    session.add(conv)
+    session.commit()
+    first = Message(conversation_id=conv.id, role="user", content="问")
+    session.add(first)
+    session.commit()
+    second = Message(
+        conversation_id=conv.id, role="assistant", content="答", parent_id=first.id
+    )
+    session.add(second)
+    session.commit()
+    uid_second, answer_id = second.uid, second.id
+    session.close()
+
+    _configure(remote.url)
+    client = _client(remote)
+    sync.run_once(engine, client)
+
+    # 远端镜像被一次空载荷洗掉（日志里那条带父的历史还在）
+    key = sync._remote_key(client, need_private=True)
+    pk = json.dumps([uid_second], ensure_ascii=False, separators=(",", ":"))
+    washed = sync._encrypt(
+        key, "messages", pk, {"uid": uid_second, "content": "答", "parent_uid": None}
+    )
+    with remote.lock:
+        remote.db.execute(
+            "UPDATE qf_sync_rows SET payload = ? WHERE tbl = 'messages' AND pk = ?",
+            (washed, pk),
+        )
+
+    # 本机也断着（模拟已被覆盖），映射表清空
+    with engine.begin() as conn:
+        conn.exec_driver_sql("UPDATE messages SET parent_id = NULL WHERE uid = ?", (uid_second,))
+        conn.exec_driver_sql("DELETE FROM qf_sync_parents")
+
+    assert sync._repair_parent_mapping(engine, client, key) >= 1
+    with engine.connect() as conn:
+        row = conn.exec_driver_sql(
+            "SELECT parent_id FROM messages WHERE id = ?", (answer_id,)
+        ).fetchone()
+        assert row[0] == first.id, "镜像洗空之后没有回落到日志历史"
+
+
+# ============================================================================ 自动同步的触发
+# 2026-11-09 用户定调："用户有修改就同步，其他在线设备如果发现有修改就同步"。
+# 纯定时推满足不了第二半：Turso 没有服务端推送的通道，只能自己去问。
+
+
+def test_remote_changed_only_when_the_remote_head_is_ahead(remote, engine) -> None:  # noqa: ANN001
+    """探测只看一行：远端 `MAX(seq)` 大过本机游标才算"有新东西"。"""
+    _configure(remote.url)
+    remote.db.execute(
+        "CREATE TABLE qf_sync_log (seq INTEGER PRIMARY KEY, at REAL, origin TEXT,"
+        " tbl TEXT, pk TEXT, deleted INTEGER, enc INTEGER, payload TEXT)"
+    )
+    remote.db.execute(
+        "INSERT INTO qf_sync_log VALUES(7, 1.0, 'other', 'notes', 'n1', 0, 0, '{}')"
+    )
+
+    # 游标还没落（第一次 / 全量中断）→ 必须跑
+    assert sync.remote_changed(engine=engine, remote=_client(remote))["changed"] is True
+
+    with engine.begin() as conn:
+        sync._state_set(conn, "last_pull_seq", 7)
+    assert sync.remote_changed(engine=engine, remote=_client(remote))["changed"] is False
+
+    remote.db.execute(
+        "INSERT INTO qf_sync_log VALUES(8, 2.0, 'other', 'schedule', 's1', 0, 0, '{}')"
+    )
+    assert sync.remote_changed(engine=engine, remote=_client(remote))["changed"] is True
+
+
+def test_local_pending_reads_the_journal(engine, monkeypatch) -> None:  # noqa: ANN001
+    """本机一改，journal 就有行 —— 节拍器据此立刻推，而不是等兜底那一轮。"""
+    monkeypatch.setattr(autosync, "get_engine", lambda: engine)
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DELETE FROM qf_sync_journal")
+    assert autosync._local_pending() is False
+
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO qf_sync_journal(tbl, pk, op, at) VALUES('notes', 'n1', 'put', 1.0)"
+        )
+    assert autosync._local_pending() is True
+
+
+def test_one_machines_change_is_pushed_and_discovered_by_the_other(
+    remote, tmp_path, monkeypatch
+) -> None:  # noqa: ANN001
+    """端到端：A 写一条日程 → journal 有行 → 立刻推 → B 的探测看见 → B 拉下来。
+
+    这就是用户要的两半："有修改就同步"与"别的在线设备发现有修改就同步"。
+    """
+    _configure(remote.url)
+    a = _machine(tmp_path, "a")
+    b = _machine(tmp_path, "b")
+    sync.run_full(a)
+    sync.run_full(b)
+
+    start = datetime(2026, 11, 10, 9, 0, tzinfo=UTC)
+    with _session(a) as session:
+        session.add(
+            ScheduleEvent(
+                id="evt-auto-1",
+                title="自习",
+                start_at=start,
+                end_at=start + timedelta(hours=1),
+                all_day=False,
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(autosync, "get_engine", lambda: a)
+    assert autosync._local_pending() is True
+    autosync.tick("local", engine=a)
+
+    # B 还没跑：它应该能**发现**远端比自己的游标新
+    assert sync.remote_changed(engine=b, remote=_client(remote))["changed"] is True
+
+    sync.run_full(b)
+    with _session(b) as session:
+        assert session.query(ScheduleEvent).filter_by(id="evt-auto-1").one().title == "自习"
+    assert sync.remote_changed(engine=b, remote=_client(remote))["changed"] is False
+
+
+def test_save_passphrase_writes_the_settings_file(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """新设备唯一的入口：口令写进**设置文件**（不再有 snapshot.key），且老文件被收掉。"""
+    settings = tmp_path / "settings.local.json"
+    legacy = tmp_path / "snapshot.key"
+    legacy.write_text("旧口令\n", encoding="utf-8")
+    monkeypatch.setenv("QF_SETTINGS_FILE", str(settings))
+    monkeypatch.setenv("QF_SYNC_KEY_FILE", str(legacy))
+    monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
+    monkeypatch.delenv("QUIZFORGE_SNAPSHOT_PASSPHRASE", raising=False)
+
+    out = sync.save_passphrase("  新口令  ")
+    assert out["keyReady"] is True
+    assert out["envOverride"] is False
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["syncPassphrase"] == "新口令"
+    assert settings.stat().st_mode & 0o077 == 0     # 只有本人可读写
+    assert sync.passphrase() == "新口令"
+    assert not legacy.exists()                      # 不留两份
+
+
+def test_legacy_key_file_is_migrated_into_settings(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """老机器升级：口令从 snapshot.key 搬进设置文件，搬完就删——一处真相。"""
+    settings = tmp_path / "settings.local.json"
+    legacy = tmp_path / "snapshot.key"
+    legacy.write_text("老口令\n", encoding="utf-8")
+    monkeypatch.setenv("QF_SETTINGS_FILE", str(settings))
+    monkeypatch.setenv("QF_SYNC_KEY_FILE", str(legacy))
+    monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
+    monkeypatch.delenv("QUIZFORGE_SNAPSHOT_PASSPHRASE", raising=False)
+
+    assert sync.passphrase() == "老口令"
+    assert json.loads(settings.read_text(encoding="utf-8"))["syncPassphrase"] == "老口令"
+    assert not legacy.exists()
+
+
+def test_settings_put_keeps_the_passphrase(client) -> None:  # noqa: ANN001
+    """整份覆盖设置不许把口令弄丢 —— 前端手里那份**从来没见过**它（FILE_ONLY）。"""
+    client.post("/api/sync/passphrase", json={"passphrase": "keep-me"})
+    data = client.get("/api/settings").json()["settings"]
+    assert "syncPassphrase" not in data          # 不下发到界面，也就不会被改回来
+
+    data["theme"] = "dark"
+    res = client.put("/api/settings", json={"settings": data, "replace": True})
+    assert res.status_code == 200, res.text
+    # 看文件：环境变量（测试里钉了一份）会盖过文件，但我们要验的是"文件里那份没丢"
+    assert settings_file.load()["syncPassphrase"] == "keep-me"
+    assert client.get("/api/settings").json()["settings"]["theme"] == "dark"
+
+
+def test_save_passphrase_endpoint(client, monkeypatch) -> None:  # noqa: ANN001
+    """设置页那只按钮：存完返回 keyReady，并把口令留在本机。"""
+    monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
+    res = client.post("/api/sync/passphrase", json={"passphrase": "p@ss"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is True and body["keyReady"] is True
+    assert sync.passphrase() == "p@ss"
+
+
+def test_save_passphrase_rejects_empty(client) -> None:  # noqa: ANN001
+    res = client.post("/api/sync/passphrase", json={"passphrase": "  "})
+    assert res.status_code == 400
+    assert "不能为空" in res.json()["detail"]
+
+
+def test_settings_never_ship_the_passphrase() -> None:
+    """口令可以出现在**手动导出的 JSON** 里（新设备一次搬完），但绝不能上云。"""
+    out = sync._scrub_settings(
+        {"syncPassphrase": "secret", "ai": {"apiKey": "k"}, "theme": "light"}
+    )
+    assert "syncPassphrase" not in out
+    assert out["ai"]["apiKey"] == ""
+    assert out["theme"] == "light"

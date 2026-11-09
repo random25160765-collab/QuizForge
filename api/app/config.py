@@ -111,6 +111,16 @@ class Settings(BaseSettings):
     # 测试里一律关掉：用例不该因为跑一次就去下载几十兆。
     heavy_prefetch: bool = True
 
+    # ------------------------------------------------------ 移动端存储
+    #: 资料正文**懒加载**（手机端开）：同步只落条目与切片坐标，点开哪片才从云端
+    #: 取哪一块，命中过的块留在本机（见 `app/slice_cloud.py`）。
+    #: 桌面端关着：整包拉下来，离线照样能读。
+    lazy_bodies: bool = False
+
+    #: 关掉本机向量计算（手机端开）：3.8 万窗口约 168MB，占库 82%。
+    #: 检索仍可回桌面端算；手机上重算一次要很久，不值得。
+    embed_disabled: bool = False
+
     # 会话相关的配置项（cookie 名、有效期、令牌字节数）随账号面一起删掉了 ——
     # 单用户本地形态没有会话，见 `app/deps.py`。
 
@@ -158,30 +168,15 @@ class Settings(BaseSettings):
     # 实际值取"模型窗口"与"用户设置"里更小的那个。
     ai_max_context_tokens: int = 1000000
 
-    # ------------------------------------------------------- 内测通道
-    # 内测期间让「没有自带密钥的人也能聊」：一个**实例级**的 OpenAI 兼容配置，
-    # 写给内测用。它长什么样与用户自己那份（`app_settings.data.ai`）完全一致，
-    # 密钥放在一个被 gitignore 的文件里：
-    #
-    #     config/ai.local.json  →  {"enabled":true,"baseUrl":"…","model":"…","apiKey":"…"}
-    #
-    # **这里只存路径，不存密钥**：Settings 会被 repr、会被日志打印，
-    # 而密钥不该出现在任何一处输出里。文件由网关按 mtime 懒读，改完立刻生效。
-    #
-    # 它与上面那条「不替别人保管计费凭据」的关系要说清：内测通道是**故意**的例外，
-    # 就是站长拿自己的额度请大家试用。所以：
-    #   * 用户自己填了密钥 → 用他的（谁的额度谁负责，这条没变）
-    #   * 没填 → 走内测通道，并且**建议把 QF_AI_DAILY_QUOTA 设成非 0**，
-    #     否则一个人就能把这份共享额度刷光
-    #   * 两条路都没有 → 明确报错，不静默降级
-    #
-    # 与「通道」的关系（2026-09-18 定）：**只有 beta 通道才读它**。
-    # 正式包里连这个文件都不看，所以正式包用不到站长的额度（见 `beta_active`）。
-    # （2026-11-07：`ai_beta_enabled` / `beta_active` 随内测通道一起删除）
+    # ------------------------------------------------------ 本机配置文件目录
+    # AI 密钥**不在这里**：它在设置里（`config/settings.local.json` 的 `ai` 块，
+    # 由界面写、由 `ai_gateway.resolve_config` 读）。`config/ai.local.json` 那份
+    # 并行配置 2026-11-09 已删除 —— 同一个密钥存两处，改了一处另一处不知道。
+    # 这里只剩"跟着这台机器走、不该进 git"的文件：`embed.local.json`（用哪个 ONNX
+    # 变体、哪个 provider）。
     # 走 `RESOURCE_ROOT` 而不是 `ROOT`：打包后后者是解包目录的上一级（`%TEMP%`），
-    # 会把"内测配置在不在"问到一个临时目录里去。打包时这个文件被放进包里
-    # （`build/package.py` 把它打进包里），所以冻结之后它是**跟着包走**的。
-    ai_beta_config_file: Path = RESOURCE_ROOT / "config" / "ai.local.json"
+    # 会把"本机配置在不在"问到一个临时目录里去。
+    config_dir: Path = RESOURCE_ROOT / "config"
 
     # ------------------------------------------------------------ 导入器
     # 容器里用 QF_QUESTIONS_DIR / QF_TOPICS_FILE / QF_TOOLS_DIR 指到挂载点。
@@ -208,7 +203,7 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """进程内单例。全部来自环境变量（开发时由 `api/.env` 提供）。
 
-    `Settings` 自己**不装密钥**（它会被 repr、被日志打印）—— 内测配置只留一个**路径**
-    在这里，真读它的是 `ai_gateway.beta_config()`，而且只在 beta 通道下读。
+    `Settings` 自己**不装任何凭据**（它会被 repr、被日志打印）：AI 密钥在设置里
+    （`config/settings.local.json` 的 `ai` 块），同步口令在本机 key 文件里。
     """
     return Settings()

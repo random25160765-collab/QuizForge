@@ -585,6 +585,33 @@ const raisedRev = store.settingsRev();
 store.hydrate({ records: {}, days: {}, settingsRev: 3 });
 eq('更小的 settingsRev 不会把本机时钟压回去', store.settingsRev(), raisedRev);
 
+// 设置文件只放"设置"：读到哪儿 / 面板位置 / 选题篮是本机状态，不进文件也不进复制。
+// 2026-11-09 之前设置文件是整个 settings 的镜像，chatRead 一项就占七成。
+store.saveSettings({
+  theme: 'dark',
+  chatRead: { 'c-1': { mid: 'm-1', dy: 12, at: 1 } },
+  graph: { panel: { x: 0, y: 0, collapsed: true } },
+  basket: ['c-0001'],
+});
+const fileOnly = store.fileSettings();
+ok('设置文件不带 chatRead', !('chatRead' in fileOnly));
+ok('设置文件不带 graph', !('graph' in fileOnly));
+ok('设置文件不带 basket', !('basket' in fileOnly));
+ok('设置文件保留主题', fileOnly.theme === 'dark');
+// 服务端那份覆盖上来时，本机状态必须活下来（否则打开设置页就丢阅读位置）
+store.adoptSettings({ theme: 'light' });
+ok('覆盖设置后本机阅读位置还在', !!store.settings().chatRead['c-1']);
+ok('覆盖设置后本机选题篮还在', store.settings().basket[0] === 'c-0001');
+eq('覆盖设置后主题按服务端那份', store.settings().theme, 'light');
+
+// 滤镜记录是**数据**（`lens_records` 表），不进设置文件：本机只留一份缓存
+store.attachLens({ cid: 'c-lens', mid: 'm-9', key: 'feynman', on: true });
+ok('滤镜记录进了自己的缓存', store.lensOn('m-9').length === 1);
+ok('滤镜记录不在设置文件里', !('lens' in store.fileSettings()));
+ok('滤镜记录不写进设置对象', store.settings().lens === undefined);
+store.hydrateLens([{ cid: 'c-lens', mid: 'm-9', key: 'feynman', on: false, at: 5 }]);
+ok('hydrateLens 用服务端那份覆盖缓存', store.lensOn('m-9')[0].on === false);
+
 // 快照里的 records 仍是前端认识的形状（服务端照这个形状组装）
 store.hydrate({
   records: { 'c-0009': { id: 'c-0009', attempts: 4, correct: 3, partial: 0, wrong: 1, flagged: true, _rev: 6 } },

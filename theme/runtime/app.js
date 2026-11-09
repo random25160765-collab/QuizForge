@@ -1201,8 +1201,8 @@
     if (busy) {
       return h('span.ai-loading', null, h('span.spinner'), h('span', { text: 'AI 正在批改…' }));
     }
-    if (!conf.enabled || !conf.baseUrl) {
-      return h('span.badge', { text: '未启用 AI 批改，提交后按参考答案自评' });
+    if (!conf.apiKey || !conf.baseUrl) {
+      return h('span.badge', { text: '还没填 API 密钥，提交后按参考答案自评' });
     }
     return h(
       'button.btn.btn--sm',
@@ -1962,7 +1962,7 @@
     var conf = ai.config();
     var s = state.session;
 
-    if (!withAI || !conf.enabled || !conf.baseUrl) {
+    if (!withAI || !conf.apiKey || !conf.baseUrl) {
       var selfResult = {
         status: 'ungraded',
         correct: false,
@@ -2056,8 +2056,8 @@
 
   function gradeOnePart(question, partIndex) {
     var conf = ai.config();
-    if (!conf.enabled || !conf.baseUrl) {
-      ui.toast('需要先在设置里启用 AI 批改', 'warn');
+    if (!conf.apiKey || !conf.baseUrl) {
+      ui.toast('需要先在设置里填 API 密钥', 'warn');
       return;
     }
     var s = state.session;
@@ -2085,8 +2085,8 @@
   /** 依次批改所有「已作答且未批改」的小问，避免并发打满接口 */
   function gradeAllParts(question) {
     var conf = ai.config();
-    if (!conf.enabled || !conf.baseUrl) {
-      ui.toast('需要先在设置里启用 AI 批改', 'warn');
+    if (!conf.apiKey || !conf.baseUrl) {
+      ui.toast('需要先在设置里填 API 密钥', 'warn');
       return;
     }
     var s = state.session;
@@ -2176,7 +2176,7 @@
       responses: container.partResponses[question.id] || {},
       partResults: (container.partResults || {})[question.id] || {},
       busy: (container.partBusy || {})[question.id] || {},
-      aiEnabled: !!(conf.enabled && conf.baseUrl),
+      aiEnabled: !!(conf.apiKey && conf.baseUrl),
       onChange: function (partIndex, value) {
         container.partResponses[question.id] = container.partResponses[question.id] || {};
         container.partResponses[question.id][partIndex] = value;
@@ -3355,7 +3355,6 @@
   function applyStoredAppearance() {
     var conf = store.settings();
     document.documentElement.style.setProperty('--font-scale', String(conf.fontScale || 1));
-    document.documentElement.style.setProperty('--content-max', (conf.maxWidth || 880) + 'px');
   }
 
   function boot() {

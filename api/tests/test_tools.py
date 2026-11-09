@@ -393,10 +393,11 @@ def test_run_python_hands_the_code_to_the_resident_shell(
         {"title": "斐波那契", "code": "print([1, 1, 2, 3])", "packages": ["numpy"]},
     )
     assert ok, payload
-    demo = payload["demo"]
-    assert demo["title"] == "斐波那契"
-    assert demo["runId"], "零件要有身份：宿主靠它把输出认领回来"
-    assert "html" not in demo, "不再一段脚本一个页面（见 tools.py 的 _PYODIDE_SHELL）"
+    artifact = payload["artifact"]
+    assert artifact["title"] == "斐波那契"
+    assert artifact["kind"] == "python", "跑脚本是作品的第三种形态（不是演示）"
+    assert artifact["runId"], "零件要有身份：宿主靠它把输出认领回来"
+    assert "html" not in artifact, "不再一段脚本一个页面（见 tools.py 的 _PYODIDE_SHELL）"
 
     # 壳里该有的东西：运行时地址（本机那份优先）、预载、就绪信号、按 runId 执行
     shell = tools.shell_page()
@@ -437,8 +438,8 @@ def test_run_python_page_reports_its_output_back(client, db_session, _runtime_re
         db_session, "run_python", {"code": "print(1 + 1)", "packages": ["numpy"]}
     )
     assert ok, payload
-    demo = payload["demo"]
-    assert demo["runId"], "要有身份，宿主才认得出这是哪一次运行回传的"
+    artifact = payload["artifact"]
+    assert artifact["runId"], "要有身份，宿主才认得出这是哪一次运行回传的"
 
     # 回传这条路现在在常驻壳里：跑完（或报错）都要 send 一次，
     # 否则宿主永远停在"运行中…"——那正是用户报过的样子。
@@ -500,28 +501,66 @@ def test_run_python_refuses_empty_and_giant_code(client, db_session) -> None:  #
     _register(client)
 
     ok, payload = tools.call(db_session, "run_python", {"code": "   "})
-    assert ok and "error" in payload and "demo" not in payload
+    assert ok and "error" in payload and "artifact" not in payload
 
     ok, payload = tools.call(db_session, "run_python", {"code": "x = 1\n" * tools.CODE_MAX_CHARS})
-    assert ok and "error" in payload and "demo" not in payload
+    assert ok and "error" in payload and "artifact" not in payload
 
 
-# ------------------------------------------------------------------ 演示沙箱
+# ------------------------------------------------------------------ 作品（artifact）
 
 
-def test_render_demo_refuses_a_giant_html(client, db_session) -> None:  # noqa: ANN001
-    """演示会落进零件、每次读会话都要发给前端 —— 它必须小，超了就直接拒。"""
+def test_create_artifact_refuses_a_giant_html(client, db_session) -> None:  # noqa: ANN001
+    """作品会落进零件、每次读会话都要发给前端 —— 它必须小，超了就直接拒。"""
     _register(client)
 
     ok, payload = tools.call(
-        db_session, "render_demo", {"html": "<div>" + "x" * tools.DEMO_MAX_CHARS + "</div>"}
+        db_session,
+        "create_artifact",
+        {"kind": "html", "title": "T", "html": "<div>" + "x" * tools.DEMO_MAX_CHARS + "</div>"},
     )
-    assert ok and "error" in payload and "demo" not in payload
+    assert ok and "error" in payload and "artifact" not in payload
     assert "上限" in payload["error"]
 
-    ok, payload = tools.call(db_session, "render_demo", {"title": "T", "html": "<b>hi</b>"})
-    assert ok and payload["demo"]["title"] == "T"
-    assert "<b>hi</b>" in payload["demo"]["html"], "模型写的东西要原样留着"
+    ok, payload = tools.call(
+        db_session, "create_artifact", {"kind": "html", "title": "T", "html": "<b>hi</b>"}
+    )
+    assert ok and payload["artifact"]["title"] == "T"
+    assert payload["artifact"]["kind"] == "html"
+    assert "<b>hi</b>" in payload["artifact"]["html"], "模型写的东西要原样留着"
+
+
+def test_create_artifact_writes_a_markdown_article(client, db_session) -> None:  # noqa: ANN001
+    """`kind="markdown"`：文章只存正文 —— 不进沙箱，所以 TikZ 不必拦。"""
+    _register(client)
+
+    figure = "$$\\begin{tikzpicture}\\draw (0,0) -- (1,1);\\end{tikzpicture}$$"
+    ok, payload = tools.call(
+        db_session,
+        "create_artifact",
+        {"kind": "markdown", "title": "竞态", "markdown": "# 两个写者\n\n" + figure},
+    )
+    assert ok, payload
+    article = payload["artifact"]
+    assert article["kind"] == "markdown" and article["title"] == "竞态"
+    assert "html" not in article, "文章不进 iframe"
+    assert "tikzpicture" in article["markdown"], (
+        "文章里的 `$$` 走正文那条真 TeX 引擎 —— 这里**不做 TikZ 拦截**（html 版才拦）"
+    )
+
+    # 空的不收；太长的也不收（它同样要随消息发给前端）
+    ok, payload = tools.call(
+        db_session, "create_artifact", {"kind": "markdown", "title": "T", "markdown": "  "}
+    )
+    assert ok and "error" in payload and "artifact" not in payload
+
+    ok, payload = tools.call(
+        db_session,
+        "create_artifact",
+        {"kind": "markdown", "title": "T", "markdown": "x" * (tools.MARKDOWN_MAX_CHARS + 1)},
+    )
+    assert ok and "error" in payload and "artifact" not in payload
+    assert "上限" in payload["error"]
 
 
 def test_a_question_can_be_written_on_the_spot(client, db_session) -> None:  # noqa: ANN001
@@ -590,9 +629,13 @@ def test_demo_page_carries_the_kit(client, db_session) -> None:  # noqa: ANN001
         pytest.skip("演示套件未同步（make vendor）")
 
     fragment = '<div id="app"></div>\n<script type="text/babel">QFKit.mount(<h1>hi</h1>);</script>'
-    ok, payload = tools.call(db_session, "render_demo", {"title": "帽子里放什么", "html": fragment})
+    ok, payload = tools.call(
+        db_session,
+        "create_artifact",
+        {"kind": "html", "title": "帽子里放什么", "html": fragment},
+    )
     assert ok, payload
-    page = payload["demo"]["html"]
+    page = payload["artifact"]["html"]
 
     assert page.startswith("<!doctype html>"), "片段要包成完整的一页"
     assert "帽子里放什么" in page
@@ -620,9 +663,11 @@ def test_demo_page_keeps_a_full_document_intact(client, db_session) -> None:  # 
         "<title>我自己写的标题</title><style>body{color:red}</style></head>"
         '<body><canvas id="c"></canvas></body></html>'
     )
-    ok, payload = tools.call(db_session, "render_demo", {"title": "演示", "html": full})
+    ok, payload = tools.call(
+        db_session, "create_artifact", {"kind": "html", "title": "演示", "html": full}
+    )
     assert ok, payload
-    page = payload["demo"]["html"]
+    page = payload["artifact"]["html"]
 
     for keep in ("<title>我自己写的标题</title>", "body{color:red}", '<canvas id="c">'):
         assert keep in page, keep

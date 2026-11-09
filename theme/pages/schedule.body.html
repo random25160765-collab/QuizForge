@@ -9,6 +9,16 @@
   原先日期标题横在上方、压在计划列头顶上，看着像"计划的标题"，其实是日历的。
 -->
 <div id="app-root" data-page="schedule" class="sch-root">
+  <!-- 2026-11-09：计划与日历拆成同一页的两个子页，用上面这颗胶囊切。
+       原先左右并排，手机上两边都只剩半屏。 -->
+  <header class="sch-switch">
+    <!-- inner 与任务列同一条 720 左对齐：胶囊不随子页跳位（2026-11-09） -->
+    <div class="sch-switch__inner">
+      <div class="sch-panes" id="sch-panes" role="tablist" aria-label="计划与日历"></div>
+      <div class="sch-switch__action" id="sch-pane-action"></div>
+    </div>
+  </header>
+
   <aside class="sch-side" id="sch-side" aria-label="计划"></aside>
 
   <div class="sch-calwrap">

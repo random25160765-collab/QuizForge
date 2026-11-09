@@ -16,9 +16,15 @@ from . import (
     graph,
     health,
     knowledge,
+    # 滤镜（lens）：清单 + 创作接口 + **挂载记录**（`/api/lens/records`）。
+    # 2026-11-09 之前它一直没登记 —— 前端 `refreshLenses()` 调 `/api/lens` 吃了 404
+    # （catch 掉了，表现为"保存 / 删除滤镜后清单不更新"）。与当年 `sync_api`
+    # 漏登记是同一个坑。
+    lens,
     material,
     memory,
     mybank,
+    notes,
     obsidian,
     plans,
     problem,
@@ -39,9 +45,12 @@ def all_routers() -> list[APIRouter]:
         progress.router,
         ai.router,
         chat.router,
+        lens.router,
         problem.router,
         mybank.router,
-        # 笔记：只给 LLM 工具用（走 Obsidian 桥接），这里只开一个"连上没有"的只读状态
+        # 笔记：读写面给**没有 Obsidian 的设备**（手机，走 `notes` 表），
+        # 桌面端与 LLM 工具不经过它。`obsidian` 只有"连上没有"这一个只读状态。
+        notes.router,
         obsidian.router,
         # 整份设置（文件是权威，可拷贝）
         settings_api.router,

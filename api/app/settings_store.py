@@ -14,9 +14,51 @@ from __future__ import annotations
 from typing import Any
 
 from .models import AppSettings
+from .settings_file import FILE_ONLY
 
 #: 单例那一行固定用它 —— 表本来就是个单行表，主键只是个占位。
 SETTINGS_ID = 1
+
+#: **只在本机、不落设置文件也不跨机同步的键**（与 `theme/runtime/store.js` 的
+#: `LOCAL_ONLY` 同一份名单）。名单只在这里写一次，落盘 / 上云 / 读出来都走
+#: `strip_local()`：
+#:
+#: * `chatRead` —— 每条会话读到哪儿（实测占设置文件七成）；
+#: * `graph` —— 图谱面板位置与布局参数；
+#: * `basket` —— 选题篮；
+#: * `skills` / `lens` —— 滤镜挂载记录（2026-11-09 搬进 `lens_records` 表：
+#:   它属于数据，随对话同步、进用户数据包，不再占设置文件）。
+#:
+#: `notes` / `places` 不在此列 —— `marks_of()` 要从设置行里读它们。
+#: `onboarding` 是每台设备自己的状态（引导做没做过），不该跟着同步走。
+LOCAL_ONLY = ("chatRead", "graph", "basket", "skills", "lens", "onboarding")
+
+
+def strip_local(data: dict) -> dict:
+    """去掉只在本机的状态键。"""
+    return {key: value for key, value in data.items() if key not in LOCAL_ONLY}
+
+
+def normalize(data: dict) -> dict:
+    """读 / 写都过一遍：剔掉只在本机的状态键（含滤镜记录）与废键。
+
+    旧版把 `lens` / `skills` 写在这里；它们现在归 `lens_records` 表
+    （见 `app/lens.py` 的 `_migrate_from_settings`）。设置这一侧只做丢弃，
+    真正的搬运由那张表在第一次读时完成。
+
+    `ai.enabled` 是旧的「启用 AI」开关（2026-11-09 删除）：能不能用只看
+    有没有填密钥，所以这个键从任何入口进来都丢掉。
+
+    `FILE_ONLY`（同步口令）也在这里剔掉：它只该住在设置文件里。进了这一行，
+    下一次同步就会把它当设置传上 Turso —— 端到端加密就形同虚设了。
+    """
+    out = strip_local(dict(data))
+    for key in FILE_ONLY:
+        out.pop(key, None)
+    ai = out.get("ai")
+    if isinstance(ai, dict):
+        out["ai"] = {key: value for key, value in ai.items() if key != "enabled"}
+    return out
 
 
 def row(db: Any, *, create: bool = False) -> Any:
@@ -36,7 +78,9 @@ def row(db: Any, *, create: bool = False) -> Any:
     if found is not None:
         on_disk = settings_file.load()
         if on_disk:
-            found.data = on_disk
+            # 老文件里可能还躺着本机状态键（2026-11-09 之前什么都往里推）——
+            # 读出来就滤掉，界面与同步都看不到它们。
+            found.data = normalize(on_disk)
     return found
 
 
@@ -44,7 +88,7 @@ def load(db: Any) -> dict:
     """整份设置（读不到就是空 dict）。"""
     found = row(db)
     data = getattr(found, "data", None)
-    return dict(data) if isinstance(data, dict) else {}
+    return normalize(dict(data)) if isinstance(data, dict) else {}
 
 
 def marks_of(conf: dict, cid: Any) -> dict:
@@ -84,6 +128,9 @@ def put(db: Any, **changes: Any) -> dict:
             data.pop(key, None)
         else:
             data[key] = value
+    # 任何写路径（界面 / 同步 / 脚本）都别把这些键带进去；
+    # 老调用点还在写 `skills=` 的，这里顺手改成 `lens`。
+    data = normalize(data)
     found.data = data
     db.commit()
     # 文件是权威：改完一起写回去（写失败不该让这次请求失败 —— 数据库那份已经落了）
@@ -96,4 +143,4 @@ def put(db: Any, **changes: Any) -> dict:
     return data
 
 
-__all__ = ["load", "marks_of", "put", "row"]
+__all__ = ["LOCAL_ONLY", "load", "marks_of", "normalize", "put", "row", "strip_local"]

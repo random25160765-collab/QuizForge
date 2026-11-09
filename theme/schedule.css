@@ -25,6 +25,9 @@ body[data-page='schedule'] #app-root {
 }
 
 .sch-root {
+  /* 任务列的宽度：顶栏（胶囊 / 新建计划）与列表共用这一条，切子页不跳位。
+   * 640 让最长的一条待办也放得下一行（13px 中文约 40 字）；右边留白（2026-11-09）。 */
+  --sch-col: 640px;
   /* 深色档的默认值（`:root` 那一套）。浅色档在文件末尾覆盖。 */
   --sch-ok: #4fb39d;
   --sch-amber: #c99a55;
@@ -36,13 +39,93 @@ body[data-page='schedule'] #app-root {
 
   position: relative;
   display: flex;
-  /* 两栏并排：左栏与日历**各自整栏到底**，中间一条竖线从上贯到下。
-     原来是"上一条整宽工具条 + 下面两栏"，于是日期标题横在计划列头顶上，
-     看着像计划区的标题（用户 2026-11-08 指出的就是这一处）。 */
-  flex-direction: row;
+  /* 2026-11-09：计划与日历拆成两个子页（顶上的胶囊切），不再左右并排。
+     手机上并排时两边各剩半屏，计划标题被挤成两行、日历一周只剩三列。 */
+  flex-direction: column;
   height: 100%;
   min-height: 0;
   color: var(--fg);
+}
+
+/* ---------------------------------------------------------------- 子页切换 */
+
+/* 顶带是**页面框架**：胶囊的位置不随子页变化（2026-11-09 用户："点击转换后位置
+ * 会发生变化"）。所以它不跟着内容列居中去算 padding，而是与任务列共用同一条
+ * 左对齐的 720 列 —— 列不动，胶囊就不动。
+ * 右边那个槽放当前这页的主操作（计划是"新建计划"），右缘与条目同一条竖线。 */
+.sch-switch {
+  flex: none;
+  height: 52px;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.sch-switch__inner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--sch-col);
+  height: 100%;
+  /* 左对齐：与 `.sch-side__body` 同一条列（任务在左，右边留白） */
+  margin: 0 auto 0 0;
+  padding: 0 16px;
+}
+
+/* 胶囊：两半各自是按钮，选中那半灌 `--pri`（与 `.btn--primary` 同一套色） */
+.sch-panes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.sch-panes__btn {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  /* 未选中用 fg2 而不是 fg3：fg3 在深色底上那颗圆圈勾几乎看不见（2026-11-09） */
+  color: var(--fg2);
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.sch-panes__btn:hover {
+  color: var(--fg2);
+}
+
+.sch-panes__btn.is-on {
+  background: var(--pri);
+  /* 与 `.btn--primary` 同一个文字色：`--pri` 是浅底，白字反而糊 */
+  color: #04211c;
+}
+
+.sch-panes__btn:focus-visible {
+  outline: 2px solid var(--pri);
+  outline-offset: 2px;
+}
+
+.sch-switch__action {
+  display: flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* 两页都留在 DOM 里，只显示当前那页：切回来不用重建，日历的滚动位置也还在 */
+.sch-root .sch-side,
+.sch-root .sch-calwrap {
+  display: none;
+}
+
+.sch-root.is-plan .sch-side,
+.sch-root.is-cal .sch-calwrap {
+  display: flex;
 }
 
 html[data-theme='light'] .sch-root {
@@ -121,43 +204,26 @@ html[data-theme='light'] .sch-root {
 .sch-side {
   display: flex;
   flex-direction: column;
-  /* 320 而不是 300：条目行里同时要放"勾选框 + 标题 + 日期 + 星标"，
-     300 时第三行那种长标题会把日期挤没。 */
-  width: 320px;
-  flex: none;
+  /* 分页后它自己占满整页（原先 320px 是给两栏让位）；内容限宽，桌面别拉成一整行 */
+  width: 100%;
+  flex: 1;
   min-height: 0;
-  border-right: 1px solid var(--line);
-  overflow: hidden;
-}
-
-/* 左栏的顶带：与右边工具条**同高、同一条底线**。
-   两栏各自有一条顶带，中间那条竖线才有地方落；否则上半截是通栏，
-   线到工具条下面才出现，看着像断了。 */
-.sch-side__top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  height: 52px;
-  padding: 0 12px 0 16px;
-  border-bottom: 1px solid var(--line);
-}
-
-/* 顶带里的"计划"是**栏名**，比正文重、比右边的日期轻 */
-.sch-side__top .sch-side__title {
-  color: var(--fg);
-  font-size: 13px;
-  font-weight: 600;
+  /* 滚动放在**这一层**：滚动条贴页面右缘，720 列就不会被它挤窄 ——
+     否则顶栏的"新建计划"与卡片右缘会差出一个滚动条的宽度。 */
+  overflow-y: auto;
 }
 
 .sch-side__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  flex: 1;
-  min-height: 0;
-  padding: 12px;
-  overflow-y: auto;
+  /* 组与组之间（两份计划 / 计划与订阅）：22 与手机同一档 */
+  gap: 22px;
+  width: 100%;
+  /* 左对齐、限宽 520：任务在左，右边留白（2026-11-09 用户）。
+     左右 16 与顶栏胶囊同一条竖线。 */
+  max-width: var(--sch-col);
+  margin: 0 auto 0 0;
+  padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
 }
 
 /* 日历那一栏：工具条在上，网格在下，自己占满剩下的宽高 */
@@ -257,16 +323,14 @@ html[data-theme='light'] .sch-root {
   font-variant-numeric: tabular-nums;
 }
 
-/* ---------------------------------------------------------------- 计划卡 */
+/* ---------------------------------------------------------------- 计划（裸列表） */
 
+/* 2026-11-09：宽屏也改成手机那套"组标题 + 裸列表"，不再是一张居中的卡片 ——
+ * 任务在左、右边留白，卡片盒子只把内容往里缩了两道（用户："圆角矩形就是冗余了"）。 */
 .sch-plan {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg2);
 }
 
 .sch-plan__head {
@@ -275,15 +339,14 @@ html[data-theme='light'] .sch-root {
   gap: 6px;
 }
 
+/* 组标题：比条目大一档（14 vs 13），层级靠字号而不是字重 */
 .sch-plan__name {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.4;
   cursor: text;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sch-plan__count {
@@ -301,10 +364,10 @@ html[data-theme='light'] .sch-root {
 
 .sch-plan__doc:hover { color: var(--pri); }
 
-/* 三个 hover 才出现的动作（删除计划）：平时不占视线 */
+/* 删除计划：平时不占视线（触摸屏那档常驻，见文件末尾） */
 .sch-plan__del {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   opacity: 0;
   transition: opacity 140ms ease;
 }
@@ -321,7 +384,6 @@ html[data-theme='light'] .sch-root {
 .sch-plan__rows {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .sch-plan__rename,
@@ -335,18 +397,19 @@ html[data-theme='light'] .sch-root {
   background: var(--bg);
   color: var(--fg);
   font-family: inherit;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 
+/* 与条目同一条左缘、同高：它是列表的最后一行，不是卡片底部的输入框 */
 .sch-plan__add {
-  height: 24px;
-  padding: 0 6px;
+  height: 32px;
+  padding: 0;
   border: 1px dashed transparent;
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--fg3);
   font-family: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   cursor: text;
 }
 
@@ -359,18 +422,24 @@ html[data-theme='light'] .sch-root {
 
 /* ---------------------------------------------------------------- 待办条目 */
 
+/* 桌面是**一行**：勾选 · 标题 · 日期 · 星标。
+ * 手机上折成两行是因为 358px 放不下；照搬到大屏，日期会孤零零吊在右边
+ * （2026-11-09 用户："不能照搬，否则很丑"）。窄屏的折法在文件末尾覆盖。 */
 .sch-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 26px;
-  padding: 0 4px;
-  border-radius: var(--r-sm);
+  gap: 8px;
+  padding: 7px 0;
   cursor: grab;
 }
 
+/* 行与行之间一条细线：裸列表靠它分隔，不靠卡片 */
+.sch-item + .sch-item {
+  border-top: 1px solid var(--line);
+}
+
 .sch-item:hover {
-  background: var(--bg3);
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
 }
 
 .sch-item.is-dragging {
@@ -382,11 +451,12 @@ html[data-theme='light'] .sch-root {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
   padding: 0;
+  /* 圆形：方块勾选框是桌面表单的形状，清单是圆的 */
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: 50%;
   background: transparent;
   color: transparent;
   cursor: pointer;
@@ -405,10 +475,11 @@ html[data-theme='light'] .sch-root {
 .sch-item__text {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .sch-item__text.is-done {
@@ -416,32 +487,36 @@ html[data-theme='light'] .sch-root {
   text-decoration: line-through;
 }
 
+/* 日期是**注释**不是按钮：没有描边、没有胶囊底，只剩一行灰字。
+ * 桌面给它一条固定宽的列（右对齐），几十行看下来日期是一条竖线。 */
 .sch-item__date {
   flex: none;
-  padding: 1px 5px;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  min-width: 52px;
+  text-align: right;
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
   background: transparent;
   color: var(--fg3);
   font-family: inherit;
   font-size: 11px;
+  line-height: 1.4;
   cursor: pointer;
 }
 
 .sch-item__date.is-set {
-  border-color: var(--line);
-  color: var(--fg2);
+  border: 0;
+  color: var(--fg3);
 }
 
 .sch-item__date:hover {
-  border-color: var(--line-strong);
-  color: var(--fg);
+  color: var(--fg2);
 }
 
 .sch-item__dateinput {
   flex: none;
   width: 118px;
-  height: 22px;
+  height: 24px;
   border: 1px solid var(--pri);
   border-radius: var(--r-sm);
   background: var(--bg);
@@ -451,14 +526,17 @@ html[data-theme='light'] .sch-root {
 }
 
 .sch-item__star {
+  display: grid;
+  place-items: center;
   flex: none;
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: var(--line-strong);
+  /* 桌面原来用 line-strong（几乎融进背景）；清单里要看得见是颗星 */
+  color: var(--fg3);
   cursor: pointer;
 }
 
@@ -642,6 +720,8 @@ html[data-theme='light'] .sch-root {
   top: 0;
   z-index: 2;
   height: 40px;
+  /* 列头是 40 + 1px 底线，左栏少了这 1px 就会整体错开一行 */
+  border-bottom: 1px solid var(--line);
   background: var(--bg);
 }
 
@@ -653,6 +733,61 @@ html[data-theme='light'] .sch-root {
   text-align: right;
   transform: translateY(-6px);
   font-variant-numeric: tabular-nums;
+}
+
+/* 紧跟折叠条的第一格（06:00 / 展开后的 00:00）：它头顶就是那条 34px 的带子，
+ * 再上移 6px 会把字塞进带子里（用户 2026-11-09："太挤了"）。这一格落在带子下方。 */
+.sch-rail__night + .sch-rail__hour {
+  transform: none;
+}
+
+/* 凌晨折叠条（2026-11-09 用户："凌晨时段弄一个折叠条"）。
+ * 左栏这一条给区间与方向箭头、负责点击；每列那条只有底色，合起来是一条横带。
+ * 34px：26px 时它和紧跟的 `06:00` 只隔 2px，两行字挤成一坨（同日用户："太挤了"）。 */
+.sch-rail__night {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding-right: 7px;
+  color: var(--fg3);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px dashed var(--line);
+  transition: color 140ms ease;
+}
+
+.sch-rail__night::after {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid currentColor;
+  transition: transform 140ms ease;
+}
+
+.sch-rail__night.is-open::after {
+  transform: rotate(180deg);
+}
+
+.sch-rail__night:hover {
+  color: var(--fg2);
+}
+
+.sch-col__night {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 34px;
+  z-index: 1;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--bg3) 30%, transparent);
+  border-bottom: 1px dashed var(--line);
 }
 
 .sch-cols {
@@ -672,15 +807,22 @@ html[data-theme='light'] .sch-root {
   top: 0;
   z-index: 2;
   display: flex;
-  align-items: baseline;
+  /* 基线对齐时 11px 的"周一"与 13px 的"9"行盒不同高，数字看着偏上（用户 2026-11-09）；
+     改成视觉中心对齐，两行字各按自己的字号居中。 */
+  align-items: center;
   justify-content: center;
   gap: 5px;
   height: 40px;
-  padding-top: 6px;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
   color: var(--fg3);
   font-size: 11px;
+}
+
+.sch-col__dow,
+.sch-col__num {
+  /* 行盒贴着字形，居中才是真的居中 */
+  line-height: 1;
 }
 
 .sch-col__num {
@@ -755,6 +897,11 @@ html[data-theme='light'] .sch-root {
   opacity: 0.85;
   cursor: grabbing;
   z-index: 3;
+}
+
+/* 钉住的块：拖不动（`ScheduleEvent.locked`），光标也就不该给"能抓"的暗示 */
+.sch-ev.is-locked {
+  cursor: default;
 }
 
 .sch-ev__time {
@@ -935,6 +1082,28 @@ html[data-theme='light'] .sch-root {
   color: var(--fg);
   font-family: inherit;
   font-size: 13px;
+}
+
+.sch-edit__pin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg2);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 课表来的块没有"钉住"这个开关，那一行只是说明：别给可点的光标 */
+.sch-edit__pin.is-static {
+  cursor: default;
+}
+
+.sch-edit__pin input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--pri);
 }
 
 .sch-edit__row {
@@ -1304,12 +1473,8 @@ html[data-theme='light'] .sch-root {
 
 /* ---------------------------------------------------------------- 窄屏 */
 
-@media (max-width: 1100px) {
-  /* 窄屏收一点：320 会让日历只剩六列宽 */
-  .sch-side {
-    width: 288px;
-  }
-}
+/* 2026-11-09：两栏撤销后这条不再需要 —— 它把计划页钉死在 288px，
+   分页后右侧空出 102px（用户："没有和右边界对齐"）。 */
 
 @media (max-width: 860px) {
   .sch-grid.is-day {
@@ -1318,5 +1483,274 @@ html[data-theme='light'] .sch-root {
 
   .sch-day {
     display: none;
+  }
+}
+
+/* ============================================================================
+ * 手机（≤600）：日历与计划**各自一版**（2026-11-09 用户："从宽屏移植过来的，很丑"）。
+ *
+ * 宽屏那套到 390px 上：一周七列每列 55px，事件标题只剩一个字（"大…"）；
+ * 待办一行里塞了勾选框、标题、日期、星标，标题被截成半句。这里不是缩小，
+ * 是换排法 —— 周四列变议程、待办一行变两行。
+ * ========================================================================= */
+
+@media (max-width: 600px) {
+  /* ---- 议程（手机上"列表"视图，替代周视图；渲染见 `renderAgenda`） ---- */
+
+  .sch-agenda {
+    padding: 4px 12px 28px;
+  }
+
+  .sch-agenda__head {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    margin: 20px 0 8px;
+  }
+
+  .sch-agenda__head:first-child {
+    margin-top: 6px;
+  }
+
+  .sch-agenda__dow {
+    color: var(--fg3);
+    font-size: 12px;
+  }
+
+  .sch-agenda__num {
+    font-size: 19px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .sch-agenda__head.is-today .sch-agenda__dow,
+  .sch-agenda__head.is-today .sch-agenda__num {
+    color: var(--pri);
+  }
+
+  .sch-agenda__now {
+    margin-left: auto;
+    color: var(--pri);
+    font-size: 11px;
+  }
+
+  .sch-agenda__row {
+    display: grid;
+    grid-template-columns: 48px minmax(0, 1fr);
+    align-items: start;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 6px;
+    padding: 11px 12px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--sch-blue);
+    border-radius: 12px;
+    background: var(--bg2);
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .sch-agenda__row.is-plan {
+    border-left-color: var(--pri);
+  }
+
+  .sch-agenda__row.is-sub {
+    border-left-color: var(--sch-sub);
+  }
+
+  .sch-agenda__row.is-allday {
+    border-left-color: var(--sch-amber);
+  }
+
+  .sch-agenda__time {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    color: var(--fg3);
+    font-size: 11px;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sch-agenda__time b {
+    color: var(--fg2);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .sch-agenda__main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .sch-agenda__title {
+    font-size: 14.5px;
+    line-height: 1.4;
+  }
+
+  .sch-agenda__where {
+    color: var(--fg3);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .sch-agenda__empty {
+    padding: 40px 0;
+    color: var(--fg3);
+    font-size: 13px;
+    text-align: center;
+  }
+
+  /* ---- 时间轴（日视图）：左栏收窄给事件腾宽度，字号提一档 ---- */
+
+  .sch-grid {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .sch-ev {
+    padding: 4px 7px;
+    font-size: 12px;
+  }
+
+  .sch-ev__title {
+    font-size: 12.5px;
+    line-height: 1.35;
+  }
+
+  .sch-ev__where {
+    font-size: 11.5px;
+  }
+
+  /* ---- 月视图：一屏看完整月；格子里只留一条色带，点它仍是开编辑 ---- */
+
+  .sch-month {
+    margin-top: 8px;
+    border-radius: 10px;
+  }
+
+  .sch-month__head {
+    padding: 4px 3px;
+    font-size: 10px;
+    text-align: center;
+    letter-spacing: 0;
+  }
+
+  .sch-cell {
+    gap: 2px;
+    min-height: 52px;
+    padding: 3px 3px 4px;
+  }
+
+  .sch-cell__num {
+    font-size: 11px;
+  }
+
+  .sch-cell__dot {
+    width: 4px;
+    height: 4px;
+  }
+
+  .sch-chip {
+    display: block;
+    height: 6px;
+    padding: 0;
+    margin: 1px 0;
+    border: 0;
+    border-radius: 2px;
+    background: var(--sch-blue);
+    overflow: hidden;
+  }
+
+  .sch-chip.is-plan {
+    background: var(--pri);
+  }
+
+  .sch-chip__time,
+  .sch-chip__text {
+    display: none;
+  }
+
+  .sch-cell__more {
+    font-size: 9px;
+  }
+
+  /* ---- 计划清单：窄屏折成两行（勾选 | 标题 | 星标 / 日期），尺寸大一档 ---- */
+
+  .sch-plan {
+    gap: 6px;
+  }
+
+  .sch-plan__name {
+    font-size: 15.5px;
+  }
+
+  .sch-plan__count {
+    font-size: 12px;
+  }
+
+  .sch-item {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr) 58px;
+    grid-template-areas:
+      'check text star'
+      'check text date';
+    column-gap: 10px;
+    row-gap: 5px;
+    align-items: start;
+    padding: 13px 0;
+  }
+
+  .sch-item__check {
+    grid-area: check;
+    width: 20px;
+    height: 20px;
+    border-width: 1.5px;
+    align-self: start;
+    margin-top: 1px;
+  }
+
+  .sch-item__text {
+    grid-area: text;
+    font-size: 15px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .sch-item__date {
+    grid-area: date;
+    justify-self: end;
+    min-width: 0;
+    margin-right: 4px;
+    font-size: 11.5px;
+  }
+
+  .sch-item__dateinput {
+    grid-area: date;
+    justify-self: end;
+    height: 26px;
+    font-size: 11.5px;
+  }
+
+  .sch-item__star {
+    grid-area: star;
+    justify-self: end;
+    width: 22px;
+    height: 22px;
+  }
+
+  .sch-plan__add {
+    height: 38px;
+    font-size: 13.5px;
+  }
+
+  /* 触摸屏没有 hover：宽屏那条"悬停才出现"的删除键在手机上永远不出现，
+     等于删不掉计划。这一档让它常驻（压到 0.55，别抢标题） */
+  .sch-plan__del {
+    opacity: 0.55;
   }
 }

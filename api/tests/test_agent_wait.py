@@ -41,8 +41,8 @@ def test_loop_waits_for_the_sandbox_output(db_session, monkeypatch):
 
     def fake_call(db, name, args, ctx=None, **kwargs):
         """只替掉 `run_python` 的结果：真让它返回"待运行"的那个形状。"""
-        return True, {"demo": {"title": "t", "runId": run_id}, "await_run": True,
-                      "note": "会等它跑完"}
+        return True, {"artifact": {"title": "t", "kind": "python", "runId": run_id},
+                      "await_run": True, "note": "会等它跑完"}
 
     monkeypatch.setattr(agent_loop.gateway, "stream_completion", fake_stream)
     monkeypatch.setattr(tools, "call", fake_call)

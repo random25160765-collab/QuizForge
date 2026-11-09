@@ -92,7 +92,7 @@ def test_the_subagent_toolbox_is_narrowed(client, db_session) -> None:  # noqa: 
 
     names = [spec["function"]["name"] for spec in box.specs()]
     assert names == list(problem_router.GRADE_TOOLS)
-    assert "run_python" not in names and "render_demo" not in names
+    assert "run_python" not in names and "create_artifact" not in names
 
     # 名单外的工具回一条结果（不是抛）：模型看得见"不在范围内"
     ok, payload = box.call(db_session, "push_question", {})

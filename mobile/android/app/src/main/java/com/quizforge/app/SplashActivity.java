@@ -54,15 +54,17 @@ public class SplashActivity extends AppCompatActivity {
 
     private void boot() {
         try {
-            say("正在释放前端资源…");
-            say(BootHelper.prepare(this));
+            // 屏上只留一句「正在准备」：细账进日志，不往启动页上堆字
+            // （用户：启动页"冗余，尤其是文字"太多）。
+            say("正在准备");
+            Log.i(TAG, "释放前端资源：" + BootHelper.prepare(this));
 
-            say("正在启动 Python…");
+            Log.i(TAG, "启动 Python");
             if (!Python.isStarted()) {
                 Python.start(new AndroidPlatform(getApplicationContext()));
             }
 
-            say("正在启动后端服务…");
+            Log.i(TAG, "启动后端服务");
             Python.getInstance()
                     .getModule("android_boot")
                     .callAttr("start_in_thread",
@@ -70,7 +72,6 @@ public class SplashActivity extends AppCompatActivity {
                             BootHelper.webDir(this).getAbsolutePath(),
                             PORT);
 
-            say("等待服务就绪…");
             if (!waitHealthy()) {
                 fail("后端在 " + HEALTH_TIMEOUT_S + " 秒内没有就绪");
                 return;
@@ -103,8 +104,9 @@ public class SplashActivity extends AppCompatActivity {
             } catch (IOException ignored) {
                 // 还没监听 —— 正常，继续等
             }
+            // 拖久了才报秒数 —— 让人知道没卡死，但不往屏上堆一串步骤名
             if (i % 5 == 0) {
-                say("等待服务就绪… " + i + "s");
+                say("正在准备 · " + i + "s");
             }
             try {
                 Thread.sleep(1000);

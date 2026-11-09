@@ -15,9 +15,14 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, HTTPException
+from sqlalchemy import select
 
 from .. import lens as lens_lib
+from ..deps import DbSession
+from ..models import Conversation, LensRecord, Message
 
 router = APIRouter(prefix="/api/lens", tags=["lens"])
 
@@ -26,6 +31,73 @@ router = APIRouter(prefix="/api/lens", tags=["lens"])
 def list_lenses() -> dict:
     """药丸里那份清单。**不带正文**（提示词是服务端的实现细节，界面只要名字与说明）。"""
     return {"items": lens_lib.catalog()}
+
+
+def _conversation(db: DbSession, raw: object) -> Conversation:
+    try:
+        conv_id = uuid.UUID(str(raw or ""))
+    except (ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail="cid 不是对话编号") from exc
+    conv = db.get(Conversation, conv_id)
+    if conv is None:
+        raise HTTPException(status_code=404, detail="没有这条对话")
+    return conv
+
+
+# **必须排在 `/{key}` 之前**：否则 `/records` 会被当成一条滤镜的 key。
+@router.get("/records")
+def list_records(db: DbSession, cid: str = "") -> dict:
+    """挂载记录（`cid` 空 = 全部）。形状与前端 `QF.store` 那份一致。"""
+    conv = _conversation(db, cid) if cid else None
+    return {"items": lens_lib.records(db, str(conv.id) if conv else "")}
+
+
+@router.put("/records")
+def save_record(body: dict, db: DbSession) -> dict:
+    """装 / 取一条滤镜。同一（对话、消息、key）只留一行。"""
+    conv = _conversation(db, body.get("cid"))
+    key = str(body.get("key") or "").strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="key 不能空")
+    mid = str(body.get("mid") or "").strip()
+    message_uid = ""
+    if mid:
+        try:
+            msg = db.get(Message, int(mid))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="mid 不是消息编号") from exc
+        if msg is None or str(msg.conversation_id) != str(conv.id):
+            raise HTTPException(status_code=400, detail="这条消息不在这个对话里")
+        message_uid = str(msg.uid or "")
+    one = db.scalar(
+        select(LensRecord).where(
+            LensRecord.conversation_id == conv.id,
+            LensRecord.message_uid == message_uid,
+            LensRecord.lens_key == key,
+        )
+    )
+    on = body.get("on") is not False
+    try:
+        at = int(body.get("at") or 0)
+    except (TypeError, ValueError):
+        at = 0
+    if one is None:
+        one = LensRecord(
+            conversation_id=conv.id,
+            message_uid=message_uid,
+            lens_key=key,
+            enabled=on,
+            at=at,
+        )
+        db.add(one)
+    else:
+        one.enabled = on
+        one.at = at
+    db.commit()
+    return {
+        "ok": True,
+        "item": {"cid": str(conv.id), "mid": mid, "key": key, "on": on, "at": at},
+    }
 
 
 @router.get("/{key}")

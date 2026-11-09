@@ -638,15 +638,21 @@
     fold.setAttribute('aria-expanded', asideOpen ? 'true' : 'false');
   }
 
-  function toggleAside() {
-    autoFolded = false;   // 人按了就以他的选择为准：从此不再"自动展开"
-    asideOpen = !asideOpen;
+  /** 左栏开合的**唯一落点**：按钮与边缘手势都走它（只认目标态，不 toggle —
+   * 连着划两下时 toggle 会跟状态赛跑）。 */
+  function setAside(open) {
+    autoFolded = false;   // 人（或手指）动了就以这个为准：从此不再"自动展开"
+    asideOpen = !!open;
     try {
       window.localStorage.setItem(ASIDE_KEY, asideOpen ? 'open' : 'closed');
     } catch (err) {
       /* 存不下就只在这次生效 */
     }
     applyAside();
+  }
+
+  function toggleAside() {
+    setAside(!asideOpen);
   }
 
   function asideWidthNow() {
@@ -735,6 +741,16 @@
     };
     if (narrow.addEventListener) narrow.addEventListener('change', onChange);
     else if (narrow.addListener) narrow.addListener(onChange);
+
+    // 边缘手势：左边缘往右划展开、在抽屉上往左划收回（与对话页同一套，见 swipe.js）
+    if (QF.swipe) {
+      QF.swipe.bind({
+        edge: 'left',
+        enabled: function () { return narrow.matches; },
+        isOpen: function () { return asideOpen; },
+        set: setAside,
+      });
+    }
 
     // ⌘/Ctrl+B：与对话页同一个快捷键，焦点在可编辑区里时不抢
     document.addEventListener('keydown', function (ev) {

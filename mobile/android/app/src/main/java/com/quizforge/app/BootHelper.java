@@ -57,18 +57,18 @@ final class BootHelper {
             if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
                 throw new IOException("建不出数据目录：" + parent);
             }
-            copyAsset(context.getAssets(), "bank.db", db);
+            // 安装包里不放数据：题库由首启同步从 Turso 整包拉（app/bank_cloud.py）。
+            // 这里只留一个空库，Python 侧 `ensure_schema` 会把表建齐。
+            db.createNewFile();
         }
 
         // 可选的同步引导（构建时用 scripts/inject-sync-assets.py 塞进来）：
-        // 设置文件给出 turso 地址/令牌，snapshot.key 是对话端到端口令。
+        // 一份设置文件里同时给出 turso 地址/令牌与对话端到端口令（`syncPassphrase`）。
         // 只在目标不存在时拷 —— 用户在设置页改过之后就以设备上那份为准。
         copyAssetIfAbsent(context.getAssets(), "sync/settings.local.json",
                 new File(dataDir(context), "config/settings.local.json"));
-        copyAssetIfAbsent(context.getAssets(), "sync/snapshot.key",
-                new File(dataDir(context), "snapshot.key"));
 
-        return fresh ? "已释放前端资源与题库" : "资源已是最新";
+        return fresh ? "已释放前端资源" : "资源已是最新";
     }
 
     /** assets 里没有这个文件是正常情况（没注入同步配置），不是错误。 */

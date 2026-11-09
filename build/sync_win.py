@@ -59,7 +59,6 @@ SKIP_FILES = (
     # 明文 API 密钥，`snapshot.key` 能解开对话密文，`db/*.enc` 是对话全量快照。
     # 构建镜像只该有代码与样例（`settings.example.json`）。
     "config/settings.local.json",
-    "config/ai.local.json",
     "config/embed.local.json",
     "config/snapshot.key",
     "db/quizforge.db.gz.enc",
@@ -255,7 +254,7 @@ def sync(target: Path) -> int:
                "/NFL", "/NDL", "/NP", "/NJH", "/NJS",
                "/XD", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache",
                ".venv", "dist", ".pyinstaller", "work",
-               "/XF", ".env", "settings.local.json", "ai.local.json", "embed.local.json",
+               "/XF", ".env", "settings.local.json", "embed.local.json",
                "snapshot.key", "quizforge.db.gz.enc"]
         try:
             proc = subprocess.run(

@@ -30,6 +30,37 @@
     --tabbar-h: calc(56px + env(safe-area-inset-bottom, 0px));
   }
 
+  /* 手机上**不画滚动条**：要横滑的（设置分类、练习顶栏、表格、代码块）靠拖，
+   * 纵向靠手势。桌面保留轨道 —— 鼠标用户需要看见"还能往下翻"。
+   * （用户 2026-11-09：手机端界面不要有横向滑动条。Android WebView 会画那条轨道，
+   *   `scrollbar-width` 与 `::-webkit-scrollbar` 各管一半浏览器。） */
+  html,
+  body,
+  body * {
+    scrollbar-width: none;
+  }
+
+  html::-webkit-scrollbar,
+  body::-webkit-scrollbar,
+  body *::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* 兜底：页面本身绝不横向滚。某个元素再宽，也只能在它自己的容器里滚 ——
+   * 否则屏幕底部会多出一条横跨全屏的滚动条（用户截图里那条）。
+   * 用 `clip` 而不是 `hidden`：`hidden` 会让 body 变成滚动容器，`sticky` 顶栏失效。 */
+  html,
+  body {
+    overflow-x: clip;
+  }
+
+  @supports not (overflow-x: clip) {
+    html,
+    body {
+      overflow-x: hidden;
+    }
+  }
+
   /* ---------------------------------------------------------------- 外壳 */
 
   /* 两列（活动栏 + 舞台）→ 单列。活动栏的入口搬到下面那条底栏里。
@@ -161,13 +192,45 @@
     padding: 0 12px;
   }
 
+  /* 与桌面同一套，只是**窄一档**：手机屏幕小，虚化 16px 太长 —— 它在小屏上占掉的
+   * 比例更大，看着就是一截空白（用户 2026-11-09："手机端屏幕小，要特别设计……
+   * 虚化范围也要变窄"）。10px 刚好够"淡出去"。负外边距、内距、渐变长度仍必须
+   * 是同一个数（见 chat.css 的 `.chat__composer` 与 `.chat__thread`）。 */
   body[data-page='chat'] .chat__composer {
-    margin: 6px -12px 0;
-    padding: 6px 12px;
+    margin: -10px -12px 0;
+    padding: 10px 12px 6px;
+    background: linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--bg) 0%, transparent),
+      var(--bg) 10px
+    );
   }
 
   body[data-page='chat'] .chat__thread {
     padding-right: 0;
+    /* 跟着虚化区一起收到 10（滚到底时最后一条消息正好退出雾区） */
+    padding-bottom: 10px;
+  }
+
+  /* 框顶在内距盒顶下方 10 → 按钮要吊在框上方 8，就是 100% − (10 − 8) */
+  body[data-page='chat'] .chat__jump {
+    bottom: calc(100% - 2px);
+  }
+
+  /* 脚注里那颗「重答」和「复制」、再加旗与丝带（四个图标）跟"deepseek-flash · 9.3s ·
+   * 47269+1236 tokens"挤不进一行：散着排会断成 2 + 2（两个在元信息右侧、两个掉到
+   * 行首），看着像两拨东西。整组给满一行宽 → 元信息独占第一行，四颗按钮整齐落到
+   * 第二行（用户 2026-11-09："四个按钮排布不对劲，手机端放不下，要重排。放在第二行吧"）。 */
+  body[data-page='chat'] .chatmsg__acts {
+    flex: 1 0 100%;
+    /* 图标在 28px 点击区里居中 → 图标左缘比按钮左缘缩进 6px。两行要"左边一条线"
+     * 就必须把这半格抵消掉：文字从 54 起，图标也从 54 起（实测原来是 54 / 60）。 */
+    margin-left: -6px;
+  }
+
+  /* 两行之间再收一档（与元信息是一组，别断成两块）：10 → 8 */
+  body[data-page='chat'] .chatmsg__foot {
+    row-gap: 8px;
   }
 
   /* 会话抽屉：手机上宽度按屏宽算，并给一层遮罩 ——
@@ -392,11 +455,8 @@
 }
 
 /* ================================================================ 日程页 */
-/* 手机上把「计划 | 日历」从左右两栏改成上下两段，整页一条滚动路径：
-   计划清单在前（它是"今天要做什么"的答案），日历在后（时间轴在 390 宽下
-   只剩一百来像素，独占了也没有信息量）。
-   不引入视图切换控件 —— 切换要记状态、要有选中态、要处理返回，
-   而"往下滚一屏"零成本，且两种信息同时可见。 */
+/* 2026-11-09：计划与日历已拆成两个子页（顶上胶囊切），这里只负责衔接：
+   各自占满剩余高度、各自内部滚动。具体排版在 `schedule.css` 的 ≤600 段。 */
 
 @media (max-width: 600px) {
   body[data-page='schedule'] .sch-bar {
@@ -442,37 +502,23 @@
     justify-self: end;
   }
 
-  /* 两栏 → 上下两段，整页一条滚动路径（.view 是 overflow:hidden，滚动交给根节点） */
+  /* 分页后两页各自占满剩余高度：根节点不再滚（滚动交给下面两个各自的容器），
+     否则会出现"整页滚 + 内层滚"两套滚动，手指一滑就跳。 */
   body[data-page='schedule'] .sch-root {
-    flex-direction: column;
-    overflow-y: auto;
+    overflow: hidden;
   }
 
-  body[data-page='schedule'] .sch-side {
-    width: auto;
-    flex: none;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-
-  /* 外层已经在滚，这一段不能再自己滚（否则内层滚到底才轮到外层） */
-  body[data-page='schedule'] .sch-side__body {
-    overflow: visible;
-  }
-
-  /* 上下堆叠时高度由内容决定，日历自己给固定高度（见下） */
   body[data-page='schedule'] .sch-calwrap {
-    flex: none;
+    flex: 1;
+    min-height: 0;
   }
 
-  /* 日历给一个固定高度：它内部是虚拟滚动的网格，高度 auto 会塌成 0。
-     `flex: none` 不能省 —— 桌面那条 `flex: 1` 会让它去撑满父级，而父级高度
-     又是它撑出来的（实测 68vh 被算成 1204px）。 */
+  /* 时间轴自己滚：`flex: 1` + `min-height: 0` 是它撑住剩余高度的前提 */
   body[data-page='schedule'] .sch-cal {
-    flex: none;
-    height: 68vh;
-    min-height: 380px;
-    padding: 0 10px 12px;
+    flex: 1;
+    height: auto;
+    min-height: 0;
+    padding: 0 12px 12px;
   }
 }
 

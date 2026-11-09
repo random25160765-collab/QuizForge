@@ -29,11 +29,12 @@ import re
 from html.parser import HTMLParser
 from pathlib import Path
 
-#: 分享页自己的样式：只做一件事 —— 把**输入区收起来**。
-#: 留着它就是个"能打字但发不出去"的陷阱；读写能力是这一页没有的东西，
-#: 那就不该在界面上假装有。其余布局一律照在线那一份。
+#: 分享页自己的样式：把**输入区收起来**（留着它就是个"能打字但发不出去"的陷阱；
+#: 读写能力是这一页没有的东西，那就不该在界面上假装有），再把它让出来的那 34px
+#: 底部内距（在线版的虚化区，`.chat__thread` 上）收回到 4px。其余布局一律照在线那一份。
 SHARE_CSS = """
 html[data-share] .chat__composer { display: none; }
+html[data-share] .chat__thread { padding-bottom: 4px; }
 html[data-share] .chat__notice:empty { display: none; }
 """
 

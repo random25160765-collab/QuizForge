@@ -122,17 +122,21 @@ def _text_stats(db: Any) -> dict[str, int]:
 _FP_KEYS = ("version", "materials", "slices", "figures", "textSlices", "textChars")
 
 
-def _fingerprint_of(data: dict) -> str:
+def _fingerprint_of(data: dict, *, with_text: bool = True) -> str:
     slim = {key: data.get(key) for key in _FP_KEYS}
+    if not with_text:
+        # 懒加载的机器本机没有正文，比"正文规模"永远对不上 —— 这一维不参与比对
+        slim["textSlices"] = 0
+        slim["textChars"] = 0
     blob = json.dumps(slim, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def fingerprint(db: Any) -> str:
-    """本地资料包现在的指纹。"""
+def fingerprint(db: Any, *, with_text: bool = True) -> str:
+    """本地资料包现在的指纹。`with_text=False` 用于懒加载的机器（本机没有正文）。"""
     data = pack(db)
-    data.update(_text_stats(db))
-    return _fingerprint_of(data)
+    data.update(_text_stats(db) if with_text else {"textSlices": 0, "textChars": 0})
+    return _fingerprint_of(data, with_text=with_text)
 
 
 def pack(db: Any, *, with_text: bool = False) -> dict:
@@ -263,8 +267,12 @@ def push(db: Any, *, remote: Any | None = None) -> dict:
     }
 
 
-def pull(db: Any, *, remote: Any | None = None) -> dict:
-    """从云端拉整包，按业务键 upsert 到本地三张表（含切片正文）。"""
+def pull(db: Any, *, remote: Any | None = None, bodies: bool = True) -> dict:
+    """从云端拉整包，按业务键 upsert 到本地三张表。
+
+    `bodies=False`（懒加载的手机）：正文**不落库**，只留切片坐标；点开时由
+    `slice_cloud.fetch` 按块取。旧的正文块缓存一并清掉（正文重排后会对不上）。
+    """
     client = remote or _client()
     try:
         rows = client.query("SELECT payload, bytes FROM qf_library WHERE id = ?", (PACK_ID,))
@@ -348,27 +356,32 @@ def pull(db: Any, *, remote: Any | None = None) -> dict:
 
     db.flush()
 
-    # 正文：从分块里按 (slug, slice_id) 回填
+    # 正文：从分块里按 (slug, slice_id) 回填；懒加载的机器不落正文
     text_slices = filled = 0
-    try:
-        blocks = client.query("SELECT payload FROM qf_library_text ORDER BY idx")
-    except Exception:  # noqa: BLE001 - 老包里没有这张表
-        blocks = []
-    for row in blocks:
+    blocks: list = []
+    if bodies:
         try:
-            items = json.loads(row.get("payload") or "[]")
-        except Exception:  # noqa: BLE001
-            continue
-        for item in items:
-            material = by_slug.get(str(item.get("material") or ""))
-            if material is None:
+            blocks = client.query("SELECT payload FROM qf_library_text ORDER BY idx")
+        except Exception:  # noqa: BLE001 - 老包里没有这张表
+            blocks = []
+        for row in blocks:
+            try:
+                items = json.loads(row.get("payload") or "[]")
+            except Exception:  # noqa: BLE001
                 continue
-            hit = slices.get((material.id, str(item.get("slice_id") or "")))
-            if hit is None:
-                continue
-            hit.text = str(item.get("text") or "")
-            text_slices += 1
-            filled += len(hit.text)
+            for item in items:
+                material = by_slug.get(str(item.get("material") or ""))
+                if material is None:
+                    continue
+                hit = slices.get((material.id, str(item.get("slice_id") or "")))
+                if hit is None:
+                    continue
+                hit.text = str(item.get("text") or "")
+                text_slices += 1
+                filled += len(hit.text)
+    else:
+        # 条目可能变过：正文块缓存的 idx 是云端重排出来的，旧的可能对不上 —— 整表清掉
+        db.execute(text("DELETE FROM library_text_cache"))
 
     db.commit()
     return {
@@ -401,6 +414,9 @@ def sync_pack(db: Any, *, remote: Any | None = None) -> dict:
     安全阀：**本机一份材料都没有时绝不推空包**。云端可能是另一台机器
     整理好的资料库，推一个空包上去等于把它抹掉。
     """
+    from .config import get_settings  # noqa: PLC0415 - 避免循环导入
+
+    lazy = bool(get_settings().lazy_bodies)
     client = remote or _client()
     client.execute(REMOTE_TABLE)
     client.execute(REMOTE_TEXT_TABLE)
@@ -411,13 +427,17 @@ def sync_pack(db: Any, *, remote: Any | None = None) -> dict:
         "SELECT at, origin, bytes, payload FROM qf_library WHERE id = ?", (PACK_ID,)
     )
     local_count = int(db.scalar(select(func.count()).select_from(Material)) or 0)
-    local_fp = fingerprint(db)
+    local_fp = fingerprint(db, with_text=not lazy)
     state_at = float(_state_get(db, _STATE_AT) or 0.0)
     state_fp = _state_get(db, _STATE_FP)
 
     if not rows:
-        if not local_count:
-            return {"action": "idle", "reason": "两边都还没有材料"}
+        if not local_count or lazy:
+            # 懒加载的机器**不生产资料**：本地就算有，也不往云端推（推上去没有正文）
+            return {
+                "action": "idle",
+                "reason": "两边都还没有材料" if not local_count else "懒加载：不往云端推资料",
+            }
         out = push(db, remote=client)
         _state_set(db, _STATE_AT, str(out["at"]))
         _state_set(db, _STATE_FP, local_fp)
@@ -430,9 +450,20 @@ def sync_pack(db: Any, *, remote: Any | None = None) -> dict:
         remote_data = json.loads(remote_row.get("payload") or "{}")
     except ValueError:
         remote_data = {}
-    remote_fp = _fingerprint_of(remote_data)
+    remote_fp = _fingerprint_of(remote_data, with_text=not lazy)
     remote_changed = remote_at > state_at + 1e-6
     local_changed = local_fp != state_fp
+
+    if lazy:
+        # 手机只消费资料：远端变过就拉**条目**（正文按需取），没变就 idle；永不 push
+        if not remote_changed:
+            return {"action": "idle", "at": remote_at, "reason": "懒加载：本机只读资料"}
+        out = pull(db, remote=client, bodies=False)
+        new_fp = fingerprint(db, with_text=False)
+        _state_set(db, _STATE_AT, str(remote_at))
+        _state_set(db, _STATE_FP, new_fp)
+        db.commit()
+        return {"action": "pull", **out, "at": remote_at, "fingerprint": new_fp, "lazy": True}
 
     if not remote_changed and not local_changed:
         return {"action": "idle", "at": remote_at, "fingerprint": local_fp}

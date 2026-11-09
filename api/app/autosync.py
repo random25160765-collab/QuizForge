@@ -1,4 +1,4 @@
-"""自动同步：把「推 / 拉」从按钮变成后台节拍。
+"""自动同步：不是定时推，而是**有变化才动**。
 
 ## 为什么需要它（用户 2026-11-09 的原话）
 
@@ -15,21 +15,24 @@
    设置。即 `sync.SYNC_TABLES`，与手动同步完全同一条路径。
 2. **资料整包**（`library_cloud.sync_pack`）：材料 + 切片正文 + 图。
    这三张表是流水线写的、主键会撞号，所以不走行级，按业务键整包对齐。
+3. **题库整包**（`bank_cloud.sync_pack`）：题目 + 考纲 + 概念 / 点 / 边。
+   同理，而且它让 APK 不必再内置 62MB 的题库快照。
 
-两件事**互相独立**：行级失败不影响资料包，资料包失败也不影响行级。
-各自的结果都记在 `status()` 里，设置页能看到。
+三件事**互相独立**：任何一件失败不影响另外两件。各自的结果都记在
+`status()` 里，设置页能看到。
 
-## 条件与节奏
+## 节奏（2026-11-09 第二次定调："有修改就同步"）
 
-* 只有 `turso.enabled` 且 url/token 都填了才启动；
-* 默认 **120 秒**一轮（`QF_SYNC_INTERVAL` 可改，下限 15 秒）；
-* `QF_SYNC_AUTO=0` 可关掉（测试与离线环境用）；
-* 启动后先等 `QF_SYNC_FIRST_DELAY` 秒（默认 5）再跑第一轮，避开
-  应用启动时的建表/迁移，别和它抢 SQLite 的写锁。
+* **本机改了** → 立刻推。每秒查一次 `qf_sync_journal` 有没有行（本地 SQLite
+  的带索引 `LIMIT 1`，微秒级），有就跑一轮。
+* **别的设备改了** → 每 `QF_SYNC_POLL` 秒（默认 5）问一次远端 `MAX(seq)` 是否
+  大于本机游标；大了才跑。Turso 没有"服务端推给我"的通道，只能问。
+* **兜底** → 每 `QF_SYNC_INTERVAL` 秒（默认 60）跑一轮完整的，覆盖行级日志
+  看不见的整包（材料指纹 / 题库指纹）。
+* `QF_SYNC_AUTO=0` 可关掉（测试与离线环境用）；启动后先等
+  `QF_SYNC_FIRST_DELAY` 秒（默认 5），避开应用启动时的建表/迁移。
 
-**为什么敢跑这么勤**：什么都没变的时候，行级只查一次 `qf_sync_journal`，
-资料包只读云端一行元数据再比指纹 —— 都不传正文。真正传数据只发生在
-"本机或云端确实变了"之后。
+**空转一拍的成本**：一次本地 `SELECT 1`，最多加一次远端单行查询 —— 都不传正文。
 """
 
 from __future__ import annotations
@@ -41,7 +44,7 @@ import time
 from typing import Any
 
 from . import library_cloud, sync
-from .db import get_session_factory
+from .db import get_engine, get_session_factory
 
 log = logging.getLogger("quizforge.autosync")
 
@@ -56,29 +59,54 @@ def auto_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
-def interval_seconds() -> float:
+def _seconds(name: str, default: float, floor: float) -> float:
     try:
-        value = float(os.environ.get("QF_SYNC_INTERVAL", "120"))
+        value = float(os.environ.get(name, str(default)))
     except ValueError:
-        value = 120.0
-    return max(15.0, value)
+        value = default
+    return max(floor, value)
+
+
+def poll_seconds() -> float:
+    """探测间隔：本地一眼 + 远端一行，5 秒足够勤，又不至于把电量吃光。"""
+    return _seconds("QF_SYNC_POLL", 5.0, 1.5)
+
+
+def interval_seconds() -> float:
+    """兜底整轮的间隔：只为了发现**整包**（材料 / 题库）的变化。"""
+    return _seconds("QF_SYNC_INTERVAL", 60.0, 15.0)
 
 
 def _first_delay() -> float:
-    try:
-        return max(0.0, float(os.environ.get("QF_SYNC_FIRST_DELAY", "5")))
-    except ValueError:
-        return 5.0
+    return _seconds("QF_SYNC_FIRST_DELAY", 5.0, 0.0)
 
 
 def configured() -> bool:
     return sync.turso_enabled() and sync.turso_configured()
 
 
-def tick() -> dict:
-    """跑一轮：行级同步 + 资料整包。返回这一轮的结果（也给状态页看）。"""
+def _local_pending() -> bool:
+    """本机有没有还没推上去的行。表还没建 / 库正忙时当作"没有"，下一拍再问。"""
+    try:
+        with get_engine().connect() as conn:
+            return (
+                conn.exec_driver_sql("SELECT 1 FROM qf_sync_journal LIMIT 1").fetchone()
+                is not None
+            )
+    except Exception:  # noqa: BLE001 - 探测失败不该让节拍器死掉
+        return False
+
+
+def tick(reason: str = "tick", engine: Any = None) -> dict:
+    """跑一轮：行级同步 + 资料/题库整包。返回这一轮的结果（也给状态页看）。
+
+    `engine` 只给测试注入；线上走 `get_engine()`（传 None）。
+    """
     started = time.time()
-    out: dict[str, Any] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    out: dict[str, Any] = {
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "reason": reason,
+    }
 
     if not configured():
         out["skipped"] = "还没配置 Turso，或同步开关是关的"
@@ -86,18 +114,27 @@ def tick() -> dict:
         out["skipped"] = "已有一轮同步在跑"
     else:
         try:
-            # run_full = 行级表 + 资料整包；有现成的一轮就复用它。
-            out["sync"] = sync.run_full()
+            # run_full = 行级表 + 资料整包 + 题库整包；有现成的一轮就复用它。
+            out["sync"] = sync.run_full(engine)
         except Exception as exc:  # noqa: BLE001 - 后台节拍不能死
             log.warning("自动同步（行级）失败：%s", exc)
             out["sync"] = {"ok": False, "error": str(exc)}
-            # 行级失败不拖累资料包：再单独试一次。
+            # 行级失败不拖累两个整包：分别再试一次。
+            # 资料包先跑（题库的点靠 `materials.slug` 落地），与 run_full 的顺序一致。
             try:
                 with get_session_factory()() as db:
                     out["library"] = library_cloud.sync_pack(db)
             except Exception as pack_exc:  # noqa: BLE001
                 log.warning("自动同步（资料包）失败：%s", pack_exc)
                 out["library"] = {"ok": False, "error": str(pack_exc)}
+            try:
+                from . import bank_cloud  # noqa: PLC0415 - 反过来 import sync
+
+                with get_session_factory()() as db:
+                    out["bank"] = bank_cloud.sync_pack(db)
+            except Exception as bank_exc:  # noqa: BLE001
+                log.warning("自动同步（题库包）失败：%s", bank_exc)
+                out["bank"] = {"ok": False, "error": str(bank_exc)}
 
     out["seconds"] = round(time.time() - started, 2)
     global _last
@@ -108,12 +145,26 @@ def tick() -> dict:
 
 def _loop(first_delay: float) -> None:
     time.sleep(first_delay)
+    last_full = 0.0
     while True:
+        reason = ""
+        wait = poll_seconds()
         try:
-            tick()
+            if _local_pending():
+                reason = "local"
+            elif sync.remote_changed().get("changed"):
+                reason = "remote"
+            elif time.monotonic() - last_full >= interval_seconds():
+                reason = "tick"
+            if reason:
+                tick(reason)
+                last_full = time.monotonic()
         except Exception:  # noqa: BLE001 - 循环本身不能退出
-            log.exception("自动同步轮次异常")
-        time.sleep(interval_seconds())
+            # 失败不要每 5 秒重试（会把日志刷满）：退到 15 秒，下一拍再来。
+            wait = max(15.0, wait)
+            last_full = time.monotonic()
+            log.warning("自动同步这一拍失败（%.0f 秒后重试）", wait, exc_info=True)
+        time.sleep(wait)
 
 
 def start() -> bool:
@@ -133,7 +184,11 @@ def start() -> bool:
     threading.Thread(
         target=_loop, args=(_first_delay(),), name="qf-autosync", daemon=True
     ).start()
-    log.info("自动同步已启动：每 %.0f 秒一轮", interval_seconds())
+    log.info(
+        "自动同步已启动：有改动就推（每 %.0f 秒探测），每 %.0f 秒兜底一轮",
+        poll_seconds(),
+        interval_seconds(),
+    )
     return True
 
 
@@ -148,10 +203,19 @@ def status() -> dict:
         "started": _started,
         "enabled": auto_enabled(),
         "configured": configured(),
+        "poll": poll_seconds(),
         "interval": interval_seconds(),
         "last": last,
     }
 
 
-__all__ = ["auto_enabled", "configured", "interval_seconds", "start", "started",
-           "status", "tick"]
+__all__ = [
+    "auto_enabled",
+    "configured",
+    "interval_seconds",
+    "poll_seconds",
+    "start",
+    "started",
+    "status",
+    "tick",
+]

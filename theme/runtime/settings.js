@@ -18,7 +18,7 @@
     { key: 'memory', label: '记忆', hint: '跨对话的长期记忆' },
     { key: 'search', label: '联网搜索', hint: '服务商与密钥' },
     { key: 'obsidian', label: 'Obsidian', hint: 'vault 路径与连接' },
-    { key: 'appearance', label: '外观', hint: '主题 / 字号 / 宽度' },
+    { key: 'appearance', label: '外观', hint: '主题 / 字号' },
     { key: 'sync', label: '同步', hint: 'Turso 跨机器' },
     { key: 'calendar', label: '日历', hint: '课表 / iCalendar 订阅' },
     { key: 'health', label: '作息与健康', hint: '入睡 / 精力 / 门禁' },
@@ -99,6 +99,15 @@
 
   function render() {
     if (!root) return;
+    /* 字号缩放要**在这一页也生效**：其它页各自在启动时设了 `--font-scale`
+     *（app.js / chat.js / wrongbook.js），这一页原先漏了 —— 于是拖动那根滑条时
+     * 页面自己的字样一动不动（设置页大多数字号是写死的 px，只有预览行会变），
+     * 看着就像"这个条子没意义"（用户 2026-11-09）。放在 render 里而不是 boot 里：
+     * `pullSettings()` 可能刚把设置文件里的值拉进来。 */
+    document.documentElement.style.setProperty(
+      '--font-scale',
+      String(QF.store.settings().fontScale || 1)
+    );
     var view = viewEl();
     var keep = view ? view.scrollTop : 0;
 

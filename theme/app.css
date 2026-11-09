@@ -83,7 +83,6 @@
   --dur: 0.18s;
 
   --font-scale: 1;
-  --content-max: 880px;
   --topbar-h: 58px;
   --statusbar-h: 46px;
 
@@ -161,6 +160,23 @@ a { color: inherit; text-decoration: none; }
 button { font-family: inherit; font-size: inherit; }
 
 ::selection { background: color-mix(in srgb, var(--pri) 34%, transparent); }
+
+/* 触控：不要系统那层半透明蓝色方块。
+ *
+ * Android WebView 的 `-webkit-tap-highlight-color` 默认是半透明的蓝，手指按在
+ * 任何没有显式关掉它的元素上都会闪一个方框（2026-11-09 用户实测截图：点
+ * 「深度思考」时按钮上套了个蓝框）。它和"按下去"的按压态是两码事 ——
+ * 按压态由各组件的 :active / .is-on 自己画，这里只关系统效果。
+ */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 焦点环只留给键盘（鼠标/触屏点完不该留一圈）。
+ * 两者优先级相同、:focus-visible 在后，所以键盘 Tab 仍走下面那条。 */
+:focus:not(:focus-visible) {
+  outline: none;
+}
 
 :focus-visible {
   outline: 2px solid var(--pri);
@@ -340,7 +356,7 @@ body[data-sb='on'] .view {
   padding-bottom: calc(var(--statusbar-h) + 40px);
   min-height: calc(100vh - var(--topbar-h) - var(--statusbar-h) - var(--tabbar-h, 0px));
 }
-.view--narrow { max-width: calc(var(--content-max) + 2 * var(--shell-pad)); }
+
 
 /* ---- 切页的过渡 ----
  *
@@ -1440,6 +1456,31 @@ select.select {
 
 .slider { width: 100%; accent-color: var(--pri); }
 
+/* 滑条 + 右边那一格当前值（拖动时数字跟着变）。
+ * 等宽数字 + 固定宽右对齐：拖的时候数字不许把滑条挤得跳来跳去。 */
+.sliderrow { display: flex; align-items: center; gap: 10px; }
+.sliderrow .slider { flex: 1; min-width: 0; }
+.setval {
+  flex: none;
+  width: 42px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg2);
+}
+
+/* 字号预览：与正文同一套换算（`.md` 就是 15px × --font-scale），
+ * 拖上面那根滑条时这行字当场变 —— 设置页自己的字样大多是写死的 px。 */
+.fontpreview {
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg2);
+  color: var(--fg2);
+  font-size: calc(15px * var(--font-scale, 1));
+  line-height: 1.7;
+}
+
 .staturl { font-family: var(--font-mono); font-size: 11.5px; color: var(--fg3); word-break: break-all; }
 .statline { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--fg2); padding: 7px 0; }
 .statline b { font-family: var(--font-mono); color: var(--fg); }
@@ -2202,18 +2243,12 @@ body {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  /* 关键一处：`.view` 原本是 `margin: 0 auto`（给阅读列居中用的）。
+  /* 关键一处：`.view` 原本是 `margin: 0 auto`。
      在普通块容器里它无害 —— 宽度照旧铺满；可到了弹性列里，
      **auto 外边距会压过 align-self: stretch**，视图就按内容宽度缩起来
-     （实测窗格页被缩到 483，两边各空 353）。所以这里把边距归零，
-     只给真正的阅读列（`.view--narrow`）留居中。 */
+     （实测窗格页被缩到 483，两边各空 353）。所以这里把边距归零。 */
   margin-left: 0;
   margin-right: 0;
-}
-
-.stage > .view--narrow {
-  margin-left: auto;
-  margin-right: auto;
 }
 
 /* 状态栏原本是通栏 fixed，现在得从活动栏与资源栏的右边开始 */
@@ -2234,6 +2269,15 @@ body {
   background: var(--bg2);
   overflow: hidden;
 }
+
+/* 引导页（`shell.mount({ bare: true })`）：还没走完那三步，去哪儿都会被弹回来 ——
+   所以连入口带它占的那一列一起收掉，留着只是让人白点一下。 */
+body[data-bare] { grid-template-columns: minmax(0, 1fr); }
+/* 舞台在别处被钉在第 2 列（.stage { grid-column: 2 }）：只剩一列时必须让回来，
+   否则浏览器会补一条隐式的第 2 列，内容被顶到屏幕外。 */
+body[data-bare] .stage { grid-column: 1; }
+body[data-bare] .rail,
+body[data-bare] .tabbar { display: none; }
 
 .rail__group {
   display: flex;

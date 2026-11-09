@@ -354,6 +354,12 @@
       .get('/chat/mounts')
       .then(function (data) {
         apply(data);
+        // 滤镜挂载记录跟着这一份回来（表在服务端，本机只存缓存）。
+        // 有没推上去的改动时 hydrate 会让位，随后 flush 把它们补推。
+        if (QF.store) {
+          if (QF.store.hydrateLens) QF.store.hydrateLens(data && data.lensRecords);
+          if (QF.store.flushLens) QF.store.flushLens();
+        }
         draw();
       })
       .catch(function (err) {

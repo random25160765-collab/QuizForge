@@ -28,13 +28,42 @@
 
   //: 时间轴上的一小时多少像素。48 是"一眼能看出半小时的差"与"24 小时塞得下"之间的折中。
   var HOUR = 48;
+  //: 凌晨那段的那条横带（2026-11-09 用户："凌晨时段弄一个折叠条"）。
+  //: 折叠时 0:00–6:00 压成这么高的一条；展开后这条**留在原地**，点它收回去
+  //:（原先只在折叠态画它，于是展开了就没有收回的入口）。
+  //: 34 而不是 26：26 时这条与紧跟的 `06:00` 标签只隔 2px，读起来是两行挤在一起
+  //:（用户 2026-11-09："折叠的那个地方太挤了"）。
+  var NIGHT_H = 34;
+  var NIGHT_FROM = 6;
   //: 拖拽/建事件对齐到多少分钟。
   var SNAP = 15;
   //: 月视图固定 6 行（42 格）：高度稳定，翻月时不跳。
   var CELLS = 42;
 
+  /** 手机上换一套排法（2026-11-09 用户："日历和任务针对手机单独做一版"）。
+   *  断点与 `theme/mobile.css` 同一条：600px。 */
+  var NARROW = window.matchMedia ? window.matchMedia('(max-width: 600px)') : null;
+
+  function isNarrow() {
+    return !!(NARROW && NARROW.matches);
+  }
+
+  var PANE_KEY = 'qf.sch.pane';
+
+  /** 上次停在「计划」还是「日历」。这是这一页的主入口，每次打开都从头选太烦。 */
+  function loadPane() {
+    try {
+      var saved = window.localStorage.getItem(PANE_KEY);
+      return saved === 'plan' || saved === 'calendar' ? saved : 'calendar';
+    } catch (e) {
+      return 'calendar';
+    }
+  }
+
   var state = {
     view: 'week', // day / week / month
+    //: 2026-11-09：计划与日历拆成两个子页，用顶上的胶囊切（用户要求）。
+    pane: loadPane(),
     cursor: new Date(),
     plans: [],
     events: [],
@@ -46,7 +75,31 @@
     ghosts: [],
     replanning: false,
     ready: false,
+    //: 凌晨 0–6 点是否展开。默认收起 —— 正常人的日程在 09:00 之后，
+    //: 每天先翻掉四分之一屏的空白是浪费（与 `scrollToFocus` 同一个理由）。
+    nightOpen: false,
   };
+
+  /** 折叠凌晨时，整根时间轴相对 00:00 上移了多少像素（展开时为 0）。 */
+  function nightShift() {
+    return state.nightOpen ? 0 : NIGHT_FROM * HOUR - NIGHT_H;
+  }
+
+  /** 横带下面还剩多少像素才开始有时间：展开时 00:00 就在条下面，折叠时 00:00 已被压掉。 */
+  function nightTop() {
+    return state.nightOpen ? NIGHT_H : 0;
+  }
+
+  /** 时间轴可见部分的起点（分钟）。 */
+  function nightStartMin() {
+    return state.nightOpen ? 0 : NIGHT_FROM * 60;
+  }
+
+  function toggleNight() {
+    state.nightOpen = !state.nightOpen;
+    renderCal();
+    scrollToFocus();
+  }
 
   //: 下次画完要不要把滚动条落到"现在"附近（换视图、翻页之后重新落一次）。
   var pendingScroll = true;
@@ -203,7 +256,8 @@
               load();
             },
           },
-          one.label
+          // 手机上"周"排出来的是议程，标签也说"列表"——不然名实不符
+          one.key === 'week' && isNarrow() ? '列表' : one.label
         )
       );
     });
@@ -229,32 +283,76 @@
     });
   }
 
+  /* ------------------------------------------------------------ 子页切换 */
+
+  /** 顶上的胶囊：日历 / 计划（2026-11-09 用户：拆成两个子页，用滑块调）。
+   *
+   * 右边那个槽放**当前这页**的主操作 —— 计划是"新建计划"，日历的操作在它自己的
+   * 工具条里（导航、视图、重排、新建事件），所以空着。 */
+  function renderSwitch() {
+    var seg = document.getElementById('sch-panes');
+    var action = document.getElementById('sch-pane-action');
+    if (!seg) return;
+    ui.clear(seg);
+
+    [
+      { key: 'calendar', icon: 'calendar', label: '日历' },
+      { key: 'plan', icon: 'task', label: '计划' },
+    ].forEach(function (one) {
+      var on = state.pane === one.key;
+      seg.appendChild(
+        h(
+          'button.sch-panes__btn' + (on ? '.is-on' : ''),
+          {
+            type: 'button',
+            role: 'tab',
+            'aria-selected': on ? 'true' : 'false',
+            title: one.label,
+            'aria-label': one.label,
+            onClick: function () {
+              setPane(one.key);
+            },
+          },
+          h('span', { html: ui.icon(one.icon, 17) })
+        )
+      );
+    });
+
+    if (!action) return;
+    ui.clear(action);
+    if (state.pane === 'plan') {
+      action.appendChild(
+        h('button.btn.btn--ghost.btn--sm', { type: 'button', onClick: createPlan }, '新建计划')
+      );
+    }
+  }
+
+  function setPane(pane) {
+    if ((pane !== 'plan' && pane !== 'calendar') || state.pane === pane) return;
+    state.pane = pane;
+    try {
+      window.localStorage.setItem(PANE_KEY, pane);
+    } catch (e) {
+      /* 隐私模式：记不住就记不住，不影响用 */
+    }
+    applyPane();
+  }
+
+  /** class 挂在 `#app-root` 上，CSS 只显示当前那页；两页都留在 DOM 里，切回来不重建。 */
+  function applyPane() {
+    var root = document.getElementById('app-root');
+    if (root) {
+      root.classList.toggle('is-plan', state.pane === 'plan');
+      root.classList.toggle('is-cal', state.pane === 'calendar');
+    }
+    renderSwitch();
+  }
+
   function renderSide() {
     var box = document.getElementById('sch-side');
     ui.clear(box);
 
-    // 顶带：与右边工具条同高同底线（见 schedule.css 的 `.sch-side__top`）。
-    // 计划区从这一条往下才开始 —— 日期是日历的，不该横在这儿。
-    box.appendChild(
-      h(
-        'div.sch-side__top',
-        null,
-        h('span.sch-side__title', { text: '计划' }),
-        h(
-          'button.icon-btn.sch-side__add',
-          {
-            type: 'button',
-            title: '新建一份计划',
-            'aria-label': '新建一份计划',
-            onClick: function () {
-              createPlan();
-            },
-          },
-          h('span', { html: ui.icon('plus', 15) })
-        )
-      )
-    );
-
+    // 顶带连同"计划"栏名一起撤了：顶上那条胶囊已经写着这是哪一页（2026-11-09）。
     var body = h('div.sch-side__body');
     box.appendChild(body);
 
@@ -451,7 +549,11 @@
       h('span', { html: ui.icon('check', 11) })
     );
 
-    var text = h('span.sch-item__text' + (item.done ? '.is-done' : ''), { text: item.title });
+    // 宽屏那一行是 nowrap + 省略号：悬停要能看见全文（手机端会换行，用不上但不碍事）
+    var text = h('span.sch-item__text' + (item.done ? '.is-done' : ''), {
+      text: item.title,
+      title: item.title,
+    });
     text.addEventListener('dblclick', function () {
       var input = h('input.sch-item__rename', { type: 'text', value: item.title });
       text.replaceWith(input);
@@ -913,6 +1015,14 @@
       renderMonth(box);
       return;
     }
+    if (isNarrow() && state.view === 'week') {
+      // 手机上的"周"是**议程**：七列挤在 390px 里，每列 55px，标题只能剩一个字。
+      // 议程从头读，不跟时间轴那一套"落到现在"——否则进来先看见周一的中段。
+      pendingScroll = false;
+      box.scrollTop = 0;
+      renderAgenda(box, visibleRange().days);
+      return;
+    }
     renderTimeGrid(box, state.view === 'day' ? [startOfDay(state.cursor)] : visibleRange().days);
     if (pendingScroll) {
       pendingScroll = false;
@@ -933,8 +1043,96 @@
     var now = new Date();
     var anchor = 8;
     if (now >= range.from && now < range.to) anchor = Math.max(0, now.getHours() - 2);
-    // 表头是 sticky 的（占 40px，但不算在滚动内容里），所以直接按小时数落位置
-    cal.scrollTop = anchor * HOUR;
+    // 表头是 sticky 的（占 40px，但不算在滚动内容里），所以直接按小时数落位置。
+    // 轴从 06:00 起（折叠时）或 00:00 起（展开时），两种状态下面都垫着那条 26px 的横带。
+    cal.scrollTop =
+      Math.max(0, ((anchor * 60 - nightStartMin()) / 60) * HOUR) + NIGHT_H;
+  }
+
+  /* ---- 手机上的议程（替代周视图） ---- */
+
+  /** 一天一组，按时间排。
+   *
+   * 手机上七列并排每列只有 55px，事件标题被截成一个字（"大…"、"模…"）。
+   * 议程把整屏还给一件事：时间一列、标题一行、地点跟在下面，点一行就开编辑。
+   * 没有事的那天不占位置 —— 一周里空三天是常态，不该先翻三屏空白。
+   */
+  function renderAgenda(box, days) {
+    var wrap = h('div.sch-agenda');
+    var any = false;
+
+    days.forEach(function (day) {
+      var blocks = [];
+      eventsOn(day).forEach(function (event) {
+        var one = clipToDay(event, day);
+        if (one) blocks.push(one);
+      });
+      if (!blocks.length) return;
+      any = true;
+      blocks.sort(function (a, b) {
+        return a.startMin - b.startMin;
+      });
+
+      wrap.appendChild(
+        h(
+          'div.sch-agenda__head' + (isToday(day) ? '.is-today' : ''),
+          null,
+          h('span.sch-agenda__dow', { text: WEEKDAYS[(day.getDay() + 6) % 7] }),
+          h('span.sch-agenda__num', { text: String(day.getDate()) }),
+          isToday(day) ? h('span.sch-agenda__now', { text: '今天' }) : null
+        )
+      );
+      blocks.forEach(function (one) {
+        wrap.appendChild(agendaRow(one));
+      });
+    });
+
+    if (!any) wrap.appendChild(h('p.sch-agenda__empty', { text: '这一周没有排事。' }));
+    box.appendChild(wrap);
+  }
+
+  function agendaRow(one) {
+    var event = one.event;
+    var node = h(
+      'button.sch-agenda__row'
+        + (event.itemId ? '.is-plan' : '')
+        + (event.subId ? '.is-sub' : '')
+        + (event.allDay ? '.is-allday' : ''),
+      {
+        type: 'button',
+        title: [
+          event.title,
+          whenText(event.startAt) + ' – ' + whenText(event.endAt),
+          event.location,
+          event.note,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        onClick: function () {
+          editEvent(event, node.getBoundingClientRect());
+        },
+      },
+      h(
+        'span.sch-agenda__time',
+        null,
+        h('b', { text: clock(one.startMin) }),
+        h('span', { text: clock(one.endMin) })
+      ),
+      h(
+        'span.sch-agenda__main',
+        null,
+        h('span.sch-agenda__title', { text: event.title }),
+        event.location ? h('span.sch-agenda__where', { text: event.location }) : null
+      )
+    );
+    node.__eventId = event.id;
+    return node;
+  }
+
+  /** 当天第几分钟 → `HH:MM`（24:00 也照写） */
+  function clock(minutes) {
+    var m = Math.max(0, Math.round(minutes));
+    return pad(Math.min(24, Math.floor(m / 60))) + ':' + pad(m % 60);
   }
 
   /* ---- 月视图 ---- */
@@ -1023,10 +1221,19 @@
 
     var rail = h('div.sch-rail');
     rail.appendChild(h('div.sch-rail__head'));
-    for (var hour = 0; hour < 24; hour += 1) {
-      rail.appendChild(
-        h('div.sch-rail__hour', { text: hour === 0 ? '' : pad(hour) + ':00' })
-      );
+    // 这条两个状态都画：折叠时它是"被压掉的 0–6"，展开时它是收回去的把手。
+    rail.appendChild(
+      h('div.sch-rail__night' + (state.nightOpen ? '.is-open' : ''), {
+        // 48px 宽的左栏装不下"凌晨 0–6 / 收起 0–6"：只留区间，方向交给箭头
+        text: '0–6',
+        title: state.nightOpen ? '收起凌晨时段（0:00–6:00）' : '展开凌晨时段（0:00–6:00）',
+        onClick: toggleNight,
+      })
+    );
+    for (var hour = state.nightOpen ? 0 : NIGHT_FROM; hour < 24; hour += 1) {
+      // 展开后 00:00 也写出来：顶部现在有 34px 的折叠条挡着，不会再和它挤在一起，
+      // 空着反而像少了一行（2026-11-09）。
+      rail.appendChild(h('div.sch-rail__hour', { text: pad(hour) + ':00' }));
     }
     wrap.appendChild(rail);
 
@@ -1052,13 +1259,28 @@
     );
 
     var body = h('div.sch-col__body', { 'data-day': day.toISOString() });
-    body.style.height = 24 * HOUR + 'px';
+    body.style.height = 24 * HOUR + nightTop() - nightShift() + 'px';
+    // 小时线跟着轴一起下移：折叠时轴从 06:00 起，展开时从条下面起，
+    // 两态的第一根线都在条的底边（条 26px）上。
+    body.style.backgroundPosition = '0 ' + NIGHT_H + 'px';
+
+    // 折叠条要横跨整行：左栏那条给文字，每列这一条只负责把底色连起来
+    body.appendChild(
+      h('div.sch-col__night', {
+        title: state.nightOpen ? '收起凌晨时段（0:00–6:00）' : '展开凌晨时段（0:00–6:00）',
+        onClick: toggleNight,
+      })
+    );
 
     // 时间块：绝对定位，位置由"从零点起多少分钟"换算，不铺 48 个半小时格子
     var blocks = [];
     eventsOn(day).forEach(function (event) {
       var one = clipToDay(event, day);
-      if (one) blocks.push(one);
+      if (!one) return;
+      // 折叠凌晨时 0–6 点整段看不见；跨过 6:00 的块从 6:00 起画
+      if (one.endMin <= nightStartMin()) return;
+      one.startMin = Math.max(one.startMin, nightStartMin());
+      blocks.push(one);
     });
     layoutLanes(blocks);
     blocks.forEach(function (one) {
@@ -1074,7 +1296,9 @@
       var node = h('div.sch-ghost', null, h('span.sch-ghost__title', { text: ghost.title || '' }));
       var startMin = minutesOf(start);
       var endMin = sameDay(end, day) ? minutesOf(end) : 24 * 60;
-      node.style.top = (startMin / 60) * HOUR + 'px';
+      if (endMin <= nightStartMin()) return;
+      startMin = Math.max(startMin, nightStartMin());
+      node.style.top = Math.max(0, (startMin / 60) * HOUR - nightShift() + nightTop()) + 'px';
       node.style.height = Math.max(18, ((endMin - startMin) / 60) * HOUR - 2) + 'px';
       body.appendChild(node);
     });
@@ -1084,8 +1308,11 @@
       ev.preventDefault();
       if (ev.target.closest('.sch-ev')) return;
       var rect = body.getBoundingClientRect();
-      var minutes = Math.round(((ev.clientY - rect.top) / HOUR) * 60 / SNAP) * SNAP;
-      minutes = Math.max(0, Math.min(23 * 60 + 45, minutes));
+      // body 顶端先是那条横带（26px），再往下才是轴的起点：
+      // 折叠时起点是 06:00，展开时是 00:00，两者都靠 nightShift/nightTop 换算。
+      var minutes =
+        Math.round(((ev.clientY - rect.top - nightTop() + nightShift()) / HOUR) * 60 / SNAP) * SNAP;
+      minutes = Math.max(nightStartMin(), Math.min(23 * 60 + 45, minutes));
       var start = new Date(day);
       start.setHours(0, minutes, 0, 0);
       openEditor(
@@ -1137,7 +1364,7 @@
 
   function eventBlock(one, day) {
     var event = one.event;
-    var top = (one.startMin / 60) * HOUR;
+    var top = (one.startMin / 60) * HOUR - nightShift() + nightTop();
     var height = Math.max(18, ((one.endMin - one.startMin) / 60) * HOUR - 2);
     var width = 100 / one.lanes;
     // 半小时的块只有 34px：竖排两行（时间在上、标题在下）会被挤成半句。
@@ -1241,6 +1468,35 @@
 
   function bindEventDrag(node, event, day) {
     var handle = node.querySelector('.sch-ev__resize');
+
+    // 钉住的块与**课表来的块**都不许拖：前者是"别动我"，后者是"这块的形状由订阅决定"
+    //（`sub_id` 非空）。一手滑就把课挪走，而它应该跟着学校走 —— 见 docs/日程调度.md
+    // 那张"谁决定放在哪"的表。点一下照旧开编辑器：要改在那里改，那是明确的动作。
+    if (event.locked || event.subId) {
+      node.classList.add('is-locked');
+      if (handle) handle.remove();
+      node.title =
+        (node.title || '') + (event.subId ? '（课表来的，拖不动）' : '（已钉住，拖不动）');
+      var downX = 0;
+      var downY = 0;
+      var moved = false;
+      var onMove = function (e) {
+        if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) moved = true;
+      };
+      node.addEventListener('pointerdown', function (ev) {
+        if (ev.button !== 0) return;
+        downX = ev.clientX;
+        downY = ev.clientY;
+        moved = false;
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', function up(e) {
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', up);
+          if (!moved) editEvent(event, node.getBoundingClientRect());
+        });
+      });
+      return;
+    }
 
     if (handle) {
       handle.addEventListener('pointerdown', function (ev) {
@@ -1346,7 +1602,9 @@
       ev.preventDefault();
       if (line) line.hidden = true;
       var rect = target.getBoundingClientRect();
-      var minutes = ((ev.clientY - rect.top) / HOUR) * 60;
+      // 与右键新建同一套换算：先让开顶上那条横带，再补回被压掉的凌晨段
+      var minutes = ((ev.clientY - rect.top - nightTop() + nightShift()) / HOUR) * 60;
+      minutes = Math.max(nightStartMin(), minutes);
       var placed = place(minutes, itemId);
       if (!placed) return;
 
@@ -1400,6 +1658,9 @@
       itemId: event.itemId,
       location: event.location,
       note: event.note,
+      locked: event.locked,
+      // 课表来的块在编辑器里要说明"为什么拖不动"（见下面的 pinRow）
+      subId: event.subId,
     });
   }
 
@@ -1433,6 +1694,19 @@
       placeholder: '备注（要带的书、要交的东西）',
       'aria-label': '备注',
     });
+    // 钉住 = 拖不动（`ScheduleEvent.locked`）。课程、考试、约好的时间被手一滑
+    // 挪走是事故；求解器也不许动它。**默认关**，只有人明确勾上才锁。
+    // 课表来的块（`subId`）本来就拖不动，勾选框在它身上是假的 —— 换一句说明，
+    // 免得"没勾却拖不动"看起来像坏了。
+    var pinned = h('input', { type: 'checkbox', checked: !!draft.locked });
+    var pinRow = draft.subId
+      ? h('div.sch-edit__pin.is-static', null, h('span', { text: '课表来的：日历上拖不动，改时间请在上面改' }))
+      : h(
+          'label.sch-edit__pin',
+          { title: '钉住之后不能在日历上拖动' },
+          pinned,
+          h('span', { text: '钉住（拖不动）' })
+        );
 
     function compose() {
       var start = new Date(date.value + 'T' + (from.value || '09:00'));
@@ -1455,6 +1729,7 @@
         endAt: span.end.toISOString(),
         location: String(where.value || '').trim(),
         note: String(note.value || '').trim(),
+        locked: !!pinned.checked,
       };
       if (draft.itemId) body.itemId = draft.itemId;
       var call = draft.id
@@ -1496,6 +1771,7 @@
         h('div.sch-edit__row', null, date, from, h('span.sch-edit__dash', { text: '–' }), to),
         where,
         note,
+        pinRow,
         h('div.sch-edit__foot', null, actions)
       )
     );
@@ -1525,6 +1801,7 @@
   /* ------------------------------------------------------------ 装配 */
 
   function render() {
+    applyPane();
     renderBar();
     renderSide();
     renderCal();
@@ -1563,6 +1840,14 @@
     QF.shell.mount({});
     bindBar();
     load();
+    // 跨过 600px 要换一套排法（七列 ↔ 议程、单行 ↔ 两行），不然转屏后还站在原地
+    if (NARROW && NARROW.addEventListener) {
+      NARROW.addEventListener('change', function () {
+        if (!state.ready) return;
+        renderBar();
+        renderCal();
+      });
+    }
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

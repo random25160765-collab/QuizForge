@@ -222,8 +222,9 @@ JS 的 `Math.round` 向上（32.5 → 33），而 Python 内置 `round()` 是银
 用户的密钥。这是「跨设备免重填」换来的。若哪天觉得不划算，退路是让浏览器把密钥
 只留在本地、每次请求随头上送（服务端不落库），代价是每台设备都要重填一次。
 
-服务端**不读** `config/ai.local.json`：那是离线单页时代用来内联进 HTML 的本机默认值，
-现在只剩 `make build-local` 用得到（构建离线产物时注入），与在线服务端无关。
+`config/ai.local.json` 那份并行配置**已删除**（2026-11-09）：密钥只有一处 —— 设置里的
+`ai` 块（`app_settings.data.ai`，落盘就是 `config/settings.local.json` 的 `ai`）。
+两处并存时，改了一处另一处不会知道。
 
 ---
 
@@ -252,9 +253,8 @@ Last-Modified 做启发式缓存 —— 部署新版本后老用户会继续跑�
 进不到已经在跑的容器里。所以本机改前端走 `make api-dev`
 （宿主 uvicorn + 热重载，直接读 `api/web`）。
 
-**密钥不进入任何产物**：`dist/` 是「可以对外发布」的目录，永远不含密钥；
-`dist-local/` 是本机自用（`make build-local` 会把 `config/ai.local.json` 内联进去）。
-两者刻意分开，避免误传。发布前可扫一遍：
+**密钥不进入任何产物**：`dist/` 是「可以对外发布」的目录，永远不含密钥
+（打包只带 `config/settings.example.json` 这一份样例，见 `build/package.py`）。发布前可扫一遍：
 
 ```bash
 grep -c '<密钥前缀>' dist/*.html    # 期望全为 0

@@ -178,11 +178,11 @@ def manifest() -> dict:
 def local_config_path() -> Path:
     """本机的推理配置：`config/embed.local.json`。
 
-    与 `config/ai.local.json` 同一条约定（同目录、同样不进 git）：**机器相关的东西不该
-    写进代码**。这里就两件事 —— 用哪个 ONNX 变体、用哪个 provider —— 它们跟着"这台机器
-    有没有 GPU、哪张卡配哪种精度"走，换台机器就该换一套（见 `scripts/gpu-setup.sh`）。
+    **机器相关的东西不该写进代码**，也不该进 git。这里就两件事 —— 用哪个 ONNX 变体、
+    用哪个 provider —— 它们跟着"这台机器有没有 GPU、哪张卡配哪种精度"走，换台机器
+    就该换一套（见 `scripts/gpu-setup.sh`）。
     """
-    return Path(get_settings().ai_beta_config_file).parent / "embed.local.json"
+    return Path(get_settings().config_dir) / "embed.local.json"
 
 
 def local_config() -> dict:
@@ -513,6 +513,13 @@ def _load():
     with _lock:
         if _session is not None:
             return _session, _tokenizer
+        from .config import get_settings  # noqa: PLC0415 - 避免循环导入
+
+        if get_settings().embed_disabled:
+            raise RuntimeError(
+                "这台机器关闭了本机向量计算（`QF_EMBED_DISABLED`）："
+                "检索请回桌面端算，或去掉这个开关。"
+            )
         if not is_ready(strict=True):
             raise RuntimeError("本地模型还没准备好 —— 先 ensure() 或 start_prefetch()")
         activate()

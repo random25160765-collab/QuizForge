@@ -658,6 +658,27 @@ class MaterialSlice(Base):
     __table_args__ = (UniqueConstraint("material_id", "slice_id", name="uq_slice_material"),)
 
 
+class LibraryTextCache(Base):
+    """资料正文块的**本机缓存**（2026-11-09：手机不整包落 31.7MB 正文）。
+
+    `library_cloud` 把正文按 768KB 一块写进云端 `qf_library_text`。桌面端整包拉下来
+    回填 `material_slices.text`；开了 `lazy_bodies` 的机器只同步条目与切片坐标，
+    点开某片时才取它所在的那一块，命中过的块留在这里。
+
+    **它不是数据源**：只是正文的复印件，删掉只会让下次再取一次。按字节预算 LRU 淘汰
+    （见 `app/slice_cloud.py`），所以不参与任何同步 / 数据包。
+    """
+
+    __tablename__ = "library_text_cache"
+
+    #: 云端 `qf_library_text.idx` —— 一块一行，天然幂等
+    idx: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 最后一次用到它的时刻（淘汰按它升序）
+    at: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
+
 class SliceEmbedding(Base):
     """切片内**一个窗口**的向量 —— 检索层的那一路（`docs/检索与向量化.md`）。
 
@@ -858,6 +879,17 @@ class Conversation(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    #: 这个标题还是**系统起的**（首句的前 60 字），可以再让模型起一个好点的。
+    #:
+    #: 第一轮答完之后，模型会给这条会话起名并把它置 False（见 `routers/chat.py`
+    #: 的 `_auto_title`）；用户手动改过名也置 False —— 人起了名字就不再动它。
+    #: 建会话时就写了标题的（`POST /chat/conversations` 带 title）同样是 False。
+    # `server_default` 不是装饰：**新库**（`create_all`，比如手机首次安装）拿到的
+    # DDL 只有它才会带 DEFAULT；同步的裸 INSERT 不带这一列时靠它兜底
+    #（见 `sync._apply_row` 里那段说明）。
+    title_auto: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
     #: 置顶：用户自己钉在列表最上面的那些。
     #:
     #: **它是"收藏夹"，不是"搬走"**：置顶的会话在置顶区有一份**副本**，
@@ -956,7 +988,8 @@ class Message(Base):
     #: 就再也推不出来了 —— 而它恰恰是回看对话时最要紧的一半（同一句话，
     #: 挂了资料库和只带极简模式，答案的口径完全不同）。对话树据此画出过程中的变化。
     #: 空字符串 = 这条消息早于这个字段（老消息），前端据此不画标记。
-    mounts: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: `server_default` 同理（见 `Conversation.title_auto`）：新库的裸 INSERT 要它兜底。
+    mounts: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -1393,6 +1426,77 @@ class GateRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), nullable=False
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class LensRecord(Base):
+    """一条「滤镜挂在哪儿」的记录。
+
+    为什么是表而不是设置（2026-11-09 用户："lens 属于数据，由用户手动导入，
+    用之前的云+缓存方案持久化"）：滤镜是用户自己的痕迹 —— 挂在某条消息上、
+    沿对话树继承。它该跟着对话走（Turso 行级同步、用户数据包），而不是混进
+    `config/settings.local.json`（那份是给人复制给新用户的**设置**）。
+
+    `message_uid` 存**消息的跨机身份**（`Message.uid`；空串 = 整条对话）：
+    `id` 只在单机有意义，两台机器各自从同一号段发号会撞（与 messages 的
+    同步理由同一个，见 `Message.uid` 那段）。
+    """
+
+    __tablename__ = "lens_records"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    #: 空串 = 挂在**整条对话**上（第一条消息还没有 id 时也能装）
+    message_uid: Mapped[str] = mapped_column(
+        String(32), default="", nullable=False, index=True
+    )
+    #: 滤镜的 key（`<数据目录>/lens/<key>.md` 的裸名）
+    lens_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: 装上 = True / 取下 = False。**取下也留记录**：它要盖住更靠根的那条"装上"
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: 操作时间（同一 key 取最近一次；与设置里那条记录的 `at` 同义）
+    at: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Note(Base):
+    """一份笔记的**云副本**：vault 里那份 Markdown 在库里的镜像。
+
+    为什么要有它：桌面端直连本地 vault（文件信箱），可**手机上没有 Obsidian**，
+    没有文件可读、也没有插件可发请求。于是把笔记做成一张普通的用户表，顺着
+    现有的 Turso 同步通道走 —— 手机端 LLM 读写这张表，桌面端由插件双向对齐。
+    桌面端自己**永远不写这里**（见 `app/vault.py` 的路由）：文件才是那边的权威，
+    两边都写就会互相覆盖。
+
+    `path` 是 vault 内的相对路径，与插件口径一致；`body` 是**去掉 frontmatter
+    的正文**，`hash` 与插件 `sha16(body)` 完全同算法 —— 两边靠它判"是不是同一版"，
+    算法不能各写一套（见 `notecloud.py` 的 `sha16`）。
+
+    同步时整行加密（`PRIVATE_TABLES`）：笔记是关于这个人的内容，与对话同等对待。
+    """
+
+    __tablename__ = "notes"
+
+    path: Mapped[str] = mapped_column(String(512), primary_key=True)
+    body: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: sha256(body) 的前 16 位十六进制，与 `obsidian-bridge/main.js` 的 sha16 同一算法
+    hash: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    #: 文件 mtime（epoch 秒）。排序与"谁更新"的展示用，**不参与**冲突判定
+    mtime: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    #: 正文字节数（UTF-8）
+    size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
     )

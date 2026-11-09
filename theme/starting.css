@@ -1,33 +1,31 @@
-/* 启动页：双击 exe 之后第一眼看到的东西。
+/* 启动页：双击之后第一眼看到的东西。
  *
  * 它**刻意不依赖 app.css**：这一页要在"什么都还没准备好"的时候就能显示出来，
  * 依赖越少越稳（令牌是照抄的，不是 import 的）。
  * 深浅色跟着 localStorage 里那份设置走（与 shell.html 同源）。
+ *
+ * 版式只有一列：标 → 名 → 一道细线 → 一个词。
+ * 不加卡片、不加外框、不加清单 —— 首屏的每一行字都得挣来自己的位置。
  */
 
 :root {
   --pri: #2DD4BF;
-  --pri-2: #14B8A6;
   --bg: #0B1016;
-  --bg2: #131A22;
   --fg: #E6EDF3;
-  --fg2: #9AA7B4;
-  --fg3: #75838F;
-  --ok: #34D399;
+  --fg2: #8A94A0;
   --bad: #F87171;
-  --amber: #FBBF24;
-  --line: #38495A;
+  --elev: 0 12px 30px -20px rgba(0, 0, 0, .8);
   --font-sans: 'Source Han Sans SC', 'Noto Sans CJK SC', '思源黑体', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
 html[data-theme='light'] {
+  --pri: #14B8A6;
   --bg: #F9FAFB;
-  --bg2: #FFFFFF;
   --fg: #0F1A24;
-  --fg2: #5A6672;
-  --fg3: #7A8794;
-  --line: #D9DFE5;
+  --fg2: #77828E;
+  --bad: #DC2626;
+  --elev: 0 12px 30px -20px rgba(15, 26, 36, .4);
 }
 
 * { box-sizing: border-box; }
@@ -47,119 +45,97 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* --------------------------------------------------------------- 标 + 名 */
+
 .stage {
-  width: 100%;
-  max-width: 420px;
-  background: var(--bg2);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 32px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
+  animation: enter 320ms cubic-bezier(.2, .7, .3, 1) both;
 }
 
 .mark {
-  width: 72px;
-  height: 72px;
-  border-radius: 18px;
-  /* 图标本身就是圆角方砖，这里只做一点点浮起来的感觉 */
-  box-shadow: 0 10px 30px color-mix(in srgb, var(--pri) 22%, transparent);
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  box-shadow: var(--elev);
 }
 
-.wordmark {
-  margin: 16px 0 4px;
-  font-size: 20px;
+.name {
+  margin: 20px 0 0;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.2px;
+  line-height: 1.2;
+  letter-spacing: .02em;
 }
 
-.lede {
-  margin: 0 0 20px;
-  color: var(--fg2);
-  font-size: 13px;
-  min-height: 20px;
-}
+/* ---------------------------------------------------------------- 进度线 */
 
-/* ---------------------------------------------------------------- 进度条 */
-
-.bar {
-  height: 6px;
+.track {
+  width: 112px;
+  height: 2px;
+  margin-top: 24px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--fg3) 24%, transparent);
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
   overflow: hidden;
 }
 
-.bar__fill {
-  height: 100%;
+.track__fill {
   width: 0;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--pri), var(--pri-2));
-  transition: width 240ms ease-out;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--pri);
+  transition: width 320ms cubic-bezier(.4, 0, .2, 1);
 }
 
-/* ------------------------------------------------------------ 检查清单 */
+/* ------------------------------------------------------------ 一行状态 */
 
-.steps {
-  list-style: none;
-  margin: 20px 0 0;
-  padding: 0;
-  text-align: left;
-  display: grid;
-  gap: 8px;
-}
-
-.step {
-  display: grid;
-  grid-template-columns: 10px auto 1fr;
-  align-items: baseline;
-  gap: 8px;
+.status {
+  margin: 12px 0 0;
+  min-height: 18px;
   font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: .02em;
+  color: var(--fg2);
 }
 
-.step__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--fg3);
-  align-self: center;
-}
+.status--bad { color: var(--bad); }
 
-.step--ok .step__dot { background: var(--ok); }
-.step--warn .step__dot { background: var(--amber); }
-.step--fail .step__dot { background: var(--bad); }
-
-.step__label { color: var(--fg); }
-
-.step__detail {
-  color: var(--fg3);
+/* 失败时多出来的那两行：一句原因（鼠标停上去看全）和一个重试。
+   只在这一刻出现 —— 正常启动的路上不占版面。 */
+.detail {
+  max-width: 260px;
+  margin: 6px 0 0;
   font-size: 11px;
+  line-height: 1.5;
+  color: var(--fg2);
+  opacity: .8;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* -------------------------------------------------------------- 失败提示 */
-
-.note {
-  margin-top: 18px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--bad) 10%, transparent);
-  color: var(--fg2);
-  font-size: 12px;
-  display: grid;
-  gap: 10px;
-  justify-items: center;
-}
-
-.note button {
+.retry {
+  margin-top: 14px;
+  padding: 0 0 1px;
   font: inherit;
+  font-size: 12px;
   color: var(--fg);
-  background: color-mix(in srgb, var(--fg) 8%, transparent);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 6px 14px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 24%, transparent);
   cursor: pointer;
 }
 
-.note button:hover { background: color-mix(in srgb, var(--fg) 14%, transparent); }
+.retry:hover { border-bottom-color: color-mix(in srgb, var(--fg) 55%, transparent); }
+
+@keyframes enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage { animation: none; }
+  .track__fill { transition: none; }
+}

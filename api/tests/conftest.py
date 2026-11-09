@@ -68,6 +68,16 @@ os.environ["QF_DEBUG"] = "true"
 # 自动同步是**应用启动时**拉起来的后台线程：测试若把 Turso 配起来（有用例
 # 会写设置文件），它会真的去联网。钉死关掉 —— 用例自带假远端。
 os.environ.setdefault("QF_SYNC_AUTO", "0")
+# httpx 会读 `http_proxy`（WSL 上常配着 127.0.0.1:7890），而 `NO_PROXY` 里的
+# `127.*` 这种通配它**不认** —— 于是连测试里那台 127.0.0.1 的假 Turso 也先发给
+# 代理，代理忙时就变成 ConnectTimeout（实测：单独跑 test_sync 通过、和别的文件
+# 一起跑偶发失败）。显式排除回环；生产代码不动，WSL 连真 Turso 正是要走代理。
+os.environ["NO_PROXY"] = ",".join(
+    part
+    for part in [os.environ.get("NO_PROXY", ""), "127.0.0.1", "localhost", "::1"]
+    if part
+)
+os.environ["no_proxy"] = os.environ["NO_PROXY"]
 # 设置文件：**测试永远不碰开发机上那一份**。
 #
 # `settings_store.put()` 会把整份设置写回文件（2026-11-07 起文件是权威），而这里每个
@@ -166,6 +176,20 @@ def _runtime_always_ready(monkeypatch) -> None:  # noqa: ANN001
     from app import tools
 
     monkeypatch.setattr(tools, "pyodide_base", lambda: "__ORIGIN__/assets/pyodide/")
+
+
+@pytest.fixture(autouse=True)
+def _no_auto_title(monkeypatch) -> None:  # noqa: ANN001
+    """不自动让模型给会话起名。
+
+    它发生在第一轮答完**之后**（`routers/chat.py` 的 `_stream` 末尾）。留着它，
+    每条"发一条消息"的用例都会多一次上游调用，而且标题会被打桩回答的正文覆盖 ——
+    与「标题由首句生成」那条断言正好打架，与这些用例要验的事也无关。
+    真实链路由 `test_chat.py` 里那条专门的用例覆盖（它自己把这个开关打开）。
+    """
+    from app.routers import chat
+
+    monkeypatch.setattr(chat, "AUTO_TITLE", False)
 
 
 @pytest.fixture()

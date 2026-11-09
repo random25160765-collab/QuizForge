@@ -69,14 +69,16 @@ def test_snapshot_shape(client) -> None:  # noqa: ANN001
 def test_settings_are_stored_and_returned(client) -> None:  # noqa: ANN001
     _register(client, f"set-{uuid.uuid4().hex[:8]}@example.com")
 
+    # `basket`（选题篮）是**本机状态**，2026-11-09 起不再随设置同步 —— 见
+    # `test_settings_file.py` 与 `settings_store.LOCAL_ONLY`。这里只验真设置。
     client.post(
         "/api/progress/sync",
-        json={"settings": {"theme": "light", "basket": ["c-0001"]}, "settingsRev": 1},
+        json={"settings": {"theme": "light", "fontScale": 1.15}, "settingsRev": 1},
         headers=_headers(client),
     )
     settings = client.get("/api/progress").json()["settings"]
     assert settings["theme"] == "light"
-    assert settings["basket"] == ["c-0001"]
+    assert settings["fontScale"] == 1.15
 
 
 def test_stale_settings_rev_is_ignored(client) -> None:  # noqa: ANN001

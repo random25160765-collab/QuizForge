@@ -151,24 +151,35 @@ def file_part(
     }
 
 
-def demo_part(
+def artifact_part(
     *,
     title: str,
-    html: str,
+    kind: str = "html",
+    html: str = "",
+    markdown: str = "",
     run_id: str = "",
-    kind: str = "demo",
     code: str = "",
 ) -> dict:
-    """演示沙箱：一段 HTML，前端塞进 sandbox iframe 里跑（不带 same-origin）。
+    """**作品**（artifact）：一段能跑起来的 HTML，或一篇 Markdown 文章。
+
+    前身叫「演示」（`type: "demo"`，2026-11-09 改名 —— 用户："render demo 改成
+    create artifact，以后这个东西叫 artifact"）：那会儿只会产 HTML 页面。
+    现在同一件东西有两种形态，`kind` 说它是哪种，前端据此选长相（iframe / 文章）。
+    旧消息里的 `type: "demo"` 一律按 html 作品处理（前端两种都认）。
 
     `run_id` 是**页面向宿主回传结果时的身份**：沙箱里跑完（Python 那种）会
     `postMessage({qfRun: run_id, text})`，前端据此把输出认到这条消息上 ——
     没有它，输出就只会飘在面板里，模型永远看不到自己那段代码到底干了什么。
     """
     # `kind` 让前端知道这一条该怎么长：`python` 是"跑一段脚本拿输出"，该长得像执行命令；
-    # 其余（`demo`）是可视化，才是那张要打开面板的卡片。原先两者只靠字段猜，猜不出来，
-    # 于是 run_python 也长了张"打开演示"的卡片（用户："放在沙箱里也不好看"）。
-    part = {"type": "demo", "kind": str(kind or "demo"), "title": str(title)[:80], "html": html}
+    # `html` 是能动的页面；`markdown` 是一篇文章，直接排版读，不进 iframe。
+    # 原先两者只靠字段猜，猜不出来，于是 run_python 也长了张"打开演示"的卡片
+    #（用户："放在沙箱里也不好看"）。
+    part = {"type": "artifact", "kind": str(kind or "html"), "title": str(title)[:80]}
+    if html:
+        part["html"] = str(html)
+    if markdown:
+        part["markdown"] = str(markdown)
     # 跑脚本那一类把脚本原文也带上：界面上折在「脚本」里（默认收起），
     # 要回看就展开 —— 与工具调用块里那份是同一个东西，但这里离输出最近。
     if code:
@@ -176,6 +187,16 @@ def demo_part(
     if run_id:
         part["runId"] = str(run_id)
     return part
+
+
+#: 作品零件的两种 `type`：现在叫 `artifact`，旧消息里是 `demo`（2026-11-09 改名）。
+#: **读的那一侧一律用 `is_artifact`** —— 老消息不会自己改写法，两种都得认。
+ARTIFACT_TYPES = ("artifact", "demo")
+
+
+def is_artifact(part) -> bool:  # noqa: ANN001
+    """这条零件是不是一件作品（html / markdown / python 三种形态都算）。"""
+    return isinstance(part, dict) and part.get("type") in ARTIFACT_TYPES
 
 
 def text_of(parts) -> str:  # noqa: ANN001

@@ -18,8 +18,9 @@
   `(表, 主键)` 增量双向同步。
 * **资料整包**：`materials` / `material_slices`（含正文）/ `material_figures`
   三张表主键会撞号，走 `library_cloud.py` 的整包对齐，不在这里逐行传。
-* **自动执行**：`app/autosync.py` 在应用启动后每两分钟跑一轮
-  `run_full()`；手动按钮、`make sync`、CLI 走同一个入口。
+* **自动执行**：`app/autosync.py` 是"有变化才动" —— 本地一改就推，
+  每 5 秒问一次远端有没有新行，60 秒兜底一轮整包。手动按钮、`make sync`、
+  CLI 走同一个 `run_full()` 入口。
 
 **不上云的**：纯派生数据（`days`、向量、向量化跑单、流水线队列）—— 能重算；
 `calendar_subscriptions` —— 地址里常带能力令牌，属于凭据；题库 —— 出题机的
@@ -73,8 +74,8 @@
 ## 隐私：端到端加密
 
 `PRIVATE_TABLES`（对话 / 分组 / 消息 / 附件 / **记忆** / **计划**）的
-**payload 整体加密**：AES-256-GCM，密钥由 `config/snapshot.key`
-（或环境变量里的口令）经 scrypt 派生，盐存在远端 `qf_sync_meta`，
+**payload 整体加密**：AES-256-GCM，密钥由口令（`config/settings.local.json` 的
+`syncPassphrase`，或环境变量）经 scrypt 派生，盐存在远端 `qf_sync_meta`，
 并有一个 HMAC 校验值用于尽早发现"两台机器的口令不是同一份"。
 Turso 只看到 `tbl / pk / at / origin` 和密文。其余表照旧明文上传
 （用户原话："我的个人数据（对话）端到端加密后上传。其他数据不加密上传。"；
@@ -83,10 +84,11 @@ Turso 只看到 `tbl / pk / at / origin` 和密文。其余表照旧明文上传
 表划进 `PRIVATE_TABLES` 之前已经同步过的明文行，由
 `_schedule_private_rescope` 在升级后重推一遍换成密文（每台机器一次）。
 
-**密钥不进 Turso，也不进 git**：口令文件 `config/snapshot.key` 已被 gitignore，
-新机器要同步对话 / 记忆 / 计划书就得先把它拷过去 —— 这是"端到端"的定义，
-不是缺陷。没有口令时拒绝同步（而不是偷偷明文上传），也不推进游标
-（否则之后补上密钥也拉不到错过的那段）。
+**密钥不进 Turso，也不进 git**：口令只住在设置文件里（`syncPassphrase`，
+`settings_file.FILE_ONLY`）—— 它**不进 `app_settings`**，所以不会被同步上云；
+设置文件本身也已 gitignore。新机器要同步对话 / 记忆 / 计划书就得带同一份口令，
+这是"端到端"的定义，不是缺陷。没有口令时拒绝同步（而不是偷偷明文上传），
+也不推进游标（否则之后补上密钥也拉不到错过的那段）。
 
 ## 设置里的秘密
 
@@ -129,6 +131,7 @@ from . import models as _models  # noqa: F401 —— 先让 Base.metadata 长齐
 # 加密原语在 Android 上要换实现（没有 cp314 wheel），取用点收在 crypto_compat。
 from .crypto_compat import AESGCM, InvalidTag, Scrypt
 from . import settings_file
+from .settings_store import normalize
 from .datapack import USER_TABLES
 from .db import Base, get_engine, get_session_factory
 
@@ -153,6 +156,9 @@ PRIVATE_TABLES: frozenset[str] = frozenset(
         "attachments",
         "memories",
         "plans",
+        # 笔记正文（2026-11-09）：手机端没有 Obsidian，读改都落在这张表。
+        # 它装的是用户自己写的东西，与对话正文同一档 —— 只让云看见密文。
+        "notes",
     }
 )
 
@@ -172,6 +178,9 @@ PULL_ORDER: tuple[str, ...] = (
     "conversation_folders",
     "messages",
     "attachments",
+    # 滤镜挂载记录（2026-11-09 从设置搬出来）：外键指对话，消息只用 uid 软引用，
+    # 所以排在 messages 之后就行。
+    "lens_records",
     "my_questions",
     "records",
     "attempts",
@@ -181,6 +190,9 @@ PULL_ORDER: tuple[str, ...] = (
     # 而 `_full_pull` 只逐表读这里列出的表，漏一张（这里曾漏过 memories）
     # 就等于那类数据永远到不了新机器，尽管推送 / 增量拉取都是通的。
     "memories",
+    # 笔记云副本（2026-11-09）：同样没有外键。手机靠它读笔记，首台设备装不上
+    # 就等于新机器一片空白 —— 所以必须在这里。
+    "notes",
     # 外键先父后子：条目要挂计划，日程要挂条目（虽然删父行是本机显式删的，
     # 但远端按 pk 顺序回放时子行先到会插不进去）。
     "plans",
@@ -208,7 +220,9 @@ _SECRET_PATHS: tuple[tuple[str, str], ...] = (
 _MACHINE_BLOCKS: tuple[str, ...] = ("turso", "obsidian", "library_roots")
 
 #: 上传前要抹空的设置键（含 turso 整块，所以 token 不会出去）。
-_SCRUB_SETTINGS_BLOCKS: tuple[str, ...] = ("turso",)
+#: `syncPassphrase` 只出现在**手动导出的设置 JSON**里（让新设备一次搬完），
+#: 万一被前端写进了设置，也绝不能跟着同步上云 —— 那是端到端加密的钥匙。
+_SCRUB_SETTINGS_BLOCKS: tuple[str, ...] = ("turso", "syncPassphrase")
 
 _REMOTE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS qf_sync_rows (
@@ -362,6 +376,7 @@ _TIMESTAMPS: dict[str, tuple[str, ...]] = {
     "attempts": ("at", "created_at"),
     "ai_usage": ("updated_at",),
     "memories": ("updated_at", "created_at"),
+    "notes": ("updated_at",),
     "plans": ("updated_at",),
     "plan_items": ("updated_at",),
     "schedule_events": ("updated_at", "start_at"),
@@ -369,6 +384,7 @@ _TIMESTAMPS: dict[str, tuple[str, ...]] = {
     "health_regimes": ("updated_at",),
     "schedule_runs": ("updated_at",),
     "gate_runs": ("updated_at",),
+    "lens_records": ("updated_at", "created_at"),
 }
 
 SPECS: dict[str, TableSpec] = _build_specs()
@@ -548,7 +564,11 @@ def _has_column(conn, table: str, column: str) -> bool:  # noqa: ANN001
 # ============================================================================ 口令与密钥
 
 
-def _key_file() -> Path:
+def _legacy_key_file() -> Path:
+    """2026-11-09 之前口令住在这里（`config/snapshot.key`）。
+
+    现在只剩"搬家时读一次"的用途：见 `_migrate_legacy_key()`。
+    """
     raw = os.environ.get(_KEY_FILE_ENV, "").strip()
     if raw:
         return Path(raw).expanduser()
@@ -556,16 +576,75 @@ def _key_file() -> Path:
     return settings_file.REPO_ROOT / "config" / "snapshot.key"
 
 
+def _migrate_legacy_key() -> None:
+    """老口令文件 → 设置文件（搬完就把旧文件删掉，绝不留两份）。"""
+    legacy = _legacy_key_file()
+    if not legacy.is_file():
+        return
+    try:
+        value = legacy.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if value and not str(settings_file.load().get("syncPassphrase") or "").strip():
+        data = settings_file.load()
+        data["syncPassphrase"] = value
+        try:
+            settings_file.save(data)
+        except OSError:
+            return
+    try:
+        legacy.unlink()
+    except OSError:
+        pass
+
+
 def _passphrase() -> str:
+    """口令：环境变量 → 设置文件的 `syncPassphrase`（老机器顺手把 key 文件搬进来）。"""
     for name in _PASS_ENVS:
         value = os.environ.get(name, "").strip()
         if value:
             return value
-    path = _key_file()
+    _migrate_legacy_key()
+    return str(settings_file.load().get("syncPassphrase") or "").strip()
+
+
+def passphrase() -> str:
+    """口令本身。只给设置页的「复制给 Obsidian 插件」用。
+
+    约束：不落库、不进快照、不写日志。它与 `turso.token` 是同一权限级别
+    （能打开本机设置页的人本来就能看到令牌），但仍然只在被显式请求时返回。
+    """
+    return _passphrase()
+
+
+def save_passphrase(text: str) -> dict:
+    """把口令写进**设置文件**（`config/settings.local.json` 的 `syncPassphrase`）。
+
+    2026-11-09 起没有 `config/snapshot.key` 了（用户："不要存两份"）：本机的凭据
+    只落这一份文件。它仍然**不进数据库、不随设置上云**（`settings_file.FILE_ONLY`），
+    所以"端到端"的含义没变 —— 换了机器还是得把同一份口令带过去（复制设置 JSON
+    时会带上它，见设置页的「复制」）。
+    派生钥匙的缓存按「盐 + 口令」分桶，所以写完立刻读得到，也不会拿到旧口令的钥匙。
+    桌面若用环境变量提供口令，文件写了也不生效 —— 返回 `envOverride` 让界面说清楚。
+    """
+    value = str(text or "").strip()
+    if not value:
+        raise SyncError("口令不能为空")
+    data = settings_file.load()
+    data["syncPassphrase"] = value
     try:
-        return path.read_text(encoding="utf-8").strip()
+        path = settings_file.save(data)
+    except OSError as exc:
+        raise SyncError("口令写不进设置文件（config/settings.local.json）") from exc
+    # 旧口令文件留着，就又是"两份"了：写完就删
+    legacy = _legacy_key_file()
+    try:
+        if legacy.is_file():
+            legacy.unlink()
     except OSError:
-        return ""
+        pass
+    env_override = any(os.environ.get(name, "").strip() for name in _PASS_ENVS)
+    return {"keyReady": bool(_passphrase()), "keyFile": str(path), "envOverride": env_override}
 
 
 _key_cache: dict[tuple[bytes, bytes], bytes] = {}
@@ -613,7 +692,7 @@ def _decrypt(key: bytes, tbl: str, pk: str, payload: str) -> dict:
         data = AESGCM(key).decrypt(blob[:12], blob[12:], _aad(tbl, pk))
     except (InvalidTag, ValueError) as exc:
         raise SyncError(
-            f"解不开 {tbl}/{pk}：两台机器的口令（config/snapshot.key）不是同一份？"
+            f"解不开 {tbl}/{pk}：两台机器的同步口令不是同一份？"
         ) from exc
     decoded = json.loads(data.decode("utf-8"))
     if not isinstance(decoded, dict):
@@ -797,10 +876,10 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
         if not passphrase:
             if need_private:
                 raise SyncError(
-                    "要同步对话 / 记忆 / 计划书（端到端加密）需要口令文件："
-                    "config/snapshot.key。\n"
-                    "  把另一台机器上那份拷过来即可（它被 gitignore，不会进仓库）。\n"
-                    f"  也可以设环境变量 {_PASS_ENVS[0]}。"
+                    "要同步对话 / 记忆 / 计划书（端到端加密）需要口令：\n"
+                    "  在「设置 → 同步」里填上与另一台机器相同的那一份"
+                    "（也可以写进 config/settings.local.json 的 syncPassphrase）。\n"
+                    f"  或设环境变量 {_PASS_ENVS[0]}。"
                 )
             return None
         salt = os.urandom(16)
@@ -826,8 +905,8 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
     if not passphrase:
         if need_private:
             raise SyncError(
-                "远端已经有加密数据（对话 / 记忆 / 计划书），而本机没有口令"
-                "（config/snapshot.key）。\n  把另一台机器上那份拷过来再同步。"
+                "远端已经有加密数据（对话 / 记忆 / 计划书），而本机没有口令。\n"
+                "  在「设置 → 同步」里填上与另一台机器相同的那份再同步。"
             )
         return None
 
@@ -835,7 +914,7 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
     if check and not hmac.compare_digest(check, _key_check(key)):
         raise SyncError(
             "两台机器的口令不是同一份（远端校验值对不上）。\n"
-            "  config/snapshot.key 必须两台机器完全相同；别各生成一份。"
+            "  两台必须填完全相同的那一份；别各生成一份。"
         )
     return key
 
@@ -932,7 +1011,8 @@ def _scrub_settings(raw: Any) -> Any:
             branch[leaf] = ""
     for block in _SCRUB_SETTINGS_BLOCKS:
         data.pop(block, None)          # turso 整块（含 token 与地址）不上传
-    return data
+    # 只在本机的状态（读到哪儿 / 面板位置 / 选题篮）也不上传；滤镜旧键顺手并进 lens
+    return normalize(data)
 
 
 def _merge_settings(local: Any, remote: Any) -> dict:
@@ -940,6 +1020,7 @@ def _merge_settings(local: Any, remote: Any) -> dict:
     local = _json_dict(local)
     remote = _json_dict(remote)
     merged = json.loads(json.dumps(remote, ensure_ascii=False))
+    merged.pop("syncPassphrase", None)   # 口令永远以本机 key 文件为准
     for block in _MACHINE_BLOCKS:
         if block in local:
             merged[block] = local[block]
@@ -952,7 +1033,8 @@ def _merge_settings(local: Any, remote: Any) -> dict:
             target = merged.setdefault(node, {})
             if isinstance(target, dict):
                 target[leaf] = value
-    return merged
+    # 老客户端推上来的设置可能还带本机状态键：落地之前滤掉
+    return normalize(merged)
 
 
 # ============================================================================ 基线
@@ -1075,6 +1157,39 @@ def _schedule_private_rescope(engine: Engine) -> int:
 # ============================================================================ 推送
 
 
+def _parent_uids_from_remote(remote: Any, key: bytes | None, pks: list[str]) -> dict[str, str]:
+    """读远端镜像里这些 pk 的 `parent_uid`（只返回非空的）。
+
+    推送前的护栏用：本机某条消息没有父、而远端镜像有 —— 说明本地这一份是坏的
+    （断链），**不能拿空值去覆盖远端**。见 `_push` 里的说明。
+    """
+    out: dict[str, str] = {}
+    for start in range(0, len(pks), 100):
+        chunk = pks[start : start + 100]
+        rows = remote.query(
+            "SELECT pk, enc, payload FROM qf_sync_rows WHERE tbl = 'messages' AND pk IN ("
+            + ", ".join("?" for _ in chunk)
+            + ")",
+            tuple(chunk),
+        )
+        for row in rows:
+            if row.get("payload") is None:
+                continue
+            try:
+                if int(row.get("enc") or 0):
+                    if key is None:
+                        continue
+                    data = _decrypt(key, "messages", str(row["pk"]), str(row["payload"]))
+                else:
+                    data = json.loads(str(row["payload"]))
+            except (SyncError, ValueError, TypeError):
+                continue
+            parent = data.get("parent_uid")
+            if parent:
+                out[str(row["pk"])] = str(parent)
+    return out
+
+
 def _push(engine: Engine, remote: Any, key: bytes | None, origin: str) -> dict:
     pushed = 0
     pages = 0
@@ -1087,8 +1202,9 @@ def _push(engine: Engine, remote: Any, key: bytes | None, origin: str) -> dict:
             ).fetchall()
             if not entries:
                 break
-            statements: list[tuple[str, tuple[Any, ...]]] = []
+            staged: list[dict] = []
             deletes: list[tuple[str, str, float]] = []
+            orphan_at: list[int] = []
             for tbl, pk, _op, _journal_at in entries:
                 spec = SPECS.get(str(tbl))
                 if spec is None:
@@ -1112,38 +1228,69 @@ def _push(engine: Engine, remote: Any, key: bytes | None, origin: str) -> dict:
                         deleted = True     # 行没了：按删除传
                 if spec.private and not deleted and key is None:
                     raise SyncError(
-                        f"要上传加密的 {tbl}，但本机没有口令（config/snapshot.key）"
+                        f"要上传加密的 {tbl}，但本机没有口令（设置里的同步口令）"
                     )
-                if deleted:
-                    encoded, enc = None, 1 if spec.private else 0
-                elif spec.private:
-                    assert key is not None
-                    encoded, enc = _encrypt(key, spec.name, str(pk), payload or {}), 1
-                else:
-                    encoded, enc = (
-                        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                        0,
-                    )
-                statements.append(
-                    (
-                        "INSERT INTO qf_sync_rows(tbl, pk, at, origin, deleted, enc, payload)"
-                        " VALUES(?, ?, ?, ?, ?, ?, ?)"
-                        " ON CONFLICT(tbl, pk) DO UPDATE SET"
-                        " at = excluded.at, origin = excluded.origin,"
-                        " deleted = excluded.deleted, enc = excluded.enc,"
-                        " payload = excluded.payload"
-                        " WHERE excluded.at > qf_sync_rows.at",
-                        (tbl, pk, at, origin, 1 if deleted else 0, enc, encoded),
-                    )
+                if not deleted and spec.name == "messages" and not (payload or {}).get("parent_uid"):
+                    orphan_at.append(len(staged))
+                staged.append(
+                    {
+                        "spec": spec,
+                        "tbl": str(tbl),
+                        "pk": str(pk),
+                        "at": at,
+                        "deleted": deleted,
+                        "payload": payload,
+                    }
                 )
-                statements.append(
-                    (
-                        "INSERT INTO qf_sync_log(at, origin, tbl, pk, deleted, enc, payload)"
-                        " VALUES(?, ?, ?, ?, ?, ?, ?)",
-                        (at, origin, tbl, pk, 1 if deleted else 0, enc, encoded),
-                    )
+
+        # ---- 护栏：父指针**只升不降**（2026-11-09 的事故防线）----------------
+        # 一台本地 `parent_id` 全空的机器整表重推，会把远端已经正确的
+        # `parent_uid` 全部洗成 null（日志 seq 3468–4084，617 条）；那台机器再拉
+        # 回来，两边的树一起散掉。所以这里先看远端镜像：**它有的父，本机空着就沿用它**。
+        # 代价：本机真把一条消息挪回根上，这次推送不会生效（应用里没有这种操作）。
+        if orphan_at:
+            rescued = _parent_uids_from_remote(
+                remote, key, [str(staged[i]["pk"]) for i in orphan_at]
+            )
+            for i in orphan_at:
+                parent = rescued.get(str(staged[i]["pk"]))
+                if parent and staged[i]["payload"] is not None:
+                    staged[i]["payload"]["parent_uid"] = parent
+
+        statements: list[tuple[str, tuple[Any, ...]]] = []
+        for item in staged:
+            spec, tbl, pk = item["spec"], item["tbl"], item["pk"]
+            at, deleted, payload = item["at"], item["deleted"], item["payload"]
+            if deleted:
+                encoded, enc = None, 1 if spec.private else 0
+            elif spec.private:
+                assert key is not None
+                encoded, enc = _encrypt(key, spec.name, str(pk), payload or {}), 1
+            else:
+                encoded, enc = (
+                    json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    0,
                 )
-                deletes.append((str(tbl), str(pk), at))
+            statements.append(
+                (
+                    "INSERT INTO qf_sync_rows(tbl, pk, at, origin, deleted, enc, payload)"
+                    " VALUES(?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(tbl, pk) DO UPDATE SET"
+                    " at = excluded.at, origin = excluded.origin,"
+                    " deleted = excluded.deleted, enc = excluded.enc,"
+                    " payload = excluded.payload"
+                    " WHERE excluded.at > qf_sync_rows.at",
+                    (tbl, pk, at, origin, 1 if deleted else 0, enc, encoded),
+                )
+            )
+            statements.append(
+                (
+                    "INSERT INTO qf_sync_log(at, origin, tbl, pk, deleted, enc, payload)"
+                    " VALUES(?, ?, ?, ?, ?, ?, ?)",
+                    (at, origin, tbl, pk, 1 if deleted else 0, enc, encoded),
+                )
+            )
+            deletes.append((str(tbl), str(pk), at))
         if statements:
             remote.batch(statements)
         # 远端落了才清本地的脏标记；期间又变过（at 不同）就留着
@@ -1260,8 +1407,14 @@ def _apply_page(engine: Engine, rows: list[dict], key: bytes | None, origin: str
                 _apply_row(conn, spec, values, data, at)
                 if spec.name == "messages":
                     parent_uid = data.get("parent_uid")
-                    if parent_uid:
-                        message_parents.append((str(pk), str(parent_uid)))
+                    # **子消息的身份取 payload 里的 `uid`，不是 `pk`**：
+                    # `pk` 是 JSON 串（`["9f3…"]`，见 `_pk_json`），拿它当 child_uid
+                    # 写进 `qf_sync_parents` 就永远 JOIN 不上 `messages.uid` ——
+                    # 回填 SQL 一直在空转，全量拉下来一半的消息 `parent_id` 是空的
+                    # （对话树整个散掉）。
+                    child_uid = str(data.get("uid") or "")
+                    if parent_uid and child_uid:
+                        message_parents.append((child_uid, str(parent_uid)))
                 elif spec.name == "attachments":
                     message_uid = data.get("message_uid")
                     if message_uid:
@@ -1283,8 +1436,10 @@ def _apply_page(engine: Engine, rows: list[dict], key: bytes | None, origin: str
                 " ON CONFLICT(child_uid) DO UPDATE SET parent_uid = excluded.parent_uid",
                 (child_uid, parent_uid),
             )
-        if message_parents:
-            conn.exec_driver_sql(_BACKFILL_PARENTS_SQL)
+        # **每次都补一次**，而不是"这一页里有新消息才补"：老版本拉下来的行可能
+        # 一直挂着空的 `parent_id`（对话树整个散掉），而后面几轮只要还有别的表在同步，
+        # 就该顺手把它们接回去 —— 这条 SQL 自己带 `parent_id IS NULL`，没有可补的就是空转。
+        conn.exec_driver_sql(_BACKFILL_PARENTS_SQL)
         for attachment_pk, message_uid in attachment_messages:
             attachment_key = json.loads(attachment_pk)
             conn.exec_driver_sql(
@@ -1320,7 +1475,7 @@ def _local_settings_from_db(conn) -> dict:  # noqa: ANN001
         data = json.loads(row[0]) if isinstance(row[0], (str, bytes)) else row[0]
     except (ValueError, TypeError):
         return {}
-    return data if isinstance(data, dict) else {}
+    return normalize(data) if isinstance(data, dict) else {}
 
 
 def _write_settings_row(conn, data: dict, client_rev: Any) -> None:  # noqa: ANN001
@@ -1348,8 +1503,21 @@ def _apply_row(conn, spec: TableSpec, values: list[Any], data: dict, at: float) 
         if name in data:
             row_values[name] = _from_json_value(data[name])
     if spec.name == "messages":
+        # **远端"没有父"不等于要把本地的父擦掉。**
+        # 2026-11-09 实测：一台本地 `parent_id` 全空的机器整表重推（日志 seq
+        # 3468–4084），把远端 617 条已经带父的消息洗成了 `parent_uid = null`；
+        # 那台机器再拉回来，`_apply_row` 又用 null 覆盖自己（本来就空），于是
+        # 两端一起断链，且越拉越"确认"这个错误状态。
+        # 所以只在**解析得到**父行时才写 `parent_id`：载荷里 `parent_uid` 为空
+        # （键缺失或显式 null）都当"这一行没提供父信息"，保留本机已有的指针。
+        # 代价是"把一条消息明确改成根"不会随同步生效 —— 应用里没有这种操作
+        # （编辑重发是新增一条、带 `parentId`），换来的是一棵树不会被空载荷洗掉。
         parent_uid = data.get("parent_uid")
-        row_values["parent_id"] = _local_id_for_uid(conn, "messages", parent_uid)
+        parent_id = _local_id_for_uid(conn, "messages", parent_uid)
+        if parent_id is not None:
+            row_values["parent_id"] = parent_id
+        else:
+            row_values.pop("parent_id", None)
     elif spec.name == "attachments":
         message_uid = data.get("message_uid")
         row_values["message_id"] = _local_id_for_uid(conn, "messages", message_uid)
@@ -1383,6 +1551,25 @@ def _apply_row(conn, spec: TableSpec, values: list[Any], data: dict, at: float) 
                 (row_values["uid"], seen[0]),
             )
             return
+
+    # **老行推上来时可能还没有这一列**（payload 是稀疏的）。新库是 `create_all`
+    # 建出来的，模型上的客户端默认值**不会变成 DDL 里的 DEFAULT**，于是那条裸
+    # INSERT 会撞 `NOT NULL constraint failed: conversations.title_auto`（实测：
+    # 手机首次全量拉取就死在这张表上，一条都拉不下来）。这里按模型上的标量默认值
+    # 补齐 —— 与 `db._ensure_columns` 给老库补列时用的是同一档默认值。
+    for column in table.columns:
+        if column.name in row_values or column.name in spec.generated:
+            continue
+        if column.nullable or column.server_default is not None:
+            continue
+        default = column.default
+        if default is None:
+            continue
+        if default.is_scalar:
+            row_values[column.name] = default.arg
+        elif callable(default.arg):
+            # `default=dict` / `list` 这种：没有 context 也能调
+            row_values[column.name] = default.arg()
 
     names = ", ".join(_q(col) for col in row_values)
     marks = ", ".join("?" for _ in row_values)
@@ -1523,8 +1710,143 @@ def _from_json_value(value: Any) -> Any:
 # ============================================================================ 拉取
 
 
+def _heal_parent_mapping(engine: Engine) -> bool:
+    """检测**写歪或缺失的父子映射**，有就清空并返回 True（重建见 `_repair_parent_mapping`）。
+
+    两种形态：
+
+    * 老版本把 `child_uid` 落成了主键的 JSON 串（`["9f3…"]`），与 `messages.uid`
+      永远对不上，回填 SQL 一直在空转 —— 表现是"全量拉完，一半消息的父节点没了"；
+    * 更老的版本里还没有这张表，映射**压根没建过**。判据里要带上"拉取游标已经在、
+      并且本机同步过消息"：从没拉过的机器（只推不拉的 origin）不该被拽去重建。
+    """
+    with engine.begin() as conn:
+        broken = conn.exec_driver_sql(
+            "SELECT 1 FROM qf_sync_parents WHERE child_uid LIKE '[%' LIMIT 1"
+        ).fetchone()
+        empty = broken is None and conn.exec_driver_sql(
+            "SELECT 1 FROM qf_sync_parents LIMIT 1"
+        ).fetchone() is None
+        if empty and _state_get(conn, "last_pull_seq") is None:
+            empty = False
+        if empty and conn.exec_driver_sql(
+            "SELECT 1 FROM qf_sync_rows WHERE tbl = 'messages' LIMIT 1"
+        ).fetchone() is None:
+            empty = False
+        if broken is None and not empty:
+            return False
+        conn.exec_driver_sql("DELETE FROM qf_sync_parents")
+    return True
+
+
+def _parent_pairs_from_log(remote: Any, key: bytes | None) -> dict[str, str]:
+    """从 `qf_sync_log` 的历史里取每个消息 uid **最后一次非空** 的 `parent_uid`。
+
+    为什么需要它：镜像（`qf_sync_rows`）只保留**当前值**，一次空载荷就能把父指针
+    从镜像里彻底抹掉（2026-11-09 就是这么丢了 617 条）。日志是追加的，历史还在；
+    这是断链之后**唯一**的恢复来源 —— 只要那条消息曾经带过父，就能找回来。
+    """
+    pairs: dict[str, str] = {}
+    cursor = 0
+    while True:
+        rows = remote.query(
+            "SELECT seq, pk, enc, payload FROM qf_sync_log"
+            " WHERE tbl = 'messages' AND seq > ? ORDER BY seq LIMIT ?",
+            (cursor, _PULL_PAGE),
+        )
+        if not rows:
+            break
+        for row in rows:
+            cursor = int(row["seq"])
+            if row.get("payload") is None:
+                continue
+            try:
+                if int(row.get("enc") or 0):
+                    if key is None:
+                        continue
+                    data = _decrypt(key, "messages", str(row["pk"]), str(row["payload"]))
+                else:
+                    data = json.loads(str(row["payload"]))
+            except (SyncError, ValueError, TypeError):
+                continue
+            child = str(data.get("uid") or "")
+            parent = data.get("parent_uid")
+            # 按 seq 递增遍历：后面的覆盖前面的；空值**不覆盖**（保留最后一次非空）
+            if child and parent:
+                pairs[child] = str(parent)
+        if len(rows) < _PULL_PAGE:
+            break
+    return pairs
+
+
+def _repair_parent_mapping(engine: Engine, remote: Any, key: bytes | None) -> int:
+    """重建 `qf_sync_parents`，再把 `parent_id` 接回去。
+
+    两个来源，**镜像优先、日志兜底**：
+    * 镜像 `qf_sync_rows` 是"当前值"（最新事实）；
+    * 日志 `qf_sync_log` 是历史，镜像里被洗空的那些只能靠它（见
+      `_parent_pairs_from_log`）。空值一律不当事实 —— 与 `_apply_row` 同一口径：
+      **父指针只会被补上，不会被空载荷擦掉**。
+
+    为什么不能靠"再全量拉一遍"：拉取有一条影子时间戳的短路（`qf_sync_rows.at`
+    不比远端旧就跳过），全量重放时每条都被判成"已是最新"，一条也不会重新落库
+    （实测：清掉游标再拉，2050 行全被 skip，父节点一个都没接回来）。
+
+    这么修也**不碰正文**：只读 `uid` / `parent_uid` 两列，写进映射表，再跑一次回填。
+    """
+    if remote is None:
+        return 0
+    mirror: dict[str, str] = {}
+    last = ""
+    while True:
+        rows = remote.query(
+            "SELECT pk, enc, payload, deleted FROM qf_sync_rows"
+            " WHERE tbl = 'messages' AND pk > ? ORDER BY pk LIMIT ?",
+            (last, _FULL_PAGE),
+        )
+        if not rows:
+            break
+        for row in rows:
+            last = str(row.get("pk") or "")
+            if int(row.get("deleted") or 0) or row.get("payload") is None:
+                continue
+            try:
+                if int(row.get("enc") or 0):
+                    if key is None:
+                        continue
+                    data = _decrypt(key, "messages", last, str(row["payload"]))
+                else:
+                    data = json.loads(str(row["payload"]))
+            except (SyncError, ValueError, TypeError):
+                continue
+            child = str(data.get("uid") or "")
+            parent = data.get("parent_uid")
+            if child and parent:
+                mirror[child] = str(parent)
+        if len(rows) < _FULL_PAGE:
+            break
+    pairs = _parent_pairs_from_log(remote, key)
+    pairs.update(mirror)          # 镜像是最新事实，同一条以它为准
+    if not pairs:
+        return 0
+    with engine.begin() as conn:
+        for child, parent in pairs.items():
+            conn.exec_driver_sql(
+                "INSERT INTO qf_sync_parents(child_uid, parent_uid) VALUES(?, ?)"
+                " ON CONFLICT(child_uid) DO UPDATE SET parent_uid = excluded.parent_uid",
+                (child, parent),
+            )
+        conn.exec_driver_sql(_BACKFILL_PARENTS_SQL)
+    return len(pairs)
+
+
 def _pull(engine: Engine, remote: Any, key: bytes | None, origin: str) -> dict:
     pulled = applied = deletes = 0
+    if _heal_parent_mapping(engine):
+        try:
+            _repair_parent_mapping(engine, remote, key)
+        except Exception:  # noqa: BLE001 - 修不回来不该拖垮这一轮同步
+            log.warning("父子映射重建失败（下一轮再试）", exc_info=True)
     with engine.begin() as conn:
         cursor_raw = _state_get(conn, "last_pull_seq")
     if cursor_raw is None:
@@ -1596,6 +1918,10 @@ def _full_pull(engine: Engine, remote: Any, key: bytes | None, origin: str) -> d
         if name not in cursors:
             cursors[name] = ""
     with engine.begin() as conn:
+        # 收尾再补一次父子：父消息可能正好落在**最后一页**，而那一页末尾的回填跑在
+        # 它插入之前（页内顺序按 uid 排，不保证父在前）—— 不补这一次，最末几层的
+        # `parent_id` 会一直是空的（对话树散掉的另一种成因）。
+        conn.exec_driver_sql(_BACKFILL_PARENTS_SQL)
         _state_set(conn, "last_pull_seq", started)
         _state_del(conn, "full_pull_cursor")
         _state_del(conn, "full_pull_seq")
@@ -1688,14 +2014,16 @@ def run_once(engine: Engine | None = None, remote: Any | None = None) -> dict:
 
 
 def run_full(engine: Engine | None = None, remote: Any | None = None) -> dict:
-    """一次**完整**同步：行级表 + 资料整包（材料 / 切片正文 / 图）。
+    """一次**完整**同步：行级表 + 资料整包 + 题库整包。
 
-    行级与资料包是两套搬运方式（见 `library_cloud.py` 的模块注释），
-    但对用户来说是同一件事：所有数据。手动按钮、`make sync`、后台节拍
-    走的都是这一个入口。
+    三套搬运方式（行级 / 资料包 / 题库包）对用户来说是同一件事：所有数据。
+    手动按钮、`make sync`、后台节拍走的都是这一个入口。
 
-    资料包失败不回滚行级，也不把整次同步判死：结果里单独给 `library`，
-    失败时带 `error`。行级失败仍然抛（那是更基础的一层）。
+    **顺序有讲究**：题库包里的点靠 `materials.slug` 落地，所以资料包必须先跑完
+    （否则那一轮只能拉到题目，知识点要等下一轮）。
+
+    两个整包失败都不回滚行级，也不把整次同步判死：结果里分别给 `library` /
+    `bank`，失败时带 `error`。行级失败仍然抛（那是更基础的一层）。
     """
     result = run_once(engine, remote)
     try:
@@ -1706,6 +2034,15 @@ def run_full(engine: Engine | None = None, remote: Any | None = None) -> dict:
     except Exception as exc:  # noqa: BLE001 - 资料包失败只记账
         log.warning("资料包同步失败：%s", exc)
         result["library"] = {"ok": False, "error": str(exc)}
+
+    try:
+        from . import bank_cloud  # noqa: PLC0415 - 同上
+
+        with get_session_factory()() as db:
+            result["bank"] = bank_cloud.sync_pack(db)
+    except Exception as exc:  # noqa: BLE001 - 题库包失败只记账
+        log.warning("题库包同步失败：%s", exc)
+        result["bank"] = {"ok": False, "error": str(exc)}
 
     # 把含资料包的结果写回状态（`run_once` 只知道行级那一半）。
     try:
@@ -1742,6 +2079,31 @@ def is_running() -> bool:
     return _running
 
 
+def remote_changed(engine: Engine | None = None, remote: Any | None = None) -> dict:
+    """远端有没有本机还没拉到的行 —— 一次单行查询，用来决定"要不要现在跑一轮"。
+
+    只看 `qf_sync_log` 的 `MAX(seq)`：别人写进来的东西都从那里进来。自己推上去的行
+    会在同一轮的 `_pull` 里把游标推到同一位置，所以不会在这里反复命中自己。
+    没配 / 没启用时返回 `changed=False`，自动同步那侧就只按本地改动走。
+    """
+    if not (turso_enabled() and turso_configured()):
+        return {"changed": False, "reason": "同步没开或没配"}
+    engine = engine or get_engine()
+    ensure_sync_schema(engine)
+    with engine.connect() as conn:
+        cursor_raw = _state_get(conn, "last_pull_seq")
+    if cursor_raw is None:
+        # 第一次（或全量拉取中断）—— 游标还没落，必须让它跑。
+        return {"changed": True, "reason": "还没拉过"}
+    conf = turso_config()
+    if remote is None:
+        remote = TursoClient(str(conf["url"]), str(conf["token"]))
+    rows = remote.query("SELECT COALESCE(MAX(seq), 0) AS m FROM qf_sync_log")
+    head = int(rows[0]["m"] or 0) if rows else 0
+    cursor = int(cursor_raw)
+    return {"changed": head > cursor, "cursor": cursor, "head": head, "reason": ""}
+
+
 # ============================================================================ 状态
 
 
@@ -1775,7 +2137,7 @@ def status(engine: Engine | None = None) -> dict:
         "baselineDone": baseline,
         "last": last_result,
         "keyReady": bool(_passphrase()),
-        "keyFile": str(_key_file()),
+        "keyFile": str(settings_file.path()),
         "privateTables": sorted(PRIVATE_TABLES),
         "tables": counts,
         "lastError": _last_error,
@@ -1791,7 +2153,9 @@ __all__ = [
     "TursoClient",
     "ensure_sync_schema",
     "is_running",
+    "remote_changed",
     "run_full",
+    "save_passphrase",
     "run_in_background",
     "run_once",
     "status",

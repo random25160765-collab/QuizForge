@@ -1,0 +1,9 @@
+{
+  "id": "quizforge-sync",
+  "name": "QFStudio Sync",
+  "version": "0.1.0",
+  "minAppVersion": "1.2.0",
+  "description": "把笔记库与 QFStudio 的云端副本双向同步（端到端加密，与 Bridge 插件互不依赖）。",
+  "author": "QFStudio",
+  "isDesktopOnly": true
+}

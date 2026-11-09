@@ -50,22 +50,35 @@ def configure(data_dir: str, web_dir: str) -> None:
     os.environ["QF_SETTINGS_FILE"] = str(data / "config" / "settings.local.json")
     # 对话同步的端到端口令：有就带上（由 BootHelper 从 assets 拷来），没有就只在
     # 启用同步时报错 —— 与桌面端"没有口令时拒绝同步"是同一条规则。
-    key = data / "snapshot.key"
-    if key.is_file():
-        os.environ.setdefault("QF_SYNC_KEY_FILE", str(key))
+    # 口令文件固定在**可写的数据目录**，不管现在有没有：手机没有文件管理器，
+    # 口令只能从设置页填进来；而 `_key_file()` 的默认值会落到只读的 AssetFinder 根上。
+    os.environ.setdefault("QF_SYNC_KEY_FILE", str(data / "snapshot.key"))
     # 手机上不预取 Pyodide（76M），用到了再说；失败也只是"跑 Python"这一项不可用。
     os.environ.setdefault("QF_HEAVY_PREFETCH", "0")
+    # 正文**懒加载**：同步只落条目与切片坐标，点开哪片才从云端取哪块
+    # （31.7MB 切片正文不再整包落地，见 `app/slice_cloud.py`）。
+    os.environ.setdefault("QF_LAZY_BODIES", "1")
+    # 手机不跑向量：3.8 万窗口约 168MB（占库 82%），重算一次要很久。
+    os.environ.setdefault("QF_EMBED_DISABLED", "1")
     if str(HERE) not in sys.path:
         sys.path.insert(0, str(HERE))
 
 
 def ensure_database() -> str:
-    """建库 / 补表。首次启动时 Java 已经把内置的 bank.db 拷成 quizforge.db。"""
-    from app.db import ensure_schema, get_engine  # noqa: PLC0415 —— 必须在设完环境变量之后
+    """建库 / 补表。工作库由 Java 侧建好，一定是空库 —— 题库不随包，首轮同步拉。"""
+    from app.db import ensure_schema, get_engine, get_session_factory  # noqa: PLC0415 —— 必须在设完环境变量之后
 
     engine = get_engine()
     ensure_schema(engine)
-    return f"db ok: {engine.url}"
+    # 老版本在手机上整包落过资料正文（~39MB）与向量（~168MB）：懒加载开启后清一次
+    from app.slice_cloud import slim  # noqa: PLC0415
+
+    db = get_session_factory()()
+    try:
+        info = slim(db)
+    finally:
+        db.close()
+    return f"db ok: {engine.url} slim={info}"
 
 
 def crypto_check() -> str:

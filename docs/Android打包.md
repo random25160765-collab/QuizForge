@@ -7,7 +7,24 @@
 
 APK 里跑的是**同一份 `api/app`**：Capacitor 的 WebView 加载 `http://127.0.0.1:8731`，
 该端口由 APK 内嵌的 CPython（Chaquopy 17.2）用 uvicorn 提供，SQLite 在
-`filesDir/quizforge/quizforge.db`，题库随包（`assets/bank.db`），用户态经 Turso 双向同步。
+`filesDir/quizforge/quizforge.db`。
+
+**题库不随包**（2026-11-09 起）：题目 / 考纲 / 概念 / 点 / 边由 `app/bank_cloud.py`
+整包同步，新设备首启是空库、头一轮同步从 Turso 拉下来；材料与切片正文走
+`library_cloud.py`。**安装包只放代码、不放数据**：没网就是空库，不另做兜底；
+`build-apk.sh` 里有一道闸，`assets/bank.db` 存在就报错退出。
+
+**新设备要拿到口令**：对话 / 记忆 / 计划书是端到端加密的，钥匙是设置文件里的
+`syncPassphrase`（`assets/sync/settings.local.json`，首启落到 `filesDir/quizforge/config/`）。
+两条路都行：
+
+* 从旧设备**复制设置 JSON**（设置 → 数据 → 复制）—— 里面带 `syncPassphrase`，
+  粘到新设备的「导入」就一起带过去了；
+* 只填了地址与令牌的，去 设置 → 同步 → 「同步口令」补一次。
+
+没填时材料与题库（明文整包）能同步，但对话**只有标题、没有消息** ——
+2026-11-09 手机端"只有对话列表"就是这么来的。眼下新设备首次打开会先进
+`welcome.html`（AI → 同步 → 数据密码），每步都能跳过。
 
 ## 两道门禁（都实测通过，别再怀疑）
 

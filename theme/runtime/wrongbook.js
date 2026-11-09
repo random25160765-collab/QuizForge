@@ -752,7 +752,6 @@
     ui.theme.init();
     var conf = store.settings();
     document.documentElement.style.setProperty('--font-scale', String(conf.fontScale || 1));
-    document.documentElement.style.setProperty('--content-max', (conf.maxWidth || 880) + 'px');
 
     // 主题按钮、设置按钮、当前页图标都由 shell.js 统一接线（全站一份）
     // 错题本属于练习中心那一族：给它 view，顶栏那排才会显示（否则是一条空 bar）

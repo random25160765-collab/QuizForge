@@ -687,7 +687,7 @@ def pyodide_base() -> str | None:
     """
     return heavy_deps.base_url()
 
-# 代码上限：它会被嵌进零件的库、每次读会话都要发给前端（同 render_demo 的道理）
+# 代码上限：它会被嵌进零件的库、每次读会话都要发给前端（同作品那两种形态的道理）
 CODE_MAX_CHARS = 20_000
 
 # Pyodide 页面的样板。**由服务端写死**，模型只交 Python ——
@@ -1390,8 +1390,11 @@ def run_python(db, args, ctx=None) -> dict:  # noqa: ANN001
     # `await_run`：让 agent 循环**停下来等**这次运行（见 agent_loop 里那段注释）。
     # 只在这一条上打开 —— 别的工具（查资料、推题）都是自己就出结果的，不需要等。
     return {
-        "demo": {
+        "artifact": {
             "title": title,
+            # 同一件作品（artifact）的第三种形态：跑一段脚本拿输出。
+            # 前端据此选长相（命令块），别让它长成"打开演示"那张卡片。
+            "kind": "python",
             "runId": run_id,
             # 点名要装的包（`packages` 参数那条路）——宿主会把它连同代码一起交给壳
             #（壳里叫 `qfPackages`）。壳自己还会按 import 现装别的，不靠这一项。
@@ -1581,18 +1584,64 @@ def _demo_page(page: str, title: str, theme: str = "dark", run_id: str = "") -> 
     )
 
 
-def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
-    """产出一个**可运行的演示**，界面在沙箱 iframe 里跑它。
+#: 一篇文章的长度上限。与 html 那份同一个量级：都要随消息发给前端。
+MARKDOWN_MAX_CHARS = 60_000
 
-    ## 什么时候值得用
+
+def _markdown_artifact(title: str, body: str) -> dict:
+    """文章形态的作品：只存正文，界面按 Markdown 排版（不进沙箱）。
+
+    与 html 那份的区别不只是格式：这里**不做 TikZ 拦截** —— 文章里的 `$$…$$`
+    走正文那条真 TeX 引擎，坐标图照旧能画（html 版里排公式的 KaTeX 不认 TikZ，
+    所以那边才要拦）。
+    """
+    text = str(body or "").strip()
+    if not text:
+        return {"error": "markdown 不能为空。"}
+    if len(text) > MARKDOWN_MAX_CHARS:
+        return {
+            "error": f"这篇文章太长了（{len(text)} 字，上限 {MARKDOWN_MAX_CHARS}）"
+            "—— 拆成两篇，或者精简一版。",
+            "note": "一篇作品讲一件事；长的材料按主题分开写。",
+        }
+    return {
+        "artifact": {
+            "title": (title or "文章")[:80],
+            "kind": "markdown",
+            "markdown": text,
+        },
+        "note": "文章已作为作品挂在这条消息上（界面按正文排版，能直接读）。"
+        "**不要把同一篇正文再贴进回复** —— 回复里说清它讲了什么、建议怎么读就够了。",
+    }
+
+
+def create_artifact(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """产出一件**作品**（artifact）。两种形态，`kind` 说清是哪种：
+
+    * `markdown` —— 一篇**文章**：笔记整理、机制讲解、对比清单、读书笔记这类
+      "值得留下来重读"的成篇文字。排版按正文来（标题 / 列表 / 表格 / 公式 / 代码），
+      界面给一篇能读的文章，不是一屏聊天记录。
+    * `html` —— 一个**能动的页面**（演示）：机制里有空间或时间上的结构时用它
+      （详见下面那段）。
+
+    前身叫 `render_demo`（只会做 html）。名字与形态都在 2026-11-09 扩的
+    （用户："render demo 改成 create artifact，除了 html 还可以写 markdown 文章"）。
+
+    ## 什么时候用 markdown
+
+    这件事的产物是**一段成篇的文字**时：他问"帮我整理成一篇笔记""把这几条对比写成
+    一篇文章""这段材料的要点写成可以回看的稿子"。聊天正文适合短回答，成篇的东西
+    放作品里 —— 能重读、能单独打开、不把对话撑得很长。
+
+    ## 什么时候用 html（演示）
 
     机制里有**空间或时间上的结构**时：数据怎么流、怎么切、怎么重叠、
     流水线怎么排、哪一步是瓶颈 —— 那种东西一张能动的图胜过三段文字。
 
-    ## 什么时候别用
+    ## 什么时候都别用
 
-    结论、定义、名词解释、代码逐行讲解。那些用文字说清更好，
-    硬做个动画反而把重点冲淡，还占掉整个屏幕。
+    结论、定义、名词解释、代码逐行讲解。那些用正文说清更好，
+    硬做一件作品反而把重点冲淡，还占掉整个屏幕。
 
     ## 沙箱里已经给你备好了套件（别再自己引库）
 
@@ -1647,10 +1696,16 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
     * 想在中途报一句（比如"这是第 120 帧的状态"）就调 `QFKit.report({ text })` ——
       它会带着**当时的画面**一起回来；不调也有一份自动的（首帧之后）。
     """
+    kind = str(args.get("kind") or "html").strip().lower()
+    title = str(args.get("title") or "").strip()
+    if kind == "markdown":
+        return _markdown_artifact(title, str(args.get("markdown") or ""))
     page = str(args.get("html") or "").strip()
-    title = str(args.get("title") or "").strip() or "演示"
+    title = title or "演示"
     if not page:
-        return {"error": "html 不能为空。"}
+        return {
+            "error": "html 不能为空（kind=html 时给 html；要写文章请把 kind 设成 markdown）。"
+        }
     if len(page) > DEMO_MAX_CHARS:
         return {
             "error": f"演示太大了（{len(page)} 字，上限 {DEMO_MAX_CHARS}）—— 精简一版再看。",
@@ -1697,15 +1752,16 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
     if not _demo_kit_ready():
         # 套件没同步就退回老规矩：让模型自己引库（能联网时可用）
         return {
-            "demo": {"title": title[:80], "html": page},
-            "note": "演示已挂上（沙箱 iframe，允许联网）。套件未就绪（`make vendor` 可取回），"
+            "artifact": {"title": title[:80], "kind": "html", "html": page},
+            "note": "作品已挂上（沙箱 iframe，允许联网）。套件未就绪（`make vendor` 可取回），"
             "所以库里得自己引 —— 建议直接用 d3 这类 https CDN。",
         }
 
     run_id = uuid.uuid4().hex[:12]
     return {
-        "demo": {
+        "artifact": {
             "title": title[:80],
+            "kind": "html",
             "html": _demo_page(page, title, _demo_theme(db), run_id=run_id),
             # **runId 是这条回路的钥匙**：页面那头 `QFKit.report` 按它认领
             #（宿主那条 `qfRun` 回填路 → `/chat/runs/{id}`），库里也按它把 run 存进这个零件。
@@ -1715,7 +1771,7 @@ def render_demo(db, args, ctx=None) -> dict:  # noqa: ANN001
         # 演示画在页面里，"它到底画成什么样"只有页面知道 —— 不等，模型手里就只剩一句
         # "应该出来了"（而那正是从前的样子）。等它，画面才会随回执回到模型眼前。
         "await_run": True,
-        "note": "演示已挂在这条消息上（他那边是个沙箱 iframe，套件已自动注入）。"
+        "note": "作品已挂在这条消息上（他那边是个沙箱 iframe，套件已自动注入）。"
         "**不要**把同一份 HTML 再贴进正文 —— 正文里说清它在演示什么、看哪里就行。"
         "这一轮会**等它跑完**：画面会**截图回传给你看**（页面报错与 GLSL 编译错误一起回来）。"
         "所以别急着下结论 —— 拿到图再说话，哪里不对就照实改。",
@@ -4249,11 +4305,17 @@ REGISTRY = {
             "required": ["code"],
         },
     },
-    "render_demo": {
+    "create_artifact": {
         "access": "exec",
         "group": "sandbox",
-        "fn": render_demo,
-        "description": "产出一个**能动的演示**（跑在沙箱 iframe 里）。"
+        "fn": create_artifact,
+        "description": "产出一件**作品**（artifact）：存在这条消息里、能单独打开读的东西。"
+        "两种形态，用 `kind` 选：\n"
+        "**`kind=\"markdown\"` = 一篇文章** —— 笔记整理、机制讲解、对比清单、读书笔记这类"
+        "**成篇的文字**。正文放 `markdown` 参数（标题、列表、表格、代码块、`$$` 公式都认，"
+        "与正文同一套渲染）。聊天正文适合短回答；值得重读的东西放这里，"
+        "不把对话撑长、也能单独打开。\n"
+        "**`kind=\"html\"` = 一个能动的页面**（演示，跑在沙箱 iframe 里）—— "
         "机制里有空间/时间结构时用它：数据怎么流、怎么切、怎么重叠、流水线怎么排、瓶颈在哪 —— "
         "一张能动的图胜过三段文字。"
         # 分工写清楚：用户说"用一下 matplotlib"时，模型从前会把它推到这里来（因为那份
@@ -4346,14 +4408,25 @@ REGISTRY = {
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "演示的标题（一句话）"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["html", "markdown"],
+                    "description": "作品形态：markdown = 一篇成篇的文章；html = 一个能动的页面",
+                },
+                "title": {"type": "string", "description": "作品标题（一句话，会显示在卡片上）"},
+                "markdown": {
+                    "type": "string",
+                    "description": "文章正文（kind=markdown 时给）。就是正经 Markdown："
+                    "`#` 标题、列表、表格、代码块、`$$…$$` 公式都认。"
+                    "**一篇只讲一件事**，长的材料按主题分篇。",
+                },
                 "html": {
                     "type": "string",
-                    "description": "页面正文（套件自动注入，别写 <script src>）；"
+                    "description": "页面正文（kind=html 时给；套件自动注入，别写 <script src>）；"
                     "推荐 `<div id=\"app\"></div>` + 一段 `text/babel` 脚本",
                 },
             },
-            "required": ["html"],
+            "required": ["kind", "title"],
         },
     },
     "explore_graph": {

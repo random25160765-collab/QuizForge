@@ -152,6 +152,10 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("conversations", "archived", "BOOLEAN NOT NULL DEFAULT 0"),
     # 置顶：老对话一律 False = 未置顶，正是想要的默认
     ("conversations", "pinned", "BOOLEAN NOT NULL DEFAULT 0"),
+    # 标题是不是系统起的（见 `models.Conversation.title_auto`）。老对话给 1 是
+    # **安全**的那一侧：它们的标题本来就是首句截出来的，模型要重起也只会更好；
+    # 而用户手改过名字的那几条，改名那一刻就会把它置 0，不会被覆盖。
+    ("conversations", "title_auto", "BOOLEAN NOT NULL DEFAULT 1"),
     ("messages", "mounts", "TEXT NOT NULL DEFAULT ''"),
     # 跨机器同步的稳定身份（见 `app/sync.py`）。自增 `id` 两台机器会撞号，
     # 同步只认这两列；老行由下面 `_BACKFILLS` 补一个随机串。

@@ -116,7 +116,8 @@ mobile/*.log
 # 源码才是唯一事实来源（README 里写了这条规矩）
 mobile/android/app/src/main/python/
 
-# 随包资源：前端产物与题库都是构建期生成（make web / export-bank-db.py）
+# 随包资源：前端产物是构建期生成的（make web）。
+# bank.db 不该存在 —— 安装包只放代码，`build-apk.sh` 见到它就报错退出
 mobile/android/app/src/main/assets/web/
 mobile/android/app/src/main/assets/bank.db
 

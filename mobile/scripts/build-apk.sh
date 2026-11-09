@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键出 APK：前端 → 题库快照 → Python 源 → Gradle。
+# 一键出 APK：前端 → Python 源 → Gradle。
 #
 # 用法：
 #   bash mobile/scripts/build-apk.sh                 # release（自签，可长期升级）
@@ -38,8 +38,13 @@ if [ "$SKIP_WEB" = "0" ]; then
   ( cd "$ROOT" && make web )
 fi
 
-echo "→ 题库快照"
-"$ROOT/api/.venv/bin/python" "$ROOT/mobile/scripts/export-bank-db.py"
+# 安装包里不放数据：题库走 Turso 整包（app/bank_cloud.py），新设备首启拉一次。
+# 快照不管哪天打，第二天就过期；跟着包发出去只会让每台设备多背 62MB 旧数据。
+echo "→ 题库：不随包（首启从云端整包拉）"
+if [ -e "$ANDROID/app/src/main/assets/bank.db" ]; then
+  echo "assets/bank.db 不该存在：安装包只放代码，题库走云端同步" >&2
+  exit 1
+fi
 
 echo "→ Python 源目录"
 bash "$ROOT/mobile/scripts/assemble-python.sh"

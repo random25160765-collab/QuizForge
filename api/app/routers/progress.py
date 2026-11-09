@@ -31,7 +31,7 @@ from sqlalchemy import func, select
 from .. import sync_ops
 from ..deps import DbSession
 from ..models import AppSettings, Record
-from ..settings_store import row as settings_row
+from ..settings_store import normalize, row as settings_row
 
 router = APIRouter(prefix="/api/progress", tags=["progress"])
 
@@ -134,6 +134,13 @@ def _upsert_settings(db: DbSession, incoming: dict, rev: int) -> tuple[dict, boo
     但原先**不告诉客户端**，于是客户端以为推成功了 —— 下一次加载它就把本机那份
     （含刚写的批注）换成服务端这份旧的，而且一声不响。收没收下必须回话。
     """
+    # 同步推上来的设置同样不能带本机状态键（`chatRead` / `graph` / `basket` / `skills`）：
+    # 那些跟着设备走，不该覆盖到另一台机器上。
+    incoming = normalize(incoming or {})
+    if not incoming:
+        existing = settings_row(db)
+        return (normalize(existing.data) if existing is not None else {}), True
+
     row = settings_row(db)
     if row is None:
         row = AppSettings(data=incoming, client_rev=rev)

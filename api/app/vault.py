@@ -18,6 +18,19 @@
 这一层与 `notelib` **同形**（libraries / library / tree / read_note / search /
 write_body / create_note + NoteError/NoteNotFound），所以 `tools.py` 里那五个
 LLM 笔记工具只要把导入换成这里，业务代码一行不用改。
+
+## 降级（2026-11-09）：没有 Obsidian 的设备
+
+上面那条"没有 Obsidian 笔记功能就无效"被**手机端**打破了：手机上没有 Obsidian，
+也不可能有本地文件路径。于是加了第二条路 ——
+
+* 桥在（`bridge.json` + 心跳新鲜）→ 走信箱，桌面行为一行不改；
+* 桥不在（没配路径 / Obsidian 没开 / 心跳过期）→ 转 `notecloud`，读写 `notes` 表
+  （它是桌面那台机器上 `obsidian-sync` 插件同步下来的**云副本**）。
+
+边界必须记住：**降级时读到的是上次同步的版本，不是实时文件**。所以桌面端
+永远优先信箱；只有信箱不可用时才退到表。`ping` / `open_note` **不降级** ——
+"检测连接"要如实回答本地 Obsidian 在不在，打不开文件也要如实报错。
 """
 
 from __future__ import annotations
@@ -31,6 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import notecloud
 from . import notelib
 
 #: 与 notelib 同名的异常：工具的 `except notelib.NoteNotFound`（换成 vault 之后）
@@ -52,9 +66,10 @@ _HASH: dict[tuple[str, str], str] = {}
 
 
 def configure(db: Any = None) -> None:
-    """工具层每次调用前喂一次 db（读设置用）。"""
+    """工具层每次调用前喂一次 db（读设置用；降级路径也要用它查表）。"""
     _conf["db"] = db
     _conf["at"] = 0.0
+    notecloud.configure(db)
 
 
 def _normalize(raw: str) -> str:
@@ -161,6 +176,19 @@ def _bridge() -> dict[str, Any]:
     return meta
 
 
+def _online() -> bool:
+    """桥这会儿可用吗。**判断只此一处** —— 每个入口各写一遍迟早会不一致。
+
+    注意它把 `_bridge()` 的所有失败都当成"不在线"（没配路径、没开 Obsidian、
+    心跳过期）。这正是降级的定义：本地拿不到，就去读云副本。
+    """
+    try:
+        _bridge()
+        return True
+    except NoteError:
+        return False
+
+
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     """先写 tmp 再 rename —— 对端要么看不到，要么看到完整文件。"""
     box = path.parent.parent
@@ -234,6 +262,8 @@ def _library(vault: str, name: str = "") -> notelib.Library:
 
 
 def libraries() -> list[notelib.Library]:
+    if not _online():
+        return notecloud.libraries()
     # ping 里带着笔记数：`list_notes` 不带 lib 时要把"这个库有几篇"报给模型，
     # 显示 0 会让它以为库是空的。
     info = _call("ping", {}, expect="1s")
@@ -254,6 +284,8 @@ def library(name: str = "") -> notelib.Library:
 
 
 def tree(lib: notelib.Library, dir_path: str = "") -> dict[str, Any]:
+    if not _online():
+        return notecloud.tree(lib, dir_path)
     params: dict[str, Any] = {}
     if dir_path:
         params["dir"] = dir_path
@@ -261,6 +293,13 @@ def tree(lib: notelib.Library, dir_path: str = "") -> dict[str, Any]:
 
 
 def read_note(lib: notelib.Library, rel: str) -> dict[str, Any]:
+    if not _online():
+        result = notecloud.read_note(lib, rel)
+        # 降级路径也要记 hash：下一步 write_body 的乐观锁靠它
+        if result.get("hash"):
+            _HASH[(lib.name, rel)] = str(result["hash"])
+        return result
+
     result = _call("read", {"path": rel})
     # 记住 hash：工具层的下一步是 write_body(merged)
     if result.get("hash"):
@@ -277,6 +316,8 @@ def read_note(lib: notelib.Library, rel: str) -> dict[str, Any]:
 
 
 def search(query: str, *, lib_name: str = "", limit: int = 50, folder: str = "") -> list[dict[str, Any]]:
+    if not _online():
+        return notecloud.search(query, lib_name=lib_name, limit=limit, folder=folder)
     params: dict[str, Any] = {"query": query, "limit": limit}
     if lib_name:
         params["lib"] = lib_name
@@ -288,8 +329,14 @@ def search(query: str, *, lib_name: str = "", limit: int = 50, folder: str = "")
 
 
 def write_body(lib: notelib.Library, rel: str, body: str, *, why: str = "编辑") -> dict[str, Any]:
-    params: dict[str, Any] = {"path": rel, "body": body, "why": why}
     known = _HASH.get((lib.name, rel))
+    if not _online():
+        result = notecloud.write_body(lib, rel, body, why=why, base_hash=known or "")
+        if result.get("hash"):
+            _HASH[(lib.name, rel)] = str(result["hash"])
+        return result
+
+    params: dict[str, Any] = {"path": rel, "body": body, "why": why}
     if known:
         params["baseHash"] = known
     result = _call("write", params, expect="10s")
@@ -299,6 +346,8 @@ def write_body(lib: notelib.Library, rel: str, body: str, *, why: str = "编辑"
 
 
 def create_note(lib: notelib.Library, folder: str, title: str, kind: str = "note") -> dict[str, Any]:
+    if not _online():
+        return notecloud.create_note(lib, folder, title, kind)
     return _call("create", {"folder": folder, "title": title, "kind": kind}, expect="10s")
 
 
@@ -309,10 +358,17 @@ def create_at(lib: notelib.Library, rel: str, body: str = "") -> dict[str, Any]:
     叫 X 的"；这个给的是完整路径，`edit_note` 写一个还不存在的文件时用它
     （coding agent 的惯例：写新文件 = 创建）。
     """
+    if not _online():
+        return notecloud.create_at(lib, rel, body)
     return _call("create", {"path": rel, "body": body}, expect="10s")
 
 
 def open_note(path: str, line: int = 0) -> dict[str, Any]:
+    """在 Obsidian 里打开。**不降级**：云端副本打不开 —— 那是本机文件才有的动作。"""
+    if not _online():
+        raise NoteError(
+            "这台设备上没有 Obsidian，打不开笔记窗口（笔记本身可以读写，见 read_note / edit_note）。"
+        )
     return _call("open", {"path": path, "line": line}, expect="1s")
 
 

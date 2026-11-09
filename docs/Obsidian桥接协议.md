@@ -297,6 +297,10 @@ class NoteError / NoteNotFound      # 与 notelib 同名，工具的 except 不�
 ## 十、明确不做
 
 - 不做网络传输（HTTP / WebSocket / 命名管道都不做）—— 见 §一。
-- 不做本地文件降级：没有 Obsidian，笔记工具就是不可用（用户明确要求）。
-- 不把 vault 内容写进 QFStudio 的数据库或快照；正文只在一次工具调用里进出。
+- 不做本地文件降级：**本插件**不做 —— 没有 Obsidian，它就没有文件可读。自 2026-11-09 起，
+  QF 侧在桥不可用时会退到 `notes` 云副本，那是**另一条链路**（见
+  [`Obsidian云同步协议.md`](Obsidian云同步协议.md)）；插件 A 的行为一行不变。
+- 不把 vault 内容写进 QFStudio 的数据库或快照：**本插件不写**。云副本（`notes` 表）
+  由另一个插件 `quizforge-sync` 与 QF 的同步通道维护，同样见云同步协议。
 - 不做双向同步、不做后台索引：每次请求现读，需要搜索时由插件用它的 `metadataCache` 回答。
+  云同步是**另一个插件**的职责，与本协议无关。

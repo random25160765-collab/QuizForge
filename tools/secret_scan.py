@@ -17,7 +17,7 @@ fork 里也有），只能换密钥。所以真正的解法是别再让它出去
 ## 扫什么
 
 扫的是 `git ls-files`（**会被提交的那些**），不是整个目录：
-`.env`、`config/ai.local.json`、`reference/` 这些本来就该待在库外，
+`.env`、`config/settings.local.json`、`reference/` 这些本来就该待在库外，
 扫它们只会天天误报，然后就没人看这个报告了。
 
 `.gz` 会解压着扫（那次事故就是栽在这里：密钥没在明文里，在压缩包里）。

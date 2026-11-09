@@ -6,8 +6,8 @@
 
 ## 谁付钱
 
-**这台机器的主人**用自己的密钥（`app_settings.data.ai`），或者走内测通道
-（`config/ai.local.json`，站长那份）。服务端只保留三项与凭据无关的策略：
+**这台机器的主人**用自己的密钥（`app_settings.data.ai`，即
+`config/settings.local.json` 的 `ai` 块）。服务端只保留三项与凭据无关的策略：
 `ai_enabled`（总开关）/ `ai_daily_quota`（每日上限，0 不限）/ `ai_timeout_ms`（超时上限）。
 
 代价也写在这里：密钥存在库里（`app_settings.data.ai.apiKey`），
@@ -266,7 +266,7 @@ def resolve_config(db) -> dict:  # noqa: ANN001
     timeout_ms = int(conf.get("timeoutMs") or DEFAULT_TIMEOUT_MS)
     timeout_ms = max(MIN_TIMEOUT_MS, min(timeout_ms, settings.ai_timeout_ms))
 
-    if conf.get("enabled") and api_key:
+    if api_key:
         model = str(conf.get("model") or "").strip() or DEFAULT_MODEL
         return {
             "apiKey": api_key,
@@ -283,16 +283,11 @@ def resolve_config(db) -> dict:  # noqa: ANN001
             "label": "你自己的密钥",
         }
 
-    if not conf.get("enabled"):
-        raise HTTPException(
-            http_status.HTTP_503_SERVICE_UNAVAILABLE,
-            "尚未启用 AI：打开「设置 → AI」，填入你自己的 API 密钥"
-            "（或直接改 `config/settings.local.json` 的 ai 块）。",
-        )
-
+    # 2026-11-09：「启用 AI」开关删除 —— 有没有密钥就是唯一判据。
     raise HTTPException(
         http_status.HTTP_503_SERVICE_UNAVAILABLE,
-        "还没有填写 API 密钥：打开「设置 → AI」，填入你自己的密钥即可。",
+        "还没有填写 API 密钥：打开「设置 → AI」，填入你自己的密钥即可"
+        "（或直接改 `config/settings.local.json` 的 ai 块）。",
     )
 
 

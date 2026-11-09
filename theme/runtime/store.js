@@ -31,6 +31,11 @@
     attempts: PREFIX + 'attempts',
     // 待上传的「重新设基线」（重置 / 导入）
     resets: PREFIX + 'resets',
+    // 滤镜挂载记录（2026-11-09 从设置里搬出来）：本机缓存那一份。
+    // 权威在 `lens_records` 表（随对话同步、进用户数据包），这里只为离线可读。
+    lens: PREFIX + 'lens',
+    // 有还没推上去的挂载改动（跨刷新存活）
+    lensDirty: PREFIX + 'lensDirty',
   };
 
   /* ------------------------------------------------------- 存储后端 */
@@ -94,26 +99,43 @@
   /* ---------------------------------------------------------- 设置 */
 
   var DEFAULT_SETTINGS = {
-    theme: 'dark',
+    theme: 'light',
     fontScale: 1,
-    maxWidth: 880,
+    maxWidth: 860,
     shuffle: false,
     // 首页主题排序：被置顶的 topic key 会排到最前，顺序即用户自定义顺序
     pinnedTopics: [],
     // 选题篮：浏览题库时攒下的题目 id，跨刷新保留
     basket: [],
     ai: {
-      enabled: false,
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o-mini',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-flash',
       apiKey: '',
-      timeoutMs: 60000,
+      timeoutMs: 90000,
       temperature: 0.2,
       jsonMode: true,
       fallbackSelfRate: true,
       strictRubric: true,
     },
   };
+
+  /* **只在本机、不进设置文件也不跨机同步的键。**
+   *
+   * 设置文件（`config/settings.local.json`）是"给人看、给新用户复制"的那一份，
+   * 从前它是整个 settings 对象的镜像 —— 聊天读到哪儿（`chatRead`，实测占文件七成）、
+   * 图谱面板与布局参数（`graph`）、选题篮（`basket`）、滤镜的旧键（`skills`）都被推了进去。
+   * 后果：复制设置会把别人的阅读位置一起带走，导入又会把它们清掉。
+   *
+   * **刻意不做白名单**：新加一项设置时默认就该进文件，漏登记只是不同步；
+   * 白名单会让新增设置悄悄不同步。这里只列"明确不该出去"的。
+   *
+   * `notes` / `places` 不在此列 —— 后端 `settings_store.marks_of()` 要从设置行里
+   * 读它们（导出分享页）。滤镜记录也不在里面：它属于数据，住 `lens_records` 表，
+   * 本机只留一份缓存（见 `lensRows`）。
+   */
+  // `onboarding`：引导做没做过是**每台设备自己的事** —— 同步到别的设备
+  // 会让新机器跳过引导，正是 2026-11-09 那台手机"什么都没有"的来源之一。
+  var LOCAL_ONLY = { chatRead: 1, graph: 1, basket: 1, skills: 1, lens: 1, onboarding: 1 };
 
   function deepMerge(base, patch) {
     var out = Array.isArray(base) ? base.slice() : Object.assign({}, base);
@@ -139,6 +161,115 @@
     return settingsCache;
   }
 
+  /** 只含"该进设置文件"的那些键（去掉 `LOCAL_ONLY`）。
+   *
+   * 设置文件、复制 / 从剪贴板导入都只认这一份；本机状态留在 localStorage，
+   * 由 `adoptSettings` / `hydrateSettings` 在覆盖时护住。 */
+  function fileSettings(data) {
+    var src = data && typeof data === 'object' ? data : settings();
+    var out = {};
+    Object.keys(src).forEach(function (key) {
+      if (!LOCAL_ONLY[key]) out[key] = src[key];
+    });
+    return out;
+  }
+
+  /** 服务端那份覆盖上来时，把本机状态键原样搬回去（否则打开设置页就没了）。 */
+  function keepLocalOnly(next, mine) {
+    Object.keys(LOCAL_ONLY).forEach(function (key) {
+      if (mine[key] === undefined) delete next[key];
+      else next[key] = mine[key];
+    });
+    return next;
+  }
+
+  /* ---------------------------------------------------------- 滤镜记录
+   *
+   * 2026-11-09 起**不是设置**：一条记录一行，住 `lens_records` 表（随对话走
+   * Turso 行级同步、进用户数据包）。这里只是本机缓存 —— 离线时聊天页仍能画
+   * 那几枚 chip，写操作先落缓存，再尽力推给服务端（推不动就留脏标记，下次再推）。
+   */
+  var lensCache = null;
+
+  function lensRows() {
+    if (!lensCache) {
+      var stored = readJSON(K.lens, null);
+      if (!Array.isArray(stored) || !stored.length) {
+        // 老数据：升级前挂在设置里的那批（`skills` 是更早的名字）
+        var conf = settings();
+        var legacy = Array.isArray(conf.lens) ? conf.lens : conf.skills;
+        if (Array.isArray(legacy) && legacy.length) stored = legacy;
+      }
+      lensCache = Array.isArray(stored) ? stored : [];
+      if (lensCache.length) writeJSON(K.lens, lensCache);
+    }
+    return lensCache;
+  }
+
+  function writeLensRows(rows) {
+    lensCache = Array.isArray(rows) ? rows : [];
+    writeJSON(K.lens, lensCache);
+    return lensCache;
+  }
+
+  function lensDirty() {
+    return rawGet(K.lensDirty) === '1';
+  }
+
+  /** 服务端那份灌进本机缓存。本机有没推上去的改动时**不覆盖**（同设置的规矩）。 */
+  function hydrateLens(items) {
+    if (!Array.isArray(items)) return false;
+    if (lensDirty()) return false;
+    writeLensRows(items.map(function (one) {
+      return {
+        cid: String(one.cid || ''),
+        mid: one.mid == null ? '' : String(one.mid),
+        key: String(one.key || ''),
+        on: one.on !== false,
+        at: Number(one.at || 0),
+      };
+    }));
+    return true;
+  }
+
+  /** 推一条给服务端；失败就留脏标记，下次加载再推一遍。 */
+  var lensPending = 0;
+  var lensFailed = false;
+
+  function pushLensRecord(one) {
+    if (!QF.api || !QF.api.put || !one || !one.cid) return;
+    rawSet(K.lensDirty, '1');
+    lensPending += 1;
+    QF.api.put('/lens/records', one).then(function () {
+      lensPending -= 1;
+      if (!lensPending && !lensFailed) rawSet(K.lensDirty, '0');
+    }, function () {
+      lensPending -= 1;
+      lensFailed = true;
+    });
+  }
+
+  /** 把本机所有记录重推一遍（加载时用：上次离线攒下的那些）。 */
+  function flushLens() {
+    if (!lensDirty() || !QF.api || !QF.api.put) return;
+    var rows = lensRows();
+    if (!rows.length) {
+      rawSet(K.lensDirty, '0');
+      return;
+    }
+    var left = rows.length;
+    var failed = false;
+    rows.forEach(function (one) {
+      QF.api.put('/lens/records', one).then(function () {
+        left -= 1;
+        if (!left && !failed) rawSet(K.lensDirty, '0');
+      }, function () {
+        left -= 1;
+        failed = true;
+      });
+    });
+  }
+
   function saveSettings(patch) {
     settingsCache = deepMerge(settings(), patch || {});
     writeJSON(K.settings, settingsCache);
@@ -157,31 +288,73 @@
    * **只提交变动的键**（patch），不提交整份：设置有好几个页面在用，各自手里的
    * `settings()` 可能已经过期；整份 PUT 会把别的页刚写的键冲掉（实测把
    * `obsidian.vaultPath` 冲成了空串）。服务端默认也是按 patch 合并的。
-   * 防抖 400ms：拖滑块会连着改好几次，不必每次都落盘。 */
+   * 防抖 120ms：拖滑块会连着改好几次，不必每次都落盘；但**不能太长** ——
+   * 手机上填完 API key 直接划走/杀进程，400ms 那一版经常没发出去（2026-11-09
+   * 用户实测"填入设置后退出软件，设置不会保存"）。剩下一段由 `pagehide` 兜底。 */
   var settingsFileTimer = 0;
   var pendingFilePatch = null;
 
+  /** 立刻把攒着的 patch 发出去（页面要走了就用这个，fetch keepalive 保证发得出去）。 */
+  function flushSettingsFile() {
+    if (!pendingFilePatch) return;
+    if (settingsFileTimer) {
+      window.clearTimeout(settingsFileTimer);
+      settingsFileTimer = 0;
+    }
+    var body = pendingFilePatch;
+    pendingFilePatch = null;
+    var base = String((QF.config && QF.config.apiBase) || '').replace(/\/+$/, '');
+    try {
+      // 用 keepalive：页面已经隐藏/卸载，普通 fetch 会被浏览器掐掉
+      fetch(base + '/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ patch: body }),
+        credentials: 'same-origin',
+        keepalive: true,
+      });
+    } catch (err) {
+      pendingFilePatch = body;   // 发都不出去就留着，下一次改动 / 隐藏时再试
+    }
+  }
+
   function pushSettingsFile(patch) {
     if (!QF.api || !QF.api.put) return;
-    pendingFilePatch = deepMerge(pendingFilePatch || {}, patch || {});
+    // 只改了本机状态（读到哪儿 / 面板位置）就不必打扰服务端。
+    var send = fileSettings(deepMerge({}, patch || {}));
+    if (!Object.keys(send).length) return;
+    pendingFilePatch = deepMerge(pendingFilePatch || {}, send);
     if (settingsFileTimer) window.clearTimeout(settingsFileTimer);
     settingsFileTimer = window.setTimeout(function () {
       settingsFileTimer = 0;
       var body = pendingFilePatch;
       pendingFilePatch = null;
       QF.api.put('/settings', { patch: body }).catch(function () {
-        /* 写文件失败只影响"下次打开时看到的值"；这一次界面已经生效了 */
+        // 没写进去：放回队列，等下一次改动或页面隐藏时重试（别静默弄丢）
+        pendingFilePatch = deepMerge(body, pendingFilePatch || {});
       });
-    }, 400);
+    }, 120);
   }
+
+  window.addEventListener('pagehide', flushSettingsFile);
+  document.addEventListener('visibilitychange', function () {
+    // 手机切后台 / 锁屏走这条（有些 WebView 不发 pagehide）
+    if (document.visibilityState === 'hidden') flushSettingsFile();
+  });
 
   /** 用**服务端那份设置文件**整份替换本机（设置页打开时调）。
    *
    * 与 `hydrateSettings` 的区别：那个遵守 rev/pending 的合并规则（同步用），
-   * 这个不管 rev —— 设置页是编辑界面，打开就该显示文件里现在是什么。 */
-  function adoptSettings(data) {
+   * 这个不管 rev —— 设置页是编辑界面，打开就该显示文件里现在是什么。
+   *
+   * `opts.merge`：**补丁式导入**（剪贴板 / 别的机器拷来的 JSON 可能只有半份）。
+   * 以本机现值为底，导入里没提到的键保持不动 —— 否则缺 `ai` 就回落到
+   * `DEFAULT_SETTINGS`，把用户填好的 baseUrl / model / 密钥一起冲成默认值。 */
+  function adoptSettings(data, opts) {
     if (!data || typeof data !== 'object') return false;
-    settingsCache = deepMerge(DEFAULT_SETTINGS, data);
+    var mine = settings();   // 先取本机那份：里面才有 LOCAL_ONLY 的状态
+    var base = opts && opts.merge ? mine : DEFAULT_SETTINGS;
+    settingsCache = keepLocalOnly(deepMerge(base, data), mine);
     writeJSON(K.settings, settingsCache);
     clearSettingsDirty();
     return true;
@@ -588,7 +761,8 @@
 
     var got = false;
     if (snapshot.settings && typeof snapshot.settings === 'object') {
-      settingsCache = deepMerge(DEFAULT_SETTINGS, snapshot.settings);
+      var mine = settings();   // 同上：本机状态键要在这份覆盖里活下来
+      settingsCache = keepLocalOnly(deepMerge(DEFAULT_SETTINGS, snapshot.settings), mine);
       writeJSON(K.settings, settingsCache);
       // 本机那份已经被服务端这份取代了（它就是权威）→ 未推标记可以清掉。
       // 这一步不能省：不清的话，每次加载都会走上面那条早退，本机再也接受不到服务端的更新。
@@ -1346,6 +1520,8 @@
     KEYS: K,
     available: available,
     settings: settings,
+    // 设置文件 / 复制 / 导入只认这一份（去掉只在本机的状态键）
+    fileSettings: fileSettings,
     // 云端同步（离线模式下 QF.sync 为 null，这些函数不会被用到）
     hydrate: hydrate,
     hydrateSettings: hydrateSettings,
@@ -1547,28 +1723,20 @@
     /* ------------------------------------------------------------ 流程（lens / 滤镜）
      *
      * `docs/对话树.md` §十二：滤镜是一段提示词，挂在**节点**上、沿树继承、可回退。
-     * 存法与记号同源（settings）：一条 `{cid, mid, key, on}` 记录 —— 前端只管写，
-     * **服务端按当下的链自己算"现在挂着什么"**（见 `app/lens.py` 的 `resolve`）。
+     * 记录一条 `{cid, mid, key, on}`：前端写、服务端按当下的链算"现在挂着什么"
+     * （见 `app/lens.py` 的 `resolve`）。
      *
-     * 为什么不本地算好再报给服务端：链是会变的（切分支、编辑重发），本地那一份随时可能
-     * 过期；交给服务端按当下的链算，就不存在"两边不一致"这回事。
-     * `mid` 为空 = 整条对话（第一条消息还没有 mid 可挂，见 `chat.js` 里 `/` 那一段）。
-     *
-     * **老数据还认**：这一批记录原先存在 `skills` 这个键上（那时它叫 skill）。
-     * 读的时候两处都看，写只写 `lens` —— 升级之后"我已经装上的那些"不该凭空消失。
+     * 2026-11-09 起它**不属于设置**：权威在 `lens_records` 表（随对话同步、
+     * 进用户数据包），这里读的是本机缓存（离线也画得出那几枚 chip）。
+     * `mid` 为空 = 整条对话（第一条消息还没有 mid 可挂）。
      */
-    _lensRows: function () {
-      var conf = settings();
-      if (Array.isArray(conf.lens)) return conf.lens;
-      return Array.isArray(conf.skills) ? conf.skills : [];
-    },
     lens: function () {
-      return this._lensRows().slice();
+      return lensRows().slice();
     },
     /** 这一条消息上挂过哪些（一条记录一条）。 */
     lensOn: function (mid) {
       var key = mid == null ? '' : String(mid);
-      return this._lensRows().filter(function (one) {
+      return lensRows().filter(function (one) {
         return one && String(one.mid || '') === key;
       });
     },
@@ -1577,20 +1745,25 @@
       var one = info || {};
       var key = String(one.key || '').trim();
       if (!key) return false;
+      var cid = one.cid ? String(one.cid) : '';
       var mid = one.mid == null ? '' : String(one.mid);
-      var list = this._lensRows().filter(function (each) {
-        return !(each && String(each.mid || '') === mid && String(each.key || '') === key);
+      var list = lensRows().filter(function (each) {
+        return !(
+          each &&
+          String(each.cid || '') === cid &&
+          String(each.mid || '') === mid &&
+          String(each.key || '') === key
+        );
       });
-      list.push({
-        cid: one.cid ? String(one.cid) : '',
-        mid: mid,
-        key: key,
-        on: one.on !== false,
-        at: Date.now(),
-      });
-      saveSettings({ lens: list });
+      var row = { cid: cid, mid: mid, key: key, on: one.on !== false, at: Date.now() };
+      list.push(row);
+      writeLensRows(list);
+      pushLensRecord(row);
       return true;
     },
+    // 服务端那份灌进本机缓存 / 把离线攒下的改动重推（`/api/chat/mounts` 拿到记录时调）
+    hydrateLens: hydrateLens,
+    flushLens: flushLens,
     // 选题篮落盘：攒题可以跨刷新、跨会话继续
     basket: function () {
       var list = settings().basket;

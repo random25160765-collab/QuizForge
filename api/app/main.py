@@ -28,15 +28,19 @@ def create_app() -> FastAPI:
     async def lifespan(_app: FastAPI):  # noqa: ANN202
         """应用生命周期的两头。
 
-        启动时把**自动同步**的节拍器开起来（见 `app/autosync.py`）：
-        只要设置里配了 Turso，行级数据与资料包就每两分钟自动对齐一次，
+        启动时把**自动同步**的后台线程开起来（见 `app/autosync.py`）：
+        配了 Turso 之后，本机一改就推、别的设备一改这边 5 秒内就能发现，
         不再依赖用户去点设置页那颗按钮。测试与离线环境用
         `QF_SYNC_AUTO=0` 关掉（`tests/conftest.py` 已设）。
         """
         from . import autosync  # noqa: PLC0415 - 避免导入期互相拉扯
 
         if autosync.start():
-            logger.info("自动同步已启动：每 %.0f 秒一轮", autosync.interval_seconds())
+            logger.info(
+                "自动同步已启动：有改动就推（每 %.0f 秒探测远端），每 %.0f 秒兜底一轮",
+                autosync.poll_seconds(),
+                autosync.interval_seconds(),
+            )
         yield
 
     app = FastAPI(

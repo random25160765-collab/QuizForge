@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select, text
 
 from .. import materials as material_text
+from .. import slice_text
 from ..deps import DbSession
 from ..models import (
     KnowledgePoint,
@@ -54,8 +55,15 @@ def material_lines(
         raise HTTPException(404, "没有这份材料：" + slug)
     try:
         lines = material_text.read_lines(material, start, end)
-    except material_text.MaterialError as exc:
-        raise HTTPException(503, str(exc)) from None
+    except material_text.MaterialError:
+        # 原文件不在这台机器上（手机 / 换机）：走切片正文；懒加载时按需从云端取
+        lines = slice_text.read_lines(db, material, start, end)
+        if not lines:
+            raise HTTPException(
+                503,
+                "这份材料在本机既没有原文件，也没有取到切片正文"
+                "（文件不在这台机器上；先 `make library-pull`，或检查云同步）。",
+            ) from None
 
     return {
         "material": material.slug,

@@ -1,36 +1,42 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  启动页版式：标 → 名 → 一行状态。与网页端 starting.html 是同一套版式
+  （那边是「标 / 名 / 一道细线 / 一个词」），但必须走原生：WebView 建起来时
+  后端还没开始监听，这一屏要能立刻出现，不能指望前端。
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:gravity="center"
     android:padding="32dp"
-    android:background="#f7f9fb">
+    android:background="#F9FAFB">
 
     <ImageView
-        android:layout_width="96dp"
-        android:layout_height="96dp"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
         android:src="@mipmap/ic_launcher"
         android:contentDescription="@string/app_name" />
 
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_marginTop="20dp"
+        android:layout_marginTop="18dp"
         android:text="@string/app_name"
-        android:textSize="20sp"
+        android:textSize="15sp"
         android:textStyle="bold"
-        android:textColor="#1d2b36" />
+        android:letterSpacing="0.02"
+        android:textColor="#0F1A24" />
 
     <TextView
         android:id="@+id/splash_status"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
+        android:layout_marginTop="14dp"
         android:gravity="center"
-        android:text="正在启动…"
-        android:textSize="13sp"
+        android:text="正在准备"
+        android:textSize="12sp"
         android:lineSpacingExtra="3dp"
-        android:textColor="#5b6b78" />
+        android:textColor="#77828E" />
 
 </LinearLayout>

@@ -13,7 +13,7 @@
 ```
 ┌─ SplashActivity（原生启动页）
 │    · 释放 assets/web → filesDir/web（25M，按 lastUpdateTime 判断要不要重放）
-│    · 拷贝 assets/bank.db → filesDir/quizforge/quizforge.db（仅首次）
+│    · 建空库（安装包不带数据；题库由首轮同步从 Turso 拉）
 │    · Python.start() → android_boot.start_in_thread()
 │    · 每秒打 /api/health，就绪后跳 MainActivity，失败则显示日志尾部
 └─ MainActivity（BridgeActivity）
@@ -84,13 +84,17 @@ print('key=' + key.hex()[:16], 'blob=' + blob.hex()[:24])"
 
 对不上就说明两端的算法参数被改动了 —— 症状是「拉下来的对话全是乱码/解密失败」。
 
-## 题库怎么随包走
+## 题库怎么走
 
-`mobile/scripts/export-bank-db.py` 按 `app/datapack.py` 的 `BANK_TABLES` 从 `data/quizforge.db`
-抽一张只含题库表的新库（59M），**用户表与 qf_sync_\* 一张都不进** —— 既减体积，也避免把
-对话/进度发出去。首启由 `BootHelper` 拷成工作库，`ensure_schema` 再补建用户表。
+题库**不再随包**（2026-11-09 起）。题目、考纲、概念 / 点 / 边由 `app/bank_cloud.py`
+整包同步到 Turso（业务键对齐，题目按 768KB 分块）；材料与切片正文由
+`app/library_cloud.py` 搬。新设备首启是一张空库，头一轮同步（启动后 5 秒）把题库拉下来
+—— 实测 2055 题 + 981 个点 + 4841 条边约 2 秒，材料正文 33MB 约 5 秒。
 
-题库不参与同步：手机与电脑各自有题库，同步的只有用户态。
+代价：**首启必须联网一次**（或至少先有一次同步配置）。没网时就是空库 ——
+不内置快照是刻意的：**安装包只放代码，不放数据**。快照打完第二天就过期，
+跟着包发只会让每台设备多背 62MB 旧数据。`build-apk.sh` 里有一道闸：
+`assets/bank.db` 存在就报错退出。
 
 ## 已知限制
 

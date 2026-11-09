@@ -7,9 +7,10 @@
 
 拷什么：
 
-* `config/settings.local.json` 里的 `turso` 块（url / token / enabled）→
-  设备首启时落到 `filesDir/quizforge/config/settings.local.json`
-* `config/snapshot.key`（对话端到端加密口令）→ `filesDir/quizforge/snapshot.key`
+* `config/settings.local.json` 里的 `turso` 块（url / token / enabled）**与
+  `syncPassphrase`**（对话端到端加密口令）→ 设备首启时落到
+  `filesDir/quizforge/config/settings.local.json`
+  （2026-11-09 起口令也住设置文件，不再单独拷 `snapshot.key`）
 
 已有的设备文件不会被覆盖（BootHelper 只补缺），所以升级包不会抹掉用户改过的设置。
 """
@@ -17,7 +18,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 
@@ -35,18 +35,26 @@ def main() -> None:
     if not isinstance(turso, dict) or not turso.get("url"):
         raise SystemExit("settings.local.json 里没有 turso 配置，没什么可注入的")
 
+    payload = {"turso": turso}
+    passphrase = str(data.get("syncPassphrase") or "").strip()
+    if passphrase:
+        payload["syncPassphrase"] = passphrase
+
     ASSETS.mkdir(parents=True, exist_ok=True)
     (ASSETS / "settings.local.json").write_text(
-        json.dumps({"turso": turso}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(f"✓ turso → {ASSETS / 'settings.local.json'}（url={turso.get('url')}）")
-
-    key = ROOT / "config" / "snapshot.key"
-    if key.is_file():
-        shutil.copyfile(key, ASSETS / "snapshot.key")
-        print(f"✓ 口令 → {ASSETS / 'snapshot.key'}")
+    if passphrase:
+        print("✓ 口令 → 同一份 settings.local.json 的 syncPassphrase")
     else:
-        print("· 没有 config/snapshot.key，对话同步会因缺口令被拒绝（符合端到端的设计）")
+        print("· settings.local.json 里没有 syncPassphrase，对话同步会因缺口令被拒绝（符合端到端的设计）")
+
+    # 老包留下的那个文件：口令已经搬进设置，留着它就是"两份"
+    stale = ASSETS / "snapshot.key"
+    if stale.is_file():
+        stale.unlink()
+        print(f"✓ 删掉旧的 {stale.name}（口令只在设置文件里）")
 
     print("⚠️ 以上内容会进入 APK，只适合自用包；不要提交到仓库。")
 

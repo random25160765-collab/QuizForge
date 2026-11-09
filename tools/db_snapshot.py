@@ -20,7 +20,7 @@
     python3 tools/db_snapshot.py save --out db/quizforge.db.gz       # 库 → 明文快照
     python3 tools/db_snapshot.py encrypt --in db/quizforge.db.gz --out db/quizforge.db.gz.enc
     python3 tools/db_snapshot.py load --path db/quizforge.db.gz.enc  # 密文快照 → 库（--force 覆盖）
-    python3 tools/db_snapshot.py genkey                              # 生成 config/snapshot.key
+    python3 tools/db_snapshot.py genkey                              # 生成口令（写进 config/settings.local.json）
     python3 tools/db_snapshot.py load --path … --target /tmp/x.db    # 换个落点（自检用）
 
 ## 快照分三份：**三份都只在本机，绝不进 git**（2026-11-08 起）
@@ -33,8 +33,9 @@
   不带也行，`make embed` 重建。
 
 口令只有一个，三处来源（按顺序）：环境变量 `QUIZFORGE_SNAPSHOT_PASSPHRASE`、
-`config/snapshot.key`、终端里现敲。生成口令走 `make snapshot-key` —— 一台机器
-生成一次，把 `config/snapshot.key` 复制到每一台要同步的机器（它被 gitignore）。
+`config/settings.local.json` 的 `syncPassphrase`（老机器还有 `config/snapshot.key`，
+读到就搬进设置并删掉）、终端里现敲。生成口令走 `make snapshot-key` —— 一台机器
+生成一次，把同一个 `syncPassphrase` 带到每一台要同步的机器（设置文件已被 gitignore）。
 
 为什么这么分：向量占全库的 **82.9%**（实测 159.7 / 192.6 MB），而它**是派生物** ——
 `make embed` 随时能从正文重算出来（GPU 约 10 分钟）。更要紧的是它**压不动**：
@@ -225,46 +226,78 @@ def decrypt_file(src: Path, dst: Path, passphrase: str) -> None:
     dst.write_bytes(plain)
 
 
-def _key_file() -> Path:
+def _settings_file() -> Path:
+    return ROOT / "config" / "settings.local.json"
+
+
+def _legacy_key_file() -> Path:
+    """2026-11-09 之前口令住在这里（`config/snapshot.key`），现在只当迁移来源。"""
     return ROOT / "config" / "snapshot.key"
 
 
+def _settings_passphrase() -> str:
+    """设置文件里的那份口令：`syncPassphrase`（与 `api/app/sync.py` 同一个键）。"""
+    try:
+        data = json.loads(_settings_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str((data or {}).get("syncPassphrase") or "").strip() if isinstance(data, dict) else ""
+
+
 def _passphrase() -> str:
-    """口令的三个来源，按顺序：环境变量 → config/snapshot.key → 终端里现敲。
+    """口令的来源，按顺序：环境变量 → 设置文件的 `syncPassphrase` →
+    老的 `config/snapshot.key` → 终端里现敲。
 
     找不到就报错并退出：宁可不存不取，也不许拿错误的口令产出解不开的快照。
     """
     env = os.environ.get(_PASSPHRASE_ENV, "").strip()
     if env:
         return env
-    key_file = _key_file()
+    text = _settings_passphrase()
+    if text:
+        return text
+    key_file = _legacy_key_file()
     if key_file.is_file():
-        text = key_file.read_text(encoding="utf-8").strip()
+        try:
+            text = key_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            text = ""
         if text:
             return text
     if sys.stdin.isatty():
         return getpass.getpass("快照口令（两台机器必须用同一个）: ")
     print(
-        "找不到口令。三个办法任选其一：\n"
+        "找不到口令。四个办法任选其一：\n"
         f"  1. 环境变量 {_PASSPHRASE_ENV}=…\n"
-        f"  2. 把密钥文件放到 {key_file}（`make snapshot-key` 生成，复制到每台要同步的机器）\n"
-        "  3. 在终端里跑（会提示你现敲）",
+        f"  2. 写进 {_settings_file()} 的 syncPassphrase"
+        "（`make snapshot-key` 生成，把同一份带到每台要同步的机器）\n"
+        f"  3. 老的密钥文件放到 {key_file}\n"
+        "  4. 在终端里跑（会提示你现敲）",
         file=sys.stderr,
     )
     raise SystemExit(2)
 
 
-def genkey(key_file: Path | None = None) -> int:
-    """生成口令文件。内容**不打印**（口令不是给人看的）；已有则拒绝覆盖 ——
-    两台机器的口令一旦对不上，快照就再也解不开。"""
-    key_file = key_file or _key_file()
-    if key_file.exists():
-        print(f"口令文件已存在：{key_file}（不覆盖；把这个文件复制到别的机器即可）")
+def genkey(settings_file: Path | None = None) -> int:
+    """生成口令，写进**设置文件**的 `syncPassphrase`（2026-11-09 起不再有 key 文件）。
+
+    内容**不打印**（口令不是给人看的）；已有则拒绝覆盖 —— 两台机器的口令一旦
+    对不上，快照与对话就再也解不开。"""
+    target = settings_file or _settings_file()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if str(data.get("syncPassphrase") or "").strip():
+        print(f"口令已存在：{target} 的 syncPassphrase（不覆盖；把同一份带到别的机器即可）")
         return 1
-    key_file.parent.mkdir(parents=True, exist_ok=True)
-    key_file.write_text(secrets.token_urlsafe(32) + "\n", encoding="utf-8")
-    key_file.chmod(0o600)
-    print(f"口令已生成：{key_file}（内容不显示 —— 把这个文件复制到每一台要同步的机器）")
+    data["syncPassphrase"] = secrets.token_urlsafe(32)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    target.chmod(0o600)
+    print(f"口令已生成 → {target} 的 syncPassphrase（内容不显示 —— 把同一份带到每一台要同步的机器）")
     return 0
 
 
@@ -457,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
     dec_parser.add_argument("--in", dest="src", required=True)
     dec_parser.add_argument("--out", required=True)
 
-    sub.add_parser("genkey", help="生成 config/snapshot.key（一台机器一次，两台共用同一份）")
+    sub.add_parser("genkey", help="生成同步口令并写进 config/settings.local.json（一台机器一次，两台共用同一份）")
 
     args = parser.parse_args(argv)
     if args.cmd == "save":

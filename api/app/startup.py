@@ -140,7 +140,9 @@ def checks() -> list[Step]:
                     "bank",
                     "题库",
                     OK if questions else WARN,
-                    f"{questions} 题 · {topics} 个主题" if questions else "还是空的（可以去资料页导入）",
+                    f"{questions} 题 · {topics} 个主题"
+                    if questions
+                    else "还是空的：首轮同步会从云端取（没配同步就去资料页导入）",
                 )
             )
 

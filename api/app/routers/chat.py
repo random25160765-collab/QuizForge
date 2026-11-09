@@ -89,6 +89,9 @@ def mounts_state(db: DbSession) -> dict:
     """
     out = mounts.describe(db)
     out["lens"] = lens_lib.catalog()
+    # 挂载记录跟着一起来：输入区那颗药丸的勾选框要立刻有状态（存在 `lens_records` 表，
+    # 随对话同步；老数据第一次读时从设置里搬过来）。
+    out["lensRecords"] = lens_lib.records(db)
     return out
 
 
@@ -199,7 +202,7 @@ VOICE = (
     "`\\draw`、`\\node`、`child`、`matrix`、样式指令都认；"
     "**pgfplots 在**（`\\begin{axis}`、`\\addplot`/`\\addplot3`、`legend`、`grid`、`ymode=log`、"
     "`view={…}{…}`、误差棒、极坐标那些都认）：坐标轴图、函数图、曲面图**直接写 pgfplots**；"
-    "要能动的交互演示才用 `render_demo` —— 但**图不要放进去**：那里的公式由 **KaTeX** 排，"
+    "要能动的交互演示才用 `create_artifact`（`kind=\"html\"`）—— 但**图不要放进去**：那里的公式由 **KaTeX** 排，"
     "**不认 TikZ 与 pgfplots**（实测：'再来几张 tex 图' 那次，它把三张 "
     "`\\begin{tikzpicture}` 包进 `QFKit.Math` 交上来，三张图全成了源码 —— 现在工具会"
     "直接拒掉那种 html）。**图一律写在正文的 `$$` 里**，那才是真 TeX 引擎编的。"
@@ -383,7 +386,7 @@ GROUP_PROMPTS = {
         "界面上会出现一张凭条，他点了才生效 —— 永远不要声称你已经替他改了记录。"
     ),
     "sandbox": (
-        "沙箱两件事，别混：\n"
+        "沙箱三件事，别混：\n"
         "* **验证与算数**用 `run_python` —— 脚本**直接交给工具**（写进 `code` 参数），"
         "**不要在正文里贴代码、也不要贴你「预期」的输出**。"
         "这一次调用**会等它跑完**（通常几毫秒；第一次要等运行时启动，几秒）："
@@ -392,9 +395,9 @@ GROUP_PROMPTS = {
         "那一轮就是现在。也**不许**在没有输出的时候声称跑出了什么。"
         "（这里原来写的是「调完就停、下一轮再说」；用户的原话是"
         "「让 agent 等命令返回了再说话」，所以改成了现在的等待。）\n"
-        "* **可视化**（空间 / 时间结构：数据怎么流、流水线怎么排、瓶颈在哪）用 `render_demo` "
-        "画一个能动的演示（里面已备好 React + JSX + d3 与现成组件，见该工具说明里的骨架 —— "
-        "**别自己引库、也别手画坐标轴**）。\n"
+        "* **可视化**（空间 / 时间结构：数据怎么流、流水线怎么排、瓶颈在哪）用 `create_artifact` "
+        "（`kind=\"html\"`）画一个能动的演示（里面已备好 React + JSX + d3 与现成组件，"
+        "见该工具说明里的骨架 —— **别自己引库、也别手画坐标轴**）。\n"
         "  那个沙箱里**有 WebGL2，可以直接写 GLSL**（`QFKit.Shader`，写法见该工具说明）："
         "波、场、并行度、访存模式、光照插值、3D / raymarching 这类「每个像素各自算一遍」"
         "的机制就用它。**不许说「沙箱里没有 GPU / 编译不了着色器」** —— 实测能编、能出像素；"
@@ -403,6 +406,10 @@ GROUP_PROMPTS = {
         "  `<canvas>` 都会被一起截图回传；变量名、版本号、返回值的形状都不必迁就谁。\n"
         "  这一次调用**也会等它跑完**：回执里带着**画面截图**（还有页面报错与 GLSL 编译错误）。"
         "拿到图再说话 —— 哪里不对就照实改，别自己说「应该出来了」。\n"
+        "* **成篇的文字**（整理成一篇笔记、机制讲解、对比清单、读书笔记）用同一个工具，"
+        "`kind=\"markdown\"` —— 它会作为一篇**能读的文章**挂在这条消息上"
+        "（与正文同一套排版：标题 / 列表 / 表格 / `$$` 公式都认）。"
+        "聊天正文适合短回答；值得他回头重读的东西放作品里，**正文不要再贴一遍**。\n"
         "不要因为「我做不到」就推辞，也不要把「做不到」当结论 —— 先看手上的工具能做到哪一步。"
     ),
     "web": (
@@ -520,7 +527,7 @@ GROUP_TOOLS = {
     "quiz": ("get_existing_questions", "get_mastery", "get_due_reviews",
              "grade_problem", "flag_question", "mark_mastered", "push_question",
              "create_question"),
-    "sandbox": ("run_python", "render_demo"),
+    "sandbox": ("run_python", "create_artifact"),
     "web": ("web_search", "search_papers", "read_web_page"),
     # 森林那一层（`docs/对话树.md` §三）：翻**别的**对话。四个全是只读档。
     "trees": ("list_conversations", "search_conversations", "read_tree", "read_tree_nodes"),
@@ -842,9 +849,92 @@ def _sse(event: str, data) -> str:  # noqa: ANN001
     return "event: " + event + "\ndata: " + json.dumps(data, ensure_ascii=False) + "\n\n"
 
 
+#: 自动取标题时最多存多少字。
+#:
+#: 原先截 24 字 —— 左栏最宽能拖到 520px（约 37 个汉字），于是"拖宽了也只看到那 24 个
+#: 字"，看着像标题不随宽度变化（用户 2026-11-09 报的就是这个）。截断该由**显示端**
+#: 做（`.chatlist__title` 的省略号），存储这边只防一整段贴进来的病态长标题。
+TITLE_MAX = 60
+
+
 def _title_from(text: str) -> str:
-    line = " ".join((text or "").split())[:24]
-    return line + ("…" if len(" ".join((text or "").split())) > 24 else "")
+    line = " ".join((text or "").split())
+    return line[:TITLE_MAX] + ("…" if len(line) > TITLE_MAX else "")
+
+
+#: 让模型给会话起名时用的那一句。
+#:
+#: 为什么不让首条消息直接当标题：用户的第一句常常是"我准备要学的东西是……"这类
+#: 开场白，截出来的几个字里没有信息；**第一轮答完之后**再看一眼"这一轮到底在聊
+#: 什么"，才起得出一个认得出来的名字（用户 2026-11-09 要的就是这个）。
+TITLE_SYSTEM = (
+    "你在给一条学习对话起标题。只输出标题本身：不超过 20 个汉字，"
+    "中文里夹着英文术语就照原样夹着写，不要翻译。"
+    "不要引号、不要书名号、不要「标题：」这类前缀，结尾不要句号。"
+)
+#: 第一轮答完之后，要不要让模型给会话起名。
+#:
+#: **测试里关掉**（见 conftest 的 `_no_auto_title`）：它会给每条"发一条消息"的用例
+#: 多一次上游调用，还会把标题改成打桩回答的正文，与「标题由首句生成」的断言打架。
+#: 真实链路由 `test_chat.py` 里那条专门用例覆盖。
+AUTO_TITLE = True
+
+#: 起标题这一步的超时。**比主对话短得多**：它卡住时用户已经读完答案了，
+#: 却还要盯着"生成中"，比没有好标题难看得多。
+TITLE_TIMEOUT_MS = 8000
+#: 模型可能不听话写长；这里再兜一道（显示端还有省略号）。
+TITLE_LIMIT = 40
+
+
+def _auto_title(db: DbSession, conf: dict, question: str, answer: str) -> str:  # noqa: ANN001
+    """让模型给这条会话起个名。失败返回空串 —— 调用方保留占位标题。
+
+    这是一次**小调用**：关掉思考（默认模型开着思考，起个名字让它想半天不值），
+    只喂问题与回答的开头，最多几十个 token，超时也砍得很短。
+    """
+    brief = "用户：" + " ".join((question or "").split())[:400]
+    reply = " ".join((answer or "").split())[:600]
+    if reply:
+        brief += "\n\n助手：" + reply
+    # 超时只在这一步压短，别动用户的全局设置（`conf` 是副本）
+    conf = dict(conf, timeoutMs=min(int(conf.get("timeoutMs") or TITLE_TIMEOUT_MS), TITLE_TIMEOUT_MS))
+    started = time.perf_counter()
+    usage: dict = {}
+    out: list[str] = []
+    try:
+        for kind, value in gateway.stream_completion(
+            conf,
+            [
+                {"role": "system", "content": TITLE_SYSTEM},
+                {"role": "user", "content": brief},
+            ],
+            params={
+                "max_tokens": 60,
+                "temperature": 0.2,
+                **gateway.thinking_params(str(conf.get("model") or ""), "off"),
+            },
+        ):
+            if kind == "delta":
+                out.append(str(value))
+            elif kind == "usage":
+                usage = value or {}
+    except Exception:  # noqa: BLE001 —— 起名字失败不该影响任何东西
+        gateway.record_usage(
+            db, ok=False, latency_ms=gateway.elapsed_ms(started), detail="会话起名失败"
+        )
+        return ""
+    gateway.record_usage(
+        db,
+        ok=True,
+        latency_ms=gateway.elapsed_ms(started),
+        prompt_tokens=int(usage.get("promptTokens") or 0),
+        completion_tokens=int(usage.get("completionTokens") or 0),
+    )
+    line = " ".join("".join(out).split())
+    line = line.strip("\"'“”‘’《》「」【】[]()（）:：.。,，;；!！?？ ")
+    if line.startswith("标题"):
+        line = line[2:].lstrip("：: ")
+    return line[:TITLE_LIMIT]
 
 
 def _leaf_id(db: DbSession, conv: Conversation) -> int | None:  # noqa: ANN001
@@ -1121,9 +1211,7 @@ def _history(db: DbSession, messages: list[Message], *, vision: bool = False, mo
         runs = [
             str((part.get("run") or {}).get("text") or "").strip()
             for part in (message.parts or [])
-            if isinstance(part, dict)
-            and part.get("type") == "demo"
-            and isinstance(part.get("run"), dict)
+            if msgparts.is_artifact(part) and isinstance(part.get("run"), dict)
         ]
         for output in runs:
             if output:
@@ -1462,7 +1550,8 @@ def create_conversation(payload: dict, db: DbSession) -> dict:
     """
     body = payload or {}
     title = str(body.get("title") or "").strip()[:120]
-    conv = Conversation(title=title)
+    # 人自己起了名字就不再让模型起（`title_auto` 的语义见 models.Conversation）
+    conv = Conversation(title=title, title_auto=not title)
     if body.get("folder"):
         conv.folder = _clean_folder(body.get("folder"))
         _ensure_folder(db, conv.folder)
@@ -1519,6 +1608,8 @@ def rename_conversation(cid: uuid.UUID, payload: dict, db: DbSession) -> dict:
         if not title:
             raise HTTPException(400, "标题不能为空")
         conv.title = title
+        # **人起的名字不再让模型改**：第一轮答完之后那次自动起名会看这个标记
+        conv.title_auto = False
 
     if isinstance(body.get("pinned"), bool):
         conv.pinned = body["pinned"]
@@ -1657,8 +1748,15 @@ def _markdown_of(conv: Conversation, messages: list[Message]) -> str:
                 )
             elif kind == "file":
                 notes.append("附件 `" + str(part.get("name")) + "`")
-            elif kind == "demo":
-                notes.append("演示「" + str(part.get("title")) + "」（HTML 见 json 导出）")
+            elif kind in msgparts.ARTIFACT_TYPES:
+                # 作品三种形态：html 演示、markdown 文章、python 运行。
+                # 正文都不抄进 md（作品本身在 json 里），这里只记一笔它是什么。
+                what = {"markdown": "文章", "python": "脚本"}.get(
+                    str(part.get("kind") or ""), "演示"
+                )
+                notes.append(
+                    what + "「" + str(part.get("title")) + "」（正文见 json 导出）"
+                )
             elif kind == "action":
                 notes.append("动作凭条 " + str(part.get("kind")))
         if notes:
@@ -1902,7 +2000,10 @@ def post_message(
 
         db.add(user_msg)
         if not conv.title.strip():
+            # 先给一个**占位**标题（左栏立刻要有个名字），第一轮答完之后模型会重起一个
+            #（见 `_stream` 末尾那次 `_auto_title`）—— 所以标成 auto，允许被覆盖。
             conv.title = _title_from(content)
+            conv.title_auto = True
         conv.updated_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(user_msg)
@@ -2024,11 +2125,7 @@ def attach_run(
     parts = []
     hit = False
     for part in message.parts or []:
-        if (
-            isinstance(part, dict)
-            and part.get("type") == "demo"
-            and str(part.get("runId") or "") == run_id
-        ):
+        if msgparts.is_artifact(part) and str(part.get("runId") or "") == run_id:
             part = dict(
                 part,
                 run={
@@ -2515,7 +2612,7 @@ def _stream(  # noqa: ANN001
                 run = event.get("run")
                 if isinstance(run, dict) and run:
                     for one in parts:
-                        if one.get("type") == "demo" and one.get("runId") == event["runId"]:
+                        if msgparts.is_artifact(one) and one.get("runId") == event["runId"]:
                             one["run"] = run
                             break
                 yield _sse("run", {"runId": event["runId"], "run": run})
@@ -2583,40 +2680,42 @@ def _stream(  # noqa: ANN001
 
                 # 写操作也一样：工具只**提案**，界面上长出一张待确认的凭条，
                 # 他点了才落到记录里（走的是收藏夹 / 错题本那两条老路）。
-                # 演示沙箱：模型给的是一段自包含 HTML，界面上长成一个沙箱 iframe
-                demo = (event.get("payload") or {}).get("demo")
+                #
+                # 作品（artifact）：三种形态都落成一个零件 —— 自包含 HTML 的演示、
+                # 一篇 Markdown 文章、一段交给常驻运行壳的 Python 脚本。
+                artifact = (event.get("payload") or {}).get("artifact")
                 # `runId` 也算：跑 Python 现在走**常驻运行壳**，零件本身没有 html
                 #（见 tools.py 的 `_PYODIDE_SHELL`），但照样要长出一个零件。
-                if isinstance(demo, dict) and (demo.get("html") or demo.get("runId")):
+                if isinstance(artifact, dict) and (
+                    artifact.get("html") or artifact.get("markdown") or artifact.get("runId")
+                ):
+                    # 跑脚本 vs 画演示 vs 文章：前端据此选长相（命令块 / 卡片 / 文章）
+                    kind = str(artifact.get("kind") or "html").strip().lower()
+                    if kind not in ("html", "markdown", "python"):
+                        kind = "html"
+                    # 脚本原文（`run_python` 的入参）：给界面折起来看
+                    code = str(
+                        artifact.get("code") or (event.get("args") or {}).get("code") or ""
+                    )
                     parts.append(
-                        msgparts.demo_part(
-                            title=demo.get("title") or "演示",
-                            html=demo.get("html") or "",
-                            run_id=demo.get("runId") or "",
-                            # 跑脚本 vs 画演示：前端据此选长相（命令块 / 卡片）
-                            kind=(
-                                "python"
-                                if demo.get("kind") == "python" or event.get("name") == "run_python"
-                                else "demo"
-                            ),
-                            # 脚本原文（`run_python` 的入参）：给界面折起来看
-                            code=(
-                                demo.get("code")
-                                or (event.get("args") or {}).get("code")
-                                or ""
-                            ),
+                        msgparts.artifact_part(
+                            title=artifact.get("title")
+                            or ("文章" if kind == "markdown" else "演示"),
+                            kind=kind,
+                            html=artifact.get("html") or "",
+                            markdown=artifact.get("markdown") or "",
+                            run_id=artifact.get("runId") or "",
+                            code=code,
                         )
                     )
-                    # 跑 Python 的那种：把 `kind` 与**脚本原文**一起发过去 ——
                     # 流式那一路是照着这个 payload 直接长出零件的（不走库里那份），
-                    # 少了 code，前端就没法把它交给常驻运行壳。
-                    payload = dict(demo)
-                    if payload.get("runId") and not payload.get("html"):
-                        payload["kind"] = "python"
-                        payload["code"] = str((event.get("args") or {}).get("code") or "")
+                    # 少了 kind / code，前端就没法把它交给常驻运行壳。
+                    payload = dict(artifact, kind=kind)
+                    if kind == "python":
+                        payload["code"] = code
                         # 点名要装的包（动态导入那种）也跟着走 —— 壳要用它
-                        payload["packages"] = list(demo.get("packages") or [])
-                    yield _sse("demo", {"callId": event["callId"], "demo": payload})
+                        payload["packages"] = list(artifact.get("packages") or [])
+                    yield _sse("artifact", {"callId": event["callId"], "artifact": payload})
 
                 proposal = (event.get("payload") or {}).get("proposal")
                 if isinstance(proposal, dict) and proposal.get("kind"):
@@ -2702,3 +2801,19 @@ def _stream(  # noqa: ANN001
 
     yield _sse("usage", usage)
     yield _sse("done", _message_out(assistant))
+
+    # **第一轮答完之后**让模型给这条会话起个正式标题（占位标题是首句前 60 字）。
+    #
+    # 放在 `done` 之后而不是之前：用户看到的是"回答完了"，而这一步只换左栏那一行字；
+    # 前端收流后会重新拉一次列表（chat.js 收尾那句 `loadList()`），新标题自然到手。
+    # 失败就留着占位标题 —— `title_auto` 仍是真，下一次成功的回答再试一次。
+    try:
+        db.refresh(conv)
+        if AUTO_TITLE and conv.title_auto:
+            title = _auto_title(db, conf, user_msg.content or "", msgparts.text_of(parts))
+            if title:
+                conv.title = title
+                conv.title_auto = False
+                db.commit()
+    except Exception:  # noqa: BLE001 —— 起名这一步**绝不许**影响这一轮的结果（已经答完了）
+        db.rollback()

@@ -1,7 +1,7 @@
 """Obsidian 桥接的只读状态：设置页那颗「检测连接」调它。
 
 这里只做一件事：把 `vault.py` 的健康检查翻成一句话。**不提供读笔记的接口** ——
-笔记只给 LLM 工具用（见 `app/vault.py` 的文件头）。
+那些在 `routers/notes.py`（只给手机端用；桌面端与 LLM 工具不经过 HTTP）。
 """
 
 from __future__ import annotations
