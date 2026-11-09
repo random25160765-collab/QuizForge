@@ -43,5 +43,10 @@ httpx>=0.28
 # --- 测试 ---
 pytest>=8.3
 
+# --- 构建期（**不是运行时依赖**）---
+# `tools/make_icons.py` 用 ImageDraw 画图标（方砖 / 环 / 缺口 / 青点），Pillow 只在
+# 开发机上跑那一次；打包出去的应用吃的是仓库里已经生成好的 SVG / PNG / ICO。
+Pillow>=10
+
 # EmailStr 校验
 email-validator>=2.2

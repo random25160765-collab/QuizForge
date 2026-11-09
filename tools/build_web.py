@@ -519,11 +519,11 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
 
     # -------------------------------------------------- 图标
     # favicon 与触屏图标放到 **web 根下**：页面都在根下，`<link href="icon.svg">`
-    # 这类相对路径才解析得到（顶栏与对话头像用的是同一个字形的线条版，
-    # 见 `theme/shell.html` 与 `chat.js` 的 `logoMark()`）。
-    # 源文件由 `python3 tools/make_icons.py` 生成（纯标准库画的，没有图像库依赖）。
+    # 这类相对路径才解析得到（对话头像用的是同一个字形的简化版，见 `chat.js`
+    # 的 `logoMark()`）。
+    # 源文件由 `python3 tools/make_icons.py` 生成（Pillow 画的，构建期依赖）。
     icon_count = 0
-    for name in ("icon.svg", "icon-256.png"):
+    for name in ("icon.svg", "mark.svg", "icon-256.png"):
         source = THEME_DIR / "assets" / name
         if source.is_file():
             shutil.copy2(source, out_dir / name)

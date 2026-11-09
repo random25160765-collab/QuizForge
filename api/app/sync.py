@@ -162,6 +162,10 @@ PRIVATE_TABLES: frozenset[str] = frozenset(
 _RESCOPE_PRIVATE: tuple[str, ...] = ("memories", "plans")
 _RESCOPE_STATE_KEY = "private_rescope_v1"
 
+#: 哪些表已经做过基线（逗号分隔）。**按表记**而不是一个 `baseline_done`：
+#: 后来才加进 `SYNC_TABLES` 的表要有自己的第一次（见 `_baseline` 的说明）。
+_BASELINE_STATE_KEY = "baseline_tables"
+
 #: 拉取时的应用顺序（外键先父后子）。同一页里也按它排序。
 PULL_ORDER: tuple[str, ...] = (
     "conversations",
@@ -955,14 +959,36 @@ def _merge_settings(local: Any, remote: Any) -> dict:
 
 
 def _baseline(engine: Engine) -> int:
-    """给"触发器出生之前就存在"的行补影子与脏标记。只做一次。"""
+    """给"触发器出生之前就存在"的行补影子与脏标记。
+
+    **不是"整库只做一次"** —— 老写法是一个 `baseline_done=1` 一刀切，代价写实：
+    `SYNC_TABLES` 后来长出来的表（日程、计划条目、健康都是后加的）如果在第一次
+    同步之后才有行，就永远进不了队列。实测：181 条日程与 9 条计划条目在本机
+    躺了一整天，远端一行都没有 —— 而两边看起来都"同步成功"（推送 316 行、
+    状态全绿），因为缺失的正是**没有被记脏的那些表**。
+
+    现在的口径：按表登记 + 每次核对"本地行数 vs 影子行数"。
+    对不上（新表 / 触发器没建 / 老数据）就补一次；数字相等时只花两条 COUNT。
+    """
     with engine.begin() as conn:
-        if _state_get(conn, "baseline_done") == "1":
+        done_raw = _state_get(conn, _BASELINE_STATE_KEY) or ""
+        done = {name for name in done_raw.split(",") if name}
+        todo: list[str] = []
+        for name in SYNC_TABLES:
+            if name not in done:
+                todo.append(name)
+                continue
+            local = conn.exec_driver_sql(f"SELECT COUNT(*) FROM {_q(name)}").fetchone()[0]
+            shadow = conn.exec_driver_sql(
+                "SELECT COUNT(*) FROM qf_sync_rows WHERE tbl = ? AND deleted = 0", (name,)
+            ).fetchone()[0]
+            if local != shadow:
+                todo.append(name)
+        if not todo:
             return 0
         added = 0
-        for name in SYNC_TABLES:
+        for name in todo:
             spec = SPECS[name]
-            columns = [col.name for col in _table(name).columns]
             rows = conn.exec_driver_sql(f"SELECT * FROM {_q(name)}").mappings().all()
             for raw in rows:
                 row = dict(raw)
@@ -989,6 +1015,7 @@ def _baseline(engine: Engine) -> int:
                     (name, pk, at),
                 )
                 added += 1
+        _state_set(conn, _BASELINE_STATE_KEY, ",".join(sorted(done | set(todo))))
         _state_set(conn, "baseline_done", "1")
         return added
 

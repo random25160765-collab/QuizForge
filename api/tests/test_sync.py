@@ -18,16 +18,25 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 
 from app import autosync, library_cloud, memory, settings_file, sync
 from app.db import Base
-from app.models import Attempt, Conversation, Material, MaterialSlice, Message, Plan, Record
+from app.models import (
+    Attempt,
+    Conversation,
+    Material,
+    MaterialSlice,
+    Message,
+    Plan,
+    Record,
+    ScheduleEvent,
+)
 
 
 # ============================================================================ 假 Turso
@@ -650,6 +659,40 @@ def test_baseline_captures_rows_created_before_triggers(tmp_path) -> None:  # no
     assert before == 1
     with machine.connect() as conn:
         assert conn.exec_driver_sql("SELECT COUNT(*) FROM qf_sync_journal").fetchone()[0] == 1
+
+
+def test_baseline_revisits_tables_that_gained_rows_without_shadows(tmp_path) -> None:  # noqa: ANN001
+    """表晚于第一次同步才有行（或那批行没经过触发器）时，也要能补上。
+
+    实测栽在这里：181 条日程与 9 条计划条目躺在本地，远端一行都没有，
+    而每次同步都报成功 —— 老写法 `baseline_done=1` 一刀切，补漏只可能发生一次，
+    且远早于这些表出生。判据是"本地行数 ≠ 影子行数"，与表是什么时候加的无关。
+    """
+    machine = _machine(tmp_path, "late")
+    assert sync._baseline(machine) == 0, "空库：登记一遍，没有可补的行"
+
+    session = _session(machine)
+    session.execute(text("DROP TRIGGER IF EXISTS qf_sync1_schedule_events_insert"))
+    start = datetime.now(UTC)
+    session.add(
+        ScheduleEvent(
+            id="evt-late-1",
+            title="自习",
+            start_at=start,
+            end_at=start + timedelta(hours=1),
+            all_day=False,
+        )
+    )
+    session.commit()
+    session.close()
+
+    assert sync._baseline(machine) == 1, "没有影子行的日程要被补进队列"
+    with machine.connect() as conn:
+        assert conn.exec_driver_sql(
+            "SELECT COUNT(*) FROM qf_sync_journal WHERE tbl = 'schedule_events'"
+        ).fetchone()[0] == 1
+
+    assert sync._baseline(machine) == 0, "补过之后不该每次都重扫整表"
 
 
 # ============================================================================ 资料整包

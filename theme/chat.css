@@ -924,9 +924,11 @@ body.is-colresize {
 /* （这里原来有一条 `margin-left: -6px` —— 那是这两颗按钮还在**气泡里**时，
  * 用来抵消气泡左内距的。现在它们在气泡外面，负边距只会把它推歪。） */
 
+/* 新 logo 自己就是"环 + 点"：外面再套一个青绿圆环 = 两层环（用户："怪"）。
+   所以 assistant 这边不画容器 —— 26px 的格子留着对齐，让图形自己站。 */
 .chatmsg--assistant .chatmsg__who {
-  border-color: var(--pri);
-  color: var(--pri);
+  border: 0;
+  color: var(--fg);
 }
 
 .chatmsg__body {
@@ -2850,6 +2852,13 @@ body.is-colresize {
   color: var(--fg3);
 }
 
+/* 撞车提示：只把"撞了谁"摆出来，不挡按钮（提示不是拦截，见 schedule_view） */
+.chatplan__warn {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--amber);
+}
+
 /* ---------------------------------------------------------------- 图片放大 */
 
 .chatzoom {
@@ -3767,7 +3776,14 @@ body.is-colresize {
 .chatmsg__logo {
   display: inline-flex;
   align-items: center;
-  color: var(--pri);
+  /* 与图标同一套：深墨的环 + 品牌青的点（点自己带颜色，见 `logoMark`） */
+  color: var(--fg);
+}
+
+/* 15 的时候环只有 8.6px，站在 26px 的格子里偏小；17 与"我"字的 11px 字号相当 */
+.chatmsg__logo svg {
+  width: 17px;
+  height: 17px;
 }
 
 /* --------------------------------------------------- 对话树（分组 + 会话）

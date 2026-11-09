@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- 与图标那块砖同色：自适应图标的前景（带砖画）因此和背景融在一起 -->
+    <color name="ic_launcher_background">#F0F4F8</color>
 </resources>

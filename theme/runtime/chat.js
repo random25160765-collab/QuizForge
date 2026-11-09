@@ -886,8 +886,16 @@
     var row = list.querySelector('.ctrow[data-node="' + id + '"]');
     if (!row) return;
     // 上面留三分之一屏的上下文：正好居中会让人以为上面没内容了
-    list.scrollTop = Math.max(0, row.offsetTop - list.clientHeight / 3);
-    TREE.outlineScroll = list.scrollTop;
+    var want = Math.max(0, row.offsetTop - list.clientHeight / 3);
+    // 再对到某一行的上沿：任意像素起跳会把最上面那一行切成半截字（打开时看着像没对齐）
+    var rows = list.querySelectorAll('.ctrow');
+    for (var i = 0; i < rows.length; i++) {
+      var top = rows[i].offsetTop;
+      if (top > want) break;
+      want = top;
+    }
+    list.scrollTop = want;
+    TREE.outlineScroll = want;
   }
 
   /** 把整棵树摊成一条行列表（前序：父在前、子在后，缩进由 `--ind` 表达）。 */
@@ -958,14 +966,18 @@
         (message.status === 'error' ? '.is-error' : ''),
       {
         'data-node': String(message.id),
-        // 长按 = 这一行上能做的事（收起 / 分家 / 删）。与地图上的右键是**同一张菜单** ——
-        // 触屏上的长按就是右键（Android Chrome 会发 contextmenu）
+        // 长按 = 在地图上"右键一处地点"：加书签 / 打回溯点（触屏上长按就是右键，
+        // Android Chrome 会发 contextmenu）。与地图那边**同一张菜单、同一套语义** ——
+        // "这一支能做的事"（收起 / 分家 / 删）走右边那颗「⋯」，两件事不混。
         onContextmenu: function (event) {
           event.preventDefault();
           event.stopPropagation();
           chatMenuX = event.clientX;
           chatMenuY = event.clientY;
-          openNodeMenu(message);
+          openPlaceMenu(placesOn(message.id), refreshPlaces, [
+            { kind: 'mark', m: message },
+            { kind: 'back', m: message },
+          ]);
         },
       }
     );
@@ -1872,17 +1884,23 @@
   }
 
   /**
-   * 品牌那枚 logo（图形与 `shell.html` 里回首页的那个**同一个** —— 改一处要一起改）。
+   * 品牌那枚 logo：`theme/assets/icon.svg` 的**缩小版**（同一套几何，见
+   * `tools/make_icons.py`）—— 环在右下断开，青点落在那儿，是 Q 的环与它的点。
+   *
+   * 15px 下分隔环连一个像素都不到，所以只留最要紧的两样。环用 `currentColor`
+   * （深浅两套主题各自可读），点固定品牌青（识别色，不跟文字颜色走）。
    *
    * 用它替掉"AI"两个字：署名用图形更省地方，也让"这谁说的"与品牌对得上。
-   * 只取图形、不带那个渐变方块 —— 每条消息旁边都挂一块彩色方块太重了。
+   * 只取图形、不带那块浅色方砖 —— 每条消息旁边都挂一块底太抢眼。
    */
   function logoMark() {
     var box = h('span.chatmsg__logo', { 'aria-label': 'QFStudio', title: 'QFStudio' });
     box.innerHTML =
-      '<svg viewBox="0 0 32 32" width="15" height="15" fill="none" stroke="currentColor" ' +
-      'stroke-width="2.8" stroke-linecap="round">' +
-      '<circle cx="14.4" cy="14.4" r="8.4"/><path d="M20.6 20.6 L26.4 26.4"/></svg>';
+      '<svg viewBox="0 0 32 32" width="15" height="15" fill="none">' +
+      // 缺口 13.8°→76.3°（照设计稿），顺时针画剩下的 297.5°
+      '<path d="M16.18 22.94 A9.2 9.2 0 1 1 22.93 16.19" stroke="currentColor" ' +
+      'stroke-width="3.6"/>' +
+      '<circle cx="18.24" cy="18.24" r="2.5" style="fill:var(--pri)"/></svg>';
     return box;
   }
 
@@ -8653,13 +8671,16 @@
     var payload = part.payload || {};
     var kind = String(payload.kind || '');
     // 凭条按 kind 分家：`mastered` / `flag` 是"给某道题打个标记"（本地 store），
-    // 三个 `plan.*` 是"往库里写计划/日程"（走后端，见 planReceipt）。
+    // `plan.*` 是"往库里写计划/日程"（走后端，见 planReceipt）。
     // 两类的东西完全不同，硬塞进一个函数只会让每一方都长满 if。
+    // **列全**：漏一个 kind 不会报错，它会静静掉进题目凭条里
+    // （`plan.scheduleSeries` 就这么当过一阵"已掌握"）。
     if (
       kind === 'plan.create' ||
       kind === 'plan.edit' ||
       kind === 'plan.schedule' ||
-      kind === 'plan.scheduleBatch'
+      kind === 'plan.scheduleBatch' ||
+      kind === 'plan.scheduleSeries'
     ) {
       return planReceipt(part, repaint);
     }
@@ -8791,21 +8812,20 @@
     if (kind === 'plan.edit') return planEditBox(payload, repaint);
     if (kind === 'plan.schedule') return planScheduleBox(payload, repaint);
     if (kind === 'plan.scheduleBatch') return planScheduleBatchBox(payload, repaint);
+    if (kind === 'plan.scheduleSeries') return planScheduleSeriesBox(payload, repaint);
     return planCreateBox(payload, repaint);
   }
 
   function planDoneBox(kind, payload) {
-    var label =
-      kind === 'plan.scheduleBatch'
-        ? '已排进日程'
-        : kind === 'plan.schedule'
-          ? '已排进日程'
-          : kind === 'plan.edit'
-            ? '改动已生效'
-            : '已接受计划';
+    // 落到日历的三种（单次 / 整周 / 一串）说的是同一件事：已经排进日程。
+    var isSchedule =
+      kind === 'plan.schedule' ||
+      kind === 'plan.scheduleBatch' ||
+      kind === 'plan.scheduleSeries';
+    var label = isSchedule ? '已排进日程' : kind === 'plan.edit' ? '改动已生效' : '已接受计划';
     var box = h('div.chatplan.chatplan--done');
     // 凭据上的标签与卡片一致：排程是排程，不是"计划"（两者在日程页是两种东西）
-    var tag = kind === 'plan.schedule' || kind === 'plan.scheduleBatch' ? '排程' : '计划';
+    var tag = isSchedule ? '排程' : '计划';
     box.appendChild(
       h(
         'div.chatplan__head',
@@ -9103,9 +9123,27 @@
         null,
         h('span.chatplan__time', { text: whenText(payload.startAt) + ' – ' + whenText(payload.endAt) }),
         payload.itemTitle ? h('span.chatplan__from', { text: '来自：' + payload.itemTitle }) : null,
+        payload.location ? h('span.chatplan__from', { text: '在 ' + payload.location }) : null,
         h('span.chatplan__raw', { text: line })
       )
     );
+
+    // 撞车是**提示**不是拦截（见 `schedule_view.conflicts_of` 的说明）：
+    // 有时候是故意的（自习 + 旁听），所以只说撞了谁，不挡按钮。
+    var conflicts = payload.conflicts || [];
+    if (conflicts.length) {
+      box.appendChild(
+        h('div.chatplan__warn', {
+          text:
+            '这段时间已经占着：' +
+            conflicts
+              .map(function (one) {
+                return one.title || '未命名';
+              })
+              .join('、'),
+        })
+      );
+    }
 
     var go = h(
       'button.btn.btn--primary.btn--sm.chatplan__go',
@@ -9118,6 +9156,10 @@
         proposalId: payload.proposalId || undefined,
         itemId: payload.itemId || undefined,
         title: payload.title || '',
+        // 地点与备注是提案里就有的（模型问过"在哪"），卡片确认时要一并落库：
+        // 漏掉它们，日程页上那一块就只剩个标题。
+        location: payload.location || '',
+        note: payload.note || '',
         startAt: payload.startAt,
         endAt: payload.endAt,
         allDay: !!payload.allDay,
@@ -9224,6 +9266,123 @@
         null,
         go,
         h('span.chatplan__hint', { text: '应用之后可在日历上一键撤销' }),
+        h('a.btn.btn--ghost.btn--sm', { href: 'schedule.html' }, '打开日程')
+      )
+    );
+    return box;
+  }
+
+  /** `2026-11-09T19:00:00Z` × 2 → `2 小时` */
+  function spanText(startAt, endAt) {
+    var ms = new Date(endAt) - new Date(startAt);
+    if (!(ms > 0)) return '';
+    var minutes = Math.round(ms / 60000);
+    var hours = Math.floor(minutes / 60);
+    var rest = minutes % 60;
+    if (!hours) return rest + ' 分钟';
+    return rest ? hours + ' 小时 ' + rest + ' 分' : hours + ' 小时';
+  }
+
+  /** `plan.scheduleSeries`：一次排一串（`propose_schedule` 带 `repeat` 出的那张卡）。
+   *
+   * 与整周排程那张的区别：这里的时刻是**模型算好的**（"每周二四晚八点，八次"），
+   * 不经过求解器，所以卡片只负责把这一串列清楚、一次排上；改单次去日历页。
+   *
+   * 每块都有自己的 `proposalId`（后端是 base + 序号），所以这里是逐条 POST：
+   * 中途失败只缺那一条，重画后再点一次，已进库的会回 `created: false`
+   * （幂等键在库里），不会排出两份。 */
+  function planScheduleSeriesBox(payload, repaint) {
+    var box = h('div.chatplan');
+    var events = payload.events || [];
+    box.appendChild(planHead('一串排期', payload.title, events.length + ' 次'));
+
+    var meta = h('div.chatplan__when');
+    if (payload.itemTitle) {
+      meta.appendChild(h('span.chatplan__from', { text: '来自：' + payload.itemTitle }));
+    }
+    if (payload.location) {
+      meta.appendChild(h('span.chatplan__from', { text: '在 ' + payload.location }));
+    }
+    if (meta.childNodes.length) box.appendChild(meta);
+
+    var rows = h('div.chatplan__rows');
+    events.slice(0, 10).forEach(function (one) {
+      rows.appendChild(
+        h(
+          'div.chatplan__slot',
+          null,
+          h('span.chatplan__time', { text: whenText(one.startAt) }),
+          h('span.chatplan__slotTitle', { text: spanText(one.startAt, one.endAt) })
+        )
+      );
+    });
+    if (events.length > 10) {
+      rows.appendChild(
+        h('div.chatplan__hint', { text: '还有 ' + (events.length - 10) + ' 次（排上后在日历上看）' })
+      );
+    }
+    box.appendChild(rows);
+
+    // 撞车按**块**去重：同一门课占了三次，不该在卡片上念三遍。
+    var conflicts = payload.conflicts || [];
+    if (conflicts.length) {
+      var names = [];
+      conflicts.forEach(function (one) {
+        var name = one.title || '未命名';
+        if (names.indexOf(name) < 0) names.push(name);
+      });
+      box.appendChild(h('div.chatplan__warn', { text: '这些时段已经占着：' + names.join('、') }));
+    }
+
+    var go = h(
+      'button.btn.btn--primary.btn--sm.chatplan__go',
+      { type: 'button' },
+      '全部排上' + (events.length ? '（' + events.length + ' 次）' : '')
+    );
+    go.addEventListener('click', function () {
+      if (!events.length) return;
+      lock(go, true, '正在排…');
+      var jobs = events.map(function (one) {
+        return QF.api.post('/schedule', {
+          proposalId: one.proposalId || undefined,
+          itemId: payload.itemId || undefined,
+          title: payload.title || '',
+          location: payload.location || '',
+          note: payload.note || '',
+          startAt: one.startAt,
+          endAt: one.endAt,
+        });
+      });
+      Promise.allSettled(jobs).then(function (results) {
+        var made = 0;
+        var failed = 0;
+        results.forEach(function (one) {
+          if (one.status !== 'fulfilled') failed += 1;
+          else if (!one.value || one.value.created !== false) made += 1;
+        });
+        if (!failed) {
+          payload.committed = true;
+          // 刷新之后 `committed` 就没了，卡片会再露一次按钮；那一轮全是 `created: false`
+          //（幂等键在库里），所以说"已经在日程里"而不是"新增 0 次"。
+          ui.toast(made ? '已排进日程 · ' + made + ' 次' : '这些已经在日程里了', 'ok', 1800);
+          repaint();
+          return;
+        }
+        // 部分成功：已进库的那几条靠幂等键挡住重排，再点一次只会补齐缺的。
+        lock(go, false, '全部排上' + (events.length ? '（' + events.length + ' 次）' : ''));
+        ui.toast(
+          made ? '排上 ' + made + ' 次，还有 ' + failed + ' 次没排上' : '一次都没排上',
+          'bad',
+          2600
+        );
+      });
+    });
+
+    box.appendChild(
+      h(
+        'div.chatplan__foot',
+        null,
+        go,
         h('a.btn.btn--ghost.btn--sm', { href: 'schedule.html' }, '打开日程')
       )
     );

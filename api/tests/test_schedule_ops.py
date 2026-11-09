@@ -174,6 +174,42 @@ def test_schedule_week_proposes_but_does_not_write(client, db_session):  # noqa:
     assert _events(client) == [], "提案阶段不许写日历"
 
 
+def test_repeat_proposal_lists_each_occurrence_with_its_own_key(client, db_session):  # noqa: ANN001
+    """一次排一串：**每块一个幂等键**，卡片才敢一次提交八条。
+
+    前端那张 `plan.scheduleSeries` 卡是按 `events` 逐条 POST `/api/schedule` 的
+    （见 chat.js 的 `planScheduleSeriesBox`）。字段形状一改，卡片就退化成
+    "一条都没排上"，而且不会报错 —— 所以契约钉在这里。
+    """
+    from app import tools
+
+    body = tools.propose_schedule(
+        db_session,
+        {
+            "title": "信号与系统 精读",
+            "startAt": "2026-11-10T20:00:00+08:00",
+            "endAt": "2026-11-10T22:00:00+08:00",
+            # 周二、周四，连着两周 → 4 次
+            "repeat": {"weekdays": [2, 4], "weeks": 2},
+        },
+    )
+
+    proposal = body["proposal"]
+    assert proposal["kind"] == "plan.scheduleSeries"
+    events = proposal["events"]
+    assert len(events) == 4
+    assert len({one["proposalId"] for one in events}) == 4, "幂等键不能共用：共用就只能排上一块"
+    assert proposal["proposalId"] not in {one["proposalId"] for one in events}, "卡片自己的键也别撞上"
+
+    for one in events:
+        assert one["startAt"] and one["endAt"]
+        # 本地时刻是给模型与界面直接念的（见 schedule_view）：不能是空串
+        assert one["startLocal"] and one["endLocal"]
+        assert datetime.fromisoformat(one["startLocal"]).utcoffset() is not None
+
+    assert _events(client) == [], "提案阶段不许写日历"
+
+
 def test_get_energy_summarizes_today(client, db_session):  # noqa: ANN001
     from app import tools
 

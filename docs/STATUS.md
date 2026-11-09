@@ -197,9 +197,14 @@ Postgres 里的那种场合）；为此它补了两处容错：源库缺表时�
 没有终端之后，"出错去哪儿看"有三个落点：启动页红条目 · 数据目录的 `quizforge.log` ·
 Windows 的系统错误对话框。
 
-**品牌与图标**：图标由 `python3 tools/make_icons.py` 生成（纯标准库：手写 PNG 与 ICO），
-顶栏与对话头像用**同一个字形的线条版**（`theme/shell.html` 与 `chat.js` 的 `logoMark()`，
-改要一起改）；名字统一 **QFStudio**（不再全小写）。
+**品牌与图标**：图标由 `python3 tools/make_icons.py` 生成（Pillow，**构建期**依赖 ——
+运行时只吃仓库里生成好的文件）。一套几何出三处：网页 favicon（`theme/assets/icon.svg`，
+手写矢量）· 预览 PNG · Windows ICO；`--android` 再加 Android 的 launcher（5 档密度）、
+圆形图标与自适应前景。形状是"浅灰蓝方砖 + 墨色的环（右下切圆角缺口）+ 品牌青的点"，
+所有尺寸都写在脚本顶部的常量里（1024 画布，与设计稿一一对应）。
+对话头像（`chat.js` 的 `logoMark()`）是同一个字形的 15px 简化版：只留环与点
+（分隔环在这个尺寸不足一像素），外面**不再套圆框** —— 那会变成两层环。
+名字统一 **QFStudio**（不再全小写）。
 
 **分发命令**（完整流程与踩过的坑见 `docs/分发工作流.md`）：
 
