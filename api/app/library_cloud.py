@@ -25,11 +25,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 
 from . import sync
 from .models import Material, MaterialFigure, MaterialSlice
@@ -72,6 +73,66 @@ def _origin() -> str:
     from .db import get_engine  # noqa: PLC0415 - 避免循环导入
 
     return sync._origin(get_engine())  # noqa: SLF001
+
+
+# ------------------------------------------------------------ 自动同步的两把标尺
+#
+# 资料包是**整包替换**的：谁最后推，云上就是谁那份。自动同步不能每轮都推
+# 31MB，也不能每轮都把云上的整包拉下来。所以本地记两个值（存在
+# `qf_sync_state`，与行级同步共用；它是本机状态，不参与同步）：
+#
+#   library_pack_at  上次对齐过的云端 `qf_library.at`
+#   library_pack_fp  上次对齐时本地资料包的指纹
+#
+# 两边一比就知道"谁变了"：远端 at 变了 = 云上动过；本地指纹变了 = 本机动过。
+# 只有一边动 → 拉/推；两边都动 → 先把云上的拉下来（共享行以远端为准），
+# 再把并集推回去 —— 本机独有、云端没有的材料不会丢。
+_STATE_AT = "library_pack_at"
+_STATE_FP = "library_pack_fp"
+
+
+def _state_get(db: Any, key: str) -> str:
+    row = db.execute(text("SELECT v FROM qf_sync_state WHERE k = :k"), {"k": key}).first()
+    return str(row[0]) if row is not None and row[0] is not None else ""
+
+
+def _state_set(db: Any, key: str, value: str) -> None:
+    db.execute(
+        text(
+            "INSERT INTO qf_sync_state(k, v) VALUES(:k, :v)"
+            " ON CONFLICT(k) DO UPDATE SET v = excluded.v"
+        ),
+        {"k": key, "v": value},
+    )
+
+
+def _text_stats(db: Any) -> dict[str, int]:
+    """正文规模（条数 + 字符数）。指纹用它，避免为了算哈希把 31MB 正文读一遍。"""
+    row = db.execute(
+        select(
+            func.count(),
+            func.coalesce(func.sum(func.length(MaterialSlice.text)), 0),
+        ).where(MaterialSlice.text != "")
+    ).one()
+    return {"textSlices": int(row[0]), "textChars": int(row[1])}
+
+
+#: 指纹只覆盖"同步会带走的内容"：三张表的业务字段 + 正文规模。
+#: 云端 payload 里也存了同样这几个字段，所以两边的指纹可以直接比。
+_FP_KEYS = ("version", "materials", "slices", "figures", "textSlices", "textChars")
+
+
+def _fingerprint_of(data: dict) -> str:
+    slim = {key: data.get(key) for key in _FP_KEYS}
+    blob = json.dumps(slim, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def fingerprint(db: Any) -> str:
+    """本地资料包现在的指纹。"""
+    data = pack(db)
+    data.update(_text_stats(db))
+    return _fingerprint_of(data)
 
 
 def pack(db: Any, *, with_text: bool = False) -> dict:
@@ -172,14 +233,16 @@ def push(db: Any, *, remote: Any | None = None) -> dict:
     blocks = text_blocks(db)
     data["textBlocks"] = len(blocks)
     data["textBytes"] = sum(size for _, _, size in blocks)
+    data.update(_text_stats(db))
 
     blob = json.dumps(data, ensure_ascii=False)
     client = remote or _client()
     client.execute(REMOTE_TABLE)
     client.execute(REMOTE_TEXT_TABLE)
+    pushed_at = time.time()
     client.execute(
         "INSERT OR REPLACE INTO qf_library (id, at, origin, bytes, payload) VALUES (?, ?, ?, ?, ?)",
-        (PACK_ID, time.time(), _origin(), len(blob.encode("utf-8")), blob),
+        (PACK_ID, pushed_at, _origin(), len(blob.encode("utf-8")), blob),
     )
     client.execute("DELETE FROM qf_library_text")
     for idx, payload, size in blocks:
@@ -188,12 +251,15 @@ def push(db: Any, *, remote: Any | None = None) -> dict:
             (idx, size, payload),
         )
     return {
+        "at": pushed_at,
         "materials": len(data["materials"]),
         "slices": len(data["slices"]),
         "figures": len(data["figures"]),
         "bytes": len(blob.encode("utf-8")),
         "textBlocks": len(blocks),
         "textBytes": data["textBytes"],
+        "textSlices": data["textSlices"],
+        "textChars": data["textChars"],
     }
 
 
@@ -315,4 +381,110 @@ def pull(db: Any, *, remote: Any | None = None) -> dict:
         "textBlocks": len(blocks),
         "textSlices": text_slices,
         "textBytes": filled,
+    }
+
+
+def sync_pack(db: Any, *, remote: Any | None = None) -> dict:
+    """自动同步一轮资料包：比较两边指纹，决定推、拉、还是都不动。
+
+    这是「云端-缓存」里资料那一半的入口。规则只有三条：
+
+    * 只有云上变了 → 拉（本机没改过，直接接受云上的）；
+    * 只有本机变了 → 推（云上没动过，本机就是最新）；
+    * 两边都变了 → 先拉齐（共享行以远端为准），再把并集推回去
+      （本机独有的材料不在远端，拉取不会删它，推上去两边就一致了）。
+
+    首次同步（本地还没有标尺）走第三条：先拉后推，把两边的并集建立起来。
+    指纹只看业务字段与正文规模，所以每轮先比指纹、再决定要不要传
+    31MB 的正文块 —— 这是它敢每分钟跑一次的原因。
+
+    安全阀：**本机一份材料都没有时绝不推空包**。云端可能是另一台机器
+    整理好的资料库，推一个空包上去等于把它抹掉。
+    """
+    client = remote or _client()
+    client.execute(REMOTE_TABLE)
+    client.execute(REMOTE_TEXT_TABLE)
+    bind = db.get_bind()
+    sync.ensure_sync_schema(bind if hasattr(bind, "begin") else bind.engine)
+
+    rows = client.query(
+        "SELECT at, origin, bytes, payload FROM qf_library WHERE id = ?", (PACK_ID,)
+    )
+    local_count = int(db.scalar(select(func.count()).select_from(Material)) or 0)
+    local_fp = fingerprint(db)
+    state_at = float(_state_get(db, _STATE_AT) or 0.0)
+    state_fp = _state_get(db, _STATE_FP)
+
+    if not rows:
+        if not local_count:
+            return {"action": "idle", "reason": "两边都还没有材料"}
+        out = push(db, remote=client)
+        _state_set(db, _STATE_AT, str(out["at"]))
+        _state_set(db, _STATE_FP, local_fp)
+        db.commit()
+        return {"action": "push", **out, "fingerprint": local_fp}
+
+    remote_row = rows[0]
+    remote_at = float(remote_row.get("at") or 0.0)
+    try:
+        remote_data = json.loads(remote_row.get("payload") or "{}")
+    except ValueError:
+        remote_data = {}
+    remote_fp = _fingerprint_of(remote_data)
+    remote_changed = remote_at > state_at + 1e-6
+    local_changed = local_fp != state_fp
+
+    if not remote_changed and not local_changed:
+        return {"action": "idle", "at": remote_at, "fingerprint": local_fp}
+
+    if remote_changed and remote_fp == local_fp:
+        # 云上那份与本机当前内容一致（对端把同一份包推了回来）：只对齐标尺。
+        _state_set(db, _STATE_AT, str(remote_at))
+        _state_set(db, _STATE_FP, local_fp)
+        db.commit()
+        return {"action": "same", "at": remote_at, "fingerprint": local_fp}
+
+    if remote_changed and not local_changed:
+        out = pull(db, remote=client)
+        new_fp = fingerprint(db)
+        _state_set(db, _STATE_AT, str(remote_at))
+        _state_set(db, _STATE_FP, new_fp)
+        db.commit()
+        return {"action": "pull", **out, "at": remote_at, "fingerprint": new_fp}
+
+    if local_changed and not remote_changed:
+        if not local_count:
+            # 本机清空了资料：不推空包，只把标尺记成"已对齐"，避免每轮重算。
+            _state_set(db, _STATE_FP, local_fp)
+            db.commit()
+            return {"action": "idle", "reason": "本机没有材料，不覆盖云端"}
+        out = push(db, remote=client)
+        _state_set(db, _STATE_AT, str(out["at"]))
+        _state_set(db, _STATE_FP, local_fp)
+        db.commit()
+        return {"action": "push", **out, "fingerprint": local_fp}
+
+    # 两边都变过（含首次同步）：先拉齐，再把并集推回去。
+    pulled: dict = {"materials": 0}
+    if remote_data.get("materials"):
+        pulled = pull(db, remote=client)
+    if local_count:
+        after_pull_fp = fingerprint(db)
+        out = push(db, remote=client)
+        _state_set(db, _STATE_AT, str(out["at"]))
+        _state_set(db, _STATE_FP, after_pull_fp)
+        db.commit()
+        return {"action": "pull+push", "pulled": pulled, **out, "fingerprint": after_pull_fp}
+
+    new_fp = fingerprint(db)
+    _state_set(db, _STATE_AT, str(remote_at))
+    _state_set(db, _STATE_FP, new_fp)
+    db.commit()
+    if pulled.get("materials"):
+        return {"action": "pull", "pulled": pulled, "at": remote_at, "fingerprint": new_fp}
+    return {
+        "action": "idle",
+        "reason": "本机没有材料，不覆盖云端",
+        "at": remote_at,
+        "fingerprint": new_fp,
     }

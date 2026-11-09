@@ -36,8 +36,9 @@ def _material(db, path: Path, *, lines: int, depth: str = "出题") -> Material:
         source_path=str(path),
         sha256="0" * 64,
         lines=lines,
-        # 默认这一档是"我在学的" —— `search_material` 只看它（另一档归 `search_library`）。
-        # 夹具不写这一句的话，模型的默认值是 `检索`，那个工具会一条都搜不到。
+        # 默认这一档是"我在学的" —— `search_material` 默认只看它；
+        # 要看另一档得显式传 `depth=检索`（2026-11-08 之后没有第二个检索工具了）。
+        # 夹具不写这一句的话，模型的默认值是 `检索`，默认那档会一条都搜不到。
         depth=depth,
     )
     db.add(material)
@@ -218,11 +219,12 @@ def test_material_lines_endpoint(client, db_session, tmp_path) -> None:  # noqa:
 # **正文与检索方式完全一样，差别只有这一个字段**。
 
 
-def test_the_two_tools_look_at_different_shelves(db_session, tmp_path) -> None:  # noqa: ANN001
-    """`search_material` 只看 `出题`、`search_library` 只看 `检索`。
+def test_the_two_shelves_stay_apart(db_session, tmp_path) -> None:  # noqa: ANN001
+    """同一个工具按 `depth` 看两档：默认 `出题`，传 `检索` 才看另一档。
 
     造两份**一模一样**的材料（同样的正文、同样的词），只差 `depth` ——
-    这样任何一条工具能搜到另一档，都是错的。
+    这样任一档搜到另一档的材料，都是错的。2026-11-08 之前这是两个工具
+    （`search_material` / `search_library`），合并之后只剩这一个入口。
 
     断言用**归属**而不是"精确列表"：隔离夹具不清 `materials`（设计如此 ——
     "题库与知识空间用例之间共享"），别的用例留下的材料也可能命中同一个词。
@@ -236,13 +238,15 @@ def test_the_two_tools_look_at_different_shelves(db_session, tmp_path) -> None: 
     assert ok, payload
     found = {hit["material"] for hit in payload["hits"]}
     assert on_chain.slug in found, "出题档的材料没被 search_material 找到"
-    assert for_reference.slug not in found, "search_material 读到了检索档 —— 两个书架串了"
+    assert for_reference.slug not in found, "默认档读到了检索档 —— 两档串了"
 
-    ok, payload = tools.call(db_session, "search_library", {"query": "circular buffer"})
+    ok, payload = tools.call(
+        db_session, "search_material", {"query": "circular buffer", "depth": "检索"}
+    )
     assert ok, payload
     found = {hit["material"] for hit in payload["hits"]}
-    assert for_reference.slug in found, "检索档的资料没被 search_library 找到"
-    assert on_chain.slug not in found, "search_library 读到了出题档 —— 两个书架串了"
+    assert for_reference.slug in found, "检索档的材料没被 depth=检索 找到"
+    assert on_chain.slug not in found, "depth=检索 读到了出题档 —— 两档串了"
 
 
 def test_an_empty_shelf_is_not_reported_as_a_missing_file(db_session, tmp_path) -> None:  # noqa: ANN001

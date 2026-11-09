@@ -3,7 +3,7 @@
     # 看这台机器的同步状态（不会显示令牌）
     .venv/bin/python -m app.cli.sync status
 
-    # 立刻跑一次（推 + 拉）
+    # 立刻跑一次（推 + 拉，含资料整包）
     .venv/bin/python -m app.cli.sync run
 
 配置在 `config/settings.local.json` 的 `turso` 块（设置页 →「同步」也能改）：
@@ -47,7 +47,7 @@ def _status() -> int:
 
 def _run() -> int:
     try:
-        result = sync.run_once()
+        result = sync.run_full()
     except sync.SyncNotConfigured as exc:
         print(f"没配好：{exc}", file=sys.stderr)
         return 2

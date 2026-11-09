@@ -24,9 +24,9 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app import settings_file, sync
+from app import autosync, library_cloud, settings_file, sync
 from app.db import Base
-from app.models import Attempt, Conversation, Message, Record
+from app.models import Attempt, Conversation, Material, MaterialSlice, Message, Record
 
 
 # ============================================================================ 假 Turso
@@ -564,3 +564,100 @@ def test_baseline_captures_rows_created_before_triggers(tmp_path) -> None:  # no
     assert before == 1
     with machine.connect() as conn:
         assert conn.exec_driver_sql("SELECT COUNT(*) FROM qf_sync_journal").fetchone()[0] == 1
+
+
+# ============================================================================ 资料整包
+
+
+def _seed_material(session, slug: str, text: str) -> None:  # noqa: ANN001
+    material = Material(
+        slug=slug, subject="测试", title=slug, source_path="", sha256=slug, lines=1
+    )
+    session.add(material)
+    session.flush()
+    session.add(
+        MaterialSlice(
+            material_id=material.id,
+            slice_id="s1",
+            path=[],
+            start_line=1,
+            end_line=1,
+            tokens="",
+            figures=[],
+            summary="",
+            text=text,
+            windows=0,
+        )
+    )
+    session.commit()
+
+
+def _drop_material(engine, slug: str) -> None:  # noqa: ANN001
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "DELETE FROM material_slices WHERE material_id IN"
+            " (SELECT id FROM materials WHERE slug = ?)",
+            (slug,),
+        )
+        conn.exec_driver_sql("DELETE FROM materials WHERE slug = ?", (slug,))
+
+
+def test_library_pack_auto_sync_pushes_then_pulls(engine, remote, tmp_path) -> None:  # noqa: ANN001
+    """资料包：本机有东西 → 推；另一台空机器 → 拉（含切片正文）。"""
+    slug = "sync-test-material"
+    session = _session(engine)
+    _seed_material(session, slug, "第一段\n第二段")
+    session.close()
+
+    try:
+        _configure(remote.url)
+        out = sync.run_full(engine, _client(remote))
+        assert out["library"]["action"] == "push"
+        assert out["library"]["textSlices"] == 1
+
+        # 什么都没变 → 不再传第二遍
+        again = library_cloud.sync_pack(_session(engine), remote=_client(remote))
+        assert again["action"] == "idle"
+
+        # 另一台机器（空库）拉下来：材料与正文都在
+        other = _machine(tmp_path, "other")
+        other_session = _session(other)
+        pulled = library_cloud.sync_pack(other_session, remote=_client(remote))
+        assert pulled["action"] == "pull"
+        material = other_session.query(Material).filter_by(slug=slug).one()
+        slice_row = other_session.query(MaterialSlice).filter_by(material_id=material.id).one()
+        assert slice_row.text == "第一段\n第二段"
+        other_session.close()
+    finally:
+        _drop_material(engine, slug)
+
+
+def test_library_pack_never_pushes_an_empty_pack(tmp_path, remote) -> None:  # noqa: ANN001
+    """本机没有材料时绝不推空包 —— 那会把另一台机器的资料库抹掉。"""
+    remote.db.execute(
+        "CREATE TABLE qf_library (id INTEGER PRIMARY KEY, at REAL NOT NULL,"
+        " origin TEXT NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, payload TEXT)"
+    )
+    remote.db.execute(
+        "CREATE TABLE qf_library_text (idx INTEGER PRIMARY KEY,"
+        " bytes INTEGER NOT NULL DEFAULT 0, payload TEXT)"
+    )
+    remote.db.execute(
+        "INSERT INTO qf_library(id, at, origin, bytes, payload) VALUES(1, 100.0, 'other', 2, '{}')"
+    )
+    # 用一台**全新**的机器，而不是共享的测试库：materials 属于 bank 表，
+    # `_isolate_user_data` 不清它，别的用例会留下材料。
+    empty = _machine(tmp_path, "empty")
+    out = library_cloud.sync_pack(_session(empty), remote=_client(remote))
+    assert out["action"] == "idle"
+    assert "不覆盖云端" in out["reason"]
+    assert remote.rows("SELECT payload FROM qf_library")[0]["payload"] == "{}"
+
+
+def test_sync_status_exposes_auto_mode(client) -> None:  # noqa: ANN001
+    """设置页要能看到自动同步的状态（测试环境里它是关的）。"""
+    body = client.get("/api/sync/status").json()
+    assert body["auto"]["enabled"] is False
+    assert body["auto"]["started"] is False
+    assert body["auto"]["interval"] >= 15
+    assert autosync.start() is False

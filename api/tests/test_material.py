@@ -20,7 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app import attachments as att  # noqa: E402
-from app import library as lib  # noqa: E402
+from app import material_files as lib  # noqa: E402
 
 
 @pytest.fixture()
@@ -364,7 +364,7 @@ def test_index_extracts_text_even_when_metadata_was_hand_filled(tmp_path: Path, 
     from fastapi.testclient import TestClient
 
     from app.main import app
-    from app.routers import library as route
+    from app.routers import material as route
 
     doc_root = tmp_path / "docs"
     doc_root.mkdir()
@@ -395,7 +395,7 @@ def test_detail_lists_primary_and_assets_with_roles(tmp_path: Path, monkeypatch)
     from fastapi.testclient import TestClient
 
     from app.main import app
-    from app.routers import library as route
+    from app.routers import material as route
 
     doc_root = tmp_path / "docs"
     (doc_root / "figs").mkdir(parents=True)
@@ -539,7 +539,7 @@ def test_view_and_file_endpoints(tmp_path: Path, monkeypatch):
     from fastapi.testclient import TestClient
 
     from app.main import app
-    from app.routers import library as route
+    from app.routers import material as route
 
     doc_root = tmp_path / "docs"
     doc_root.mkdir()

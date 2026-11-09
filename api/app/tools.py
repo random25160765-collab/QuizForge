@@ -1979,7 +1979,12 @@ def search_material(db, args, ctx=None) -> dict:  # noqa: ANN001
     `search_knowledge` 查的是**知识空间**（概念、点、题）；这个查的是**文本**。
     想知道"材料里原话怎么说的"，用这个；想知道"这个点在图谱里的位置"，用那个。
     """
-    return _search_by_depth(db, args, "出题")
+    # 2026-11-08 之后"书架 / 资料库"那层概念没了，只有一份材料与两个档位；
+    # 检索仍是同一个工具，`depth` 只换看哪一档（默认出题 —— 我在学的那档）。
+    depth = str(args.get("depth") or "").strip()
+    if depth not in ("出题", "检索"):
+        depth = "出题"
+    return _search_by_depth(db, args, depth)
 
 
 def _search_by_depth(db, args, depth: str) -> dict:  # noqa: ANN001
@@ -4173,6 +4178,7 @@ REGISTRY = {
             "properties": {
                 "query": {"type": "string", "description": "问一句话或给关键词都行：原词走字面，换个说法走向量"},
                 "slug": {"type": "string", "description": "只在这份材料里找（可省略）"},
+                "depth": {"type": "string", "description": "看哪一档：出题 / 检索（默认出题；这一档没有满意答案就换另一档再问）"},
                 "limit": {"type": "integer", "description": "最多几段，默认 5"},
             },
             "required": ["query"],

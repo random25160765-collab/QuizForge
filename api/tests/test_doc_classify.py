@@ -21,7 +21,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from app import library as lib  # noqa: E402
+from app import material_files as lib  # noqa: E402
 from pipeline import doc_classify as dc  # noqa: E402
 
 

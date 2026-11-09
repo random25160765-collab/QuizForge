@@ -585,9 +585,11 @@
 
     /* ------------------------------------------------------ 跨机器同步（Turso）
      *
-     * 本地库仍是唯一工作库；Turso 只做行级增量的中转（见 api/app/sync.py）。
+     * 云端-缓存：Turso 是云上那份共享副本，本地 SQLite 是工作副本。
+     * 行级表与资料整包都由后台节拍自动对齐（api/app/autosync.py）；
+     * 这里只填连接信息、看状态、以及需要时手动催一轮。
      * 对话四张表端到端加密，密钥就是 `config/snapshot.key` —— 两台机器必须
-     * 同一份。其余数据明文上传。这里只填连接信息，令牌不会显示回来。
+     * 同一份。其余数据明文上传。令牌不会显示回来。
      */
     var syncConf = conf.turso || {};
     var syncStatusLine = h('p', {
@@ -628,10 +630,24 @@
         return;
       }
       var bits = ['已配置', '待推送 ' + (st.pending || 0) + ' 行'];
+      var auto = st.auto || {};
+      if (auto.started) {
+        bits.push('自动同步：每 ' + Math.round(auto.interval || 0) + ' 秒');
+      } else if (auto.enabled === false) {
+        bits.push('自动同步：已关闭');
+      } else {
+        bits.push('自动同步：未启动');
+      }
       bits.push(st.keyReady ? '对话加密口令：有' : '对话加密口令：没有（对话不会上传）');
       var last = st.last;
       if (last && last.ok) {
         bits.push('上次 ' + last.at + ' · 推 ' + (last.pushed || 0) + ' / 拉 ' + (last.pulled || 0));
+        var lib = last.library || {};
+        var libLabels = { push: '已上传', pull: '已下载', 'pull+push': '已对齐', same: '已一致' };
+        if (lib.action && lib.action !== 'idle') {
+          bits.push('资料包' + (libLabels[lib.action] || lib.action)
+            + (lib.materials ? '（' + lib.materials + ' 份材料）' : ''));
+        }
       } else if (last && !last.ok) {
         bits.push('上次失败：' + last.error);
       } else {
@@ -675,9 +691,10 @@
     var syncForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '同步（Turso）' }),
       h('p', {
-        text: '换机器时不用再搬整库：本地 SQLite 照常用，Turso 只中转变化。'
+        text: '云端-缓存：Turso 是云上那份共享副本，本地 SQLite 是工作副本，两边自动对齐。'
+          + '配置好之后每两分钟自动同步一轮（行级表 + 资料整包），也可以点下面的按钮立刻跑。'
           + '对话、分组、消息、附件端到端加密后上传（密钥是 config/snapshot.key，'
-          + '两台机器必须同一份）；进度、自出的题、设置等其余数据明文上传。'
+          + '两台机器必须同一份）；日程、任务、材料、进度、设置等其余数据明文上传。'
           + '令牌只存在本机设置里，不会显示回来。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),

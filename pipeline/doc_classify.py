@@ -20,7 +20,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app import library as lib
+from app import material_files as lib
 
 #: 一次最多处理几份。一份线索约 300~500 字，24 份对上下文是安全的。
 BATCH_MAX = 24

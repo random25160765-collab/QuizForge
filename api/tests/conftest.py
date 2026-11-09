@@ -65,6 +65,9 @@ def _ensure_database() -> None:
 # 必须在 import app.* 之前落到环境里
 os.environ["QF_DATABASE_URL"] = TEST_URL
 os.environ["QF_DEBUG"] = "true"
+# 自动同步是**应用启动时**拉起来的后台线程：测试若把 Turso 配起来（有用例
+# 会写设置文件），它会真的去联网。钉死关掉 —— 用例自带假远端。
+os.environ.setdefault("QF_SYNC_AUTO", "0")
 # 设置文件：**测试永远不碰开发机上那一份**。
 #
 # `settings_store.put()` 会把整份设置写回文件（2026-11-07 起文件是权威），而这里每个

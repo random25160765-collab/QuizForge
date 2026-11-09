@@ -168,6 +168,11 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 分母，而分母要读正文才算得出来。默认 0 = 还不知道（老行就是 0；跑一次
     # `pipeline.ops audit --exact` 会把它校准回去）。
     ("material_slices", "windows", "INTEGER NOT NULL DEFAULT 0"),
+    # 「切片就是正文」（2026-11-08）：从原文件按行区间截出来的那一段，随资料包
+    # 上云，换台机器靠它读材料。老库没有这一列 —— 不补的话资料页与
+    # `read_material` 一读就报 `no such column: material_slices.text`。
+    # 默认空串 = 还没截（拉一次资料包或跑 `make library-texts` 就填上）。
+    ("material_slices", "text", "TEXT NOT NULL DEFAULT ''"),
     # 这条跑单跑在哪块芯片上（ORT 的实际 provider）。空 = 还没写（刚开跑，或老行）。
     ("embed_runs", "device", "VARCHAR(48) NOT NULL DEFAULT ''"),
     # 排期卡片的幂等键（见 `app/routers/plans.py` 的 `POST /schedule`）。

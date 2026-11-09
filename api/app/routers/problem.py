@@ -46,9 +46,11 @@ router = APIRouter(prefix="/api/problem", tags=["problem"])
 # 子代理能用的工具（收窄是"子"的一半）。刻意**没有** run_python：
 # 输出落在面板上、不进它的上下文，它会凭想象说自己算出来了 —— 那条坑刚填过。
 GRADE_TOOLS = (
+    # 顺序跟 `tools.specs()` 的注册表一致：`_Toolbox.specs()` 按注册表过滤，
+    # 用例会逐项比对（见 `tests/test_problem.py`）。
+    "read_material",
     "get_existing_questions",
     "search_material",
-    "read_material",
     "grade_problem",
 )
 

@@ -499,7 +499,8 @@ GROUP_TOOLS = {
     "trees": ("list_conversations", "search_conversations", "read_tree", "read_tree_nodes"),
     # 计划与日程：两读三提案。**没有 write 档** —— 落库永远由他点那一下触发。
     "plan": ("list_plans", "list_schedule", "get_energy", "propose_plan",
-             "propose_plan_edit", "propose_schedule", "schedule_week"),
+             "propose_plan_edit", "propose_schedule", "propose_unschedule",
+             "schedule_week"),
 }
 
 

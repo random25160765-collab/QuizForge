@@ -51,7 +51,7 @@ from . import config, ingest
 
 sys.path.insert(0, str(config.ROOT / "api"))
 
-from app import library as lib  # noqa: E402
+from app import material_files as lib  # noqa: E402
 from app.config import get_settings  # noqa: E402
 from app.db import get_session_factory  # noqa: E402
 from app.models import Material, MaterialSlice, SliceEmbedding  # noqa: E402

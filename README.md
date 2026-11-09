@@ -37,14 +37,18 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8100/api/health   # 20
 （`data/quizforge.db`）；表由首启自动建好（alembic 已退役）。
 `.env` 可选（`make env-init` 从 `.env.example` 生成，里面是端口与用量上限）。
 
-**数据全在本机，仓库里没有库**：权威是 `data/quizforge.db`；快照
-`db/quizforge.db.gz.enc` **就是 SQLite 库本身**、口令加密过的，`make db-restore`
-解密解压即用，不用起任何服务。`make db-snapshot` 把它写回 `db/`（**三份都只留本机**，
-已 gitignore），用途是**冷备份 / 换机器手动拷贝**。
+**数据不进 git，运行靠本机那份库**：`data/quizforge.db` 是工作副本（页面、
+检索、流水线都读写它）；配置了 Turso 时，云上那份共享副本由后台自动同步
+维持。快照 `db/quizforge.db.gz.enc` **就是 SQLite 库本身**、口令加密过的，
+`make db-restore` 解密解压即用，不用起任何服务。`make db-snapshot` 把它写回
+`db/`（**三份都只留本机**，已 gitignore），用途是**冷备份 / 换机器手动拷贝**。
 
-两台机器日常一起用走 Turso 行级增量同步：设置页「同步」填数据库地址与令牌，或
-`make sync`。对话、分组、消息、附件端到端加密后才上传（密钥仍是
-`config/snapshot.key`，两台机器必须同一份）；进度、自出的题、设置等其余数据明文上传。
+两台机器日常一起用是**云端-缓存**架构：Turso 是云上那份共享副本，本地 SQLite
+是工作副本。设置页「同步」填数据库地址与令牌后，后台每两分钟自动对齐一轮
+（`api/app/autosync.py`，也可 `make sync` 手动催一次）：行级表按 `(表, 主键)`
+增量双向同步，资料（材料 / 切片正文 / 图）整包对齐。对话、分组、消息、附件
+端到端加密后才上传（密钥仍是 `config/snapshot.key`，两台机器必须同一份）；
+日程、任务、材料、进度、设置等其余数据明文上传。
 `config/snapshot.key` 由 `make snapshot-key` 生成，**绝不进 git**；落盘快照前还会
 自动抹掉 AI 密钥与 Turso token。
 
@@ -115,7 +119,8 @@ agent 把"推导"的边际成本压到近零，于是**验证与审读成了不�
 数据**不进版本库**：库只在本机 `data/quizforge.db`，快照只在本机 `db/`。
 校验与测试会把库**物化到临时目录**再读，避免用到跨轮残渣。
 交换形态有 `make bank-export` → `bank.json`（题库投影）和 `make user-export`
-（用户数据包）：都是按需生成的投影，不进版本库；日常跨机器用 Turso 行级同步。
+（用户数据包）：都是按需生成的投影，不进版本库；日常跨机器由 Turso 自动同步
+（云端是共享副本，本地是工作副本，见 `api/app/sync.py` / `api/app/autosync.py`）。
 
 内容来源是几个只读目录（材料 PDF、笔记 vault、文档仓库）—— 它们**只读**，
 写回去的只有库里那一份。

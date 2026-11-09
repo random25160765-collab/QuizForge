@@ -1,11 +1,35 @@
-"""与 Turso 的**行级增量双向同步**。
+"""云端-缓存架构：Turso 是云上的那份数据，本地 SQLite 是工作副本。
+
+## 两个角色（2026-11-09 明确）
+
+* **云端（Turso）**：所有设备共享的那一份。它不参与页面渲染，但它是
+  "换台机器为什么能看到同样的数据"的答案 —— 用户数据在云上的权威副本。
+* **缓存 / 工作副本（本地 SQLite）**：应用直接读写的那份。断网照常用，
+  所有页面、检索、流水线都打它；同步只是把变化在两边对齐。
+
+于是"本地删掉的对话在另一台也消失"不是 bug，而是缓存与云端对齐的
+正常结果（删除以 tombstone 行上传，对端拉到时删本地行）。
+
+## 同步什么（全部用户数据，自动进行）
+
+* **行级表**：`SYNC_TABLES` = 所有 `user` 表减去 `days`（纯派生）。对话、
+  分组、消息、附件、自出的题、答题流水、计划、条目、日程、睡眠、健康档位、
+  门禁记录、重排快照、设置。每张表按 `(表, 主键)` 增量双向同步。
+* **资料整包**：`materials` / `material_slices`（含正文）/ `material_figures`
+  三张表主键会撞号，走 `library_cloud.py` 的整包对齐，不在这里逐行传。
+* **自动执行**：`app/autosync.py` 在应用启动后每两分钟跑一轮
+  `run_full()`；手动按钮、`make sync`、CLI 走同一个入口。
+
+**不上云的**：纯派生数据（`days`、向量、向量化跑单、流水线队列）—— 能重算；
+`calendar_subscriptions` —— 地址里常带能力令牌，属于凭据；题库 —— 出题机的
+产物，走题库包（`make bank-export` / `bank-import`），不随用户日常使用变化。
 
 ## 它替换的是什么
 
 2026-11-08 之前，换机器靠的是"整库快照 + git"（`tools/db_snapshot.py`）。
 那条路的根本问题是**单向且不可合并**：两台机器各写各的，谁最后提交谁覆盖，
 另一边的对话与进度就没了（`docs/STATUS.md` 里早就写着这一条）。
-现在改成：本地 SQLite 仍是唯一工作库，Turso 只做**中转站**，
+现在改成：本地 SQLite 是日常读写的工作副本，Turso 是云上那份共享副本，
 每张表按行同步，两边都能写。
 
 ## 一行的身份与版本
@@ -101,7 +125,7 @@ from . import models as _models  # noqa: F401 —— 先让 Base.metadata 长齐
 from .crypto_compat import AESGCM, InvalidTag, Scrypt
 from . import settings_file
 from .datapack import USER_TABLES
-from .db import Base, get_engine
+from .db import Base, get_engine, get_session_factory
 
 log = logging.getLogger("quizforge.sync")
 
@@ -1547,6 +1571,35 @@ def run_once(engine: Engine | None = None, remote: Any | None = None) -> dict:
     return result
 
 
+def run_full(engine: Engine | None = None, remote: Any | None = None) -> dict:
+    """一次**完整**同步：行级表 + 资料整包（材料 / 切片正文 / 图）。
+
+    行级与资料包是两套搬运方式（见 `library_cloud.py` 的模块注释），
+    但对用户来说是同一件事：所有数据。手动按钮、`make sync`、后台节拍
+    走的都是这一个入口。
+
+    资料包失败不回滚行级，也不把整次同步判死：结果里单独给 `library`，
+    失败时带 `error`。行级失败仍然抛（那是更基础的一层）。
+    """
+    result = run_once(engine, remote)
+    try:
+        from . import library_cloud  # noqa: PLC0415 - library_cloud 反过来 import sync
+
+        with get_session_factory()() as db:
+            result["library"] = library_cloud.sync_pack(db)
+    except Exception as exc:  # noqa: BLE001 - 资料包失败只记账
+        log.warning("资料包同步失败：%s", exc)
+        result["library"] = {"ok": False, "error": str(exc)}
+
+    # 把含资料包的结果写回状态（`run_once` 只知道行级那一半）。
+    try:
+        with (engine or get_engine()).begin() as conn:
+            _state_set(conn, "last_result", json.dumps(result, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 - 状态写不进去不影响同步本身
+        log.warning("同步结果没能写进状态表", exc_info=True)
+    return result
+
+
 def run_in_background(engine: Engine | None = None) -> bool:
     """起一个后台线程跑一次；已经在跑就返回 False。"""
     global _running
@@ -1558,7 +1611,7 @@ def run_in_background(engine: Engine | None = None) -> bool:
     def worker() -> None:
         global _running
         try:
-            run_once(engine)
+            run_full(engine)
         except Exception as exc:  # noqa: BLE001 - 后台线程里吞掉，状态里有
             log.warning("后台同步失败：%s", exc)
         finally:
@@ -1622,6 +1675,7 @@ __all__ = [
     "TursoClient",
     "ensure_sync_schema",
     "is_running",
+    "run_full",
     "run_in_background",
     "run_once",
     "status",

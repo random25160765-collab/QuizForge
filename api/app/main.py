@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +24,28 @@ def create_app() -> FastAPI:
     settings = get_settings()
     logger = setup_logging(settings.debug)
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):  # noqa: ANN202
+        """应用生命周期的两头。
+
+        启动时把**自动同步**的节拍器开起来（见 `app/autosync.py`）：
+        只要设置里配了 Turso，行级数据与资料包就每两分钟自动对齐一次，
+        不再依赖用户去点设置页那颗按钮。测试与离线环境用
+        `QF_SYNC_AUTO=0` 关掉（`tests/conftest.py` 已设）。
+        """
+        from . import autosync  # noqa: PLC0415 - 避免导入期互相拉扯
+
+        if autosync.start():
+            logger.info("自动同步已启动：每 %.0f 秒一轮", autosync.interval_seconds())
+        yield
+
     app = FastAPI(
         title="quizforge API",
         version=__version__,
         docs_url="/api/docs" if settings.debug else None,
         redoc_url=None,
         openapi_url="/api/openapi.json" if settings.debug else None,
+        lifespan=lifespan,
     )
 
     if settings.cors_origin_list:

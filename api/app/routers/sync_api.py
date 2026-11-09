@@ -8,14 +8,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from .. import sync
+from .. import autosync, sync
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
 
+def _status() -> dict:
+    out = sync.status()
+    # 自动同步是后台节拍：设置页要能回答"它开着吗、多快一轮、上一轮怎样"。
+    out["auto"] = autosync.status()
+    return out
+
+
 @router.get("/status")
 def read_status() -> dict:
-    return sync.status()
+    return _status()
 
 
 @router.post("/run")
@@ -29,4 +36,4 @@ def run_now() -> dict:
             detail="还没配 Turso：填数据库地址与令牌，或改 config/settings.local.json 的 turso 块",
         )
     started = sync.run_in_background()
-    return {"started": started, "status": sync.status()}
+    return {"started": started, "status": _status()}
