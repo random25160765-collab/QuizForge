@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from app import datapack, ics
+from app import datapack, ics, sync
 
 
 def _iso(delta_minutes: int = 0) -> str:
@@ -175,10 +175,15 @@ def test_items_carry_scheduling_metadata(client):  # noqa: ANN001
 
 
 def test_plan_tables_are_user_data():
-    """三张表都属于用户：换台机器打开，他的计划得还在（用户包要带走它们）。"""
+    """三张表都属于用户：换台机器打开，他的计划得还在（用户包要带走它们）。
+
+    其中 `plans` 整行**端到端加密**上云 —— 计划书正文（`doc`）是关于他
+    学习安排的内容，用户要求加密（2026-11-09）。
+    """
     for table in ("plans", "plan_items", "schedule_events"):
         assert datapack.BOUNDARY.get(table) == "user", f"{table} 没登记成用户数据"
         assert table in datapack.USER_TABLES
+    assert "plans" in sync.PRIVATE_TABLES, "计划书正文要加密，不再明文上云"
 
 
 # ============================================================================ 订阅（iCalendar）

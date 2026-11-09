@@ -160,6 +160,9 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 资料走到哪一步（检索 / 出题）。默认给"检索"是给**以后新来的行**选的，
     # 老行得靠下面那张回填表 —— 见 `_BACKFILLS`。
     ("materials", "depth", "VARCHAR(16) NOT NULL DEFAULT '检索'"),
+    # 每份计划配套的 Markdown 计划书（2026-11-09）。计划表早就建出来了，
+    # 老行补一列空串 = 还没有文档（打开 / 读写时按需播第一版，见 plan_doc.ensure）。
+    ("plans", "doc", "TEXT NOT NULL DEFAULT ''"),
     # 「以概念为中心」的判边问过它了吗（`graph_build relate-centric`）。
     # 缺省 NULL = **还没问过**，正是想要的语义（补上之后那些概念会被重新选中，
     # 这是对的：老库里的边本来就少，正该把没问过的补问一遍）。

@@ -1,0 +1,179 @@
+/* plandoc.css —— 计划书（Markdown）的右侧抽屉。
+ *
+ * 和演示沙箱一样：从右边滑进来、整屏高、点遮罩或 Esc 收起（用户：
+ * "像 render_demo 一样，做一个图标按钮，点击它从右侧打开"）。
+ * 视觉上刻意贴近文档本身而不是表单：一栏 76ch 的正文、一条只放字数的细栏，
+ * 编辑时才露出等宽输入框。颜色一律走令牌，深浅两套主题共用。
+ *
+ * 挂在 body 上（不挂在某个页面里）：对话、日程、设置都能打开同一个抽屉。
+ */
+
+.plandoc-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  justify-content: flex-end;
+  background: color-mix(in srgb, #000 42%, transparent);
+  opacity: 0;
+  transition: opacity 180ms var(--ease);
+}
+
+.plandoc-overlay.is-open {
+  opacity: 1;
+}
+
+.plandoc-overlay.is-out {
+  opacity: 0;
+}
+
+.plandoc__panel {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 94vw);
+  height: 100%;
+  border-left: 1px solid var(--line);
+  background: var(--bg2);
+  box-shadow: -18px 0 48px color-mix(in srgb, #000 20%, transparent);
+  opacity: 0;
+  transform: translateX(24px);
+  transition:
+    opacity 240ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    transform 240ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.plandoc-overlay.is-open .plandoc__panel {
+  opacity: 1;
+  transform: none;
+}
+
+.plandoc-overlay.is-out .plandoc__panel {
+  opacity: 0;
+  transform: translateX(24px);
+}
+
+/* 作者样式（.btn 的 inline-flex、.plandoc__view 的 display 等）会盖掉 UA 的
+   [hidden]{display:none}，这里显式兜底 —— 按钮、正文与编辑框全靠它切换。 */
+.plandoc-overlay [hidden] {
+  display: none !important;
+}
+
+.plandoc__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.plandoc__title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.plandoc__close {
+  flex: none;
+}
+
+.plandoc__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg3) 28%, transparent);
+}
+
+.plandoc__meta {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+.plandoc__actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+.plandoc__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px 28px;
+}
+
+.plandoc__view {
+  min-height: 100%;
+}
+
+.plandoc__prose {
+  max-width: 76ch;
+  margin: 0 auto;
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.plandoc__prose .md {
+  font-size: 14px;
+  line-height: 1.75;
+}
+
+.plandoc__empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg3);
+}
+
+.plandoc__editor {
+  display: block;
+  width: 100%;
+  min-height: 100%;
+  padding: 14px 16px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--fg);
+  background: var(--bg3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.plandoc__editor:focus {
+  outline: none;
+  border-color: var(--pri);
+}
+
+.plandoc__hint {
+  flex: none;
+  margin: 0;
+  padding: 10px 24px 13px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg3);
+}
+
+/* 系统开了"减少动效"：直接到位，别在 0.001ms 里闪一下 */
+@media (prefers-reduced-motion: reduce) {
+  .plandoc-overlay,
+  .plandoc__panel,
+  .plandoc-overlay.is-open .plandoc__panel,
+  .plandoc-overlay.is-out .plandoc__panel {
+    transition: none;
+    transform: none;
+  }
+}

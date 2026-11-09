@@ -2104,29 +2104,6 @@ body.is-colresize {
   border-color: color-mix(in srgb, var(--pri) 42%, var(--line));
 }
 
-/* 导出 */
-.chat__exports {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: stretch;
-}
-
-.chattree__export {
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: none;
-  color: var(--fg3);
-  font-size: 11.5px;
-  cursor: pointer;
-}
-
-.chattree__export:hover {
-  color: var(--pri);
-  border-color: var(--pri);
-}
-
 /* ---------------------------------------------------------------- 工具栏 */
 
 /* 分享单独推到**最右端**。
@@ -2633,12 +2610,13 @@ body.is-colresize {
 /* ---------------------------------------------------------------- 计划凭条 */
 
 /* 计划卡是**实线**边框、题卡那种凭条是虚线：两者的分量不同 ——
-   一个是要落进库里的一整份计划，一个只是给某道题打个标记。 */
+   一个是要落进库里的一整份计划，一个只是给某道题打个标记。
+   宽度跟上面的工具卡一样铺满（用户："你要把它拉到右边（现在视觉不平衡）"
+   —— 560 的上限让卡片缩在左半边，右边空出一大片）。 */
 .chatplan {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 560px;
   padding: 12px 14px;
   border: 1px solid var(--line-strong);
   border-radius: var(--r-md);
@@ -2683,16 +2661,78 @@ body.is-colresize {
   max-width: 260px;
 }
 
+/* 计划书入口：正文不铺在卡上，点这个书本图标从右侧抽屉打开（与演示沙箱同一套）。
+ * 比顶栏的图标按钮小一圈，别让一张 13px 的标题行被撑高。 */
+.chatplan__docbtn {
+  margin-left: auto;
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--fg3);
+}
+
 .chatplan__rows {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
+/* 计划卡的行间不留缝：左边那条轨道要连续（见 .chatplan__rail）。
+   原来的 4px 呼吸放进行内 padding，轨道跨行时才接得上。
+   只作用于 `plan.create` 那张卡 —— 改期、排程那几张没有轨道，间距照旧。 */
+.chatplan__rows--roadmap {
+  gap: 0;
+}
+
 .chatplan__row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 2px 0;
+}
+
+/* 左侧路线图：竖线由每行自己的伪元素画，圆点是空心的（参考 To-dos 面板）。
+   首行从圆点起、末行到圆点收 —— 删掉任何一条，`:first-child` / `:last-child`
+   自动认新的端点，不用重算。 */
+.chatplan__rail {
+  position: relative;
+  flex: none;
+  align-self: stretch;
+  width: 12px;
+}
+
+.chatplan__rail::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 1px;
+  background: var(--line);
+}
+
+.chatplan__row:first-child .chatplan__rail::before {
+  top: 50%;
+}
+
+.chatplan__row:last-child .chatplan__rail::before {
+  bottom: 50%;
+}
+
+.chatplan__dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--bg2); /* 盖住穿过的竖线 —— 圆点才是空心的 */
 }
 
 /* 整周排程卡的一行：时刻 / 标题 / 为什么排在这（依据压在下面一列，小一号字） */

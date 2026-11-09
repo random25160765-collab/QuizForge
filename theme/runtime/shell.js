@@ -235,6 +235,7 @@
     var baseUrlInput = h('input.input.input--mono', {
       type: 'text',
       spellcheck: 'false',
+      placeholder: '例如 https://api.deepseek.com/v1',
       value: aiConf.baseUrl || '',
       onInput: function (event) {
         store.saveSettings({ ai: { baseUrl: event.target.value.trim() } });
@@ -243,6 +244,7 @@
     var modelInput = h('input.input.input--mono', {
       type: 'text',
       spellcheck: 'false',
+      placeholder: '例如 deepseek-chat / gpt-4o-mini',
       value: aiConf.model || '',
       onInput: function (event) {
         store.saveSettings({ ai: { model: event.target.value.trim() } });
@@ -265,13 +267,11 @@
     // 服务端只做转发（不少模型供应商不允许浏览器直连），不持有任何共享密钥。
     var connectionBlock = h('div', null,
       h('div.form__grid', { style: { marginTop: '12px' } },
-        field('接口地址（OpenAI 兼容）', '例如 https://api.deepseek.com/v1', baseUrlInput),
-        field('模型名', '例如 deepseek-chat / gpt-4o-mini', modelInput),
-        field('上下文预算（token）', '越大能带进的对话越多；小窗口模型可调低，服务端另设上限', contextInput)),
+        field('接口地址（OpenAI 兼容）', null, baseUrlInput),
+        field('模型名', null, modelInput),
+        field('上下文预算（token）', '小窗口模型可调低', contextInput)),
       h('div', { style: { marginTop: '12px' } },
-        field('API 密钥',
-          '你自己的密钥，存在本机库里（不随仓库走）。用量按天记在本机，方便看花了多少。',
-          apiKeyInput)));
+        field('API 密钥', '只存本机，不随仓库走。', apiKeyInput)));
 
     // **现在能不能用**：2026-11-07 起没有内测通道了，只有"填了密钥"与"没填"两态。
     var channelRow = h('p', {
@@ -286,7 +286,7 @@
         channelRow.textContent =
           mode === 'user'
             ? '当前：已配置' + (mine ? ' · ' + mine : '')
-            : '当前：还没配 —— 对话与批改都用不了，填上密钥即可。';
+            : '当前：未配置 —— 填上密钥即可。';
       })
       .catch(function () {
         channelRow.textContent = '';
@@ -294,10 +294,6 @@
 
     var aiForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: 'AI（批改与对话）' }),
-      h('p', {
-        text: '密钥填在下面；也可以直接改 config/settings.local.json 的 ai 块（可拷贝，见「数据」段）。',
-        style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
-      }),
       channelRow,
       switchRow('启用 AI', '关闭时简答题提交后直接显示参考答案，由你自己判断对错；对话页也不再可用。', aiConf.enabled, function (value) {
         store.saveSettings({ ai: { enabled: value } });
@@ -336,10 +332,221 @@
       h('p.form__note', {
         style: { marginTop: '12px' },
         html:
-          '提示：浏览器直连模型接口需要该服务允许跨域（CORS），并且密钥会出现在页面请求中——' +
-          '仅在你自己信任的本机环境使用。<br>若接口不允许跨域，可改用本地服务（如 <code>ollama</code>，' +
-          '地址填 <code>http://localhost:11434/v1</code>）并通过 <code>OLLAMA_ORIGINS=*</code> 放开跨域。',
+          '浏览器直连需服务商允许跨域（CORS）。不支持时可用本地 <code>ollama</code>：' +
+          '地址 <code>http://localhost:11434/v1</code>，并以 <code>OLLAMA_ORIGINS=*</code> 放开跨域。',
       }));
+
+    /* ------------------------------------------------------ 全局记忆
+     *
+     * 这些是**跨对话长期有效**的信息，但**不自动进提示词**（用户 2026-11-09 定的：
+     * 放在那边，让 agent 有需要的时候自己查，像 coding agent 的 global memory）。
+     * 对话里走 `list_memory` / `edit_memory` 工具；这里的增删改直接落库，
+     * 下一轮它来查时看到的就是新的。
+     *
+     * 类型只有四档，与后端 `memory.KINDS` 对齐；文案不必逐字一样，但键不能漂。
+     */
+    var MEMORY_KINDS = [
+      ['profile', '身份 / 背景'],
+      ['preference', '偏好 / 要求'],
+      ['project', '在做的事'],
+      ['fact', '记住的事实'],
+    ];
+
+    function memoryKindSelect(value) {
+      var select = h(
+        'select.select.memrow__kind',
+        { 'aria-label': '记忆类型' },
+        MEMORY_KINDS.map(function (pair) {
+          return h('option', { value: pair[0], text: pair[1] });
+        })
+      );
+      select.value = value || 'fact';
+      return select;
+    }
+
+    function memoryStamp(iso) {
+      var d = new Date(iso || '');
+      if (isNaN(d.getTime())) return '';
+      return (
+        '更新于 ' + (d.getMonth() + 1) + '月' + d.getDate() + '日 ' +
+        (d.getHours() < 10 ? '0' : '') + d.getHours() + ':' +
+        (d.getMinutes() < 10 ? '0' : '') + d.getMinutes()
+      );
+    }
+
+    /** 一条记忆：标题 / 类型 / 正文，改完点保存（别每敲一个字就 PATCH 一次） */
+    function memoryRow(one) {
+      var current = one;
+      var title = h('input.input.memrow__title', {
+        type: 'text',
+        placeholder: '一句话标题',
+        'aria-label': '记忆标题',
+        value: current.title || '',
+      });
+      var kind = memoryKindSelect(current.kind);
+      var body = h('textarea.textarea.memrow__body', {
+        rows: '3',
+        placeholder: '详细一点：它该在什么时候用上？',
+        'aria-label': '记忆正文',
+        value: current.body || '',
+      });
+      var meta = h('span.memrow__meta', { text: memoryStamp(current.updatedAt) });
+
+      var save = h('button.btn.btn--sm', { type: 'button', onClick: doSave }, '保存');
+      var del = h('button.btn.btn--ghost.btn--sm', {
+        type: 'button',
+        title: '删掉这条记忆',
+        onClick: doDelete,
+      }, '删除');
+
+      function doSave() {
+        var nextTitle = String(title.value || '').trim();
+        var nextBody = String(body.value || '').trim();
+        if (!nextTitle && !nextBody) {
+          ui.toast('标题和正文至少要有一个', 'warn', 2000);
+          return;
+        }
+        save.disabled = true;
+        api
+          .patch('/memory/' + encodeURIComponent(current.id), {
+            title: nextTitle,
+            body: nextBody,
+            kind: kind.value,
+          })
+          .then(
+            function (data) {
+              save.disabled = false;
+              if (data && data.memory) {
+                current = data.memory;
+                title.value = current.title || '';
+                body.value = current.body || '';
+                kind.value = current.kind || 'fact';
+                meta.textContent = memoryStamp(current.updatedAt);
+              }
+              ui.toast('已保存', 'ok', 1400);
+            },
+            function (err) {
+              save.disabled = false;
+              ui.toast((err && err.message) || '没保存上', 'bad', 2600);
+            }
+          );
+      }
+
+      function doDelete() {
+        ui.confirm('删掉「' + (current.title || '这条记忆') + '」？之后 AI 就查不到它了。', {
+          okLabel: '删掉',
+          danger: true,
+        }).then(function (yes) {
+          if (!yes) return;
+          api.del('/memory/' + encodeURIComponent(current.id)).then(
+            function () {
+              if (row.parentNode) row.parentNode.removeChild(row);
+              ui.toast('已删掉', 'ok', 1400);
+              if (!memList.children.length) showEmpty();
+            },
+            function (err) {
+              ui.toast((err && err.message) || '没删掉', 'bad', 2600);
+            }
+          );
+        });
+      }
+
+      var row = h(
+        'div.memrow',
+        null,
+        h('div.memrow__head', null, title, kind),
+        body,
+        h('div.memrow__foot', null, meta, save, del)
+      );
+      return row;
+    }
+
+    var memList = h('div.memlist');
+    var memEmpty = h('p.form__hint', {
+      text: '还没有记过东西。往下写一条，AI 需要时会来查。',
+    });
+
+    function showEmpty() {
+      if (!memList.children.length) memList.appendChild(memEmpty);
+    }
+
+    var newTitle = h('input.input.memrow__title', {
+      type: 'text',
+      placeholder: '一句话标题（可留空，从正文第一行取）',
+      'aria-label': '新记忆标题',
+    });
+    var newKind = memoryKindSelect('fact');
+    var newBody = h('textarea.textarea.memrow__body', {
+      rows: '3',
+      placeholder: '例如：他正在自学数字芯片设计，解释尽量给电路层面的直觉',
+      'aria-label': '新记忆正文',
+    });
+    var addBtn = h('button.btn.btn--primary.btn--sm', {
+      type: 'button',
+      onClick: function () {
+        var title = String(newTitle.value || '').trim();
+        var body = String(newBody.value || '').trim();
+        if (!title && !body) {
+          ui.toast('标题和正文至少要有一个', 'warn', 2000);
+          return;
+        }
+        addBtn.disabled = true;
+        api
+          .post('/memory', { title: title, body: body, kind: newKind.value })
+          .then(
+            function (data) {
+              addBtn.disabled = false;
+              var memory = data && data.memory;
+              if (!memory) return;
+              if (memEmpty.parentNode === memList) memList.removeChild(memEmpty);
+              memList.appendChild(memoryRow(memory));
+              newTitle.value = '';
+              newBody.value = '';
+              newKind.value = 'fact';
+              ui.toast('记住了', 'ok', 1400);
+            },
+            function (err) {
+              addBtn.disabled = false;
+              ui.toast((err && err.message) || '没记上', 'bad', 2600);
+            }
+          );
+      },
+    }, '记下来');
+
+    api.get('/memory').then(
+      function (data) {
+        var list = (data && data.memories) || [];
+        ui.clear(memList);
+        if (!list.length) {
+          showEmpty();
+          return;
+        }
+        list.forEach(function (one) {
+          memList.appendChild(memoryRow(one));
+        });
+      },
+      function () {
+        ui.clear(memList);
+        memList.appendChild(h('p.form__hint', { text: '记忆没读出来 —— 刷新一下再试。' }));
+      }
+    );
+
+    var memoryForm = h(
+      'div.form__section',
+      null,
+      h('div.form__sectiontitle', { text: '全局记忆' }),
+      h('p', {
+        text:
+          '跨对话长期有效，但不自动进提示词：AI 需要时会自己来查，学习模式下也能自己记、自己改。',
+        style: { margin: '-2px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
+      }),
+      memList,
+      h('div.memnew', null,
+        h('div.form__sectiontitle', { text: '记一条新的', style: { margin: '14px 0 10px' } }),
+        h('div.memrow__head', null, newTitle, newKind),
+        newBody,
+        h('div.btnrow', { style: { marginTop: '10px' } }, addBtn,
+          h('span.form__hint', { text: '写得越具体越有用；别整段抄对话。' }))));
 
     /* ------------------------------------------------------ 联网搜索
      *
@@ -351,7 +558,6 @@
      */
     var searchConf = conf.search || {};
     var providerEndpoints = {};
-    var providerKeyless = {};
     var searchStatus = h('p', {
       text: '正在读取当前状态…',
       style: { margin: '-4px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg2)' },
@@ -392,9 +598,8 @@
         var list = st.providers || [];
         list.forEach(function (one) {
           providerEndpoints[one.kind] = one.endpoint;
-          providerKeyless[one.kind] = !!one.keyless;
           searchKindSelect.appendChild(
-            h('option', { value: one.kind, text: one.label + (one.keyless ? ' —— 免密钥' : '') }));
+            h('option', { value: one.kind, text: one.label + (one.keyless ? '（免密钥）' : '') }));
         });
         // 没存过就选**服务端列表的第一个**（那家就是后端的默认，见 `websearch.PROVIDERS`）——
         // 不在这儿写死一个名字，免得两边各有一份默认值。
@@ -407,9 +612,9 @@
         // **实际在走哪条路**由服务端说 —— 光看这个框空着就说"没配置"，
         // 会让人对着一个其实能用的功能找问题。
         searchStatus.textContent = st.ready
-          ? '当前：可以联网 · ' + (st.label || '')
-            + (st.source === 'keyless' ? ' · 不用配任何东西' : ' · 你自己的密钥')
-          : '当前：用不了 —— ' + (st.message || '');
+          ? '当前：可用 · ' + (st.label || '')
+            + (st.source === 'keyless' ? ' · 免密钥' : ' · 自带密钥')
+          : '当前：不可用 —— ' + (st.message || '');
       })
       .catch(function () {
         searchStatus.textContent = '';
@@ -418,25 +623,21 @@
     var searchForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '联网搜索' }),
       h('p', {
-        // 这一段是**纯文本**（旁边 AI 那段也是），不解析 Markdown —— 别在这儿写 `**强调**`，
+        // 这一段是**纯文本**，不解析 Markdown —— 别在这儿写 `**强调**`，
         // 星号会原样显示出来。
-        text: '让 AI 能上外网查它自己不知道的东西（最新的版本、现在的推荐做法、'
-          + '某个数字的出处）。它只读网页，不动你的任何数据；引用时会把网址写出来'
-          + '给你核对。',
+        text: '让 AI 联网查资料并给出网址；它只读网页，不动你的数据。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       searchStatus,
-      switchRow('启用联网搜索', '关掉之后这一组工具不再声明给模型 —— 它就不会去搜。',
+      switchRow('启用联网搜索', '关掉后模型拿不到搜索工具。',
         searchConf.enabled !== false, function (value) {
           store.saveSettings({ search: { enabled: value } });
         }),
       h('div.form__grid', { style: { marginTop: '12px' } },
-        field('服务商', '默认那条免密钥；往下三家要各自申请一把密钥', searchKindSelect),
-        field('接口地址', '一般留空 —— 只有自建网关时才需要改', searchEndpointInput)),
+        field('服务商', null, searchKindSelect),
+        field('接口地址', '只有自建网关才需要改', searchEndpointInput)),
       h('div', { style: { marginTop: '12px' } },
-        field('API 密钥', '只有选收费那三家才要填。填了就用你的（额度、稳定性、更长的摘要）；'
-          + '留空就走免密钥那条（必应，一次最多 10 条，个人小量够用）。',
-          searchKeyInput)));
+        field('API 密钥', '收费服务商才需要填。', searchKeyInput)));
 
     var fontScale = h('input.slider', {
       type: 'range',
@@ -465,7 +666,7 @@
 
     var appearanceForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '外观' }),
-      switchRow('浅色主题', '长时间阅读公式与代码时，可切换到低强度浅色配色。', conf.theme === 'light', function (value) {
+      switchRow('浅色主题', '低强度配色，适合长时间阅读。', conf.theme === 'light', function (value) {
         ui.theme.set(value ? 'light' : 'dark');
         // 和旁边那几行一样走设置仓库：只写本机的话，下次进页面会被服务端那份按回去
         if (store) store.saveSettings({ theme: ui.theme.current() });
@@ -488,39 +689,44 @@
       onInput: function (event) {
         store.saveSettings({ obsidian: { vaultPath: event.target.value.trim() } });
         // 路径一改，上一次的检测结果就不作数了
-        if (obsStatus) obsStatus.textContent = '还没检测。';
+        setObsStatus('未检测', '');
       },
     });
-    var obsStatus = h('p', {
-      text: '还没检测。',
-      style: { margin: '-4px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg2)' },
-    });
+    // 状态与按钮同一行（`testrow`）：动作与结果挨着，别让一行小字自己飘在下面
+    var obsStatus = h('span.testnote', { text: '未检测' });
+
+    function setObsStatus(text, kind) {
+      obsStatus.textContent = text;
+      obsStatus.classList.toggle('is-ok', kind === 'ok');
+      obsStatus.classList.toggle('is-bad', kind === 'bad');
+    }
+
     var obsForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: 'Obsidian（笔记）' }),
       h('p', {
-        text: '笔记不在 quizforge 里存。这里填 Obsidian vault 的路径，再到 Obsidian 里启用'
-          + '「QuizForge 桥接」插件；两边通过 vault 里的一个信箱目录通信，不走网络。'
-          + '没连上时，对话里的笔记读写工具就用不了。',
+        text: '笔记存在 vault 里，不经过网络：填好路径，再在 Obsidian 里启用「QuizForge 桥接」插件。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
-      field('vault 路径', 'Windows 路径（F:\\Notes）与 WSL 路径（/mnt/f/Notes）都认', vaultInput),
-      h('div.btnrow', { style: { marginTop: '12px' } },
+      field('vault 路径', null, vaultInput),
+      h('div.btnrow.testrow', null,
         h('button.btn', {
           type: 'button',
           onClick: function () {
-            obsStatus.textContent = '正在检测…';
+            setObsStatus('正在检测…', '');
             // 带上输入框里的值：刚打完还没同步到后端，也能立刻检测
             api.get('/obsidian/status?path=' + encodeURIComponent(vaultInput.value || '')).then(function (st) {
-              obsStatus.textContent = st && st.ok
-                ? '已连上：' + (st.vault || 'vault')
-                  + (st.pluginVersion ? ' · 插件 ' + st.pluginVersion : '')
-                : '没连上：' + ((st && st.error) || '未知原因');
+              if (st && st.ok) {
+                setObsStatus('已连上 · ' + (st.vault || 'vault')
+                  + (st.pluginVersion ? ' · 插件 ' + st.pluginVersion : ''), 'ok');
+              } else {
+                setObsStatus('没连上：' + ((st && st.error) || '未知原因'), 'bad');
+              }
             }).catch(function (err) {
-              obsStatus.textContent = '没连上：' + ((err && err.message) || err);
+              setObsStatus('没连上：' + ((err && err.message) || err), 'bad');
             });
           },
-        }, h('span', { html: ui.icon('refresh', 15) }), h('span', { text: '检测连接' }))),
-      obsStatus);
+        }, h('span', { html: ui.icon('refresh', 15) }), h('span', { text: '检测连接' })),
+        obsStatus));
 
     var stats = store.stats();
     /* 题库生成时间：设置页**不装载题库**（那是几 MB，为一个时间戳不值），
@@ -588,8 +794,8 @@
      * 云端-缓存：Turso 是云上那份共享副本，本地 SQLite 是工作副本。
      * 行级表与资料整包都由后台节拍自动对齐（api/app/autosync.py）；
      * 这里只填连接信息、看状态、以及需要时手动催一轮。
-     * 对话四张表端到端加密，密钥就是 `config/snapshot.key` —— 两台机器必须
-     * 同一份。其余数据明文上传。令牌不会显示回来。
+     * 对话四张表、全局记忆、计划书端到端加密，密钥就是 `config/snapshot.key`
+     * —— 两台机器必须同一份。其余数据明文上传。令牌不会显示回来。
      */
     var syncConf = conf.turso || {};
     var syncStatusLine = h('p', {
@@ -638,7 +844,11 @@
       } else {
         bits.push('自动同步：未启动');
       }
-      bits.push(st.keyReady ? '对话加密口令：有' : '对话加密口令：没有（对话不会上传）');
+      bits.push(
+        st.keyReady
+          ? '加密口令：有'
+          : '加密口令：没有（对话 / 记忆 / 计划书不会上传）'
+      );
       var last = st.last;
       if (last && last.ok) {
         bits.push('上次 ' + last.at + ' · 推 ' + (last.pushed || 0) + ' / 拉 ' + (last.pulled || 0));
@@ -691,21 +901,19 @@
     var syncForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '同步（Turso）' }),
       h('p', {
-        text: '云端-缓存：Turso 是云上那份共享副本，本地 SQLite 是工作副本，两边自动对齐。'
-          + '配置好之后每两分钟自动同步一轮（行级表 + 资料整包），也可以点下面的按钮立刻跑。'
-          + '对话、分组、消息、附件端到端加密后上传（密钥是 config/snapshot.key，'
-          + '两台机器必须同一份）；日程、任务、材料、进度、设置等其余数据明文上传。'
-          + '令牌只存在本机设置里，不会显示回来。',
+        text: 'Turso 是云上共享副本，本地 SQLite 是工作副本，两边自动对齐。'
+          + '对话、分组、消息、附件、全局记忆、计划书端到端加密（两台机器用同一份 snapshot.key），'
+          + '其余数据明文。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       syncStatusLine,
-      switchRow('启用跨机器同步', '关闭时不会推送，也不会拉取；本机数据不受影响。',
+      switchRow('启用跨机器同步', '关闭后不推不拉，本机数据不受影响。',
         syncConf.enabled !== false, function (value) {
           store.saveSettings({ turso: { enabled: value } });
         }),
       h('div.form__grid', { style: { marginTop: '12px' } },
-        field('数据库地址', '形如 libsql://xxx.turso.io（设置页只连这一台）', syncUrlInput),
-        field('数据库令牌', '在 Turso 控制台生成；只存本机，也不会跟着同步走', syncTokenInput)),
+        field('数据库地址', null, syncUrlInput),
+        field('数据库令牌', '在 Turso 控制台生成。', syncTokenInput)),
       h('div.btnrow', { style: { marginTop: '12px' } },
         h('button.btn', {
           type: 'button',
@@ -853,14 +1061,12 @@
     var calendarForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '日历订阅（iCalendar）' }),
       h('p', {
-        text: '课表、会议邀请都是一串 .ics 地址：贴进来、点「订阅」，它就排进日程页。'
-          + '之后课程有调整，回来点一次「同步」即可。'
-          + '地址里通常带着令牌（拿到地址就能读到整份课表），所以它只存本机、不跟同步走，'
-          + '界面上也只显示抹掉值的样子。',
+        text: '贴一个 .ics 地址即可订阅课表；课程有调整时回来点「同步」。'
+          + '地址里通常带令牌，所以只存本机、不跟同步走。',
         style: { margin: '-2px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       h('div.form__grid', null,
-        field('订阅地址', 'https:// 开头；学校给的 webcal:// 把前缀换成 https://', calUrlInput)),
+        field('订阅地址', 'webcal:// 换成 https://', calUrlInput)),
       h('div.btnrow', { style: { marginTop: '10px' } },
         h('button.btn', { type: 'button', onClick: subscribeCalendar },
           h('span', { html: ui.icon('plus', 15) }), h('span', { text: '订阅' }))),
@@ -1069,9 +1275,7 @@
     var healthForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '作息与健康策略' }),
       h('p', {
-        text: '自动排程按这套作息算「今天还剩多少脑力」：先看睡眠（睡前/起床两个打卡），'
-          + '再看课表负荷与时段节律，折成一条 24 小时曲线与「深度用脑预算」。'
-          + '身体状态可以按日期分段（备考期 / 恢复期），排程会按当天的档位算。',
+        text: '自动排程按这套作息估算「今天还剩多少脑力」；身体状态可按日期分段，按当天档位算。',
         style: { margin: '-2px 0 10px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       h('div.form__grid', null,
@@ -1201,7 +1405,7 @@
           },
         }, h('span', { html: ui.icon('trash', 15) }), h('span', { text: '清空进度' }))));
 
-  return h('div.form', null, aiForm, searchForm, obsForm, appearanceForm, syncForm,
+  return h('div.form', null, aiForm, memoryForm, searchForm, obsForm, appearanceForm, syncForm,
     calendarForm, healthForm, dataForm);
   }
 

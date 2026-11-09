@@ -13,8 +13,9 @@
 ## 同步什么（全部用户数据，自动进行）
 
 * **行级表**：`SYNC_TABLES` = 所有 `user` 表减去 `days`（纯派生）。对话、
-  分组、消息、附件、自出的题、答题流水、计划、条目、日程、睡眠、健康档位、
-  门禁记录、重排快照、设置。每张表按 `(表, 主键)` 增量双向同步。
+  分组、消息、附件、自出的题、答题流水、**全局记忆**、计划（含计划书正文）、
+  条目、日程、睡眠、健康档位、门禁记录、重排快照、设置。每张表按
+  `(表, 主键)` 增量双向同步。
 * **资料整包**：`materials` / `material_slices`（含正文）/ `material_figures`
   三张表主键会撞号，走 `library_cloud.py` 的整包对齐，不在这里逐行传。
 * **自动执行**：`app/autosync.py` 在应用启动后每两分钟跑一轮
@@ -69,18 +70,22 @@
 首次同步（或游标缺失）走**全量镜像**；之后只读日志。
 `qf_sync_rows` 让新机器不必重放全部历史，日志则让日常同步只传变化。
 
-## 隐私：对话端到端加密
+## 隐私：端到端加密
 
-`PRIVATE_TABLES`（对话 / 分组 / 消息 / 附件）的 **payload 整体加密**：
-AES-256-GCM，密钥由 `config/snapshot.key`（或环境变量里的口令）经 scrypt
-派生，盐存在远端 `qf_sync_meta`，并有一个 HMAC 校验值用于尽早发现
-"两台机器的口令不是同一份"。Turso 只看到 `tbl / pk / at / origin` 和密文。
-其余表明文上传（用户的原话："我的个人数据（对话）端到端加密后上传。
-其他数据不加密上传。"）。
+`PRIVATE_TABLES`（对话 / 分组 / 消息 / 附件 / **记忆** / **计划**）的
+**payload 整体加密**：AES-256-GCM，密钥由 `config/snapshot.key`
+（或环境变量里的口令）经 scrypt 派生，盐存在远端 `qf_sync_meta`，
+并有一个 HMAC 校验值用于尽早发现"两台机器的口令不是同一份"。
+Turso 只看到 `tbl / pk / at / origin` 和密文。其余表照旧明文上传
+（用户原话："我的个人数据（对话）端到端加密后上传。其他数据不加密上传。"；
+2026-11-09 他又要求把**全局记忆**与**计划书正文**也加密 —— 已经划进来）。
+
+表划进 `PRIVATE_TABLES` 之前已经同步过的明文行，由
+`_schedule_private_rescope` 在升级后重推一遍换成密文（每台机器一次）。
 
 **密钥不进 Turso，也不进 git**：口令文件 `config/snapshot.key` 已被 gitignore，
-新机器要同步对话就得先把它拷过去 —— 这是"端到端"的定义，不是缺陷。
-没有口令时拒绝同步（而不是偷偷明文上传），也不推进游标
+新机器要同步对话 / 记忆 / 计划书就得先把它拷过去 —— 这是"端到端"的定义，
+不是缺陷。没有口令时拒绝同步（而不是偷偷明文上传），也不推进游标
 （否则之后补上密钥也拉不到错过的那段）。
 
 ## 设置里的秘密
@@ -136,9 +141,26 @@ log = logging.getLogger("quizforge.sync")
 SYNC_TABLES: tuple[str, ...] = tuple(t for t in USER_TABLES if t != "days")
 
 #: 端到端加密的表。用户原话："我的个人数据（对话）端到端加密后上传。"
+#: 2026-11-09 追加：**全局记忆**和**计划书正文**也是"关于他"的内容，
+#: 用户明确要求加密。`plans` 是整行加密（标题 / 目标 / `doc` 正文）；
+#: 条目（`plan_items`）仍是明文 —— 按表加密的粒度就这样，条目标题一般
+#: 只是"读 3.1 节"这种动作。
 PRIVATE_TABLES: frozenset[str] = frozenset(
-    {"conversations", "conversation_folders", "messages", "attachments"}
+    {
+        "conversations",
+        "conversation_folders",
+        "messages",
+        "attachments",
+        "memories",
+        "plans",
+    }
 )
+
+#: 后来才划进 `PRIVATE_TABLES` 的表（2026-11-09：全局记忆、计划书）。
+#: 远端可能已经存着它们的**明文**行；每个库跑一次重推，用密文覆盖
+#: （见 `_schedule_private_rescope`）。以后再有表划进来，改这里 + 抬版本号。
+_RESCOPE_PRIVATE: tuple[str, ...] = ("memories", "plans")
+_RESCOPE_STATE_KEY = "private_rescope_v1"
 
 #: 拉取时的应用顺序（外键先父后子）。同一页里也按它排序。
 PULL_ORDER: tuple[str, ...] = (
@@ -150,6 +172,11 @@ PULL_ORDER: tuple[str, ...] = (
     "records",
     "attempts",
     "ai_usage",
+    # 全局记忆（2026-11-09）：AI 跨对话的长期信息，换台机器要还在。
+    # 它没有外键；**必须在 PULL_ORDER 里** —— 首次同步走 `_full_pull`，
+    # 而 `_full_pull` 只逐表读这里列出的表，漏一张（这里曾漏过 memories）
+    # 就等于那类数据永远到不了新机器，尽管推送 / 增量拉取都是通的。
+    "memories",
     # 外键先父后子：条目要挂计划，日程要挂条目（虽然删父行是本机显式删的，
     # 但远端按 pk 顺序回放时子行先到会插不进去）。
     "plans",
@@ -330,6 +357,7 @@ _TIMESTAMPS: dict[str, tuple[str, ...]] = {
     "records": ("updated_at",),
     "attempts": ("at", "created_at"),
     "ai_usage": ("updated_at",),
+    "memories": ("updated_at", "created_at"),
     "plans": ("updated_at",),
     "plan_items": ("updated_at",),
     "schedule_events": ("updated_at", "start_at"),
@@ -765,7 +793,8 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
         if not passphrase:
             if need_private:
                 raise SyncError(
-                    "要同步对话（端到端加密）需要口令文件：config/snapshot.key。\n"
+                    "要同步对话 / 记忆 / 计划书（端到端加密）需要口令文件："
+                    "config/snapshot.key。\n"
                     "  把另一台机器上那份拷过来即可（它被 gitignore，不会进仓库）。\n"
                     f"  也可以设环境变量 {_PASS_ENVS[0]}。"
                 )
@@ -793,8 +822,8 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
     if not passphrase:
         if need_private:
             raise SyncError(
-                "远端已经有加密的对话数据，而本机没有口令（config/snapshot.key）。\n"
-                "  把另一台机器上那份拷过来再同步。"
+                "远端已经有加密数据（对话 / 记忆 / 计划书），而本机没有口令"
+                "（config/snapshot.key）。\n  把另一台机器上那份拷过来再同步。"
             )
         return None
 
@@ -964,6 +993,58 @@ def _baseline(engine: Engine) -> int:
         return added
 
 
+def _schedule_private_rescope(engine: Engine) -> int:
+    """把**后来才划进加密范围**的表整表重推一遍；每台机器只做一次。
+
+    `PRIVATE_TABLES` 决定的是**推送时**加不加密。表在划进来之前已经同步过
+    的行，远端存的是明文；只改常量不会回头重写它们。这里把本机仍在的每一行
+    影子时间戳抬到"现在"并记脏，下一次推送就会拿密文覆盖远端那一行。
+
+    顺带兜住另一种漏：表可能是在 `baseline_done` 之后才加的，建表到第一次
+    同步之间写入的行没有影子 —— 这里一并补出来。
+
+    返回这次排进推送队列的行数（0 = 早就做过，或这些表还是空的）。
+    """
+    with engine.begin() as conn:
+        done_raw = _state_get(conn, _RESCOPE_STATE_KEY) or ""
+        done = {name for name in done_raw.split(",") if name}
+        todo = [name for name in _RESCOPE_PRIVATE if name in SPECS and name not in done]
+        if not todo:
+            return 0
+        scheduled = 0
+        for name in todo:
+            spec = SPECS[name]
+            columns = ", ".join(_q(col) for col in spec.key)
+            rows = conn.exec_driver_sql(f"SELECT {columns} FROM {_q(name)}").fetchall()
+            for values in rows:
+                pk = _pk_json(list(values))
+                shadow = conn.exec_driver_sql(
+                    "SELECT at, deleted FROM qf_sync_rows WHERE tbl = ? AND pk = ?",
+                    (name, pk),
+                ).fetchone()
+                if shadow is not None and int(shadow[1]):
+                    # 影子是"已删除"，本地却还有这一行：别借重推把它复活。
+                    # 正常流程不会出现（删除会连本地行一起删）。
+                    continue
+                previous = float(shadow[0]) if shadow is not None else 0.0
+                at = max(time.time(), previous + 0.000001)
+                conn.exec_driver_sql(
+                    "INSERT INTO qf_sync_rows(tbl, pk, at, deleted) VALUES(?, ?, ?, 0)"
+                    " ON CONFLICT(tbl, pk) DO UPDATE SET at = excluded.at, deleted = 0",
+                    (name, pk, at),
+                )
+                conn.exec_driver_sql(
+                    "INSERT INTO qf_sync_journal(tbl, pk, op, at) VALUES(?, ?, 'put', ?)"
+                    " ON CONFLICT(tbl, pk) DO UPDATE SET op = 'put', at = excluded.at",
+                    (name, pk, at),
+                )
+                scheduled += 1
+        _state_set(
+            conn, _RESCOPE_STATE_KEY, ",".join(sorted(done | set(todo)))
+        )
+        return scheduled
+
+
 # ============================================================================ 推送
 
 
@@ -1112,7 +1193,11 @@ def _apply_page(engine: Engine, rows: list[dict], key: bytes | None, origin: str
             if payload is None:
                 skipped += 1
                 continue
-            if spec.private:
+            # 以**远端这一行自己的 enc 标记**为准，而不是表当前的分类：
+            # 一张表可能刚被划进 `PRIVATE_TABLES`，远端还留着它早期的明文行。
+            # 那些行要能读进来（随后由 `_schedule_private_rescope` 重推成密文），
+            # 否则升级当天就会因为"拿密文的口令去解明文"炸掉。
+            if int(remote_row.get("enc") or 0):
                 if key is None:
                     raise SyncError(f"远端有加密的 {tbl}，而本机没有口令")
                 data = _decrypt(key, tbl, pk, str(payload))
@@ -1544,6 +1629,10 @@ def run_once(engine: Engine | None = None, remote: Any | None = None) -> dict:
         baseline = _baseline(engine)
         pushed = _push(engine, remote, key, origin)
         pulled = _pull(engine, remote, key, origin)
+        # 新划进加密范围的表：**拉完之后**再排重推。顺序很重要 ——
+        # 先拉才能拿到另一台机器的最新行；先推会让本机的旧副本借新的
+        # 时间戳盖掉那边刚写的计划书。排进队列的行由**下一次**推送换成密文。
+        _schedule_private_rescope(engine)
         # 父指针最后再补一次：跨页/跨轮次才到的父消息在这里接上（页内已经补过一次）
         with engine.begin() as conn:
             conn.exec_driver_sql(_BACKFILL_PARENTS_SQL)

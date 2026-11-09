@@ -64,14 +64,16 @@ MODES: tuple[Mode, ...] = (
     Mode(
         key="query",
         label="查询",
-        hint="只查不改：翻笔记、读资料原文、走知识图谱、翻别的对话、看计划与日程",
+        hint="只查不改：翻笔记、读资料原文、走知识图谱、翻别的对话、看计划与日程、看记忆",
         # `trees`（对话树）也挂在这一档：**"我上次是不是钻过这个"是查询类需求**
         #（`docs/对话树.md` §三 的推论），跟查笔记、查资料同类，不是"学习"模式独有的。
         # 这一组四个工具全是 `read` 档，所以进了查询模式也只读、不改。
         #
         # `plan` 同理挂在这里，但这一档 `access` 只有 `read` —— 于是查询模式里
         # **看得见计划与日程，订不了也排不了**（那两个是 propose 档，不会被声明）。
-        groups=("notes", "library", "graph", "trees", "plan"),
+        # `memory` 也只要只读那一半（`list_memory`）：记忆不自动进提示词，
+        # 查询模式至少能查到；改它要写档 —— 那留给学习模式。
+        groups=("notes", "library", "graph", "trees", "plan", "memory"),
         access=("read",),
         color="#3B82F6",  # 蓝：翻找/查看
     ),

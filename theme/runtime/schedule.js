@@ -365,6 +365,21 @@
         title,
         h('span.sch-plan__count', { text: done + '/' + items.length }),
         h(
+          'button.icon-btn.sch-plan__doc',
+          {
+            type: 'button',
+            title: plan.docChars
+              ? '打开计划书（' + plan.docChars + ' 字）'
+              : '打开计划书',
+            'aria-label': '打开计划书',
+            onClick: function () {
+              if (QF.plandoc) QF.plandoc.open(plan.id, plan.title);
+              else ui.toast('计划书还没加载好，刷新一下页面', 'warn', 2000);
+            },
+          },
+          h('span', { html: ui.icon('book', 14) })
+        ),
+        h(
           'button.icon-btn.sch-plan__del',
           {
             type: 'button',

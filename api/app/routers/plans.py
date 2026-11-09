@@ -38,7 +38,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
-from .. import ics, schedule_view
+from .. import ics, plan_doc, schedule_view
 from ..deps import DbSession
 from ..models import CalendarSubscription, Plan, PlanItem, ScheduleEvent
 
@@ -164,6 +164,8 @@ def _plan_json(plan: Plan, items: list[PlanItem]) -> dict:
         "note": plan.note,
         "status": plan.status,
         "source": plan.source,
+        # 文档全文不进列表：它可能很长，而列表一屏十几份。要看就用 `/plans/{id}/doc`。
+        "docChars": len(plan.doc or ""),
         "createdAt": _iso(plan.created_at),
         "updatedAt": _iso(plan.updated_at),
         "items": [_item_json(one) for one in items],
@@ -237,30 +239,45 @@ def create_plan(body: dict, db: DbSession) -> dict:
     db.add(plan)
     db.flush()  # 拿到 id 再挂条目（不用等 commit）
 
+    added: list[PlanItem] = []
     for index, raw in enumerate(body.get("items") or []):
         if not isinstance(raw, dict):
             continue
         item_title = str(raw.get("title") or "").strip()[:300]
         if not item_title:
             continue
-        db.add(
-            PlanItem(
-                plan_id=plan.id,
-                title=item_title,
-                note=str(raw.get("note") or "")[:2000],
-                due_date=_parse_day(raw.get("dueDate")),
-                important=bool(raw.get("important")),
-                estimate_min=max(0, _int(raw.get("estimateMin"))),
-                focus=_focus(raw.get("focus")),
-                domain=_domain(raw.get("domain")),
-                splittable=bool(raw.get("splittable", True)),
-                max_chunk_min=max(0, min(240, _int(raw.get("maxChunkMin")))),
-                earliest_date=_parse_day(raw.get("earliestDate")),
-                gate=str(raw.get("gate") or "").strip()[:32],
-                points=_points(raw.get("points")),
-                sort=_int(raw.get("sort"), index),
-            )
+        item = PlanItem(
+            plan_id=plan.id,
+            title=item_title,
+            note=str(raw.get("note") or "")[:2000],
+            due_date=_parse_day(raw.get("dueDate")),
+            important=bool(raw.get("important")),
+            estimate_min=max(0, _int(raw.get("estimateMin"))),
+            focus=_focus(raw.get("focus")),
+            domain=_domain(raw.get("domain")),
+            splittable=bool(raw.get("splittable", True)),
+            max_chunk_min=max(0, min(240, _int(raw.get("maxChunkMin")))),
+            earliest_date=_parse_day(raw.get("earliestDate")),
+            gate=str(raw.get("gate") or "").strip()[:32],
+            points=_points(raw.get("points")),
+            sort=_int(raw.get("sort"), index),
         )
+        db.add(item)
+        added.append(item)
+
+    # 每份计划都配套一份 Markdown 计划书（用户："和 coding agent 的 plan 一样"）。
+    # 调用方显式给了 doc 就用它；否则按标题 / 目标 / 条目播第一版。
+    raw_doc = body.get("doc")
+    if isinstance(raw_doc, str) and raw_doc.strip():
+        plan.doc = raw_doc[: plan_doc.DOC_MAX]
+        # 提案里的正文是**写给人和 AI 讨论的思路**，通常不带活清单标记 ——
+        # 补一段「待办」，条目以后变动才会同步进文档（否则这份文档永远是死的）。
+        if plan_doc.ITEMS_START not in plan.doc:
+            plan.doc = (
+                plan.doc.rstrip() + "\n\n## 待办\n\n" + plan_doc.items_block(added) + "\n"
+            )
+    else:
+        plan.doc = plan_doc.seed(title, plan.note, added)
 
     try:
         db.commit()
@@ -302,6 +319,54 @@ def update_plan(plan_id: str, body: dict, db: DbSession) -> dict:
     db.commit()
     db.refresh(plan)
     return {"plan": _plan_json(plan, _items_of(db, [plan.id]).get(plan.id, []))}
+
+
+@router.get("/plans/{plan_id}/doc")
+def get_plan_doc(plan_id: str, db: DbSession) -> dict:
+    """这份计划的 Markdown 计划书。没有就当场播第一版（老计划也照样有）。"""
+    plan = db.get(Plan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="没有这份计划")
+    plan_doc.ensure(db, plan)
+    db.commit()
+    db.refresh(plan)
+    return {
+        "planId": plan.id,
+        "title": plan.title,
+        "doc": plan.doc or "",
+        "chars": len(plan.doc or ""),
+        "updatedAt": _iso(plan.updated_at),
+    }
+
+
+@router.put("/plans/{plan_id}/doc")
+def update_plan_doc(plan_id: str, body: dict, db: DbSession) -> dict:
+    """整份写回计划书（对话里的 `update_plan_doc` 与文档弹窗共用）。
+
+    **整份替换**，不是补丁 —— 与 coding agent 写 plan 文件同一种语义。
+    想保留条目清单的自动同步，就得把 `<!-- qf:items:start -->` 那一块也写回来；
+    没写回来就是 AI 自己接管整份文档，之后条目的勾选不再反映到这里。
+    """
+    plan = db.get(Plan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="没有这份计划")
+    raw = body.get("doc")
+    if not isinstance(raw, str):
+        raise HTTPException(status_code=400, detail="doc 得是字符串（整份 Markdown）")
+    if len(raw) > plan_doc.DOC_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"计划文档最多 {plan_doc.DOC_MAX} 字，这份 {len(raw)} 字 —— 计划书不是资料库。",
+        )
+    plan.doc = raw
+    db.commit()
+    db.refresh(plan)
+    return {
+        "planId": plan.id,
+        "doc": plan.doc,
+        "chars": len(plan.doc or ""),
+        "updatedAt": _iso(plan.updated_at),
+    }
 
 
 @router.delete("/plans/{plan_id}")
@@ -357,6 +422,10 @@ def create_item(body: dict, db: DbSession) -> dict:
         sort=_int(body.get("sort"), (last or 0) + 1),
     )
     db.add(item)
+    db.flush()  # 让下面的清单查询看得到这一条
+    plan = db.get(Plan, plan_id)
+    if plan is not None:
+        plan_doc.refresh(db, plan)
     db.commit()
     db.refresh(item)
     return {"item": _item_json(item)}
@@ -401,6 +470,11 @@ def update_item(item_id: str, body: dict, db: DbSession) -> dict:
         done = bool(body.get("done"))
         item.done = done
         item.done_at = datetime.now(UTC) if done else None
+    # 条目变了，计划书里那段活清单跟着变（标记之外的正文不动）
+    plan = db.get(Plan, item.plan_id)
+    if plan is not None:
+        db.flush()
+        plan_doc.refresh(db, plan)
     db.commit()
     db.refresh(item)
     return {"item": _item_json(item)}
@@ -414,7 +488,11 @@ def delete_item(item_id: str, db: DbSession) -> dict:
     removed = db.execute(
         delete(ScheduleEvent).where(ScheduleEvent.item_id == item_id)
     ).rowcount or 0
+    plan = db.get(Plan, item.plan_id)
     db.delete(item)
+    db.flush()
+    if plan is not None:
+        plan_doc.refresh(db, plan)
     db.commit()
     return {"ok": True, "deleted": {"events": removed}}
 

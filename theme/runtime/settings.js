@@ -15,6 +15,7 @@
   // 点「数据」落到了同步上）。
   var GROUPS = [
     { key: 'ai', label: 'AI', hint: '密钥 / 模型 / 上下文' },
+    { key: 'memory', label: '记忆', hint: '跨对话的长期记忆' },
     { key: 'search', label: '联网搜索', hint: '服务商与密钥' },
     { key: 'obsidian', label: 'Obsidian', hint: 'vault 路径与连接' },
     { key: 'appearance', label: '外观', hint: '主题 / 字号 / 宽度' },
@@ -105,7 +106,7 @@
     var page = h('div.setpage');
     var nav = h('aside.setpage__nav');
     nav.appendChild(h('h1.setpage__title', { text: '设置' }));
-    nav.appendChild(h('p.setpage__sub', { text: '改完立刻生效，全部存在本机。' }));
+    nav.appendChild(h('p.setpage__sub', { text: '改完立刻生效。' }));
 
     navEl = h('nav.setnav', { 'aria-label': '设置分类' });
     GROUPS.forEach(function (group) {

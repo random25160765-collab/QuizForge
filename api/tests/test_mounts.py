@@ -129,7 +129,7 @@ def test_modes_are_group_times_access():
     # 与查笔记、查资料同类（`docs/对话树.md` §三 的推论）。
     # `plan` 也挂在这里，但这一档只有 `read` —— 查询模式看得见计划与日程，
     # 订不了也排不了（那两个是 propose 档，`specs()` 不会把它们声明出去）。
-    assert one["query"].groups == ("notes", "library", "graph", "trees", "plan")
+    assert one["query"].groups == ("notes", "library", "graph", "trees", "plan", "memory")
     assert one["query"].access == ("read",)
     assert set(one["study"].access) == set(tools.ACCESS_LEVELS)
 

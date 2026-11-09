@@ -76,6 +76,7 @@ RUNTIME_ORDER = [
     "docview.js",       # 一份文件怎么看（PDF / 图片 / Markdown / Word / 幻灯片）：资料页与窗格共用
     "data.js",
     "md.js",
+    "plandoc.js",       # 每份计划配套的 Markdown 计划书：日程页与对话凭条共用
     "latex.js",         # 正文里的 LaTeX 图：交给离线 TikZJax（vendor/tikzjax）编成 SVG
     "mermaid.js",       # 正文里的 ```mermaid 图（流程图/时序图这类）：毫秒级，不占 TeX 引擎
     "highlight.js",
@@ -162,7 +163,7 @@ PAGE_CSS = {
 # 应用样式合并成一份，避免每页重复下载
 # 文件查看器的样式：资料页与工作台都要用，所以进共用那一份
 # mobile.css 必须在最后：手机档的覆盖规则要靠"后写者赢"压住上面的桌面规则
-APP_CSS = ["markdown.css", "app.css", "docview.css", "mobile.css"]
+APP_CSS = ["markdown.css", "app.css", "docview.css", "plandoc.css", "mobile.css"]
 
 
 def _read(path: Path) -> str:

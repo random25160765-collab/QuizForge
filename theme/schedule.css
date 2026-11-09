@@ -292,6 +292,15 @@ html[data-theme='light'] .sch-root {
   font-variant-numeric: tabular-nums;
 }
 
+/* 「计划书」入口：一直在，但压得很低 —— 它比删除常用，不该也要 hover 才看得见 */
+.sch-plan__doc {
+  width: 22px;
+  height: 22px;
+  color: var(--fg3);
+}
+
+.sch-plan__doc:hover { color: var(--pri); }
+
 /* 三个 hover 才出现的动作（删除计划）：平时不占视线 */
 .sch-plan__del {
   width: 20px;

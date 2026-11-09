@@ -40,13 +40,24 @@ import httpx
 from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm.attributes import flag_modified
 
-from . import heavy_deps, mastery, materials, recursion, schedule_view, semantic, slice_text
+from . import (
+    heavy_deps,
+    mastery,
+    materials,
+    memory as memory_lib,
+    plan_doc,
+    recursion,
+    schedule_view,
+    semantic,
+    slice_text,
+)
 from .models import (
     Concept,
     ConceptEdge,
     Conversation,
     KnowledgePoint,
     Material,
+    Memory,
     Message,
     Plan,
     PlanItem,
@@ -2951,6 +2962,132 @@ def read_web_page(db, args, ctx=None) -> dict:  # noqa: ANN001
         return {"error": str(exc)}
 
 
+# ------------------------------------------------------------------ 全局记忆
+#
+# 记忆与"笔记 / 对话树"的分界：笔记是他自己写的正文，对话树是翻旧对话，
+# 记忆是**关于他**的长期信息（偏好、背景、在做的事）。
+# 它**不进系统提示词**（用户 2026-11-09 定的：放在那边，有需要时自己看），
+# 所以这两个工具就是它唯一的入口 —— `list_memory` 看，`edit_memory` 改。
+
+
+def _memory_target(db, args) -> tuple[Memory | None, str]:  # noqa: ANN001
+    """按 id 找；没给 id 就按标题精确找（模型不一定记得回查 id）。"""
+    memory_id = str((args or {}).get("id") or "").strip()
+    if memory_id:
+        row = db.get(Memory, memory_id)
+        if row is None:
+            return None, f"没有这条记忆：{memory_id}（id 从 list_memory 拿，别猜）。"
+        return row, ""
+    title = str((args or {}).get("title") or "").strip()
+    if not title:
+        return None, "得给 id（从 list_memory 拿）或 title。"
+    found = [one for one in memory_lib.entries(db) if one.title.strip().lower() == title.lower()]
+    if not found:
+        return None, f"没有标题是「{title}」的记忆。先 list_memory 看看有哪些。"
+    if len(found) > 1:
+        return None, f"标题「{title}」有 {len(found)} 条，改哪条说不清 —— 用 id。"
+    return found[0], ""
+
+
+def list_memory(db, args=None, ctx=None) -> dict:  # noqa: ANN001
+    """看全局记忆里记了哪些事（可按关键词筛）。
+
+    记忆**不在**系统提示词里 —— 这个工具就是它唯一的入口：新对话开场、
+    「还是老样子」这类只有长期背景才接得上的话、或者拿不准他的偏好时先看它。
+    结果带 id（改 / 删要用）。
+    """
+    query = str((args or {}).get("query") or "").strip().lower()
+    rows = memory_lib.entries(db)
+    if query:
+        rows = [one for one in rows if query in (one.title + "\n" + one.body).lower()]
+    limit = _clamp((args or {}).get("limit"), 1, 200, 100)
+    return {
+        "memories": [
+            {
+                "id": one.id,
+                "title": one.title,
+                "body": one.body,
+                "kind": one.kind,
+                "kindLabel": memory_lib.label_of(one.kind),
+                "updatedAt": _iso_at(one.updated_at),
+            }
+            for one in rows[:limit]
+        ],
+        "count": len(rows),
+        "note": "要改一条用 edit_memory（id 从这儿拿）；记重复了用 delete 删掉 —— "
+        "别攒一堆同义条目，那会挤占每轮的上下文。",
+    }
+
+
+def edit_memory(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """记下 / 修改 / 删掉一条**全局记忆**。
+
+    * `action=create`：给 title + body（kind 可省，默认 fact）。标题完全相同的
+      已有条目会被**更新**而不是新建 —— 模型很容易把同一条记两遍。
+    * `action=update`：给 id（或标题）与要改的字段。
+    * `action=delete`：给 id（或标题）。
+
+    什么时候该记：他明确说「记住…」、或说出了会长期影响之后每轮对话的信息
+    （称呼、偏好、身体限制、在做的项目）。什么时候**不该**记：一次性的任务安排
+    （那属于计划）、他自己笔记里写过的知识、聊天里的临时上下文。
+    记完顺口跟他说一句「我记下了：…」，让他能当场纠正。
+    """
+    action = str((args or {}).get("action") or "create").strip().lower()
+    if action == "create":
+        title = str((args or {}).get("title") or "").strip()
+        body = str((args or {}).get("body") or "").strip()
+        if not title and not body:
+            return {"error": "要记什么？title 和 body 至少给一个。"}
+        # 同标题去重：更新那一条，而不是再攒一条同义的
+        if title:
+            same = db.scalar(select(Memory).where(func.lower(Memory.title) == title.lower()))
+            if same is not None:
+                memory_lib.update(
+                    db,
+                    same,
+                    body=body or same.body,
+                    kind=args.get("kind") or same.kind,
+                )
+                return {
+                    "memory": memory_lib.as_json(same),
+                    "mode": "updated",
+                    "note": "标题相同的那条已经更新，没有重复新建。",
+                }
+        row = memory_lib.create(db, title=title, body=body, kind=args.get("kind"))
+        return {
+            "memory": memory_lib.as_json(row),
+            "mode": "created",
+            "note": "记下了。它从下一轮起自动进上下文；跟他提一句记了什么。",
+        }
+
+    if action not in ("update", "delete"):
+        return {"error": "action 只认 create / update / delete。"}
+
+    row, problem = _memory_target(db, args)
+    if row is None:
+        return {"error": problem}
+
+    if action == "delete":
+        title = row.title
+        memory_lib.delete(db, row)
+        return {"ok": True, "deleted": title, "note": "删掉了。之后不会再进上下文。"}
+
+    if not any(key in (args or {}) for key in ("title", "body", "kind")):
+        return {"error": "要改什么？title / body / kind 至少给一个。"}
+    memory_lib.update(
+        db,
+        row,
+        title=args.get("title"),
+        body=args.get("body"),
+        kind=args.get("kind"),
+    )
+    return {
+        "memory": memory_lib.as_json(row),
+        "mode": "updated",
+        "note": "改好了；同样标题的条目只会有一条。",
+    }
+
+
 #: 挂载分组 —— 顶栏那几个枢纽图标就是它。
 #:
 #: **唯一出处**：界面上的标签与顺序、`specs()` 的过滤、`call()` 的纵深防御都读这里。
@@ -2974,6 +3111,10 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
     # 与 `quiz` 那组的分界：那边管**题**（推题、判分、掌握度），这边管**什么时候做什么**。
     # 仍然排在末尾，前面几组的既有位置一个都不动。
     ("plan", "计划", "订计划、看日程、把待办排进日历"),
+    # 「全局记忆」这一组：跨对话长期带着的、关于他的信息（`app/memory.py`）。
+    # 与 `plan` 的分界：那边管"什么时候做什么"，这边管"关于他、要一直记得的事"。
+    # 记忆**不进系统提示词**（有需要时自己查），这一组就是它唯一的入口。
+    ("memory", "记忆", "看 / 记 / 改跨对话的长期记忆"),
 )
 
 GROUP_LABELS: dict[str, str] = {key: label for key, label, _ in GROUPS}
@@ -3270,6 +3411,108 @@ def list_plans(db, args=None, ctx=None) -> dict:  # noqa: ANN001
     }
 
 
+def read_plan_doc(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """读一份计划的**计划书**（Markdown 正文）。
+
+    每份计划都配套一份这样的文档（建计划时从标题 / 目标 / 条目播下第一版）——
+    它与 `list_plans` 给的结构化条目不是一回事：条目是「有哪几件事、哪件做完了」，
+    文档是「为什么这么做、思路是什么、做到哪了」。要动文档先用它读全文，
+    **逐字**看清再写；没读就整份覆盖等于把之前写的东西扔掉。
+    """
+    plan_id = str((args or {}).get("planId") or "").strip()
+    if not plan_id:
+        return {"error": "得给 planId（先用 list_plans 拿 id）。"}
+    plan = db.get(Plan, plan_id)
+    if plan is None:
+        return {"error": f"没有这份计划：{plan_id}（id 从 list_plans 拿，别猜）。"}
+    plan_doc.ensure(db, plan)
+    db.commit()
+    doc = plan.doc or ""
+    return {
+        "planId": plan.id,
+        "title": plan.title,
+        "doc": doc,
+        "chars": len(doc),
+        "itemsBlock": plan_doc.ITEMS_START in doc and plan_doc.ITEMS_END in doc,
+        "note": "这是**整份**文档。改它用 update_plan_doc：整份改写给 doc，"
+        "只改一段给 old + new，追加给 append。条目清单那一块（qf:items 标记之间）"
+        "会自动跟着计划卡刷新，别手抄一份 —— 会过期。",
+    }
+
+
+def update_plan_doc(db, args, ctx=None) -> dict:  # noqa: ANN001
+    """写一份计划的**计划书**。它不碰条目与日程 —— 只改那份 Markdown。
+
+    三种写法（与 `edit_note` 同一个套路）：
+
+    * 给 `doc`：**整份替换**。要先 `read_plan_doc` 读全文，在它基础上改；
+      只把自己想加的那段当整份交上来，会把之前的内容全弄丢。
+    * 给 `old` + `new`：把文档里**逐字**出现的那一段换成新的（`new` 给空串 = 删掉）。
+      `old` 找不到或出现多次都会被拒，并说清原因 —— 与改笔记同一条纪律。
+    * 给 `append`：追加到末尾。
+
+    `<!-- qf:items:start -->` 与 `<!-- qf:items:end -->` 之间是**活清单**：
+    条目勾选 / 改期 / 改名时系统会自动重写这一段。整份替换时把这一块原样带上；
+    不带就是自己接管整份文档，之后条目变化不再反映到文档里。
+    """
+    plan_id = str((args or {}).get("planId") or "").strip()
+    if not plan_id:
+        return {"error": "得给 planId（先用 list_plans 拿 id）。"}
+    plan = db.get(Plan, plan_id)
+    if plan is None:
+        return {"error": f"没有这份计划：{plan_id}（id 从 list_plans 拿，别猜）。"}
+    plan_doc.ensure(db, plan)
+    current = plan.doc or ""
+
+    doc_arg = args.get("doc")
+    append = args.get("append")
+    old = args.get("old")
+    new = args.get("new")
+
+    if isinstance(doc_arg, str):
+        mode = "replace"
+        next_doc = doc_arg
+    elif isinstance(append, str) and append:
+        mode = "append"
+        next_doc = current.rstrip() + "\n\n" + append.strip() + "\n"
+    elif isinstance(old, str) and old and isinstance(new, str):
+        mode = "patch"
+        count = current.count(old)
+        if count == 0:
+            return {
+                "error": "文档里找不到这段原文。`old` 必须从 read_plan_doc 的结果里"
+                "**逐字**复制（空白与换行也要一致）；没读过就先读一遍。",
+            }
+        if count > 1:
+            return {
+                "error": f"这段原文在文档里出现了 {count} 次，改哪一处说不清。"
+                "多带上前后一行再试，或者整份改写（给 doc）。",
+            }
+        next_doc = current.replace(old, new, 1)
+    else:
+        return {
+            "error": "要写什么？三种写法选一种：整份替换给 doc；改一段给 old + new；"
+            "追加给 append。",
+        }
+
+    if len(next_doc) > plan_doc.DOC_MAX:
+        return {
+            "error": f"计划文档最多 {plan_doc.DOC_MAX} 字，这份 {len(next_doc)} 字 —— "
+            "计划书不是资料库，把细节留在正文回答里。",
+        }
+    plan.doc = next_doc
+    db.commit()
+    db.refresh(plan)
+    return {
+        "ok": True,
+        "planId": plan.id,
+        "title": plan.title,
+        "mode": mode,
+        "chars": len(plan.doc or ""),
+        "note": "已经写进这份计划的文档。条目与日程一个都没动。",
+    }
+
+
 def list_schedule(db, args=None, ctx=None) -> dict:  # noqa: ANN001
     """看日程上已经排了哪些时间块（可给时间窗）。
 
@@ -3316,7 +3559,9 @@ def list_schedule(db, args=None, ctx=None) -> dict:  # noqa: ANN001
 def propose_plan(db, args, ctx=None) -> dict:  # noqa: ANN001
     """提案：给他订一份计划。**不写任何东西**。
 
-    界面上会长出一张计划卡（条目可就地改、可就地删），他点「加入」才落库。
+    `doc` 是主体：**先写它，条目从它落下来**（条目是执行骨架，次要，也不在文档里重复）。
+    界面上会长出一张计划卡：右上角的书本图标从右侧抽屉打开 `doc` 正文，
+    下面是可就地改的条目；他会与你讨论、在抽屉里直接改，满意了才点「接受」落库。
     所以在那之前**不要说「已经排好了」** —— 那时候库里什么都没有。
     """
     items = []
@@ -3357,17 +3602,26 @@ def propose_plan(db, args, ctx=None) -> dict:  # noqa: ANN001
         return {"error": "一份计划至少要有条目：items 里每条给一个 title。"}
 
     title = str((args or {}).get("title") or "").strip()[:200] or "学习计划"
+    note = str((args or {}).get("note") or "")[:2000]
+    # 计划书正文是主体：先写清方案，条目从它落下来（条目次要，也绝不在文档里重复）。
+    # 他会点卡片右上角的书本图标，从右侧抽屉读它；与你在对话里讨论、在抽屉里直接改，
+    # 改到满意才点「接受」。没写正文就播一版标题 / 目标 / 条目凑合，
+    # 但那样抽屉里就只剩清单了 —— 正文是这张卡的主角。篇幅要短而有实质，不是长文。
+    doc = str((args or {}).get("doc") or "").strip()[: plan_doc.DOC_MAX]
+    if not doc:
+        doc = plan_doc.seed(title, note, items)
     return {
         "proposal": {
             "kind": "plan.create",
             "proposalId": uuid.uuid4().hex,
             "title": title,
-            "note": str((args or {}).get("note") or "")[:2000],
+            "note": note,
+            "doc": doc,
             "items": items,
         },
-        "note": "界面上已经放了一张**待确认**的计划卡，他点了「加入」才落库。"
-        "在那之前别声称计划已经建好；也别顺手说「已经排进日程」——"
-        "计划与日程是两件事。",
+        "note": "界面上已经放了一张**待确认**的计划卡：正文在右上角书本图标打开的"
+        "右侧抽屉里，他会读、与你讨论、在抽屉里直接改，满意了才点「接受」。所以在那之前"
+        "别声称计划已经建好；也别顺手说「已经排进日程」——计划与日程是两件事。",
     }
 
 
@@ -4498,6 +4752,57 @@ REGISTRY = {
             "required": ["ids"],
         },
     },
+    # ---- 全局记忆 --------------------------------------------------------
+    # 记忆**不进系统提示词**（用户 2026-11-09 定的：放在那边，有需要时自己看）。
+    # 所以这两个工具就是它唯一的入口：`list_memory` 是"看"，`edit_memory` 是"改"。
+    "list_memory": {
+        "access": "read",
+        "group": "memory",
+        "fn": list_memory,
+        "description": "看全局记忆里记了哪些事（可按关键词筛，结果带 id）。\n"
+        "它**不会自动出现在你的上下文里** —— 新对话开场、他提到「还是老样子」这类"
+        "只有长期背景才接得上的话、或者你要给建议却拿不准他的偏好与处境时，先看一眼。"
+        "要改 / 要删时也用它拿 id。不需要时别每轮都查。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "只找含这个词的（可省）"},
+                "limit": {"type": "integer", "description": "最多几条（默认 100）"},
+            },
+        },
+    },
+    "edit_memory": {
+        "access": "write",
+        "group": "memory",
+        "fn": edit_memory,
+        "description": "记下 / 修改 / 删掉一条**全局记忆**（跨对话长期带着的、关于他的信息）。\n"
+        "* `action=create`：给 title + body（kind 可省：profile / preference / project / fact）。"
+        "标题完全相同的已有条目会被更新，不会攒出两条同义的。\n"
+        "* `action=update`：给 id（或标题）与要改的字段。\n"
+        "* `action=delete`：给 id（或标题）。\n"
+        "**该记**：他明确说「记住…」，或说出了会长期影响之后每轮对话的信息"
+        "（称呼、偏好、身体限制、在做的项目）。**不该记**：一次性的任务安排"
+        "（那属于计划）、笔记里已有的知识、聊天的临时上下文。记完跟他说一句记下了什么。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["create", "update", "delete"],
+                    "description": "create（默认）/ update / delete",
+                },
+                "id": {"type": "string", "description": "哪条记忆（update / delete 用，从 list_memory 拿）"},
+                "title": {"type": "string", "description": "标题（create 必给；update / delete 可当定位用）"},
+                "body": {"type": "string", "description": "正文：要记住的内容"},
+                "kind": {
+                    "type": "string",
+                    "enum": ["profile", "preference", "project", "fact"],
+                    "description": "分类（可省，默认 fact）",
+                },
+            },
+        },
+    },
+
     # ---- 元能力：不属于任何一块（见 META_TOOLS），挂了任何工具时都在 ----
     "run_subagent": {
         "access": "read",
@@ -4541,8 +4846,9 @@ REGISTRY = {
         },
     },
     # ---- 计划与日程 ------------------------------------------------------
-    # 三个写操作都是 `propose`：计划是他自己的东西，界面上出一张卡片，
-    # 他点了才落库。这里**没有** write 档的口子 —— 那是刻意的。
+    # **结构**（条目 / 排期）的写操作全是 `propose`：计划是他自己的东西，
+    # 界面上出一张卡片，他点了才落库。唯一直接写的是**计划书文档**
+    # （`update_plan_doc`）：那是 AI 的工作文档，不改条目、不改日程。
     "list_plans": {
         "access": "read",
         "group": "plan",
@@ -4560,6 +4866,58 @@ REGISTRY = {
                     "description": "active（默认，在用的）/ archived（收起来的）/ all（都要）",
                 },
             },
+        },
+    },
+    "read_plan_doc": {
+        "access": "read",
+        "group": "plan",
+        "fn": read_plan_doc,
+        "description": "读一份计划的**计划书**（Markdown）。每份计划都配套一份 —— "
+        "它不是条目清单的副本：条目是「有哪几件事、哪件做完了」，文档是"
+        "「目标、拆解思路、进展、做过的决定」。要动它先读全文；没读就整份覆盖"
+        "等于把之前写的东西扔掉。`planId` 从 `list_plans` 拿。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "planId": {"type": "string", "description": "哪份计划（list_plans 里的 id）"}
+            },
+            "required": ["planId"],
+        },
+    },
+    "update_plan_doc": {
+        "access": "write",
+        "group": "plan",
+        "fn": update_plan_doc,
+        "description": "写一份计划的**计划书**（Markdown）。**不碰条目、不碰日程** —— "
+        "只改那份文档，所以它是 write 档（结构改动仍然只走 `propose_plan` / "
+        "`propose_plan_edit`）。三种写法：给 `doc` 整份替换（先 read_plan_doc！）；"
+        "给 `old` + `new` 改一段（`old` 从文档里逐字复制，找不到或出现多次会被拒）；"
+        "给 `append` 追加。\n"
+        "文档里 `<!-- qf:items:start -->` 与 `<!-- qf:items:end -->` 之间是**活清单**："
+        "条目勾选 / 改期 / 改名时系统会自动重写这一段。整份替换时原样带上它，"
+        "别手抄一份会过期的清单。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "planId": {"type": "string", "description": "哪份计划（list_plans 里的 id）"},
+                "doc": {
+                    "type": "string",
+                    "description": "整份新的 Markdown（整份替换；先读再改，别只交一段）",
+                },
+                "old": {
+                    "type": "string",
+                    "description": "要被替换的那段原文，从文档里逐字复制（与 new 配对）",
+                },
+                "new": {
+                    "type": "string",
+                    "description": "换成什么；空串 = 删掉这一段（与 old 配对）",
+                },
+                "append": {
+                    "type": "string",
+                    "description": "追加到文档末尾的内容（不与 doc / old 同用）",
+                },
+            },
+            "required": ["planId"],
         },
     },
     "list_schedule": {
@@ -4582,23 +4940,37 @@ REGISTRY = {
         "access": "propose",
         "group": "plan",
         "fn": propose_plan,
-        "description": "给他**订一份计划**（提案）。界面上会长出一张计划卡，条目他可就地改、就地删；"
-        "他点「加入」才真的存下来。\n"
+        "description": "给他**订一份计划**（提案）。界面上会长出一张计划卡："
+        "右上角的书本图标从右侧抽屉打开 `doc` 正文，下面是可就地改的条目；"
+        "他点「接受」才真的存下来。\n"
+        "**先写 `doc`，再落条目 —— 文档是主体，items 是它的执行骨架（次要）。** "
+        "`doc` 写成一份能一起讨论的计划书（Markdown）：目标、为什么这样拆、取舍、"
+        "先后顺序、怎样算做完。**篇幅：一篇读得完的短文（几百字），但要有实质** —— "
+        "不写空话；也**别把 items 再抄一遍**（卡片会把条目单列出来；落库时系统会把"
+        "活清单补进文档）。他会读正文、与你来回改，改到满意才接受。\n"
         "**这是「计划」不是「日程」**：条目可以没有日期；有日期也只是「这天该做」，"
         "不会自己出现在日历上 —— 要占时段，之后再 `propose_schedule`。\n"
         "**什么时候该提**：他说「帮我排一下」「接下来怎么走」「我两周内要考过」这类，"
         "或者他自己也说不清下一步 —— 你就把路线摊成几条具体的待办（每条一个动作，"
         "别写「加强理解」这种没有落点的话）。\n"
-        "**不许**在正文里再抄一遍这份清单当总结：卡片上已经有了，抄一遍是让他读两遍。"
-        "也别声称「已经建好了」—— 他还没点。",
+        "**不许**在回复正文里再抄一遍这份清单或计划书当总结：卡片上已经有了，"
+        "抄一遍是让他读两遍。也别声称「已经建好了」—— 他还没点。",
         "parameters": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "计划名（一句话，比如「两周吃透 attn 那篇」）"},
                 "note": {"type": "string", "description": "这份计划要达到什么（可省）"},
+                "doc": {
+                    "type": "string",
+                    "description": "计划书正文（Markdown）—— **先写它，条目从它落下来**。"
+                    "写清目标、拆解思路、取舍、顺序、验收标准；**几百字、有实质、不写空话**。"
+                    "卡片右上角的图标从右侧打开它，他会读、与你讨论、直接改，满意了才接受。"
+                    "不要在这里抄条目清单（items 会单列出来）。",
+                },
                 "items": {
                     "type": "array",
-                    "description": "待办条目。每条一个具体动作，按该做的顺序排",
+                    "description": "从 doc 落下来的执行条目（次要，文档才是主体；别在 doc 里重复它们）。"
+                    "每条一个具体动作，按该做的顺序排",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -4638,7 +5010,7 @@ REGISTRY = {
                     },
                 },
             },
-            "required": ["title", "items"],
+            "required": ["title", "doc", "items"],
         },
     },
     "propose_plan_edit": {

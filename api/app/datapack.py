@@ -119,9 +119,13 @@ BOUNDARY: dict[str, str] = {
     "attempts": "user",           # 逐次作答流水
     "days": "user",               # 每日聚合（热力图）
     "ai_usage": "user",           # 按天的 AI 用量（自己的账）
+    # 全局记忆（2026-11-09）：AI 跨对话带着的长期信息。换台机器要还在，
+    # 所以归 user；同步时**端到端加密**（`sync.PRIVATE_TABLES` —— 与对话正文同一档）。
+    "memories": "user",
     # 计划与日程（2026-11-08）：AI 订的计划要跟着用户走，换台机器打开还得在
-    # —— 所以三张表都是 user。日程不加密：它们是"什么时候做什么"，
-    # 与对话正文那种私密内容不是一回事（加密表见 `sync.PRIVATE_TABLES`）。
+    # —— 所以三张表都是 user。`plans`（含计划书正文）加密；条目与日程不加密：
+    # 它们是"什么时候做什么"，与对话正文那种私密内容不是一回事
+    # （加密表见 `sync.PRIVATE_TABLES`）。
     "plans": "user",
     "plan_items": "user",
     "schedule_events": "user",

@@ -1095,6 +1095,10 @@ class Plan(Base):
     proposal_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
     title: Mapped[str] = mapped_column(String(200), default="", nullable=False)
     note: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 这份计划的**计划书**（Markdown）。建计划时从标题 / 目标 / 条目播下第一版，
+    #: 之后由 AI 用 `read_plan_doc` / `update_plan_doc` 当工作文档维护 ——
+    #: 像 coding agent 的 plan 文件。条目勾选以 `plan_items` 为准，文档不反向驱动它。
+    doc: Mapped[str] = mapped_column(Text, default="", nullable=False)
     #: active / archived（归档只是收起来，不删条目）
     status: Mapped[str] = mapped_column(String(16), default="active", nullable=False, index=True)
     #: chat（AI 订的，用户确认过）/ manual（自己建的）—— 只影响界面上的来源标记
@@ -1327,6 +1331,36 @@ class ScheduleRun(Base):
     regime_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     #: 撤销过就置上时刻；一条 run 只能撤一次（再撤是 409，不是静默成功）
     undone_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Memory(Base):
+    """一条**全局记忆**：跨对话长期带着的、关于这个人的信息。
+
+    与「对话历史」和「笔记」的分界：
+
+    * 对话历史是**这一条线**的上下文，换一条对话就看不见了；
+    * 笔记是他自己写的、按主题归档的正文；
+    * 记忆是 AI 主动记下的**关于他**的长期事实（偏好、背景、在做的事），
+      每条都短，跨所有对话都成立；它**不自动进提示词**，由 AI 需要时用
+      `list_memory` 查（见 `app/memory.py`）。
+
+    所以它不是"聊天记录摘要"，也不是"知识"—— 记错一条会一直影响之后的每轮对话，
+    于是界面必须让人能看见、能改、能删（设置 → 记忆）。
+    """
+
+    __tablename__ = "memories"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    title: Mapped[str] = mapped_column(String(200), default="", nullable=False)
+    body: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: profile / preference / fact / project（见 `app/memory.py` 的 KINDS）
+    kind: Mapped[str] = mapped_column(String(16), default="fact", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), nullable=False
     )

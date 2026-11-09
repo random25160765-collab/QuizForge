@@ -16,6 +16,7 @@ import base64
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,9 +25,9 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from app import autosync, library_cloud, settings_file, sync
+from app import autosync, library_cloud, memory, settings_file, sync
 from app.db import Base
-from app.models import Attempt, Conversation, Material, MaterialSlice, Message, Record
+from app.models import Attempt, Conversation, Material, MaterialSlice, Message, Plan, Record
 
 
 # ============================================================================ 假 Turso
@@ -268,6 +269,91 @@ def test_push_and_pull_round_trip(engine, remote, tmp_path) -> None:  # noqa: AN
     # 拉下来的行不能被标成脏（触发器在应用期间静默）
     with other.connect() as conn:
         assert conn.exec_driver_sql("SELECT COUNT(*) FROM qf_sync_journal").fetchone()[0] == 0
+
+
+def test_memory_and_plan_doc_reach_a_fresh_machine(engine, remote, tmp_path) -> None:  # noqa: ANN001
+    """全局记忆与计划书正文都是**用户数据**：云端有一份，新机器全量拉得到。
+
+    这两样最容易漏 —— 它们不是对话那种"大表"，加功能时常常忘了同步。
+    `plans.doc` 跟着 `plans` 整行走；`memories` 曾经漏在 `PULL_ORDER` 外，
+    推送通、增量拉取也通，只有**新机器的首次全量拉取**永远读不到它。
+    """
+    session = _session(engine)
+    memory.create(
+        session,
+        title="叫他 rd",
+        body="回复用中文；他在准备数字芯片设计的面试",
+        kind="profile",
+    )
+    session.add(Plan(title="两周计划", doc="# 计划书\n\n先读综述，再手推。\n"))
+    session.commit()
+    session.close()
+
+    _configure(remote.url)
+    sync.run_once(engine, _client(remote))
+
+    # 两样都在 PRIVATE_TABLES 里：云端只有密文，搜不到正文
+    remote_rows = remote.rows("SELECT tbl, enc, payload FROM qf_sync_rows")
+    for tbl, secret in (("memories", "数字芯片"), ("plans", "先读综述")):
+        row = next(one for one in remote_rows if one["tbl"] == tbl)
+        assert row["enc"] == 1
+        assert secret not in (row["payload"] or "")
+
+    other = _machine(tmp_path, "other")
+    sync.run_once(other, _client(remote))
+    with other.connect() as conn:
+        memories = conn.exec_driver_sql("SELECT title, body FROM memories").fetchall()
+        docs = conn.exec_driver_sql("SELECT title, doc FROM plans").fetchall()
+    assert [tuple(row) for row in memories] == [
+        ("叫他 rd", "回复用中文；他在准备数字芯片设计的面试")
+    ]
+    assert [tuple(row) for row in docs] == [("两周计划", "# 计划书\n\n先读综述，再手推。\n")]
+
+
+def test_pull_accepts_legacy_plaintext_rows_of_now_private_tables(engine, remote, tmp_path) -> None:  # noqa: ANN001
+    """升级前上云的明文记忆行，升级后仍要拉得下来。
+
+    把表划进 `PRIVATE_TABLES` 只改变**推送**时的行为；远端镜像里那些早期的
+    明文行还在。拉取如果一律按"这张表必须解密"去读，升级当天同步就会炸。
+    """
+    pk = json.dumps(["m" * 32])
+    payload = {
+        "id": "m" * 32,
+        "title": "旧记忆",
+        "body": "升级前是明文上云的",
+        "kind": "fact",
+        "created_at": "2026-11-01T00:00:00+00:00",
+        "updated_at": "2026-11-01T00:00:00+00:00",
+    }
+    _client(remote).ensure_schema()
+    with remote.lock:
+        remote.db.execute(
+            "INSERT INTO qf_sync_rows(tbl, pk, at, origin, deleted, enc, payload)"
+            " VALUES('memories', ?, ?, 'old-machine', 0, 0, ?)",
+            (pk, time.time(), json.dumps(payload, ensure_ascii=False)),
+        )
+
+    other = _machine(tmp_path, "other")
+    _configure(remote.url)
+    sync.run_once(other, _client(remote))
+    with other.connect() as conn:
+        got = conn.exec_driver_sql("SELECT title, body FROM memories").fetchall()
+    assert [tuple(row) for row in got] == [("旧记忆", "升级前是明文上云的")]
+
+    # 这一轮拉完之后，rescope 把它排进了重推队列；下一轮推送就该换成密文
+    sync.run_once(other, _client(remote))
+    row = remote.rows("SELECT enc, payload FROM qf_sync_rows WHERE tbl = 'memories'")[0]
+    assert row["enc"] == 1
+    assert "升级前是明文上云的" not in (row["payload"] or "")
+
+
+def test_full_pull_covers_every_sync_table() -> None:
+    """`_full_pull` 只读 `PULL_ORDER` —— 它必须覆盖所有同步表。
+
+    缺一张不会报错：那类数据只是**永远到不了新机器**。所以把它钉成断言，
+    以后加表时漏了这里，测试当场红。
+    """
+    assert set(sync.PULL_ORDER) == set(sync.SYNC_TABLES)
 
 
 def test_two_machines_new_messages_do_not_collide(engine, remote, tmp_path) -> None:  # noqa: ANN001

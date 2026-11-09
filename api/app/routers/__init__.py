@@ -17,6 +17,7 @@ from . import (
     health,
     knowledge,
     material,
+    memory,
     mybank,
     obsidian,
     plans,
@@ -49,6 +50,8 @@ def all_routers() -> list[APIRouter]:
         material.router,
         # 计划与日程：日程页的读写 + 对话凭条确认后落库（`proposalId` 是幂等键）
         plans.router,
+        # 全局记忆：设置页的增删改查。对话里的写入口是 `edit_memory` 工具。
+        memory.router,
         # 日程的操作面：健康（打卡 / 档位 / 精力曲线）与自动重排。
         # 与 `health.router`（`/api/health` 服务自检）是两件事，别名不同路径不冲突。
         schedule_ops.router,

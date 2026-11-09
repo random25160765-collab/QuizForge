@@ -5419,7 +5419,7 @@
   }
 
   /** 区标题那一行。`withTools` 时右边带上这一区的工具：
-   *  新建文件夹 + 排序（两颗并列的小图标，不再占一行"＋ 新建文件夹"）。 */
+   *  新建分组 + 排序（两颗并列的小图标，不再占一行"＋ 新建分组"）。 */
   function zoneHead(text, withTools) {
     var box = h('div.chatzone__head', null, h('span.chatzone__headtext', { text: text }));
     if (withTools) {
@@ -5428,8 +5428,8 @@
           'button.chatzone__headbtn',
           {
             type: 'button',
-            title: '新建文件夹（在归档区空白处右键也可以）',
-            'aria-label': '新建文件夹',
+            title: '新建分组（在归档区空白处右键也可以）',
+            'aria-label': '新建分组',
             onClick: function (ev) {
               ev.stopPropagation();
               openFolderMenu({ path: '', name: '最外层' }, ev);
@@ -5687,7 +5687,7 @@
       ),
       h('span.chattree__label', { text: node.name }),
       h('span.chattree__count', { text: String(countLeaves(node)) }),
-      // 每行一个 ⋯（与对话行的 ⋯ 同一个位置感）：菜单里是"在里面新对话 /
+      // 每行一个 ⋯（与对话行的 ⋯ 同一套菜单）：菜单里是"新建对话 /
       // 新建子分组 / 重命名 / 删除"。原先只能右键这一行，等于看不见。
       h(
         'button.chattree__more',
@@ -5697,7 +5697,8 @@
           'aria-label': '分组操作',
           onClick: function (ev) {
             ev.stopPropagation();
-            openFolderMenu(node, ev);
+            // 点 ⋯ = 菜单贴着按钮弹（右键才跟鼠标走）
+            openFolderMenu(node, ev, ev.currentTarget);
           },
         },
         '⋯'
@@ -5767,11 +5768,11 @@
       // 而它们本来就是同一类操作 —— 对这条会话做什么。
       h('button.chatlist__more', {
         type: 'button',
-        title: '重命名 / 置顶 / 删除 / 导出',
+        title: '重命名 / 置顶 / 归档 / 导出 / 删除',
         'aria-label': '更多',
         onClick: function (event) {
           event.stopPropagation(); // 别顺带把会话也切了
-          openMenu(conv);
+          openRowMenu(conv, event.currentTarget);
         },
       }, '⋯')
     );
@@ -6027,8 +6028,29 @@
     ui.menu(items, { x: chatMenuX, y: chatMenuY });
   }
 
-  /** 分组行上的右键菜单。 */
-  function openFolderMenu(node, ev) {
+  /** 在某个按钮旁弹菜单：底下留 4px，右对齐到按钮右缘。
+   *
+   * `⋯` 这类"固定在行尾"的入口都走这里（右键仍跟鼠标走，见 showChatMenu）。
+   */
+  function menuAt(anchor, items) {
+    var rect = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+    var at = rect
+      ? { x: rect.left, y: rect.bottom + 4 }
+      : { x: chatMenuX, y: chatMenuY };
+    var menu = ui.menu(items, at);
+    if (!rect) return menu;
+    // 先画出来量宽度，再往左挪。`.popmenu` 是 fixed，这一挪不会改变它自己的宽。
+    var box = menu.node.getBoundingClientRect();
+    menu.node.style.left = Math.max(8, rect.right - box.width) + 'px';
+    return menu;
+  }
+
+  /** 分组行上的菜单：右键跟鼠标，`⋯` 贴着按钮（`anchor`）。
+   *
+   * 用词与对话行的菜单对齐：不写"在里面"（菜单是这一行的，动作当然在这一行）、
+   * 不写"…"（对话行那边也没有）、不把限制塞进标签（"空的分组才能删"后端会回
+   * "删不掉：里面还有东西"，不必先喊一遍）。 */
+  function openFolderMenu(node, ev, anchor) {
     if (ev) {
       chatMenuX = ev.clientX;
       chatMenuY = ev.clientY;
@@ -6036,7 +6058,8 @@
     var atRoot = !node.path;
     var items = [
       {
-        label: '在里面新对话',
+        label: '新建对话',
+        icon: 'plus',
         run: function () {
           api
             .post('/chat/conversations', { folder: node.path })
@@ -6049,7 +6072,8 @@
         },
       },
       {
-        label: '新建子文件夹',
+        label: '新建子分组',
+        icon: 'folder',
         run: function () {
           askName('新建子分组', '', '创建').then(function (name) {
             if (!name) return;
@@ -6067,7 +6091,8 @@
         },
       },
       {
-        label: '重命名…',
+        label: '重命名',
+        icon: 'rename',
         run: function () {
           askName('重命名分组', node.name, '改名').then(function (name) {
             if (!name) return;
@@ -6083,8 +6108,10 @@
           });
         },
       },
+      { node: h('div.popmenu__sep') },
       {
-        label: '删除（空的分组才能删）',
+        label: '删除',
+        icon: 'trash',
         danger: true,
         run: function () {
           api
@@ -6101,8 +6128,12 @@
     ];
     if (atRoot) {
       // 根上只有"新建"一件事：再套一层只含一项的菜单，等于让人点两下才看到输入框
-      //（用户："那个加号，点击之后竟然跳出来「新建文件夹」"）。
+      //（用户："那个加号，点击之后竟然跳出来「新建分组」"）。
       newRootFolder();
+      return;
+    }
+    if (anchor) {
+      menuAt(anchor, items);
       return;
     }
     showChatMenu(items);
@@ -8739,7 +8770,7 @@
     var key = String(payload.proposalId || '');
 
     // 已经确认过：只留一条凭据（卡片重画时靠 `payload.committed` 认，见下面各处的 remember）
-    if (payload.committed) return planDoneBox(kind);
+    if (payload.committed) return planDoneBox(kind, payload);
 
     // 回读：历史里那张卡片在他点过之后才被重新画出来（刷新 / 翻页）。
     // 只问一次 —— 一张卡片问一次就够；失败就当没加过（按钮还在，再点也不会建两份）。
@@ -8763,7 +8794,7 @@
     return planCreateBox(payload, repaint);
   }
 
-  function planDoneBox(kind) {
+  function planDoneBox(kind, payload) {
     var label =
       kind === 'plan.scheduleBatch'
         ? '已排进日程'
@@ -8771,7 +8802,7 @@
           ? '已排进日程'
           : kind === 'plan.edit'
             ? '改动已生效'
-            : '已加入计划';
+            : '已接受计划';
     var box = h('div.chatplan.chatplan--done');
     // 凭据上的标签与卡片一致：排程是排程，不是"计划"（两者在日程页是两种东西）
     var tag = kind === 'plan.schedule' || kind === 'plan.scheduleBatch' ? '排程' : '计划';
@@ -8783,10 +8814,31 @@
         h('span.chatplan__title', { text: label })
       )
     );
+    // 已落库的计划才有一份计划书可看：建计划那张从回读结果里拿 id，
+    // 改计划那张卡片本身就带着 planId（`propose_plan_edit` 的 payload）。
+    var plan = null;
+    if (kind === 'plan.create') {
+      var hit = planCommitted[String(payload.proposalId || '')];
+      if (hit && hit.id) plan = hit;
+    } else if (kind === 'plan.edit' && payload.planId) {
+      plan = { id: payload.planId, title: payload.planTitle || '' };
+    }
     box.appendChild(
       h(
         'div.chatplan__foot',
         null,
+        plan
+          ? h(
+              'button.btn.btn--ghost.btn--sm',
+              {
+                type: 'button',
+                onClick: function () {
+                  if (QF.plandoc) QF.plandoc.open(plan.id, plan.title);
+                },
+              },
+              '查看文档'
+            )
+          : null,
         h('a.btn.btn--ghost.btn--sm', { href: 'schedule.html' }, '打开日程')
       )
     );
@@ -8819,17 +8871,35 @@
   /** `plan.create`：一张计划卡，条目可就地改标题 / 改日期 / 删 */
   function planCreateBox(payload, repaint) {
     var box = h('div.chatplan');
-    var rows = h('div.chatplan__rows');
+    // 这张卡的行连成一条轨道（见 `.chatplan__rows--roadmap`）
+    var rows = h('div.chatplan__rows.chatplan__rows--roadmap');
     var kept = [];
 
-    // meta 只放条数：`note` 是模型写给自己看的一句目标（常含 LaTeX 原样），
-    // 塞在标题后面就会被截成半句乱码 —— 留成 tooltip，想看再看。
-    var noteMeta = payload.note ? h('span.chatplan__meta', { text: '目标' }) : null;
-    if (noteMeta) noteMeta.title = String(payload.note);
-    box.appendChild(
-      planHead('计划', payload.title, (payload.items || []).length + ' 条')
+    /* 正文在右侧抽屉里（用户："像 render_demo 一样，做一个图标按钮，点击它从右侧打开"）。
+     * 卡片上只留一个书本图标 —— 标题后面不再堆条数、"目标"这类冗余小字。
+     * 他先读正文、和 AI 讨论、在抽屉里直接改，满意了才「接受」。 */
+    var docText = String(payload.doc || '');
+    var docIcon = h(
+      'button.icon-btn.chatplan__docbtn',
+      {
+        type: 'button',
+        title: docText.trim() ? '打开计划书' : '计划书（还没有正文）',
+        'aria-label': '打开计划书',
+        onClick: function () {
+          if (!QF.plandoc) return;
+          QF.plandoc.openDraft(payload.title || '', docText, function (next) {
+            // 抽屉里保存的改动留在卡片上，接受时发出去的就是这一版
+            docText = String(next || '');
+            payload.doc = docText;
+            docIcon.title = docText.trim() ? '打开计划书' : '计划书（还没有正文）';
+          });
+        },
+      },
+      h('span', { html: ui.icon('book', 15) })
     );
-    if (noteMeta) box.firstChild.appendChild(noteMeta);
+    var head = planHead('计划', payload.title);
+    head.appendChild(docIcon);
+    box.appendChild(head);
 
     function addRow(one) {
       var title = h('input.chatplan__input', {
@@ -8843,7 +8913,14 @@
         value: one.dueDate || '',
         'aria-label': '哪天做',
       });
-      var row = h('div.chatplan__row', null, title, date);
+      // 左边那条轨道：圆圈 + 竖线，像路线图一样把条目串起来（用户要的 To-dos 那种）。
+      // 纯装饰 —— 每行的意思在输入框里，读屏跳过它。
+      var rail = h(
+        'span.chatplan__rail',
+        { 'aria-hidden': 'true' },
+        h('span.chatplan__dot')
+      );
+      var row = h('div.chatplan__row', null, rail, title, date);
       // `meta` 原样带着卡片上的排程元数据（focus / domain / estimateMin / gate / points）：
       // 提交时一起送进 `/plans`，自动排程才知道这一条该排上午还是晚上。
       var entry = { node: row, title: title, date: date, meta: one };
@@ -8873,7 +8950,7 @@
     }
     box.appendChild(rows);
 
-    var go = h('button.btn.btn--primary.btn--sm.chatplan__go', { type: 'button' }, '加入计划');
+    var go = h('button.btn.btn--primary.btn--sm.chatplan__go', { type: 'button' }, '接受');
     go.addEventListener('click', function () {
       var items = kept
         .map(function (entry) {
@@ -8897,12 +8974,14 @@
         ui.toast('至少留一条要做的', 'warn', 1800);
         return;
       }
-      lock(go, true, '正在加入…');
+      lock(go, true, '正在接受…');
       QF.api
         .post('/plans', {
           proposalId: payload.proposalId || undefined,
           title: payload.title || '',
           note: payload.note || '',
+          // 正文按**卡上现在这一版**发出去（他可能刚在右侧抽屉里改过）
+          doc: docText || undefined,
           source: 'chat',
           items: items,
         })
@@ -8910,12 +8989,14 @@
           function (data) {
             if (data && data.plan && payload.proposalId) planCommitted[payload.proposalId] = data.plan;
             payload.committed = true;
-            ui.toast(data && data.created === false ? '这份计划已经在日程里了' : '已加入计划', 'ok', 1800);
+            // 抽屉里还是那张未落库的草稿 —— 接受完就收掉，别让它留着误导人
+            if (QF.plandoc && QF.plandoc.close) QF.plandoc.close();
+            ui.toast(data && data.created === false ? '这份计划已经在日程里了' : '已接受计划', 'ok', 1800);
             repaint();
           },
           function (err) {
-            lock(go, false, '加入计划');
-            ui.toast((err && err.message) || '加入失败', 'bad', 2600);
+            lock(go, false, '接受');
+            ui.toast((err && err.message) || '接受失败', 'bad', 2600);
           }
         );
     });
@@ -8925,7 +9006,7 @@
         'div.chatplan__foot',
         null,
         go,
-        h('span.chatplan__hint', { text: '条目可以就地改、可以删；点了才保存' })
+        h('span.chatplan__hint', { text: '条目可以就地改；正文点右上角的图标看；接受之后才保存' })
       )
     );
     return box;
@@ -8986,7 +9067,26 @@
       );
     });
 
-    box.appendChild(h('div.chatplan__foot', null, go));
+    box.appendChild(
+      h(
+        'div.chatplan__foot',
+        null,
+        go,
+        // 改动会影响计划书里的活清单 —— 给他一个当场翻文档的入口
+        payload.planId
+          ? h(
+              'button.btn.btn--ghost.btn--sm',
+              {
+                type: 'button',
+                onClick: function () {
+                  if (QF.plandoc) QF.plandoc.open(payload.planId, payload.planTitle);
+                },
+              },
+              '查看文档'
+            )
+          : null
+      )
+    );
     return box;
   }
 
@@ -11527,17 +11627,15 @@
     });
   }
 
-  /** 会话行的右键菜单：重命名 / 置顶 / 删除（图标 + 文字，删除是红的）。
+  /** 一条会话能做的事：重命名 / 置顶 / 归档 / 删除（图标 + 文字，删除是红的）。
    *
-   * 原先这一行**压根没有右键**（容器那条监听只认空白处与分组行），F2 也没有 ——
-   * 用户的原话："对话右键/F2 没法改名字"。置顶/删除原先藏在 `⋯` 的弹层里
-   *（那个弹层还在，导出也留它那儿）。 */
-  function openConversationMenu(conv, ev) {
-    if (ev) {
-      chatMenuX = ev.clientX;
-      chatMenuY = ev.clientY;
-    }
-    showChatMenu([
+   * 右键菜单与 `⋯` 选择栏共用这一份 —— 两处各写一套迟早会走样。
+   *
+   * 归档 = 左栏那一层"文件夹"（用户："分组其实就是文件夹归档的逻辑"）。
+   * 放在置顶与删除中间：它是"收拾"，删除才是"丢掉"。
+   */
+  function conversationActions(conv) {
+    return [
       {
         label: '重命名',
         icon: 'rename',
@@ -11554,8 +11652,6 @@
         },
       },
       {
-        // 归档 = 左栏那一层"文件夹"（用户："分组其实就是文件夹归档的逻辑"）。
-        // 放在置顶与删除中间：它是"收拾"，删除才是"丢掉"。
         label: conv.archived ? '取消归档' : '归档',
         icon: conv.archived ? 'unarchive' : 'archive',
         run: function () {
@@ -11570,7 +11666,19 @@
           removeConversation(conv);
         },
       },
-    ]);
+    ];
+  }
+
+  /** 会话行的右键菜单：在鼠标位置弹出上面那几项。
+   *
+   * 原先这一行**压根没有右键**（容器那条监听只认空白处与分组行），F2 也没有 ——
+   * 用户的原话："对话右键/F2 没法改名字"。 */
+  function openConversationMenu(conv, ev) {
+    if (ev) {
+      chatMenuX = ev.clientX;
+      chatMenuY = ev.clientY;
+    }
+    showChatMenu(conversationActions(conv));
   }
 
   // F2 = 重命名。先看焦点在哪一行（点过它就有焦点），没有就用手上打开着的那个。
@@ -11590,105 +11698,56 @@
     renameConversation(found);
   });
 
-  function openMenu(conv) {
-    var field = h('input.input', { type: 'text', value: conv.title || '' });
-    var exportRow = h(
-      'div.field',
-      null,
-      h('div.field__label', { text: '导出' }),
-      h(
-        'div.chat__exports',
-        null,
-        h(
-          'button.btn.btn--ghost',
-          {
-            type: 'button',
-            onClick: function () {
-              download(exportUrl(conv.id, 'md'));
-            },
-          },
-          'Markdown（当前分支，给人读）'
-        ),
-        h(
-          'button.btn.btn--ghost',
-          {
-            type: 'button',
-            onClick: function () {
-              download('/api/chat/conversations/' + conv.id + '/export?format=json');
-            },
-          },
-          'JSON（整棵树，给机器读）'
-        ),
-        h(
-          'button.btn.btn--ghost',
-          {
-            type: 'button',
-            onClick: function () {
-              download(exportUrl(conv.id, 'html'));
-            },
-          },
-          'HTML（单页分享，能直接发出去）'
-        ),
-        h(
-          'button.btn.btn--ghost',
-          {
-            type: 'button',
-            onClick: function () {
-              download('/api/chat/export');
-            },
-          },
-          '全部对话（完整轨迹）'
-        )
-      )
-    );
-    var modal = ui.modal({
-      title: '对话设置',
-      size: 'sm',
-      body: h(
-        'div.form',
-        null,
-        h('div.field', null, h('div.field__label', { text: '标题' }), field),
-        exportRow
-      ),
-      actions: [
-        {
-          label: conv.pinned ? '取消置顶' : '置顶',
-          onClick: function () {
-            togglePin(conv);
-          },
+  /** `⋯` 上的普通点击：在按钮旁弹一个简单选择栏，不再开「对话设置」弹窗。
+   *
+   * 用户的原话："不要单独跳一个弹窗了。就常规点击，然后跳出来一个简单的选择栏"。
+   * 三种导出原先只在那只弹窗里，现在一并收进这一栏；「全部对话」是全局导出
+   *（设置页有「导出全部数据」），不挂在单条会话上。
+   */
+  function openRowMenu(conv, anchor) {
+    var items = conversationActions(conv);
+    var remove = items.pop(); // 删除压到最下面
+    var exports = [
+      {
+        label: '导出 Markdown',
+        icon: 'download',
+        hint: 'MD',
+        run: function () {
+          download(exportUrl(conv.id, 'md'));
         },
-        {
-          label: '删除',
-          kind: 'danger',
-          onClick: function () {
-            modal.close();
-            removeConversation(conv);
-          },
+      },
+      {
+        label: '导出 JSON',
+        icon: 'download',
+        hint: 'JSON',
+        run: function () {
+          download('/api/chat/conversations/' + conv.id + '/export?format=json');
         },
-        {
-          label: '保存',
-          kind: 'primary',
-          onClick: function () {
-            var title = String(field.value || '').trim();
-            modal.close();
-            if (!title || title === conv.title) return;
-            api
-              .patch('/chat/conversations/' + conv.id, { title: title })
-              .then(function () {
-                conv.title = title;
-                renderAside();
-              })
-              .catch(function (err) {
-                ui.toast(err.message, 'error');
-              });
-          },
+      },
+      {
+        label: '导出 HTML',
+        icon: 'download',
+        hint: 'HTML',
+        run: function () {
+          download(exportUrl(conv.id, 'html'));
         },
-      ],
-    });
-    setTimeout(function () {
-      field.focus();
-      field.select();
-    }, 40);
+      },
+      {
+        // 全局导出（所有会话的完整轨迹）。原先也在那只弹窗里，不能因为
+        // 弹窗没了就把功能弄丢；标签写明"全部"，别被当成导出这一条。
+        label: '导出全部对话',
+        icon: 'download',
+        hint: '全部',
+        run: function () {
+          download('/api/chat/export');
+        },
+      },
+    ];
+    // 归档与导出之间、删除之前各隔一条线：收拾 / 拿走 / 丢掉，三组分开看
+    var sep = function () {
+      return { node: h('div.popmenu__sep') };
+    };
+    menuAt(anchor, items.concat([sep()], exports, [sep()], [remove]));
   }
 
   function removeConversation(conv) {
