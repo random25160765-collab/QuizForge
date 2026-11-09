@@ -199,7 +199,7 @@ Windows 的系统错误对话框。
 
 **品牌与图标**：图标由 `python3 tools/make_icons.py` 生成（纯标准库：手写 PNG 与 ICO），
 顶栏与对话头像用**同一个字形的线条版**（`theme/shell.html` 与 `chat.js` 的 `logoMark()`，
-改要一起改）；名字统一 **QuizForge**（不再全小写）。
+改要一起改）；名字统一 **QFStudio**（不再全小写）。
 
 **分发命令**（完整流程与踩过的坑见 `docs/分发工作流.md`）：
 

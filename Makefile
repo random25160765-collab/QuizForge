@@ -1,5 +1,5 @@
 # ============================================================================
-# quizforge
+# QFStudio
 #
 # **local-first**：数据落在 `data/quizforge.db`（SQLite，随应用分发），
 # 不依赖任何外部服务 —— `make api-test` / `make test` 都不必先起数据库。
@@ -565,7 +565,7 @@ drive:
 # ---------------------------------------------------------------- 帮助
 # 新 session 先看这个：目标按用途分组，流水线那几条是最常用的。
 help:
-	@echo "quizforge · 常用目标"
+	@echo "QFStudio · 常用目标"
 	@echo ""
 	@echo "  上手        make api-venv · make api-dev（http://127.0.0.1:8100）"
 	@echo "  补充向量    make add（收 /mnt/f/Books 里的新文件 → 抽正文 → 切片 → 向量）"

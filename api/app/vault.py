@@ -3,7 +3,7 @@
 用户定的三条：
 
 1. 没有 Obsidian，笔记功能就无效 —— 所以这里**不做本地文件降级**。
-2. Obsidian 在 Windows 侧、quizforge 在 WSL 里；**不走网络**（WSL 的网络太乱）。
+2. Obsidian 在 Windows 侧、QFStudio 在 WSL 里；**不走网络**（WSL 的网络太乱）。
 3. 用户在设置里填 vault 路径，Obsidian 装一个插件，两边就能通。
 
 传输层是**同一个文件系统上的信箱**（协议见 `docs/Obsidian桥接协议.md`）：
@@ -11,7 +11,7 @@
     <vault>/.quizforge-bridge/
       bridge.json     插件写：协议版本、能力、vault 名
       heartbeat       插件每秒 touch，用来判在线
-      inbox/          quizforge 写 req-<id>.json
+      inbox/          QFStudio 写 req-<id>.json
       outbox/         插件写 res-<id>.json
       tmp/            原子写的中间文件
 
@@ -125,7 +125,7 @@ def _box() -> Path:
     if not vault:
         raise NoteError(
             "还没配 Obsidian：打开「设置 → Obsidian」，填 vault 路径"
-            "（例如 F:\\Notes 或 /mnt/f/Notes），并在 Obsidian 里启用 QuizForge 桥接插件。"
+            "（例如 F:\\Notes 或 /mnt/f/Notes），并在 Obsidian 里启用 QFStudio 桥接插件。"
         )
     root = Path(vault)
     if not root.is_dir():
@@ -156,7 +156,7 @@ def _bridge() -> dict[str, Any]:
         raise NoteError(f"bridge.json 读不了（插件正在写？）：{exc}") from exc
 
     if int(meta.get("protocol") or 0) < 1:
-        raise NoteError("桥接插件版本太旧：请更新 QuizForge 桥接插件。")
+        raise NoteError("桥接插件版本太旧：请更新 QFStudio 桥接插件。")
     meta["_box"] = str(box)
     return meta
 

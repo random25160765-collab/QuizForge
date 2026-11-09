@@ -49,10 +49,10 @@ def test_empty_memory_is_refused(client):  # noqa: ANN001
 
 def test_title_falls_back_to_the_first_line(client):  # noqa: ANN001
     """模型偶尔只给正文：标题从第一行取一句，而不是存一条没有名字的记忆。"""
-    row = client.post("/api/memory", json={"body": "在做 QuizForge\n同步是重点"}).json()[
+    row = client.post("/api/memory", json={"body": "在做 QFStudio\n同步是重点"}).json()[
         "memory"
     ]
-    assert row["title"] == "在做 QuizForge"
+    assert row["title"] == "在做 QFStudio"
 
 
 def test_memory_tools_create_list_update_delete(db_session):  # noqa: ANN001

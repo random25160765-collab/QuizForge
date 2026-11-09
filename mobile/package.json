@@ -2,7 +2,7 @@
   "name": "quizforge-android",
   "version": "0.1.0",
   "private": true,
-  "description": "QuizForge 的 Android 外壳（Capacitor + Chaquopy）",
+  "description": "QFStudio 的 Android 外壳（Capacitor + Chaquopy）",
   "scripts": {
     "sync": "cap sync android",
     "open": "cap open android"

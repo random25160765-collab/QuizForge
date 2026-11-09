@@ -16,7 +16,7 @@
 
 ## 只有一个版本
 
-2026-11-08 起没有分发通道：产物固定 `quizforge.exe` + `QuizForge Setup <版本>.exe`，
+2026-11-08 起没有分发通道：产物固定 `quizforge.exe` + `QFStudio Setup <版本>.exe`，
 数据固定 `~/quizforge`（老的 `~/quizforge-beta` 在首次启动时自动搬过去）。
 
     api/.venv/bin/python build/dist_win.py                 # 出包（后端 + 安装包）
@@ -140,16 +140,16 @@ def build_shell() -> tuple[int, str]:
 
 
 #: 安装完之后应用在哪（NSIS 的用户级安装位置，`package.json` 里 perMachine=false）
-APP_EXE = "$env:LOCALAPPDATA\\Programs\\QuizForge\\QuizForge.exe"
+APP_EXE = "$env:LOCALAPPDATA\\Programs\\QFStudio\\QFStudio.exe"
 
 #: 装一遍 + 跑一遍 + 逐页截图。PowerShell 写成"平铺的一串语句"而不是 f-string：
 #: 它满是大括号，塞进 f-string 要逐对翻倍，改一次错一次。
 INSTALL_CHECK_PS = r"""
 $ErrorActionPreference = 'Continue'
 Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-Get-Process QuizForge,quizforge -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process QFStudio,quizforge -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
-$un = "$env:LOCALAPPDATA\Programs\QuizForge\Uninstall QuizForge.exe"
+$un = "$env:LOCALAPPDATA\Programs\QFStudio\Uninstall QFStudio.exe"
 if (Test-Path $un) { Start-Process -FilePath $un -ArgumentList '/S' -Wait; Start-Sleep -Seconds 3 }
 $installer = Get-ChildItem "$env:USERPROFILE\Desktop\QF_dist\src\desktop\dist\*.exe" -ErrorAction SilentlyContinue |
   Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
@@ -157,7 +157,7 @@ if (-not $installer) { Write-Output 'NO-INSTALLER'; exit 1 }
 Write-Output ("installer=" + $installer)
 Start-Process -FilePath $installer -ArgumentList '/S' -Wait
 Start-Sleep -Seconds 3
-$app = "$env:LOCALAPPDATA\Programs\QuizForge\QuizForge.exe"
+$app = "$env:LOCALAPPDATA\Programs\QFStudio\QFStudio.exe"
 if (-not (Test-Path $app)) { Write-Output 'NO-APP'; exit 1 }
 Remove-Item "$env:APPDATA\quizforge-desktop" -Recurse -Force -ErrorAction SilentlyContinue
 $data = "$env:TEMP\qf-install-check"
@@ -168,7 +168,7 @@ $env:QF_SHELL_PROBE = 'chat,quiz,library'
 $p = Start-Process -FilePath $app -PassThru
 Start-Sleep -Seconds __WAIT__
 Write-Output ("alive=" + (-not $p.HasExited))
-Get-Process QuizForge,quizforge -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process QFStudio,quizforge -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Seconds 2
 $shots = "$env:TEMP\qf-install-shots"
 Remove-Item $shots -Recurse -Force -ErrorAction SilentlyContinue
@@ -450,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"· 也留在 {target}（{size_mb:.1f} MB，不进版本库）")
 
     if installer:
-        print("\n完成。双击桌面上的安装包装一次；装完从桌面/开始菜单的 QuizForge 启动。")
+        print("\n完成。双击桌面上的安装包装一次；装完从桌面/开始菜单的 QFStudio 启动。")
         print("  装完想确认每一页真画出来了：`api/.venv/bin/python build/dist_win.py --install-check`")
     else:
         print(f"\n完成。双击 `{name}.exe` 即用；数据在 Windows 的 %USERPROFILE%\\quizforge\\")

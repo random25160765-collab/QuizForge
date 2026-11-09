@@ -2,11 +2,11 @@
 <html lang="zh" data-theme="light">
 <head>
 <meta charset="utf-8">
-<title>TeX lab —— 独立试引擎，不碰 quizforge</title>
+<title>TeX lab —— 独立试引擎，不碰 QFStudio</title>
 <!--
-  独立 TeX 实验室（用户："你搞一个独立tex环境测试稳定了再装进quizforge"）。
+  独立 TeX 实验室（用户："你搞一个独立tex环境测试稳定了再装进 QFStudio"）。
 
-  为什么要有它：在 quizforge 里试，一出问题就是"页面卡死、而且什么也看不到"——
+  为什么要有它：在 QFStudio 里试，一出问题就是"页面卡死、而且什么也看不到"——
   引擎的 TeX 日志跑在它自己的 worker 里，应用侧抓不到（那是"死得莫名其妙"的根源）。
   这里页面是我们自己的：**在引擎之前**就把 console 钩住，于是
   TeX 的每一句 `! 错误` / 日志都能原样落到 `window.__texLog`。

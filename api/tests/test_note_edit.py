@@ -174,7 +174,7 @@ def test_append_when_old_is_omitted(lib) -> None:  # noqa: ANN001
 def test_refuses_when_the_bridge_renames_the_file(lib, monkeypatch) -> None:  # noqa: ANN001
     """桥接把文件建到别的路径（旧版插件忽略 `path`）→ **报错**，不许说成功。
 
-    真实踩过：请求 `QuizForge 写入验证.md`，旧插件按空 title 建成了 `未命名.md`，
+    真实踩过：请求 `QFStudio 写入验证.md`，旧插件按空 title 建成了 `未命名.md`，
     回执照样说 `mode: create` —— 用户以为写到了 A，其实在 B。
     """
     monkeypatch.setattr(vault, "create_at", lambda library, rel, body="": {"path": "未命名.md"})
@@ -187,7 +187,7 @@ def test_refuses_when_the_bridge_renames_the_file(lib, monkeypatch) -> None:  # 
 def test_creates_the_file_when_missing(lib) -> None:  # noqa: ANN001
     """写一个还不存在的文件 = **新建**（coding agent 的惯例），不是报"没有这篇笔记"。
 
-    这条是回归：用户让模型写一篇全新笔记 `QuizForge 写入验证.md`，原先返回
+    这条是回归：用户让模型写一篇全新笔记 `QFStudio 写入验证.md`，原先返回
     "没有这篇笔记" —— 因为追加那条路先 `read_note` 了。
     """
     target = lib / "新的一篇.md"

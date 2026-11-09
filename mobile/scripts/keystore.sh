@@ -40,7 +40,7 @@ chmod 600 "$DEST/keystore.properties"
   -keystore "$DEST/release.jks" -alias quizforge \
   -keyalg RSA -keysize 2048 -validity 10950 \
   -storepass "$PASS" -keypass "$PASS" \
-  -dname "CN=QuizForge, OU=Personal, O=QuizForge, L=Unknown, ST=Unknown, C=CN"
+  -dname "CN=QFStudio, OU=Personal, O=QFStudio, L=Unknown, ST=Unknown, C=CN"
 
 echo "✓ $DEST/release.jks"
 echo "  口令在同目录的 keystore.properties（600）；丢了就只能换签名重装。"

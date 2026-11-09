@@ -674,7 +674,7 @@
       return;
     }
     var lines = [];
-    lines.push('# QuizForge 错题本');
+    lines.push('# QFStudio 错题本');
     lines.push('');
     lines.push('导出时间：' + new Date().toLocaleString());
     lines.push('题目数：' + ids.length);
@@ -731,7 +731,7 @@
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
     a.href = url;
-    a.download = 'quizforge-wrongbook-' + ui.dayKey() + '.md';
+    a.download = 'qfstudio-wrongbook-' + ui.dayKey() + '.md';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

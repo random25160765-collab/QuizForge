@@ -436,7 +436,7 @@ def verify(artifact: Path, timeout_s: float = 120.0) -> int:
                 # （启动页没进包 = 浏览器打开一个 404，而接口一切正常）
                 splash_ok = False
                 with urllib.request.urlopen(f"{base}/starting.html", timeout=5) as response:
-                    splash_ok = response.status == 200 and b"QuizForge" in response.read(4096)
+                    splash_ok = response.status == 200 and b"QFStudio" in response.read(4096)
                 with urllib.request.urlopen(f"{base}/icon.svg", timeout=5) as response:
                     splash_ok = splash_ok and response.status == 200
                 # 启动检查接口本身也要能答（启动页靠它画进度）

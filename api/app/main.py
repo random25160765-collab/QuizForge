@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
         yield
 
     app = FastAPI(
-        title="quizforge API",
+        title="QFStudio API",
         version=__version__,
         docs_url="/api/docs" if settings.debug else None,
         redoc_url=None,
@@ -161,7 +161,7 @@ def create_app() -> FastAPI:
     app.mount("/", StaticFiles(directory=web_dir, html=True), name="web")
 
     logger.info(
-        "quizforge API 已装配 · debug=%s · db=%s · ai=%s(每用户自带密钥，每人日限 %s) · web=%s",
+        "QFStudio API 已装配 · debug=%s · db=%s · ai=%s(每用户自带密钥，每人日限 %s) · web=%s",
         settings.debug,
         _safe_db_label(settings.database_url),
         "on" if settings.ai_enabled else "off",

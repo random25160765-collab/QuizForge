@@ -1878,7 +1878,7 @@
    * 只取图形、不带那个渐变方块 —— 每条消息旁边都挂一块彩色方块太重了。
    */
   function logoMark() {
-    var box = h('span.chatmsg__logo', { 'aria-label': 'QuizForge', title: 'QuizForge' });
+    var box = h('span.chatmsg__logo', { 'aria-label': 'QFStudio', title: 'QFStudio' });
     box.innerHTML =
       '<svg viewBox="0 0 32 32" width="15" height="15" fill="none" stroke="currentColor" ' +
       'stroke-width="2.8" stroke-linecap="round">' +
@@ -11904,7 +11904,7 @@
    * **名字是 `QF.pyrun`，不是 `QF.shell`** —— 后者是布局层（`theme/runtime/shell.js`，
    * 带 `mount`）的地盘。我第一版就叫 `QF.shell`，于是把它**覆盖掉**了：`QF.chat.boot()`
    * 一开口就是 `QF.shell.mount(...)`，直接 `TypeError` —— 整个应用**从那一刻起打不开**
-   * （用户："不是，是我现在根本就进不去 quizforge 里面"）。教训：`QF.*` 是共享命名空间，
+   * （用户："不是，是我现在根本就进不去 QFStudio 里面"）。教训：`QF.*` 是共享命名空间，
    * 占一个新名字前先 `grep "QF\."` 看一眼。
    */
   QF.pyrun = {

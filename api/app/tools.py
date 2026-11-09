@@ -2705,7 +2705,7 @@ def edit_note(db, args, ctx=None) -> dict:  # noqa: ANN001
             if got and got != want:
                 return {
                     "error": f"桥接把文件建成了「{got}」，不是你指定的「{want}」。"
-                    "多半是 Obsidian 里的 QuizForge 桥接插件还是旧版 ——"
+                    "多半是 Obsidian 里的 QFStudio 桥接插件还是旧版 ——"
                     "去 Obsidian 设置 → 第三方插件里把它关一下再开（或重启 Obsidian）后重试。",
                     "landedAt": got,
                 }

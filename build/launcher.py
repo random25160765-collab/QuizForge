@@ -105,7 +105,7 @@ def _fatal(title: str, detail: str) -> None:
             text = f"{title}\n\n{detail[-800:]}"
             if log is not None:
                 text += f"\n\n日志：{log}"
-            ctypes.windll.user32.MessageBoxW(None, text, "QuizForge 启动失败", 0x10)
+            ctypes.windll.user32.MessageBoxW(None, text, "QFStudio 启动失败", 0x10)
         except Exception:  # noqa: BLE001 —— 弹不出来也没关系，日志已经在磁盘上了
             pass
 
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
             except (ValueError, OSError):
                 pass
 
-    parser = argparse.ArgumentParser(prog="QuizForge", description="本机起服务并打开界面")
+    parser = argparse.ArgumentParser(prog="QFStudio", description="本机起服务并打开界面")
     parser.add_argument("--port", type=int, default=8100, help="优先使用的端口（占了就自动换）")
     parser.add_argument("--no-browser", action="store_true", help="不自动开浏览器（自检用）")
     args = parser.parse_args(argv)
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     from app.db import ensure_schema, get_engine
 
     settings = get_settings()
-    _say(f"QuizForge · 数据目录：{settings.data_dir}")
+    _say(f"QFStudio · 数据目录：{settings.data_dir}")
     try:
         ensure_schema(get_engine())
     except Exception as exc:  # noqa: BLE001 —— 起不来的话要说清楚，不能静默退出

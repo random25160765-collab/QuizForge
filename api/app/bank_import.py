@@ -484,7 +484,7 @@ def current_bank(session: OrmSession) -> dict:
     stats = _live_stats(session, topics)
     return {
         "meta": {
-            "generator": "quizforge",
+            "generator": "qfstudio",
             "version": 2,
             "generatedAt": version.imported_at.isoformat(timespec="seconds") if version else "",
             "topics": topics,

@@ -61,7 +61,7 @@ def fetch_feed(url: str) -> str:
         with httpx.Client(
             timeout=20.0,
             follow_redirects=True,
-            headers={"User-Agent": "quizforge-calendar/1.0"},
+            headers={"User-Agent": "qfstudio-calendar/1.0"},
         ) as client:
             resp = client.get(raw)
     except Exception as exc:  # noqa: BLE001 —— httpx 的异常层级换过版本，一律当成"连不上"

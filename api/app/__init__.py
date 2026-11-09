@@ -1,4 +1,4 @@
-"""quizforge 后端应用包。
+"""QFStudio 后端应用包。
 
 **这里做一次路径引导**：`pipeline/` 在仓库根（它是脚本目录，不是包），
 而服务进程的工作目录是 `api/` —— 不补这一步，任何 `from pipeline import …`

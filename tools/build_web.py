@@ -126,14 +126,14 @@ PAGE_TOPBAR = {"quiz": "on", "wrongbook": "on", "graph": "on"}
 PAGE_STATUSBAR = {}
 
 PAGE_TITLE = {
-    "quiz": "QuizForge · 刷题",
-    "wrongbook": "QuizForge · 错题本",
-    "graph": "QuizForge · 知识图谱",
-    "chat": "QuizForge · 对话",
-    "library": "QuizForge · 资料",
-    "settings": "QuizForge · 设置",
-    "workbench": "QuizForge · 主页",
-    "schedule": "QuizForge · 日程",
+    "quiz": "QFStudio · 刷题",
+    "wrongbook": "QFStudio · 错题本",
+    "graph": "QFStudio · 知识图谱",
+    "chat": "QFStudio · 对话",
+    "library": "QFStudio · 资料",
+    "settings": "QFStudio · 设置",
+    "workbench": "QFStudio · 主页",
+    "schedule": "QFStudio · 日程",
 }
 
 PAGE_BODY = {
@@ -225,10 +225,10 @@ def _index_redirect() -> str:
         "<head>\n"
         '<meta charset="utf-8">\n'
         '<meta http-equiv="refresh" content="0; url=./chat.html">\n'
-        "<title>QuizForge</title>\n"
+        "<title>QFStudio</title>\n"
         "</head>\n"
         "<body>\n"
-        '<p>正在进入 <a href="./chat.html">QuizForge</a>…</p>\n'
+        '<p>正在进入 <a href="./chat.html">QFStudio</a>…</p>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -588,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     构建入口原先在 `tools/build.py` —— 那是离线构建器，顺带代理在线构建。
     离线形态淘汰后只剩这一条路径，CLI 就跟着落在本模块。
     """
-    parser = argparse.ArgumentParser(description="构建 quizforge 前端（在线形态）")
+    parser = argparse.ArgumentParser(description="构建 QFStudio 前端（在线形态）")
     parser.add_argument("--out", default=str(ROOT / "api" / "web"), help="输出目录，默认 api/web/")
     parser.add_argument("--api-base", default="/api", help="前端请求的接口前缀")
     parser.add_argument("--quiet", "-q", action="store_true", help="安静模式")

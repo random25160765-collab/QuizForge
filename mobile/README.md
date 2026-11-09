@@ -1,6 +1,6 @@
-# QuizForge for Android
+# QFStudio for Android
 
-把 QuizForge 装进手机：**Capacitor 做壳，Chaquopy 把 CPython 和 FastAPI 一起打进 APK**。
+把 QFStudio 装进手机：**Capacitor 做壳，Chaquopy 把 CPython 和 FastAPI 一起打进 APK**。
 手机上跑的是与桌面完全同一份后端代码，SQLite 是本地工作库，Turso 只做跨设备的状态中转。
 
 ## 为什么不走「壳 + 远程后端」

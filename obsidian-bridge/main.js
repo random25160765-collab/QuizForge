@@ -1,4 +1,4 @@
-/* QuizForge Bridge —— 让 QuizForge 的对话读写这个 vault（文件信箱，不走网络）。
+/* QFStudio Bridge —— 让 QFStudio 的对话读写这个 vault（文件信箱，不走网络）。
  *
  * 协议见仓库里的 docs/Obsidian桥接协议.md。要点：
  *
@@ -46,13 +46,13 @@ function outlineOf(body) {
   return rows;
 }
 
-module.exports = class QuizForgeBridge extends Plugin {
+module.exports = class QFStudioBridge extends Plugin {
   async onload() {
     this.base = this.app.vault.adapter.getBasePath
       ? this.app.vault.adapter.getBasePath()
       : null;
     if (!this.base) {
-      new Notice('QuizForge Bridge：拿不到 vault 的本地路径（只支持桌面版）。');
+      new Notice('QFStudio Bridge：拿不到 vault 的本地路径（只支持桌面版）。');
       return;
     }
     this.box = path.join(this.base, BOX);
@@ -76,7 +76,7 @@ module.exports = class QuizForgeBridge extends Plugin {
     this.poll = window.setInterval(() => this.drain(), 200);
     this.beat = window.setInterval(() => this.touchHeartbeat(), 1000);
     this.touchHeartbeat();
-    new Notice('QuizForge Bridge 已启用');
+    new Notice('QFStudio Bridge 已启用');
   }
 
   onunload() {

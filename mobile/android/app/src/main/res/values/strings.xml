@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">QuizForge</string>
-    <string name="title_activity_main">QuizForge</string>
+    <string name="app_name">QFStudio</string>
+    <string name="title_activity_main">QFStudio</string>
     <string name="package_name">com.quizforge.app</string>
     <string name="custom_url_scheme">com.quizforge.app</string>
 </resources>

@@ -1,4 +1,4 @@
-# quizforge 后端依赖
+# QFStudio 后端依赖
 #
 # 本机安装：
 #     python3 -m venv api/.venv && api/.venv/bin/pip install -r api/requirements.txt

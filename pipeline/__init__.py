@@ -1,4 +1,4 @@
-"""quizforge 出题流水线（自建执行器，不用第三方 agent 框架）。
+"""QFStudio 出题流水线（自建执行器，不用第三方 agent 框架）。
 
 设计见 `.codebuddy/skills/quizforge-author/references/pipeline.md`：
 任务表 + 租约 + 幂等 + 账本；编排是「出题单元内串联、单元间并联」。

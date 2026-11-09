@@ -226,7 +226,7 @@ def _download(url: str, dest: Path) -> None:
     """下载一个文件。用标准库，不引依赖（这是唯一需要联网的一步）。"""
     import urllib.request
 
-    request = urllib.request.Request(url, headers={"User-Agent": "quizforge-vendor"})
+    request = urllib.request.Request(url, headers={"User-Agent": "qfstudio-vendor"})
     with urllib.request.urlopen(request, timeout=180) as response:
         with dest.open("wb") as out:
             shutil.copyfileobj(response, out)
@@ -241,7 +241,7 @@ def _pypi_wheel_url(name: str, version: str) -> str:
     import urllib.request
 
     url = f"https://pypi.org/pypi/{name}/{version}/json"
-    request = urllib.request.Request(url, headers={"User-Agent": "quizforge-vendor"})
+    request = urllib.request.Request(url, headers={"User-Agent": "qfstudio-vendor"})
     with urllib.request.urlopen(request, timeout=60) as response:
         data = json.loads(response.read().decode("utf-8"))
     for item in data.get("urls") or []:

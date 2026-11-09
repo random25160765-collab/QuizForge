@@ -897,7 +897,7 @@ def _frame(data: dict) -> list[str]:
     width = max(12, min(40, cols - 46))
     gpu = data.get("gpu") or {}
     out: list[str] = [
-        "quizforge · 资料向量化进度                          %s"
+        "QFStudio · 资料向量化进度                          %s"
         % datetime.now().strftime("%H:%M:%S"),
         "",
     ]

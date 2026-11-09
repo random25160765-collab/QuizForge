@@ -83,7 +83,7 @@ def build_dataset(
 
     return {
         "meta": {
-            "generator": "quizforge",
+            "generator": "qfstudio",
             "version": 2,
             "generatedAt": _dt.datetime.now().isoformat(timespec="seconds"),
             "topics": topic_list,

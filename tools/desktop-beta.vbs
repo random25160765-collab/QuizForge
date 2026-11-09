@@ -1,4 +1,4 @@
-' QuizForge - Windows desktop launcher (beta / source-tree runtime)
+' QFStudio - Windows desktop launcher (beta / source-tree runtime)
 '
 ' Double-click this file:
 '   1. if the service is not running, start it **inside WSL** (build the web
@@ -25,7 +25,7 @@ Option Explicit
 ' so when it is opened through the WSL share (\\wsl$\<distro>\...\desktop-beta.vbs)
 ' both the distro and the repo come from that path. Open it some other way and
 ' there is nothing to infer from, so set the environment variables QF_DISTRO
-' (e.g. Ubuntu) and QF_REPO (a WSL path, e.g. /home/me/QuizForge).
+' (e.g. Ubuntu) and QF_REPO (a WSL path, e.g. /home/me/QFStudio).
 ' Resolved below, after `sh` exists; inferred values are the fallback.
 ' ---------------------------------------------------------------------------
 
@@ -45,10 +45,10 @@ InferFromOwnPath inferredDistro, inferredRepo
 DISTRO = EnvOr("QF_DISTRO", inferredDistro)
 REPO = EnvOr("QF_REPO", inferredRepo)
 If DISTRO = "" Or REPO = "" Then
-  MsgBox "QuizForge: cannot tell where the repo is." & vbCrLf & vbCrLf & _
+  MsgBox "QFStudio: cannot tell where the repo is." & vbCrLf & vbCrLf & _
          "Open this file from inside the WSL share (\\wsl$\<distro>\...\tools\desktop-beta.vbs)," & vbCrLf & _
-         "or set QF_DISTRO (e.g. Ubuntu) and QF_REPO (e.g. /home/me/QuizForge).", _
-         48, "QuizForge"
+         "or set QF_DISTRO (e.g. Ubuntu) and QF_REPO (e.g. /home/me/QFStudio).", _
+         48, "QFStudio"
   WScript.Quit 1
 End If
 ' ---------------------------------------------------------------------------
@@ -85,9 +85,9 @@ If Not IsUp() Then
   Loop
 
   If Not IsUp() Then
-    MsgBox "QuizForge did not come up in " & WAIT_MAX & "s." & vbCrLf & vbCrLf & _
+    MsgBox "QFStudio did not come up in " & WAIT_MAX & "s." & vbCrLf & vbCrLf & _
            "Check the log inside WSL:" & vbCrLf & "  /tmp/quizforge-beta.log", _
-           48, "QuizForge"
+           48, "QFStudio"
     WScript.Quit 1
   End If
 End If
@@ -112,8 +112,8 @@ End Function
 
 ' Pull the distro and the repo path out of the path this script was opened
 ' through, e.g.
-'   \\wsl$\Ubuntu\home\me\QuizForge\tools\desktop-beta.vbs
-'   -> distro "Ubuntu", repo "/home/me/QuizForge"
+'   \\wsl$\Ubuntu\home\me\QFStudio\tools\desktop-beta.vbs
+'   -> distro "Ubuntu", repo "/home/me/QFStudio"
 ' Either name may also be \\wsl.localhost\... . Leaves both as "" when the file
 ' was opened some other way (copied out, local path), so the caller can fall
 ' back to the environment variables and then give up with a clear message.
@@ -132,12 +132,12 @@ Sub InferFromOwnPath(ByRef distro, ByRef repo)
   i = InStr(rest, "\")            ' distro name
   If i = 0 Then Exit Sub
   distro = Left(rest, i - 1)
-  rest = Mid(rest, i)             ' \home\me\QuizForge\tools\desktop-beta.vbs
+  rest = Mid(rest, i)             ' \home\me\QFStudio\tools\desktop-beta.vbs
   i = InStrRev(rest, "\")         ' strip the file name
   If i = 0 Then Exit Sub
-  rest = Left(rest, i - 1)        ' \home\me\QuizForge\tools
+  rest = Left(rest, i - 1)        ' \home\me\QFStudio\tools
   i = InStrRev(rest, "\")         ' strip \tools
   If i = 0 Then Exit Sub
-  rest = Left(rest, i - 1)        ' \home\me\QuizForge
+  rest = Left(rest, i - 1)        ' \home\me\QFStudio
   repo = Replace(rest, "\", "/")
 End Sub

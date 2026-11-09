@@ -172,7 +172,7 @@ _REDIRECT_CODES = (301, 302, 303, 307, 308)
 
 #: 老实交代自己是谁。`Mozilla/5.0 (compatible; …)` 这个前缀很多站点的机器人过滤
 #: 会放行 —— 写一个完全不认识的 UA，一半的页面会直接 403。
-USER_AGENT = "Mozilla/5.0 (compatible; QuizForge/1.0)"
+USER_AGENT = "Mozilla/5.0 (compatible; QFStudio/1.0)"
 
 
 class SearchError(Exception):

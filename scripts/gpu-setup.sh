@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# quizforge · GPU 那条路的依赖准备与环境设置
+# QFStudio · GPU 那条路的依赖准备与环境设置
 #
 # ## 为什么单独一个脚本，而不是塞进 requirements.txt
 #

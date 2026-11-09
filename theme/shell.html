@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<meta name="generator" content="QuizForge">
+<meta name="generator" content="QFStudio">
 <!--
   主题必须在**样式之前**定下来。
   否则首帧会先用 shell 里写死的 data-theme="dark" 画一屏深色，再被脚本改成
@@ -41,7 +41,7 @@
 <!--@INJECT:BASE@-->
 <link rel="icon" type="image/svg+xml" href="icon.svg">
   <link rel="apple-touch-icon" href="icon-256.png">
-  <title>__QUIZFORGE_TITLE__</title>
+  <title>__QFSTUDIO_TITLE__</title>
 <!--
   样式注入点。
   离线构建塞 <style> 内联，在线构建塞 <link rel=stylesheet>。
@@ -56,7 +56,7 @@
   过去这两个由 JS 在 50~150ms 后才设，于是首帧与最终布局差一条顶栏 ——
   切页时看到的就是"里面的元素位移一下"。按页写死之后，首帧就是最终态。
 -->
-<body data-page="__QUIZFORGE_PAGE__" data-topbar="__QUIZFORGE_TOPBAR__" data-sb="__QUIZFORGE_STATUSBAR__">
+<body data-page="__QFSTUDIO_PAGE__" data-topbar="__QFSTUDIO_TOPBAR__" data-sb="__QFSTUDIO_STATUSBAR__">
 
 <!--
   外壳：活动栏 + 资源栏 + 舞台。

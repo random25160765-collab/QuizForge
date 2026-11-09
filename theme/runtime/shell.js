@@ -676,7 +676,7 @@
 
     /* ------------------------------------------------------ Obsidian（笔记）
      *
-     * 笔记已经不在 quizforge 里存了：读写都走本机 Obsidian 的桥接。
+     * 笔记已经不在 QFStudio 里存了：读写都走本机 Obsidian 的桥接。
      * 传输是**vault 里的一个信箱目录**（不走网络 —— WSL 的网络不可靠，见
      * docs/Obsidian桥接协议.md）。没连上时，对话里那五个笔记工具直接不可用。
      */
@@ -704,7 +704,7 @@
     var obsForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: 'Obsidian（笔记）' }),
       h('p', {
-        text: '笔记存在 vault 里，不经过网络：填好路径，再在 Obsidian 里启用「QuizForge 桥接」插件。',
+        text: '笔记存在 vault 里，不经过网络：填好路径，再在 Obsidian 里启用「QFStudio 桥接」插件。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       field('vault 路径', null, vaultInput),
@@ -1370,7 +1370,7 @@
         h('button.btn', {
           type: 'button',
           onClick: function () {
-            downloadJSON('quizforge-progress-' + ui.dayKey() + '.json', store.exportAll());
+            downloadJSON('qfstudio-progress-' + ui.dayKey() + '.json', store.exportAll());
             ui.toast('已导出进度数据', 'ok');
           },
         }, h('span', { html: ui.icon('download', 15) }), h('span', { text: '导出全部数据' })),

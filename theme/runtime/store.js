@@ -1235,7 +1235,7 @@
   function exportAll(options) {
     var opts = options || {};
     var payload = {
-      app: 'quizforge',
+      app: 'qfstudio',
       schema: 1,
       exportedAt: new Date().toISOString(),
       bank: {
@@ -1255,7 +1255,10 @@
   function importAll(payload, options) {
     var opts = options || {};
     if (!payload || typeof payload !== 'object') throw new Error('数据格式不正确');
-    if (payload.app && payload.app !== 'quizforge') throw new Error('这不是 quizforge 的导出文件');
+    // 老导出文件（app: 'quizforge'）继续认：改名不丢历史数据的导入能力
+    if (payload.app && payload.app !== 'qfstudio' && payload.app !== 'quizforge') {
+      throw new Error('这不是 QFStudio 的导出文件');
+    }
     if (payload.schema && payload.schema > 1) throw new Error('导出文件来自更新的版本，请升级本页面');
 
     var merged = { records: 0, days: 0, settings: false };

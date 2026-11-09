@@ -23,12 +23,12 @@ MARKERS = {
     "scripts": "<!--@INJECT:SCRIPTS@-->",
     "body": "<!--@INJECT:BODY@-->",
     "base": "<!--@INJECT:BASE@-->",
-    "title": "__QUIZFORGE_TITLE__",
-    "page": "__QUIZFORGE_PAGE__",
+    "title": "__QFSTUDIO_TITLE__",
+    "page": "__QFSTUDIO_PAGE__",
     # 首帧就该定下来的两个布局属性（过去由 JS 隔 50~150ms 才设，切页时会
     # 看到内容整体位移一条顶栏的高度）。值见 build_web.py 的两张表。
-    "topbar": "__QUIZFORGE_TOPBAR__",
-    "statusbar": "__QUIZFORGE_STATUSBAR__",
+    "topbar": "__QFSTUDIO_TOPBAR__",
+    "statusbar": "__QFSTUDIO_STATUSBAR__",
 }
 
 

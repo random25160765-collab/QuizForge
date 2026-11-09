@@ -335,7 +335,7 @@ def main() -> int:
         }, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
-    print(f"quizforge · 代码量（{label}）")
+    print(f"QFStudio · 代码量（{label}）")
     print()
     if args.by_dir:
         print(render(["目录", "文件", "总行", "代码"], rows_by_dir(by_dir), total_row(overall, 4)))

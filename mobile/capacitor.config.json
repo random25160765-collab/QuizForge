@@ -1,6 +1,6 @@
 {
   "appId": "com.quizforge.app",
-  "appName": "QuizForge",
+  "appName": "QFStudio",
   "webDir": "www",
   "server": {
     "url": "http://127.0.0.1:8731",

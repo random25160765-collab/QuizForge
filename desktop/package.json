@@ -1,7 +1,7 @@
 {
   "name": "quizforge-desktop",
   "version": "0.1.0",
-  "description": "QuizForge 桌面外壳：把后端 exe 拉起来，再用一个窗口装住它",
+  "description": "QFStudio 桌面外壳：把后端 exe 拉起来，再用一个窗口装住它",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -15,7 +15,7 @@
   },
   "build": {
     "appId": "com.quizforge.desktop",
-    "productName": "QuizForge",
+    "productName": "QFStudio",
     "files": [
       "main.js",
       "package.json"

@@ -1,4 +1,4 @@
-/* QuizForge 桌面外壳（Electron）。
+/* QFStudio 桌面外壳（Electron）。
  *
  * 它只做四件事：
  *   1. 找一个空闲端口，把**后端 exe** 作为子进程拉起来（`--port <p> --no-browser`）；
@@ -24,7 +24,7 @@ const http = require('node:http');
 const PROD_BACKEND = path.join(process.resourcesPath || '', 'backend', 'quizforge.exe');
 const DEV_BACKEND = process.env.QF_BACKEND || '';
 
-/** 排障用的日志：GUI 应用没有控制台，出问题只能写文件。位置 `%APPDATA%\QuizForge\shell.log`。 */
+/** 排障用的日志：GUI 应用没有控制台，出问题只能写文件。位置 `%APPDATA%\QFStudio\shell.log`。 */
 let LOG_PATH = '';
 function log() {
   if (!LOG_PATH) {
@@ -36,7 +36,7 @@ function log() {
   }
   const line = `[${new Date().toISOString()}] ${Array.from(arguments).join(' ')}\n`;
   try {
-    // `appendFileSync` 不会建父目录：首次启动时 `%APPDATA%\QuizForge` 还不存在，
+    // `appendFileSync` 不会建父目录：首次启动时 `%APPDATA%\QFStudio` 还不存在，
     // 日志会静默丢失（排查"应用一启动就退"时因此误判成"main.js 没执行"）。
     fs.mkdirSync(path.dirname(LOG_PATH), { recursive: true });
     fs.appendFileSync(LOG_PATH, line);
@@ -160,7 +160,7 @@ async function startBackend(port) {
     log('backend exit', 'code=' + code, 'signal=' + signal, 'quitting=' + quitting);
     if (!quitting) {
       dialog.showErrorBox(
-        'QuizForge 后端退出了',
+        'QFStudio 后端退出了',
         `退出码 ${code}${signal ? '（信号 ' + signal + '）' : ''}。日志：${LOG_PATH}`
       );
       app.quit();
@@ -177,7 +177,7 @@ function createWindow(port) {
     minHeight: 600,
     backgroundColor: '#f7f9fb',
     autoHideMenuBar: true,
-    title: 'QuizForge',
+    title: 'QFStudio',
     webPreferences: {
       // 前端是纯静态页面 + fetch，不需要 Node 能力
       nodeIntegration: false,

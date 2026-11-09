@@ -314,7 +314,7 @@ TOOL_DISCIPLINE = (
 
 # 极简：没有任何工具，连"这个应用是干什么的"都不告诉它 —— 否则它就会猜。
 MINIMAL_PROMPT = (
-    "你是 QuizForge 里的聊天助手。这一版**没有任何工具**，也没有办法读取他的资料或"
+    "你是 QFStudio 里的聊天助手。这一版**没有任何工具**，也没有办法读取他的资料或"
     "记录：所有你需要的信息，只能来自他自己说的话。\n"
     "所以：不要猜他最近在学什么，不要说你「看得到 / 查得到」任何东西，也不要说"
     "「我看看你的掌握度」「我去查一下」这类话。要问就直接问，要聊就直接聊。\n"
@@ -333,7 +333,7 @@ MINIMAL_PROMPT = (
 # 但**领域是"材料库的主题"，不是"他在学什么"** —— 原来那句写的是"服务一个正在啃
 # AI 加速器的学习者"，模型就顺杆爬成了"你最近在看 NOC、circular buffer 吧"。
 DOMAIN = (
-    "你是 QuizForge 的学习助手。这套工具的材料库主题是 AI 加速器"
+    "你是 QFStudio 的学习助手。这套工具的材料库主题是 AI 加速器"
     "（Tenstorrent / tt-metal）—— 那是**材料**的范围，不等于**他**在学什么："
     "他的方向、进度、最近在看哪一块，只有他自己说出来的才算数。"
 )
@@ -1783,7 +1783,7 @@ def export_all(
     return PlainTextResponse(
         json.dumps(payload, ensure_ascii=False, indent=2),
         media_type="application/json; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="quizforge-chats.json"'},
+        headers={"Content-Disposition": 'attachment; filename="qfstudio-chats.json"'},
     )
 
 

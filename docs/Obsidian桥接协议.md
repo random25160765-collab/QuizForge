@@ -1,7 +1,7 @@
 # Obsidian 桥接协议（设计稿 · 文件信箱版）
 
-> 一句话：**quizforge 和 Obsidian 插件通过一个共享目录里的 JSON 文件信箱通信，不走网络。**
-> 插件是 vault 的代理；quizforge 写请求文件，插件写响应文件。
+> 一句话：**QFStudio 和 Obsidian 插件通过一个共享目录里的 JSON 文件信箱通信，不走网络。**
+> 插件是 vault 的代理；QFStudio 写请求文件，插件写响应文件。
 
 状态：设计稿，尚未实现。人的笔记界面（笔记页 / 画布 / 资源树）已于 2026-11-07 删除；
 LLM 侧的五个笔记工具保留（`read_note` / `list_notes` / `search_notes` / `edit_note` /
@@ -27,7 +27,7 @@ LLM 侧的五个笔记工具保留（`read_note` / `list_notes` / `search_notes`
 ## 二、拓扑
 
 ```
-WSL（quizforge 后端）                      Windows（Obsidian 插件）
+WSL（QFStudio 后端）                       Windows（Obsidian 插件）
       │                                            │
       ├── 写 /mnt/f/Notes/.quizforge-bridge/inbox/req-<id>.json ──▶ 监听 inbox
       │                                            │  处理
@@ -44,9 +44,9 @@ WSL（quizforge 后端）                      Windows（Obsidian 插件）
 ```
 <vault>/.quizforge-bridge/
   bridge.json          # 插件写：协议版本、能力、vault 名、启动时间、pid
-  heartbeat            # 插件每秒 touch（内容 = ISO 时间）；quizforge 用它判断在线
-  inbox/               # quizforge → 插件：req-<id>.json
-  outbox/              # 插件 → quizforge：res-<id>.json
+  heartbeat            # 插件每秒 touch（内容 = ISO 时间）；QFStudio 用它判断在线
+  inbox/               # QFStudio → 插件：req-<id>.json
+  outbox/              # 插件 → QFStudio：res-<id>.json
   tmp/                 # 原子写的中间文件（写完 rename 进 inbox/outbox）
 ```
 
@@ -112,24 +112,24 @@ WSL（quizforge 后端）                      Windows（Obsidian 插件）
 
 - 插件启动：建目录、清掉 `inbox/`、`outbox/`、`tmp/` 里超过 60 秒的陈旧文件、写 `bridge.json`、
   起一个 1 秒的 timer touch `heartbeat`；退出时删 `bridge.json`（heartbeat 自然过期）。
-- quizforge：`bridge.json` 在 **且** `heartbeat` 的 mtime 在 5 秒内 = 在线。
+- QFStudio：`bridge.json` 在 **且** `heartbeat` 的 mtime 在 5 秒内 = 在线。
 - 不在线就不发请求，直接返回明确错误（不排队、不等）：
 
   ```json
-  { "error": "还没有连上 Obsidian：在设置里填 vault 路径，并在 Obsidian 里启用 QuizForge 桥接插件。" }
+  { "error": "还没有连上 Obsidian：在设置里填 vault 路径，并在 Obsidian 里启用 QFStudio 桥接插件。" }
   ```
 
 ### 3.5 超时与清理
 
-- quizforge 每 50ms 看一次 `outbox/res-<id>.json`；到 `expect` 上限还没出现 → 删请求文件、
+- QFStudio 每 50ms 看一次 `outbox/res-<id>.json`；到 `expect` 上限还没出现 → 删请求文件、
   返回 `timeout`（插件可能正在忙；**不自动重试写操作**）。
-- 插件处理完写响应后删请求；quizforge 读完响应后删响应。
+- 插件处理完写响应后删请求；QFStudio 读完响应后删响应。
 - 双方启动时都清陈旧文件（> 60 秒），避免断电/崩溃留下的垃圾越积越多。
 
 ### 3.6 幂等
 
 - 请求 `id` 唯一。插件处理前先看 `outbox/res-<id>.json` 是否存在：存在就跳过（重放安全）。
-- 写操作（append/replace/write）在响应里回 `hash`，quizforge 收到的 hash 与预期不符视为
+- 写操作（append/replace/write）在响应里回 `hash`，QFStudio 收到的 hash 与预期不符视为
   冲突，让模型重读，不自动覆盖。
 
 ### 3.7 并发
@@ -224,7 +224,7 @@ term / "短语" / #标签 / title:词 / path:词 / tag:词
 
 ---
 
-## 六、与 quizforge 的接入
+## 六、与 QFStudio 的接入
 
 现有的五个工具只调 `notelib`。接入方式是**同形替换**：
 
@@ -287,7 +287,7 @@ class NoteError / NoteNotFound      # 与 notelib 同名，工具的 except 不�
 ## 九、实现顺序
 
 1. 插件：建信箱、写 `bridge.json` + heartbeat、处理 `ping` / `read` / `tree`。
-2. quizforge：`api/app/vault.py`（配置归一化 + 信箱客户端）+ 工具层换入口。
+2. QFStudio：`api/app/vault.py`（配置归一化 + 信箱客户端）+ 工具层换入口。
 3. `search`（表达式语义两边对齐，跑同一组用例）。
 4. `write` / `append` / `replace`（`baseHash` 冲突）。
 5. `open` / `trash`（锦上添花）。
@@ -298,5 +298,5 @@ class NoteError / NoteNotFound      # 与 notelib 同名，工具的 except 不�
 
 - 不做网络传输（HTTP / WebSocket / 命名管道都不做）—— 见 §一。
 - 不做本地文件降级：没有 Obsidian，笔记工具就是不可用（用户明确要求）。
-- 不把 vault 内容写进 quizforge 的数据库或快照；正文只在一次工具调用里进出。
+- 不把 vault 内容写进 QFStudio 的数据库或快照；正文只在一次工具调用里进出。
 - 不做双向同步、不做后台索引：每次请求现读，需要搜索时由插件用它的 `metadataCache` 回答。

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""生成 QuizForge 的图标：浏览器 favicon（SVG）· 预览 PNG · Windows exe 的 `.ico`。
+"""生成 QFStudio 的图标：浏览器 favicon（SVG）· 预览 PNG · Windows exe 的 `.ico`。
 
 ## 为什么手写而不是找现成的
 
@@ -204,7 +204,7 @@ def _ico_bytes(images: dict[int, list[list[tuple[int, int, int, int]]]]) -> byte
 def _svg() -> str:
     """矢量版：与上面同一套几何（顶栏和对话头像用它的**线条版**，见 logoMark）。"""
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img"
-     aria-label="QuizForge">
+     aria-label="QFStudio">
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#2DD4BF"/>

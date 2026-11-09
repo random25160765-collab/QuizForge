@@ -1,4 +1,4 @@
-# QuizForge 桌面外壳（Electron）
+# QFStudio 桌面外壳（Electron）
 
 把 `quizforge.exe`（PyInstaller 打出来的后端）作为子进程拉起来，用一个窗口装住它。
 窗口加载 `http://127.0.0.1:<随机空闲端口>/` —— 前端静态文件由后端自己提供，所以
@@ -9,7 +9,7 @@
 **从 WSL 里一条命令**（前端 → 同步 → 后端 exe → 套壳 → 拷到桌面）：
 
 ```bash
-make dist          # → 桌面上的 QuizForge Setup <版本>.exe
+make dist          # → 桌面上的 QFStudio Setup <版本>.exe
 ```
 
 它由 `build/dist_win.py` 串起来，顺序不能换：

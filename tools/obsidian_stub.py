@@ -3,7 +3,7 @@
 
 真插件在 Obsidian 里跑（`obsidian-bridge/`），它用 `app.vault` / `metadataCache`。
 这个桩只做同一份文件信箱协议的最小实现，用来在没装 Obsidian 的机器上验证
-quizforge 这一端（`api/app/vault.py` + 五个笔记工具）。
+QFStudio 这一端（`api/app/vault.py` + 五个笔记工具）。
 
     python3 tools/obsidian_stub.py --vault /tmp/notes
 

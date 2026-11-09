@@ -135,7 +135,7 @@ CI 跑在 GitHub Actions 上。想知道**过没过**，走 badge —— 它是�
 **不占 GitHub API 额度**：
 
 ```bash
-curl -s https://github.com/random25160765-collab/QuizForge/actions/workflows/ci.yml/badge.svg \
+curl -s https://github.com/random25160765-collab/QFStudio/actions/workflows/ci.yml/badge.svg \
   | grep -o '<title>[^<]*</title>'
 # → <title>ci - passing</title>
 ```
@@ -147,7 +147,7 @@ curl -s https://github.com/random25160765-collab/QuizForge/actions/workflows/ci.
 只在需要 **job 级细节**（哪一步红了、日志内容）时才动 API，并且一次问够：
 
 ```bash
-GET /repos/random25160765-collab/QuizForge/actions/runs?per_page=3   # 拿 run 列表
+GET /repos/random25160765-collab/QFStudio/actions/runs?per_page=3   # 拿 run 列表
 GET .../actions/runs/{run_id}/jobs                                   # 拿某一个 run 的 job
 ```
 
