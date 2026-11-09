@@ -90,6 +90,41 @@ def test_manifest_file_is_valid_json() -> None:
     assert payload["bytes"] > 0
 
 
+def test_manifest_path_can_be_pointed_elsewhere(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """Android 上清单不跟 `ROOT` 走。
+
+    Chaquopy 把源码编进 `app.imy`，`__file__` 的层级与仓库不同（按 `parents[2]`
+    推出来的是 `files/chaquopy/`，清单却在 `app.imy/` 里），所以启动器用
+    `QF_HEAVY_MANIFEST` 指到它拷出来的那份。
+    """
+    custom = tmp_path / "pyodide-manifest.json"
+    custom.write_text(
+        json.dumps({"files": {heavy_deps.ENTRY: "a" * 64}, "bytes": 1}), encoding="utf-8"
+    )
+    monkeypatch.setenv(heavy_deps.MANIFEST_ENV, str(custom))
+    assert heavy_deps.manifest_path() == custom
+    assert heavy_deps.manifest() == {heavy_deps.ENTRY: "a" * 64}
+
+
+def test_missing_manifest_records_a_reason_and_backs_off(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """没有清单时：不下载、留下原因、短时间内不重试。
+
+    三件事缺一不可。少了最后一条，用户每问一次"跑一下这段"就重起一轮下载，
+    界面上看到的永远是"已经在后台开始取了"—— 2026-11-09 之前手机端的实际症状。
+    """
+    monkeypatch.setattr(heavy_deps, "_failure", {"detail": "", "at": 0.0})
+    monkeypatch.setattr(heavy_deps, "cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(heavy_deps, "_copy_from_vendor", lambda _say: False)
+    monkeypatch.setenv(heavy_deps.MANIFEST_ENV, str(tmp_path / "missing.json"))
+
+    ok, detail = heavy_deps.ensure(allow_download=True)
+    assert ok is False
+    assert "清单" in detail
+    assert "清单" in heavy_deps.last_failure()
+    # 退避期内不再起后台任务
+    assert heavy_deps.start_prefetch() is False
+
+
 def test_data_dir_is_out_of_the_bundle() -> None:
     """打包后数据目录：在**用户主目录**下（`~/quizforge`）。
 

@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # ------------------------------------------------------ 重型运行组件
-    # 首启在后台把 Pyodide（76M，不进安装包）取进 `data/cache/pyodide/`。
+    # 首启在后台把 Pyodide（146M，不进安装包）取进 `data/cache/pyodide/`。
     # 关掉它 = 不主动联网，等真正用到「跑 Python」那一次再取（见 app/heavy_deps.py）。
     # 测试里一律关掉：用例不该因为跑一次就去下载几十兆。
     heavy_prefetch: bool = True

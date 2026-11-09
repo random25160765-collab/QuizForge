@@ -68,6 +68,13 @@ final class BootHelper {
         copyAssetIfAbsent(context.getAssets(), "sync/settings.local.json",
                 new File(dataDir(context), "config/settings.local.json"));
 
+        // Pyodide 的校验清单（3KB，随包）：手机没有 vendor/ 副本，只能按清单下载，
+        // 而清单是校验依据 —— 缺了它 heavy_deps 会拒绝下载（"不敢下"）。
+        // **每次都覆盖**：清单随版本更新，不能像设置文件那样"已有就不动"；
+        // 老包没有这个 asset 时静默跳过，只影响"跑 Python"这一项。
+        copyAssetIfPresent(context.getAssets(), "runtime/pyodide-manifest.json",
+                new File(dataDir(context), "config/pyodide-manifest.json"));
+
         return fresh ? "已释放前端资源" : "资源已是最新";
     }
 
@@ -76,6 +83,11 @@ final class BootHelper {
         if (to.exists()) {
             return;
         }
+        copyAssetIfPresent(assets, from, to);
+    }
+
+    /** 有就拷（**覆盖目标**），没有就跳过 —— 只读资源随版本走，不能沿用旧的那份。 */
+    private static void copyAssetIfPresent(AssetManager assets, String from, File to) throws IOException {
         try {
             assets.open(from).close();
         } catch (IOException missing) {

@@ -53,8 +53,14 @@ def configure(data_dir: str, web_dir: str) -> None:
     # 口令文件固定在**可写的数据目录**，不管现在有没有：手机没有文件管理器，
     # 口令只能从设置页填进来；而 `_key_file()` 的默认值会落到只读的 AssetFinder 根上。
     os.environ.setdefault("QF_SYNC_KEY_FILE", str(data / "snapshot.key"))
-    # 手机上不预取 Pyodide（76M），用到了再说；失败也只是"跑 Python"这一项不可用。
+    # 手机上不预取 Pyodide（146M），用到了再说；失败也只是"跑 Python"这一项不可用。
     os.environ.setdefault("QF_HEAVY_PREFETCH", "0")
+    # 校验清单（3KB）由 BootHelper 从 assets 拷到数据目录。**没有它就不下载**：
+    # Chaquopy 里 `heavy_deps` 按 `__file__` 推出来的 ROOT 与仓库不同，推不到
+    # 仓库里那份 `build/pyodide-manifest.json`，必须显式指过去。
+    manifest = data / "config" / "pyodide-manifest.json"
+    if manifest.is_file():
+        os.environ.setdefault("QF_HEAVY_MANIFEST", str(manifest))
     # 正文**懒加载**：同步只落条目与切片坐标，点开哪片才从云端取哪块
     # （31.7MB 切片正文不再整包落地，见 `app/slice_cloud.py`）。
     os.environ.setdefault("QF_LAZY_BODIES", "1")
@@ -101,6 +107,27 @@ def crypto_check() -> str:
     )
 
 
+def restore_tikzjax_gz(web: Path) -> str:
+    """把 `.gzz` 改回 `.gz` —— TikZJax 只认后者。
+
+    为什么需要这一趟：AGP 在 `mergeAssets` 时会把 assets 里的 `.gz` **解压并
+    去掉后缀**（实测 `core.dump.gz` 变成 160MB 的 `core.dump`，`tex_files/` 的
+    633 个 `.gz` 全部失去后缀），而引擎是 `fetch('core.dump.gz')` /
+    `fetch('tex_files/x.sty.gz')` —— 一个都取不到，手机上所有 TikZ 图都会变成
+    `tikzjax-broken`。所以 `build-apk.sh` 进包前把它们改成 `.gzz`，到这里改回来。
+
+    幂等：没有 `.gzz`（已恢复过 / 桌面形态）就什么也不做。
+    """
+    root = web / "assets" / "tikzjax"
+    if not root.is_dir():
+        return "tikzjax：没有这个目录（跳过载荷改名）"
+    renamed = 0
+    for src in root.rglob("*.gzz"):
+        src.replace(src.with_name(src.name[:-4] + ".gz"))
+        renamed += 1
+    return f"tikzjax：{renamed} 个载荷还原为 .gz"
+
+
 def status() -> str:
     """给 Java 侧轮询用的一行状态（不含异常栈，栈在日志里）。"""
     return f"{_state['phase']}: {_state['detail']}"
@@ -112,6 +139,7 @@ def start(data_dir: str, web_dir: str, port: int = 8731) -> str:
     try:
         configure(data_dir, web_dir)
         _log(f"configured data={data_dir} web={web_dir} tools={TOOLS_DIR}")
+        _log(restore_tikzjax_gz(Path(web_dir)))
 
         message = ensure_database()
         _log(message)

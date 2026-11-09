@@ -185,8 +185,11 @@ def checks() -> list[Step]:
 
         if heavy_deps.is_ready():
             steps.append(Step("heavy", "Python 运行时", OK, "已在本机缓存里"))
+        elif not heavy_deps.manifest():
+            # 没有清单 = 连下载都不敢（校验不了）—— 这不是"稍后会好"，要如实说
+            steps.append(Step("heavy", "Python 运行时", WARN, "没有校验清单，跑 Python 这一项不可用"))
         else:
-            steps.append(Step("heavy", "Python 运行时", WARN, "首次使用时取一次（约 76M），之后离线可用"))
+            steps.append(Step("heavy", "Python 运行时", WARN, "首次跑到 Python 时取一次（约 146M），之后离线可用"))
     except Exception:  # noqa: BLE001
         steps.append(Step("heavy", "Python 运行时", WARN, "状态未知"))
 

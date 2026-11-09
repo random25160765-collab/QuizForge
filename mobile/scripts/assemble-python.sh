@@ -2,7 +2,7 @@
 # 把仓库里的后端装配成 Chaquopy 能吃的 Python 源目录。
 #
 # 为什么是"拷"而不是把 srcDirs 指到仓库里：Chaquopy 会把整个 srcDir 编成字节码
-# 塞进 APK，仓库根（带着 reference/ 软链、data/ 250M 的库、vendor/ 76M 的 Pyodide）
+# 塞进 APK，仓库根（带着 reference/ 软链、data/ 250M 的库、vendor/ 146M 的 Pyodide）
 # 显然不能整个进去。这里只挑运行期真正需要的部分。
 #
 # 清单依据（实测过，不是猜的）：

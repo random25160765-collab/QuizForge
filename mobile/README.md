@@ -101,7 +101,11 @@ print('key=' + key.hex()[:16], 'blob=' + blob.hex()[:24])"
 - **资料库原文在手机上为空**：`reference/` 是电脑上的 282M PDF/HTML，没有打进 APK。
   资料页能看到元数据与切片正文，但"打开原始文件"会失败。
 - **AI 对话需要自己填 API key**：设置 → AI。密钥不随包（`--with-sync` 只带 Turso）。
-- **Pyodide 不预取**：`QF_HEAVY_PREFETCH=0`，用到"跑 Python"时才下载 76M。
+- **Pyodide 不预取也不随包**：`QF_HEAVY_PREFETCH=0`。清单（3KB）随包（`assets/runtime/`
+  → `BootHelper` 拷进数据目录 → `QF_HEAVY_MANIFEST`），第一次真用到"跑 Python"时按
+  清单从 jsdelivr 下 146M 并逐个校验；取不到就如实说不可用（失败后退避 10 分钟）。
+- **TeX 引擎的载荷靠 `.gzz` 过桥**：AGP 会解压 assets 里的 `.gz` 并去掉后缀，而
+  引擎只认 `.gz`；打包时改名、启动时改回（见 `docs/Android打包.md` 的坑 7）。
 - **深色主题**跟随系统；浅色档未在真机校准过。
 - 首次启动要解包 Python 运行时 + 拷 25M 前端，冷启动约 15-30 秒（视存储速度）；之后 3-5 秒。
 

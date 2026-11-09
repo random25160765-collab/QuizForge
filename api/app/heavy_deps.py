@@ -12,8 +12,8 @@
 
 ## 为什么是"缓存"而不是"打进包里"
 
-Pyodide 是 **76M**（`vendor/pyodide/` 实测），而整个应用其余部分加起来约 5M。
-把它塞进安装包，等于为了"对话里跑一段 Python"这个可选能力让每次分发都背上 76M。
+Pyodide 是 **146M**（`vendor/pyodide/` 实测），而整个应用其余部分加起来约 5M。
+把它塞进安装包，等于为了"对话里跑一段 Python"这个可选能力让每次分发都背上 146M。
 所以（用户定的取舍）：
 
 * **分发包保持小体积** —— 里面没有 Pyodide；
@@ -31,15 +31,26 @@ Pyodide 是 **76M**（`vendor/pyodide/` 实测），而整个应用其余部分�
 清单在 `build/pyodide-manifest.json`（`文件名 → sha256`），由
 `python3 build/package.py manifest` 从本机 `vendor/pyodide/` 生成并提交进仓库 ——
 于是"下载的东西对不对"这件事**在离线时也能判断**。
+
+## Android：清单必须随包
+
+手机上没有 `vendor/`（146M 不进包，与桌面同一条取舍），所以它**只能**走第 3 步
+（按清单下载）。但这要求清单本身在手机上 —— 而 Chaquopy 把 Python 源码编进
+`app.imy`，`__file__` 的层级与仓库不同，按 `ROOT/build/` 推是找不到的。
+所以 Android 的打包流程把这份 3KB 的清单放进 `assets/runtime/`，启动器（`BootHelper`）
+把它拷到数据目录、`android_boot` 设 `QF_HEAVY_MANIFEST` 指过去（见 `manifest_path()`）。
+少了这一步，"用到时取一次"在手机上就是一句永远不兑现的承诺。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -69,10 +80,29 @@ ROOT = _root()
 VENDOR_DIR = ROOT / "vendor" / "pyodide"
 MANIFEST_FILE = ROOT / "build" / "pyodide-manifest.json"
 
+#: Android 上清单**不跟 `ROOT` 走**：Chaquopy 把 Python 源码编进 `app.imy`，
+#: `__file__` 的层级与仓库里不同（多一层），按 `parents[2]` 推出来的是
+#: `files/chaquopy/`，而清单被解在 `files/chaquopy/app.imy/` 里。启动器会把
+#: assets 里那份（3KB，随包）拷到数据目录，并用这个变量指过去。
+#:
+#: 为什么非要有它：清单是**校验**的依据。手机上它缺失时 `_download()` 会拒绝
+#: 下载（"没有清单文件，不敢下载"），于是"用到时取一次"在手机上永远不成立 ——
+#: 这正是 2026-11-09 之前的状态。
+MANIFEST_ENV = "QF_HEAVY_MANIFEST"
+
 #: `pyodide.js` 是入口：没有它这份副本就是没用的
 ENTRY = "pyodide.js"
 
+#: 失败后多久内不再自动重试。**不是省流量**：没有这道退避时，用户每问一次
+#: "跑一下这段"，`run_python` 都会重新起一轮下载、再报一次"已经在后台取了"
+#: —— 没网的时候表现就是永远在取。过了这个窗口再试（换网、开代理之后自然恢复）。
+FAIL_BACKOFF_SECONDS = 600
+
 _lock = threading.Lock()
+
+#: 最近一次取用的结果：`{"detail": 失败原因, "at": time.monotonic()}`。
+#: 给 `run_python` 用 —— 「在取」与「取不到」必须能分开说。
+_failure: dict[str, object] = {"detail": "", "at": 0.0}
 
 
 def cache_dir() -> Path:
@@ -80,12 +110,19 @@ def cache_dir() -> Path:
     return get_settings().data_dir / "cache" / "pyodide"
 
 
+def manifest_path() -> Path:
+    """清单实际在哪：环境变量优先（Android），否则用随仓库的默认位置。"""
+    override = os.environ.get(MANIFEST_ENV, "").strip()
+    return Path(override) if override else MANIFEST_FILE
+
+
 def manifest() -> dict[str, str]:
     """`文件名 → sha256`。清单不在（比如没打全的检出）就返回空字典。"""
-    if not MANIFEST_FILE.is_file():
+    path = manifest_path()
+    if not path.is_file():
         return {}
     try:
-        data = json.loads(MANIFEST_FILE.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
         return {}
     files = data.get("files") if isinstance(data, dict) else None
@@ -183,44 +220,79 @@ def _download(log: Callable[[str], None]) -> bool:
     return True
 
 
+def _remember(ok: bool, detail: str) -> None:
+    """记下这次取用的结果（成功就清掉失败状态）。"""
+    _failure["detail"] = "" if ok else detail
+    _failure["at"] = 0.0 if ok else time.monotonic()
+
+
+def last_failure() -> str:
+    """最近一次取用失败的原因；成功后是空串。"""
+    return str(_failure["detail"] or "")
+
+
+def prefetching() -> bool:
+    """后台是不是还有一轮在取（区分"在取"与"取不到"用）。"""
+    return _prefetching
+
+
 def ensure(*, allow_download: bool = True, log: Callable[[str], None] | None = None) -> tuple[bool, str]:
     """把运行时准备好。**幂等**，多线程同时调用只会跑一次。
 
     返回 `(是否可用, 一句人话的说明)` —— 失败时这句话要能直接讲给用户听。
     """
-    say = log or (lambda _message: None)
+    notes: list[str] = []
+
+    def say(message: str) -> None:
+        notes.append(message)
+        if log is not None:
+            log(message)
+
     with _lock:
         if is_ready():
+            _remember(True, "")
             return True, "本地已有运行时"
 
         if _copy_from_vendor(say):
             bad = _missing_in(cache_dir(), manifest())
             if not bad:
+                _remember(True, "")
                 return True, "从仓库 vendor/ 拷入（未联网）"
             say(f"运行时：vendor 副本校验不过（{', '.join(bad[:3])}）")
 
         if not allow_download:
+            _remember(False, "离线且没有本地副本")
             return False, "离线且没有本地副本 —— 跑 Python 这一项暂时不可用"
 
         if _download(say):
+            _remember(True, "")
             return True, "已下载到本机缓存"
 
-        return False, "取不到运行时（没网或下载失败）—— 跑 Python 这一项暂时不可用"
+        # 失败原因取最后一条日志（"没有清单文件""下载失败（x）—— …"）：那比
+        # "取不到"四个字有用得多，而且它就是 `run_python` 接下来要讲给用户的那句。
+        reason = notes[-1] if notes else "取不到运行时（没网或下载失败）"
+        _remember(False, reason)
+        return False, f"{reason} —— 跑 Python 这一项暂时不可用"
 
 
 _prefetching = False
 
 
-def start_prefetch(log: Callable[[str], None] | None = None) -> bool:
+def start_prefetch(log: Callable[[str], None] | None = None, *, force: bool = False) -> bool:
     """在**后台线程**里把运行时准备好（已经在准备或已就绪就返回 False）。
 
-    为什么不就地同步下载：Pyodide 是 76M，同步下载会把这次工具调用挂住几十秒
+    为什么不就地同步下载：Pyodide 是 146M，同步下载会把这次工具调用挂住几十秒
     到几分钟 —— 界面上看起来就是卡死。所以"准备好"这件事放到后台，
     调用方只需要如实告诉用户"正在取"。
+
+    `force=True` 跳过失败退避（设置页里"重试"用）。默认退避见 `FAIL_BACKOFF_SECONDS`。
     """
     global _prefetching
     with _lock:
         if _prefetching or is_ready():
+            return False
+        failed_at = float(_failure["at"] or 0.0)
+        if not force and failed_at and (time.monotonic() - failed_at) < FAIL_BACKOFF_SECONDS:
             return False
         _prefetching = True
 

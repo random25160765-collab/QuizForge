@@ -79,12 +79,23 @@ adb install -r mobile/android/app/build/outputs/apk/release/app-release.apk
    但一直 404（前端 catch 掉了，表现为同步面板永远空白）。已补登记。
 6. **WebView 不能先于后端加载**：Capacitor 的 `server.url` 一创建就去 loadUrl，
    所以必须有 SplashActivity 先等 `/api/health`，否则白屏且无任何线索。
+7. **AGP 会把 assets 里的 `.gz` 解压并去掉后缀**（2026-11-10 实测）：`core.dump.gz`
+   变成 160MB 的 `core.dump`，`tex_files/` 的 633 个 `.gz` 全部失去后缀 —— 而
+   TikZJax 的引擎写死 `fetch('core.dump.gz')`，于是手机上**所有 TikZ 图**都变
+   `tikzjax-broken`（桌面不受影响，桌面直接从 `api/web` 读 `.gz`）。
+   做法：`build-apk.sh` 进包前把 TikZ 载荷改成 `.gzz` 骗过 AGP，
+   `android_boot.restore_tikzjax_gz()` 启动时改回来（实测 635 个，`/assets/tikzjax/
+   core.dump.gz` 返回 200 / 2,777,702 字节）。
 
 ## 已知限制
 
 - 资料库原文（`reference/` 的 282M PDF/HTML）不在包里，手机上只能看切片正文与元数据。
 - AI 需要用户在设置里填自己的 key；`--with-sync` 只带 Turso 配置与对话口令（且会进 APK，仅自用）。
-- Pyodide 不预取（`QF_HEAVY_PREFETCH=0`），用到"跑 Python"时才下载 76M。
+- Pyodide **不预取也不随包**（`QF_HEAVY_PREFETCH=0`）：清单（3KB）随包走
+  （`assets/runtime/pyodide-manifest.json` → `BootHelper` 拷到数据目录 →
+  `QF_HEAVY_MANIFEST`），第一次真用到"跑 Python"时才按清单从 jsdelivr 取 146M
+  并逐个校验；取不到就如实报"这一项不可用"（失败后 10 分钟内不重复试）。
+  2026-11-09 之前的包**没带清单**，所以那个"用到时才下载"从来不成立。
 - 实测环境是 x86_64 模拟器（API 35）；真机（arm64）走的是同一份 wheel 与同一套启动路径，
   但**尚未在物理设备上验收** —— 首次真机安装时重点看：首启释放耗时、`android_boot.log` 的
   `crypto backend=android` 一行、以及 390dp 以下小屏的输入法遮挡。

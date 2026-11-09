@@ -88,7 +88,7 @@ os.environ["no_proxy"] = os.environ["NO_PROXY"]
 os.environ["QF_SETTINGS_FILE"] = str(
     Path(tempfile.mkdtemp(prefix="qf-test-settings-")) / "settings.local.json"
 )
-# 不许在测试里去联网取重型运行时（Pyodide 76M）：跑一次用例不该下载几十兆
+# 不许在测试里去联网取重型运行时（Pyodide 146M）：跑一次用例不该下载几十兆
 os.environ["QF_HEAVY_PREFETCH"] = "false"
 # 实例级 AI 总开关保持打开，好让「每用户自带密钥」那条路径可测。
 # 这里不再需要担心误打真实接口：服务端**不持有任何密钥**，

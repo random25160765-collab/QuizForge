@@ -666,7 +666,7 @@ def push_question(db, args, ctx=None) -> dict:  # noqa: ANN001
 
 # Pyodide：CPython 编译成 WASM，在浏览器里**真跑** Python（不是模拟、不是转译）。
 #
-# 运行时**不进安装包**：它 76M，而应用其余部分加起来约 5M。它缓存在
+# 运行时**不进安装包**：它 146M，而应用其余部分加起来约 5M。它缓存在
 # `data/cache/pyodide/`，第一次打开时由 `heavy_deps.ensure()` 取一次（从仓库
 # `vendor/` 拷、或按清单下载）并逐个校验 sha256，之后离线可用。
 # 位置、下载、校验、失败处理都在 `app/heavy_deps.py` 里 —— 这里只管怎么用。
@@ -1327,13 +1327,19 @@ def run_python(db, args, ctx=None) -> dict:  # noqa: ANN001
 
     if pyodide_base() is None:
         # 运行时不在本机（第一次用，缓存还没有）——**在后台开始取**，这一轮如实说明。
-        # 不在这里同步下载：76M 会把这次工具调用挂住，界面看起来像卡死。
+        # 不在这里同步下载：146M 会把这次工具调用挂住，界面看起来像卡死。
+        #
+        # 但要分清两件事：**在取** 与 **取不到**。手机上没有 vendor/ 也没有 CDN
+        # 清单时（2026-11-09 之前就是这样），旧文案会对每次调用都说"已经在后台
+        # 开始取了"——永远不会兑现。现在失败会留下原因，且短时间内不重复试。
         started = heavy_deps.start_prefetch()
+        if started or heavy_deps.prefetching():
+            note = "已经在后台开始取了，过一会儿再让我跑这段代码。"
+        else:
+            reason = heavy_deps.last_failure() or "原因未知"
+            note = f"取不到运行时（{reason}）—— 跑 Python 这一项暂时不可用，换台机器或让设备连上网再试。"
         return {
-            "error": (
-                "跑 Python 的运行时还没到位（它 76M，不进安装包，要本机取一次并校验）。"
-                + ("已经在后台开始取了，过一会儿再让我跑这段代码。" if started else "等它取完再试。")
-            )
+            "error": "跑 Python 的运行时还没到位（它 146M，不进安装包，要本机取一次并校验）。" + note
         }
 
     asked = [str(item).strip() for item in (args.get("packages") or []) if str(item).strip()][:4]

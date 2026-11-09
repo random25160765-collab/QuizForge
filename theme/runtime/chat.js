@@ -7717,7 +7717,7 @@
       .get('/chat/sandbox')
       .then(function (data) {
         if (!data || !data.html) return;
-        // 运行时还没落到本机（首启那 76M 还在后台取）→ **不要建壳**：建了它
+        // 运行时还没落到本机（首启那 146M 还在后台取）→ **不要建壳**：建了它
         // `indexURL` 是空的，壳永远起不来；而 `shell.el` 一旦占住就不会再建，
         // 真正要跑 Python 时就会一直"运行中…"。这种情况留给懒启动那条原路。
         if (data.ready === false) return;

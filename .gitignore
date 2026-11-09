@@ -121,5 +121,9 @@ mobile/android/app/src/main/python/
 mobile/android/app/src/main/assets/web/
 mobile/android/app/src/main/assets/bank.db
 
+# Pyodide 的校验清单：真身在 build/pyodide-manifest.json（提交），
+# 这里只是 build-apk.sh 拷进来准备进 APK 的那一份
+mobile/android/app/src/main/assets/runtime/
+
 # **含密钥**：inject-sync-assets.py 写进来的 Turso 令牌与对话口令
 mobile/android/app/src/main/assets/sync/
