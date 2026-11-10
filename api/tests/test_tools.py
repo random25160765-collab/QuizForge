@@ -209,7 +209,11 @@ def test_mastery_and_due_reviews_read_the_records(client, db_session, imported_b
 
 
 def test_unknown_tool_returns_an_error_instead_of_raising(client, db_session) -> None:  # noqa: ANN001
-    """工具内部出错不能中断这一轮 —— 交给模型一条结果，它可以换个问法。"""
+    """工具内部出错不能中断这一轮 —— 交给模型一条结果，它可以换个问法。
+
+    `ok` 说的是"工具跑了、没抛异常"，**不是**"拿到了东西"：查不到也走这条正常返回
+    （见 `test_point_detail_carries_line_ranges`）。所以下面的 `{"error": ...}` 仍是 ok。
+    """
     _register(client)
 
     ok, payload = tools.call(db_session, "nope", {})

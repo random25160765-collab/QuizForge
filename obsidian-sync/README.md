@@ -19,11 +19,12 @@ Obsidian 插件：把当前 vault 里的 Markdown 与 QFStudio 的**云端笔记
    模块内的相对 `require('./codec.js')` 解析不到（实测 "Failed to load plugin"），
    所以加密与口径那一层内联在 `main.js` 的 `// #region codec` 段里。
 2. Obsidian → 设置 → 第三方插件 → 关闭安全模式 → 启用 **QFStudio Sync**。
-3. 在同名的设置页填三样：
+3. 在同名的设置页填两样：
 
    - **Turso 地址**：`libsql://xxx.turso.io`（插件自动补 `/v2/pipeline`）
    - **Turso token**：QF 设置 → 同步里复制
-   - **口令**：QF 那台机器上 `config/snapshot.key` 的内容（**不是**派生后的 key）
+
+   没有"口令"这一栏（2026-11-10 起）：端到端密钥由这两样推导，用户不用保管东西。
 
 ## 它怎么工作
 
@@ -54,7 +55,7 @@ api/.venv/bin/python -m pytest api/tests/test_plugin_codec.py -q   # 与 Python 
 
 ## 排错
 
-- **口令与远端不是同一份**：三台机器必须用同一个 `config/snapshot.key`。
-  换口令等于换加密身份，云端旧数据解不开。
+- **校验值对不上**：说明填的地址 / 令牌属于另一个库。三台机器必须指向同一个库；
+  换过令牌等于换了加密身份，云端旧密文解不开（后端会重写 `check` 并把加密行重推）。
 - **Turso HTTP 4xx**：token 过期或地址抄错（`libsql://` 与 `https://` 都行）。
 - 插件日志前缀 `[qf-sync]`，在开发者工具（Ctrl+Shift+I）的 Console 里看。

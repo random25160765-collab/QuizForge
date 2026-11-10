@@ -7,10 +7,11 @@
 
 拷什么：
 
-* `config/settings.local.json` 里的 `turso` 块（url / token / enabled）**与
-  `syncPassphrase`**（对话端到端加密口令）→ 设备首启时落到
-  `filesDir/quizforge/config/settings.local.json`
-  （2026-11-09 起口令也住设置文件，不再单独拷 `snapshot.key`）
+* `config/settings.local.json` 里的 `turso` 块（url / token / enabled）
+  → 设备首启时落到 `filesDir/quizforge/config/settings.local.json`
+
+**不再拷口令**（2026-11-10）：端到端加密的钥匙由 turso 的地址 + 令牌在设备上
+推导（见 `app/sync.py` 的 `_derived_passphrase`），APK 里没有可带的钥匙。
 
 已有的设备文件不会被覆盖（BootHelper 只补缺），所以升级包不会抹掉用户改过的设置。
 """
@@ -36,19 +37,13 @@ def main() -> None:
         raise SystemExit("settings.local.json 里没有 turso 配置，没什么可注入的")
 
     payload = {"turso": turso}
-    passphrase = str(data.get("syncPassphrase") or "").strip()
-    if passphrase:
-        payload["syncPassphrase"] = passphrase
 
     ASSETS.mkdir(parents=True, exist_ok=True)
     (ASSETS / "settings.local.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(f"✓ turso → {ASSETS / 'settings.local.json'}（url={turso.get('url')}）")
-    if passphrase:
-        print("✓ 口令 → 同一份 settings.local.json 的 syncPassphrase")
-    else:
-        print("· settings.local.json 里没有 syncPassphrase，对话同步会因缺口令被拒绝（符合端到端的设计）")
+    print("· 口令不再随包：设备会用这份 url + token 推出加密钥匙")
 
     # 老包留下的那个文件：口令已经搬进设置，留着它就是"两份"
     stale = ASSETS / "snapshot.key"

@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app import settings_file
 
 LOCAL = ("chatRead", "graph", "basket", "skills")
@@ -154,3 +156,44 @@ def test_old_enabled_flag_is_dropped(client) -> None:  # noqa: ANN001
     )
     assert "enabled" not in out.json()["settings"]["ai"]
     assert "enabled" not in settings_file.load()["ai"]
+
+
+def test_turso_change_starts_sync_immediately(client, monkeypatch) -> None:  # noqa: ANN001
+    """同步配置一落地就立刻跑一轮（用户 2026-11-10：复制/粘进去应该马上同步）。
+
+    判据必须是"turso 那三项真的变了"：任何设置改动都触发的话，改个主题就会
+    拉一次云端，纯属无谓。
+    """
+    from app import sync as sync_mod
+
+    monkeypatch.setattr(sync_mod, "turso_enabled", lambda: True)
+    monkeypatch.setattr(sync_mod, "turso_configured", lambda: True)
+    started: list[int] = []
+    monkeypatch.setattr(
+        sync_mod, "run_in_background", lambda *a, **k: started.append(1) or True
+    )
+
+    res = client.put(
+        "/api/settings",
+        json={
+            "patch": {
+                "turso": {"url": "libsql://new.turso.io", "token": "t", "enabled": True}
+            }
+        },
+    )
+
+    assert res.status_code == 200, res.text
+    assert res.json()["syncStarted"] is True
+    assert started == [1]
+
+
+def test_unrelated_setting_does_not_start_sync(client, monkeypatch) -> None:  # noqa: ANN001
+    """改主题不该顺手拉一次同步。"""
+    from app import sync as sync_mod
+
+    monkeypatch.setattr(
+        sync_mod, "run_in_background", lambda *a, **k: pytest.fail("不该启动同步")
+    )
+    res = client.put("/api/settings", json={"patch": {"theme": "dark"}})
+    assert res.status_code == 200, res.text
+    assert res.json()["syncStarted"] is False

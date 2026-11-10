@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from app import agent_loop, ai_gateway, parts
-from app.models import Material
+from app.models import Material, Message
 
 PASSWORD = "password-1234"
 
@@ -1474,6 +1474,50 @@ def test_truncation_never_splits_a_tool_call_from_its_result() -> None:
     messages, dropped = agent_loop.build_messages("系统", history, budget=100000)
     assert dropped == 0
     _assert_no_orphan_tool(messages)
+
+
+def test_a_failed_tool_call_is_replayed_as_failed() -> None:
+    """失败的回执在回放里必须**显式**标出来 —— 它与真结果同形，模型分不出来。
+
+    2026-11-10 用户给的现场：他让模型查资料，那一次 `web_search` 因为配置 bug 返回了
+    `{"error": "联网搜索没有配服务商…"}`；他修好后说"再验证一下 web"，模型**一次工具
+    都没调**（库里那条 parts 只有 text），却写"这次我也没先检查配置，就直接再试了一次，
+    结果还是一样" —— 它把上一轮的错误回执当成了这一轮的结果。
+
+    判据不能只看 `ok`：工具用 `return {"error": ...}` 报错（不抛异常），所以 `ok` 仍是
+    True —— 真正要认的是回执本身（见 `_call_failed`）。
+    """
+    from app.routers import chat as chat_router
+
+    def one(name: str, output: str) -> Message:
+        return Message(
+            conversation_id=uuid.uuid4(),
+            role="assistant",
+            content="",
+            parts=[
+                {
+                    "type": "tool_call",
+                    "id": "call_1",
+                    "name": name,
+                    "args": {},
+                    "output": output,
+                    "ok": True,  # 旧消息就是这样落的
+                }
+            ],
+        )
+
+    failed = one(
+        "web_search", json.dumps({"error": "联网搜索没有配服务商"}, ensure_ascii=False)
+    )
+    replayed = chat_router._history(None, [failed])  # type: ignore[arg-type]
+    content = next(item for item in replayed if item["role"] == "tool")["content"]
+    assert "错误回执" in content and "不是查询结果" in content
+    assert "联网搜索没有配服务商" in content, "错误原文要留着 —— 它说明为什么没查成"
+
+    fine = one("list_materials", json.dumps({"count": 188}, ensure_ascii=False))
+    replayed = chat_router._history(None, [fine])  # type: ignore[arg-type]
+    content = next(item for item in replayed if item["role"] == "tool")["content"]
+    assert "错误回执" not in content, "成功的结果不该被标成错误回执"
 
 
 def test_the_opening_of_the_path_is_pinned_when_the_budget_is_tight() -> None:

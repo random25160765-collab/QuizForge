@@ -1,19 +1,24 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark light">
+<!-- 只声明浅色：系统暗色模式下 WebView 也不做算法暗化（Android Force Dark） -->
+<meta name="color-scheme" content="light">
 <meta name="generator" content="QFStudio">
 <!--
   主题必须在**样式之前**定下来。
-  否则首帧会先用 shell 里写死的 data-theme="dark" 画一屏深色，再被脚本改成
-  用户存的浅色 —— 浅色用户每次进这个页面都会先闪一下黑。
+  否则首帧会先用 shell 里写死的主题画一屏，再被脚本改成用户选的那种 ——
+  用户每次进这个页面都会先闪一下。
+
+  **默认是浅色**（2026-11-10 用户：首次进去是暗色，改成亮色）。设备处于系统
+  暗色模式时也一样 —— 这里不跟 `prefers-color-scheme`，只在用户自己切过之后
+  才按存下来的那份来。
   （原先 landing.html / login.html 里各有一份同样的引导 —— 它们随"单用户本地"一起删了。）
 -->
 <script>
   (function () {
-    var theme = 'dark';
+    var theme = 'light';
     try {
       var saved = JSON.parse(localStorage.getItem('quizforge.v1.settings') || '{}');
       if (saved.theme) theme = saved.theme;

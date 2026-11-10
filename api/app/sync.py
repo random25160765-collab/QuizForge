@@ -73,22 +73,26 @@
 
 ## 隐私：端到端加密
 
-`PRIVATE_TABLES`（对话 / 分组 / 消息 / 附件 / **记忆** / **计划**）的
-**payload 整体加密**：AES-256-GCM，密钥由口令（`config/settings.local.json` 的
-`syncPassphrase`，或环境变量）经 scrypt 派生，盐存在远端 `qf_sync_meta`，
-并有一个 HMAC 校验值用于尽早发现"两台机器的口令不是同一份"。
+`PRIVATE_TABLES`（对话 / 分组 / 消息 / 附件 / **记忆** / **计划** / **笔记**）的
+**payload 整体加密**：AES-256-GCM，密钥由 **Turso 的地址 + 令牌**经 HMAC-SHA256
+推出来（2026-11-10 起），盐存在远端 `qf_sync_meta`，并有一个 HMAC 校验值用于
+尽早发现"两台机器连的不是同一个库"。
 Turso 只看到 `tbl / pk / at / origin` 和密文。其余表照旧明文上传
 （用户原话："我的个人数据（对话）端到端加密后上传。其他数据不加密上传。"；
 2026-11-09 他又要求把**全局记忆**与**计划书正文**也加密 —— 已经划进来）。
 
+**为什么不再让用户填口令**（用户 2026-11-10）：数据库是用户私有的，地址 + 令牌
+已经等于身份；再让用户保管一份口令，只是多一个会丢、会填错、会两台不一致的东西。
+代价：**令牌一换，历史密文就解不开了**（换令牌属于迁移，不是日常操作）。
+
 表划进 `PRIVATE_TABLES` 之前已经同步过的明文行，由
 `_schedule_private_rescope` 在升级后重推一遍换成密文（每台机器一次）。
+密钥换代同理：`_migrate_key` 把远端 `check` 换成新密钥的，并把本机加密行整表
+重推（用户："现有密文作废，全部重新加密"）。
 
-**密钥不进 Turso，也不进 git**：口令只住在设置文件里（`syncPassphrase`，
-`settings_file.FILE_ONLY`）—— 它**不进 `app_settings`**，所以不会被同步上云；
-设置文件本身也已 gitignore。新机器要同步对话 / 记忆 / 计划书就得带同一份口令，
-这是"端到端"的定义，不是缺陷。没有口令时拒绝同步（而不是偷偷明文上传），
-也不推进游标（否则之后补上密钥也拉不到错过的那段）。
+**密钥不进 Turso，也不进 git**：它由本机设置文件里的 turso 凭据算出来，从不落盘。
+没有凭据时拒绝同步（而不是偷偷明文上传），也不推进游标（否则之后补上也拉不到
+错过的那段）。
 
 ## 设置里的秘密
 
@@ -118,6 +122,7 @@ import os
 import secrets
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date as date_type, datetime
 from pathlib import Path
@@ -167,6 +172,12 @@ PRIVATE_TABLES: frozenset[str] = frozenset(
 #: （见 `_schedule_private_rescope`）。以后再有表划进来，改这里 + 抬版本号。
 _RESCOPE_PRIVATE: tuple[str, ...] = ("memories", "plans")
 _RESCOPE_STATE_KEY = "private_rescope_v1"
+
+#: 密钥算法换代（2026-11-10：人手口令 → 由 turso 凭据派生）的一次性开关。
+#: 远端 `qf_sync_meta` 里没有它 = 旧库，里面的密文按旧口令加密 —— 一律作废，
+#: 由 `_migrate_key()` 重写校验值并把本机加密行整表重推。
+_KEY_TAG = "turso-v1"
+_KEY_TAG_META = "key"
 
 #: 哪些表已经做过基线（逗号分隔）。**按表记**而不是一个 `baseline_done`：
 #: 后来才加进 `SYNC_TABLES` 的表要有自己的第一次（见 `_baseline` 的说明）。
@@ -308,7 +319,6 @@ _AT_EXPR = (
     " COALESCE((SELECT MAX(at) FROM qf_sync_rows), 0.0) + 0.000001)"
 )
 
-_KEY_FILE_ENV = "QF_SYNC_KEY_FILE"
 _PASS_ENVS = ("QF_SYNC_PASSPHRASE", "QUIZFORGE_SNAPSHOT_PASSPHRASE")
 _SCHEMA_VERSION = "1"
 
@@ -537,10 +547,17 @@ def ensure_sync_schema(engine: Engine | None = None) -> None:
                 conn.exec_driver_sql(
                     f"CREATE INDEX IF NOT EXISTS ix_{table}_uid ON {_q(table)} ({_q(column)})"
                 )
-                conn.exec_driver_sql(
-                    f"UPDATE {_q(table)} SET {_q(column)} = lower(hex(randomblob(16)))"
-                    f" WHERE {_q(column)} IS NULL OR {_q(column)} = ''"
-                )
+                # 先看一眼再写：状态页每 2 秒轮询都会走到这里，而一句"0 行也要
+                # 拿写锁"的全表 UPDATE 足够和同步线程撞出 `database is locked`。
+                blank = conn.exec_driver_sql(
+                    f"SELECT 1 FROM {_q(table)}"
+                    f" WHERE {_q(column)} IS NULL OR {_q(column)} = '' LIMIT 1"
+                ).fetchone()
+                if blank is not None:
+                    conn.exec_driver_sql(
+                        f"UPDATE {_q(table)} SET {_q(column)} = lower(hex(randomblob(16)))"
+                        f" WHERE {_q(column)} IS NULL OR {_q(column)} = ''"
+                    )
         for name in SYNC_TABLES:
             if not _has_table(conn, name):
                 continue
@@ -561,90 +578,51 @@ def _has_column(conn, table: str, column: str) -> bool:  # noqa: ANN001
     ))
 
 
-# ============================================================================ 口令与密钥
+# ============================================================================ 密钥
 
 
-def _legacy_key_file() -> Path:
-    """2026-11-09 之前口令住在这里（`config/snapshot.key`）。
+def _derived_passphrase() -> str:
+    """密钥从 **Turso 的地址 + 令牌**推出来，不再由人保管。
 
-    现在只剩"搬家时读一次"的用途：见 `_migrate_legacy_key()`。
+    用户 2026-11-10："这个数据的密钥其实和用户与 turso 都没关系，不该暴露给
+    用户。数据库是用户私有的，那么可以认为数据库地址 + token 已经足以表明
+    用户的身份" —— 于是口令退化成一份**推得出来的**东西：同一组 (url, token)
+    在任何设备上得到同一串，"两台机器必须同一份"这条约束自动成立。
+
+    代价（明确接受）：**令牌一换，历史密文就解不开了**。换令牌属于迁移操作，
+    不是日常操作。
     """
-    raw = os.environ.get(_KEY_FILE_ENV, "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    # `settings_file.REPO_ROOT` 是仓库根（开发时）/ 解包目录（打包后）
-    return settings_file.REPO_ROOT / "config" / "snapshot.key"
-
-
-def _migrate_legacy_key() -> None:
-    """老口令文件 → 设置文件（搬完就把旧文件删掉，绝不留两份）。"""
-    legacy = _legacy_key_file()
-    if not legacy.is_file():
-        return
-    try:
-        value = legacy.read_text(encoding="utf-8").strip()
-    except OSError:
-        return
-    if value and not str(settings_file.load().get("syncPassphrase") or "").strip():
-        data = settings_file.load()
-        data["syncPassphrase"] = value
-        try:
-            settings_file.save(data)
-        except OSError:
-            return
-    try:
-        legacy.unlink()
-    except OSError:
-        pass
+    conf = turso_config()
+    url = str(conf.get("url") or "").strip().rstrip("/")
+    token = str(conf.get("token") or "").strip()
+    if not url or not token:
+        return ""
+    material = f"quizforge-sync-key-v1:{url}".encode()
+    return base64.b64encode(
+        hmac.new(token.encode("utf-8"), material, hashlib.sha256).digest()
+    ).decode("ascii")
 
 
 def _passphrase() -> str:
-    """口令：环境变量 → 设置文件的 `syncPassphrase`（老机器顺手把 key 文件搬进来）。"""
+    """口令：环境变量（测试/救援）→ 由 turso 凭据派生。
+
+    2026-11-10 起**不再读**设置文件里的 `syncPassphrase`：那是旧模型
+    （人手保管一份口令）的遗留。留着它只会让两台机器不一致，而且它本来
+    就不该出现在用户面前。
+    """
     for name in _PASS_ENVS:
         value = os.environ.get(name, "").strip()
         if value:
             return value
-    _migrate_legacy_key()
-    return str(settings_file.load().get("syncPassphrase") or "").strip()
+    return _derived_passphrase()
 
 
 def passphrase() -> str:
-    """口令本身。只给设置页的「复制给 Obsidian 插件」用。
+    """派生出来的那串。设置页不再展示它（用户不需要知道）。
 
-    约束：不落库、不进快照、不写日志。它与 `turso.token` 是同一权限级别
-    （能打开本机设置页的人本来就能看到令牌），但仍然只在被显式请求时返回。
+    保留这个函数是给 `/sync/status` 判 `keyReady` 与 Obsidian 插件探测用。
     """
     return _passphrase()
-
-
-def save_passphrase(text: str) -> dict:
-    """把口令写进**设置文件**（`config/settings.local.json` 的 `syncPassphrase`）。
-
-    2026-11-09 起没有 `config/snapshot.key` 了（用户："不要存两份"）：本机的凭据
-    只落这一份文件。它仍然**不进数据库、不随设置上云**（`settings_file.FILE_ONLY`），
-    所以"端到端"的含义没变 —— 换了机器还是得把同一份口令带过去（复制设置 JSON
-    时会带上它，见设置页的「复制」）。
-    派生钥匙的缓存按「盐 + 口令」分桶，所以写完立刻读得到，也不会拿到旧口令的钥匙。
-    桌面若用环境变量提供口令，文件写了也不生效 —— 返回 `envOverride` 让界面说清楚。
-    """
-    value = str(text or "").strip()
-    if not value:
-        raise SyncError("口令不能为空")
-    data = settings_file.load()
-    data["syncPassphrase"] = value
-    try:
-        path = settings_file.save(data)
-    except OSError as exc:
-        raise SyncError("口令写不进设置文件（config/settings.local.json）") from exc
-    # 旧口令文件留着，就又是"两份"了：写完就删
-    legacy = _legacy_key_file()
-    try:
-        if legacy.is_file():
-            legacy.unlink()
-    except OSError:
-        pass
-    env_override = any(os.environ.get(name, "").strip() for name in _PASS_ENVS)
-    return {"keyReady": bool(_passphrase()), "keyFile": str(path), "envOverride": env_override}
 
 
 _key_cache: dict[tuple[bytes, bytes], bytes] = {}
@@ -692,7 +670,7 @@ def _decrypt(key: bytes, tbl: str, pk: str, payload: str) -> dict:
         data = AESGCM(key).decrypt(blob[:12], blob[12:], _aad(tbl, pk))
     except (InvalidTag, ValueError) as exc:
         raise SyncError(
-            f"解不开 {tbl}/{pk}：两台机器的同步口令不是同一份？"
+            f"解不开 {tbl}/{pk}：两台机器的数据库凭据不是同一套（或密文已过期）。"
         ) from exc
     decoded = json.loads(data.decode("utf-8"))
     if not isinstance(decoded, dict):
@@ -876,10 +854,9 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
         if not passphrase:
             if need_private:
                 raise SyncError(
-                    "要同步对话 / 记忆 / 计划书（端到端加密）需要口令：\n"
-                    "  在「设置 → 同步」里填上与另一台机器相同的那一份"
-                    "（也可以写进 config/settings.local.json 的 syncPassphrase）。\n"
-                    f"  或设环境变量 {_PASS_ENVS[0]}。"
+                    "要同步对话 / 记忆 / 计划书（端到端加密），得先配好 Turso 的地址与令牌"
+                    " —— 密钥由它们推导，不用另外填口令。\n"
+                    "  在「设置 → 同步」里填上（或写进 config/settings.local.json 的 turso 块）。"
                 )
             return None
         salt = os.urandom(16)
@@ -905,16 +882,22 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
     if not passphrase:
         if need_private:
             raise SyncError(
-                "远端已经有加密数据（对话 / 记忆 / 计划书），而本机没有口令。\n"
-                "  在「设置 → 同步」里填上与另一台机器相同的那份再同步。"
+                "远端已经有加密数据（对话 / 记忆 / 计划书），而本机还缺 Turso 的地址或令牌。\n"
+                "  填上之后密钥会自动推导出来，不需要额外的口令。"
             )
         return None
 
     key = _derive_key(passphrase, base64.b64decode(salt_b64))
-    if check and not hmac.compare_digest(check, _key_check(key)):
+    # 旧库（2026-11-10 之前）没有 `key` 标记，check 是按人手口令算的 —— 那一代
+    # 校验值现在必然对不上，但这是**预期的**：`_migrate_key()` 会重写它并把
+    # 所有加密行重推（用户："现有密文作废，全部重新加密"）。所以只在已经迁到
+    # 新算法之后才拿 check 判"两台机器的令牌是不是同一套"。
+    if check and meta.get(_KEY_TAG_META) == _KEY_TAG and not hmac.compare_digest(
+        check, _key_check(key)
+    ):
         raise SyncError(
-            "两台机器的口令不是同一份（远端校验值对不上）。\n"
-            "  两台必须填完全相同的那一份；别各生成一份。"
+            "两台机器的 Turso 凭据不是同一套（远端校验值对不上）。\n"
+            "  地址和令牌必须指向同一个库；换过令牌的，历史密文已作废。"
         )
     return key
 
@@ -1102,27 +1085,21 @@ def _baseline(engine: Engine) -> int:
         return added
 
 
-def _schedule_private_rescope(engine: Engine) -> int:
-    """把**后来才划进加密范围**的表整表重推一遍；每台机器只做一次。
+def _reschedule_tables(engine: Engine, names: Iterable[str]) -> int:
+    """把本地这些表的**每一行**抬到"现在"并记脏，逼下一次推送重发。
 
-    `PRIVATE_TABLES` 决定的是**推送时**加不加密。表在划进来之前已经同步过
-    的行，远端存的是明文；只改常量不会回头重写它们。这里把本机仍在的每一行
-    影子时间戳抬到"现在"并记脏，下一次推送就会拿密文覆盖远端那一行。
+    本地表存的是明文（加密只发生在推送那一刻），所以"重发"就等于"用当前
+    密钥重新封一遍"。两件事共用这一条：表后来才划进加密范围（换明文为密文）、
+    密钥算法换代（换旧密钥为新密钥）。
 
-    顺带兜住另一种漏：表可能是在 `baseline_done` 之后才加的，建表到第一次
-    同步之间写入的行没有影子 —— 这里一并补出来。
-
-    返回这次排进推送队列的行数（0 = 早就做过，或这些表还是空的）。
+    返回排进推送队列的行数。
     """
     with engine.begin() as conn:
-        done_raw = _state_get(conn, _RESCOPE_STATE_KEY) or ""
-        done = {name for name in done_raw.split(",") if name}
-        todo = [name for name in _RESCOPE_PRIVATE if name in SPECS and name not in done]
-        if not todo:
-            return 0
         scheduled = 0
-        for name in todo:
-            spec = SPECS[name]
+        for name in names:
+            spec = SPECS.get(name)
+            if spec is None:
+                continue
             columns = ", ".join(_q(col) for col in spec.key)
             rows = conn.exec_driver_sql(f"SELECT {columns} FROM {_q(name)}").fetchall()
             for values in rows:
@@ -1148,10 +1125,61 @@ def _schedule_private_rescope(engine: Engine) -> int:
                     (name, pk, at),
                 )
                 scheduled += 1
-        _state_set(
-            conn, _RESCOPE_STATE_KEY, ",".join(sorted(done | set(todo)))
-        )
         return scheduled
+
+
+def _schedule_private_rescope(engine: Engine) -> int:
+    """把**后来才划进加密范围**的表整表重推一遍；每台机器只做一次。
+
+    `PRIVATE_TABLES` 决定的是**推送时**加不加密。表在划进来之前已经同步过
+    的行，远端存的是明文；只改常量不会回头重写它们。这里把本机仍在的每一行
+    影子时间戳抬到"现在"并记脏，下一次推送就会拿密文覆盖远端那一行。
+
+    顺带兜住另一种漏：表可能是在 `baseline_done` 之后才加的，建表到第一次
+    同步之间写入的行没有影子 —— 这里一并补出来。
+
+    返回这次排进推送队列的行数（0 = 早就做过，或这些表还是空的）。
+    """
+    with engine.begin() as conn:
+        done_raw = _state_get(conn, _RESCOPE_STATE_KEY) or ""
+        done = {name for name in done_raw.split(",") if name}
+        todo = [name for name in _RESCOPE_PRIVATE if name in SPECS and name not in done]
+        if not todo:
+            return 0
+    scheduled = _reschedule_tables(engine, todo)
+    with engine.begin() as conn:
+        _state_set(conn, _RESCOPE_STATE_KEY, ",".join(sorted(done | set(todo))))
+    return scheduled
+
+
+def _migrate_key(engine: Engine, remote: Any, key: bytes) -> int:
+    """密钥换代（2026-11-10）：远端校验值重写 + 本地加密行整表重推。
+
+    为什么不需要"先用旧口令解密再加密"：本地表里存的一直是明文，密文只在
+    远端。用户也明确说了旧密文作废（"现有密文作废，全部重新加密"），所以
+    这里只做两件事：把 `check` 换成新密钥的、把本机 private 行全部标脏 ——
+    下一次推送即用新密钥覆盖远端的每一行。
+
+    一次性：`qf_sync_meta.key` 就是那个开关（旧库没有这个键）。
+    """
+    meta = remote.meta()
+    if meta.get(_KEY_TAG_META) == _KEY_TAG:
+        return 0
+    remote.batch(
+        [
+            (
+                "INSERT INTO qf_sync_meta(k, v) VALUES('check', ?)"
+                " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                (_key_check(key),),
+            ),
+            (
+                "INSERT INTO qf_sync_meta(k, v) VALUES(?, ?)"
+                " ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                (_KEY_TAG_META, _KEY_TAG),
+            ),
+        ]
+    )
+    return _reschedule_tables(engine, PRIVATE_TABLES)
 
 
 # ============================================================================ 推送
@@ -1228,7 +1256,8 @@ def _push(engine: Engine, remote: Any, key: bytes | None, origin: str) -> dict:
                         deleted = True     # 行没了：按删除传
                 if spec.private and not deleted and key is None:
                     raise SyncError(
-                        f"要上传加密的 {tbl}，但本机没有口令（设置里的同步口令）"
+                        f"要上传加密的 {tbl}，但本机还没配 Turso 的地址与令牌"
+                        "（密钥由它们推导）；填在「设置 → 同步」里。"
                     )
                 if not deleted and spec.name == "messages" and not (payload or {}).get("parent_uid"):
                     orphan_at.append(len(staged))
@@ -1374,7 +1403,14 @@ def _apply_page(engine: Engine, rows: list[dict], key: bytes | None, origin: str
             if int(remote_row.get("enc") or 0):
                 if key is None:
                     raise SyncError(f"远端有加密的 {tbl}，而本机没有口令")
-                data = _decrypt(key, tbl, pk, str(payload))
+                try:
+                    data = _decrypt(key, tbl, pk, str(payload))
+                except (SyncError, InvalidTag, ValueError):
+                    # 旧密钥留下的密文（换代 / 换令牌之后）：作废，跳过这一行。
+                    # 一行坏密文不该让整次同步永远失败 —— 那正是"换完密钥就再也
+                    # 同步不动"的症状。
+                    skipped += 1
+                    continue
             else:
                 data = json.loads(str(payload))
                 if not isinstance(data, dict):
@@ -1979,6 +2015,10 @@ def run_once(engine: Engine | None = None, remote: Any | None = None) -> dict:
         remote.ensure_schema()
         need_private = _private_needed(engine) or _remote_has_private(remote)
         key = _remote_key(remote, need_private=need_private)
+        if key is not None:
+            migrated = _migrate_key(engine, remote, key)
+            if migrated:
+                log.info("密钥换代：%d 行加密数据待重推（旧密文作废）", migrated)
         baseline = _baseline(engine)
         pushed = _push(engine, remote, key, origin)
         pulled = _pull(engine, remote, key, origin)
@@ -2108,9 +2148,17 @@ def remote_changed(engine: Engine | None = None, remote: Any | None = None) -> d
 
 
 def status(engine: Engine | None = None) -> dict:
-    """给设置页看的一份状态。**绝不返回 token。**"""
+    """给设置页看的一份状态。**绝不返回 token。**
+
+    只读：设置页每 2 秒轮询一次，**不能**顺手建表/回填 —— 那是一个写事务，
+    会和后台同步抢锁（2026-11-10 的 `database is locked` 就是这么来的）。
+    表还没建时（全新库）才补一次。
+    """
     engine = engine or get_engine()
-    ensure_sync_schema(engine)
+    with engine.connect() as conn:
+        ready = _has_table(conn, "qf_sync_journal")
+    if not ready:
+        ensure_sync_schema(engine)
     conf = turso_config()
     with engine.connect() as conn:
         pending = conn.exec_driver_sql("SELECT COUNT(*) FROM qf_sync_journal").fetchone()[0]
@@ -2155,7 +2203,6 @@ __all__ = [
     "is_running",
     "remote_changed",
     "run_full",
-    "save_passphrase",
     "run_in_background",
     "run_once",
     "status",

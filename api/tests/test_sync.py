@@ -610,23 +610,29 @@ def test_legacy_counter_without_attempt_survives(engine, remote, tmp_path) -> No
     assert _count(fresh, "attempts") == 0
 
 
-def test_missing_passphrase_refuses_instead_of_uploading_plaintext(engine, remote, monkeypatch) -> None:  # noqa: ANN001
+def test_missing_token_refuses_instead_of_uploading_plaintext(engine, remote) -> None:  # noqa: ANN001
+    """没有令牌就推不出密钥 —— 宁可不传，也不能把加密表以明文传上去。
+
+    2026-11-10 之前考的是"没有口令"；口令现在由 (url, token) 推导，
+    所以判据变成"令牌在不在"。
+    """
     session = _session(engine)
     conv = Conversation(title="不许明文")
     session.add(conv)
     session.commit()
     session.close()
 
-    monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
-    monkeypatch.setenv("QF_SYNC_KEY_FILE", "/nonexistent/qf-sync.key")
-    _configure(remote.url)
+    _configure(remote.url, token="")
     with pytest.raises(sync.SyncError):
         sync.run_once(engine, _client(remote))
 
-    assert remote.rows("SELECT * FROM qf_sync_rows") == []
+    # 连远端结构都没建（在配置检查那一步就停了），更没有任何上传
+    assert remote.rows(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'qf_sync_rows'"
+    ) == []
 
 
-def test_pull_without_key_when_remote_has_private_data(engine, remote, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+def test_pull_without_token_when_remote_has_private_data(engine, remote, tmp_path) -> None:  # noqa: ANN001
     other = _machine(tmp_path, "other")
     session = _session(other)
     conv = Conversation(title="远端加密")
@@ -637,8 +643,7 @@ def test_pull_without_key_when_remote_has_private_data(engine, remote, tmp_path,
     _configure(remote.url)
     sync.run_once(other, _client(remote))
 
-    monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
-    monkeypatch.setenv("QF_SYNC_KEY_FILE", "/nonexistent/qf-sync.key")
+    _configure(remote.url, token="")
     with pytest.raises(sync.SyncError):
         sync.run_once(engine, _client(remote))
     assert _count(engine, "conversations") == 0
@@ -993,69 +998,51 @@ def test_one_machines_change_is_pushed_and_discovered_by_the_other(
     assert sync.remote_changed(engine=b, remote=_client(remote))["changed"] is False
 
 
-def test_save_passphrase_writes_the_settings_file(tmp_path, monkeypatch) -> None:  # noqa: ANN001
-    """新设备唯一的入口：口令写进**设置文件**（不再有 snapshot.key），且老文件被收掉。"""
-    settings = tmp_path / "settings.local.json"
-    legacy = tmp_path / "snapshot.key"
-    legacy.write_text("旧口令\n", encoding="utf-8")
-    monkeypatch.setenv("QF_SETTINGS_FILE", str(settings))
-    monkeypatch.setenv("QF_SYNC_KEY_FILE", str(legacy))
+def test_derived_key_depends_only_on_turso_credentials(monkeypatch) -> None:  # noqa: ANN001
+    """钥匙由 (url, token) 推导：同凭据必同、换令牌必变，用户没有可填的东西。"""
     monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
     monkeypatch.delenv("QUIZFORGE_SNAPSHOT_PASSPHRASE", raising=False)
+    _configure("libsql://a.turso.io", token="token-1")
+    first = sync._derived_passphrase()
+    assert first
+    assert sync._derived_passphrase() == first          # 确定性
 
-    out = sync.save_passphrase("  新口令  ")
-    assert out["keyReady"] is True
-    assert out["envOverride"] is False
-    data = json.loads(settings.read_text(encoding="utf-8"))
-    assert data["syncPassphrase"] == "新口令"
-    assert settings.stat().st_mode & 0o077 == 0     # 只有本人可读写
-    assert sync.passphrase() == "新口令"
-    assert not legacy.exists()                      # 不留两份
+    _configure("libsql://a.turso.io", token="token-2")
+    assert sync._derived_passphrase() != first          # 换令牌就换代
 
+    _configure("libsql://b.turso.io", token="token-1")
+    assert sync._derived_passphrase() != first          # 换库也算换身份
 
-def test_legacy_key_file_is_migrated_into_settings(tmp_path, monkeypatch) -> None:  # noqa: ANN001
-    """老机器升级：口令从 snapshot.key 搬进设置文件，搬完就删——一处真相。"""
-    settings = tmp_path / "settings.local.json"
-    legacy = tmp_path / "snapshot.key"
-    legacy.write_text("老口令\n", encoding="utf-8")
-    monkeypatch.setenv("QF_SETTINGS_FILE", str(settings))
-    monkeypatch.setenv("QF_SYNC_KEY_FILE", str(legacy))
-    monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
-    monkeypatch.delenv("QUIZFORGE_SNAPSHOT_PASSPHRASE", raising=False)
-
-    assert sync.passphrase() == "老口令"
-    assert json.loads(settings.read_text(encoding="utf-8"))["syncPassphrase"] == "老口令"
-    assert not legacy.exists()
+    _configure("", token="")
+    assert sync._derived_passphrase() == ""
 
 
-def test_settings_put_keeps_the_passphrase(client) -> None:  # noqa: ANN001
-    """整份覆盖设置不许把口令弄丢 —— 前端手里那份**从来没见过**它（FILE_ONLY）。"""
-    client.post("/api/sync/passphrase", json={"passphrase": "keep-me"})
-    data = client.get("/api/settings").json()["settings"]
-    assert "syncPassphrase" not in data          # 不下发到界面，也就不会被改回来
+def test_key_migration_rewrites_check_and_reschedules(engine, remote) -> None:  # noqa: ANN001
+    """旧库（没有 key 标记）第一次同步：重写校验值 + 把加密行全排进推送队列。
 
-    data["theme"] = "dark"
-    res = client.put("/api/settings", json={"settings": data, "replace": True})
-    assert res.status_code == 200, res.text
-    # 看文件：环境变量（测试里钉了一份）会盖过文件，但我们要验的是"文件里那份没丢"
-    assert settings_file.load()["syncPassphrase"] == "keep-me"
-    assert client.get("/api/settings").json()["settings"]["theme"] == "dark"
+    用户 2026-11-10："现有密文作废，全部重新加密" —— 所以不做"旧口令解密"，
+    只把本地明文行抬时间戳，让下一次推送用新密钥覆盖远端。
+    """
+    sync.ensure_sync_schema(engine)
+    session = _session(engine)
+    session.add(Conversation(title="要重封的对话"))
+    session.commit()
+    session.close()
 
+    client = _client(remote)
+    client.ensure_schema()
+    assert "key" not in client.meta()
 
-def test_save_passphrase_endpoint(client, monkeypatch) -> None:  # noqa: ANN001
-    """设置页那只按钮：存完返回 keyReady，并把口令留在本机。"""
-    monkeypatch.delenv("QF_SYNC_PASSPHRASE", raising=False)
-    res = client.post("/api/sync/passphrase", json={"passphrase": "p@ss"})
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["ok"] is True and body["keyReady"] is True
-    assert sync.passphrase() == "p@ss"
-
-
-def test_save_passphrase_rejects_empty(client) -> None:  # noqa: ANN001
-    res = client.post("/api/sync/passphrase", json={"passphrase": "  "})
-    assert res.status_code == 400
-    assert "不能为空" in res.json()["detail"]
+    migrated = sync._migrate_key(engine, client, b"\x01" * 32)
+    assert migrated >= 1
+    meta = client.meta()
+    assert meta["key"] == sync._KEY_TAG
+    assert meta["check"]
+    with engine.connect() as conn:
+        pending = conn.exec_driver_sql("SELECT COUNT(*) FROM qf_sync_journal").fetchone()[0]
+    assert pending >= 1
+    # 幂等：第二次不再排
+    assert sync._migrate_key(engine, client, b"\x01" * 32) == 0
 
 
 def test_settings_never_ship_the_passphrase() -> None:

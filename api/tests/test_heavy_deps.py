@@ -1,12 +1,13 @@
 """重型运行组件（Pyodide）的取用与投递：**包里没有它**，缓存与校验必须可靠。
 
-这一层是"轻量分发"的支点：它不在安装包里（76M），而是首启取一次进本机缓存。
+这一层是"轻量分发"的支点：它不在安装包里（146M），而是首启取一次进本机缓存。
 所以它出错的方式很难看 —— 下载了但校验不了、或者路径能穿出去、或者
 "没准备好"被当成"准备好了"从而白屏。下面这些用例盯的就是这几件事。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 from app import heavy_deps
@@ -106,6 +107,61 @@ def test_manifest_path_can_be_pointed_elsewhere(tmp_path, monkeypatch) -> None: 
     assert heavy_deps.manifest() == {heavy_deps.ENTRY: "a" * 64}
 
 
+class _FakeResponse:
+    """够 `_download` 用的最小响应：按块吐字节，支持 with。"""
+
+    def __init__(self, payload: bytes) -> None:
+        self._left = payload
+
+    def read(self, size: int = -1) -> bytes:
+        if not self._left:
+            return b""
+        chunk, self._left = self._left[:size], self._left[size:]
+        return chunk
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+
+def test_download_reports_progress_for_the_splash_screen(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """首次安装的进度条读的就是 `done/total`（字节）。
+
+    用户 2026-11-10："大的依赖不该让它在背后自己下，在首次安装的时候显示进度条" ——
+    所以下载过程中必须能把"下到哪了"说清楚，而不是只有一句"正在取"。
+    """
+    payload = b"hello world " * 512
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"files": {"a.bin": digest}, "bytes": len(payload)}), encoding="utf-8"
+    )
+    monkeypatch.setenv(heavy_deps.MANIFEST_ENV, str(manifest))
+    monkeypatch.setattr(heavy_deps, "cache_dir", lambda: tmp_path / "cache")
+    monkeypatch.setattr(heavy_deps, "VENDOR_DIR", tmp_path / "no-vendor")
+    monkeypatch.setattr(heavy_deps, "_failure", {"detail": "", "at": 0.0})
+    monkeypatch.setattr(
+        heavy_deps,
+        "_progress",
+        {"state": "idle", "done": 0, "total": 0, "files": 0, "filesTotal": 0, "detail": ""},
+    )
+    monkeypatch.setattr(
+        heavy_deps.urllib.request, "urlopen", lambda *_a, **_k: _FakeResponse(payload)
+    )
+
+    ok, _detail = heavy_deps.ensure(allow_download=True)
+    assert ok is True
+
+    state = heavy_deps.progress()
+    assert state["state"] == "ok"
+    assert state["done"] == len(payload)      # 进度条的分母/分子都按字节
+    assert state["total"] == len(payload)
+    assert state["files"] == 1
+    assert state["filesTotal"] == 1
+
+
 def test_missing_manifest_records_a_reason_and_backs_off(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     """没有清单时：不下载、留下原因、短时间内不重试。
 
@@ -139,6 +195,122 @@ def test_data_dir_is_out_of_the_bundle() -> None:
     from app import config
 
     assert config.frozen_data_dir() == Path.home() / "quizforge"
+
+
+def test_verify_names_the_files_that_do_not_match(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """「重新下载并校验」要能说清楚**缺了哪几个**，而不是只回一句"不完整"。
+
+    文件在、名字对、大小可能也对 —— 下载被打断时就是这种状态。判据只能是哈希。
+    """
+    payload = b"ok"
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"files": {"a.bin": digest, "b.bin": digest}, "bytes": 4}), encoding="utf-8"
+    )
+    monkeypatch.setenv(heavy_deps.MANIFEST_ENV, str(manifest))
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "a.bin").write_bytes(payload)
+    (cache / "b.bin").write_bytes(b"broken")
+
+    report = heavy_deps.verify(cache)
+    assert report["ready"] is False
+    assert report["missing"] == ["b.bin"]      # 坏掉的那个，而不是齐的那份
+    assert report["missingCount"] == 1
+    assert report["checked"] == 1
+    assert report["total"] == 2
+
+
+def test_repair_says_so_when_the_cache_is_complete(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """缓存完整时按下去不该再下一轮 —— 直接给结论（这是"校验"那一半）。"""
+    payload = b"ok"
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"files": {"a.bin": digest}, "bytes": len(payload)}), encoding="utf-8"
+    )
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "a.bin").write_bytes(payload)
+    monkeypatch.setenv(heavy_deps.MANIFEST_ENV, str(manifest))
+    monkeypatch.setattr(heavy_deps, "cache_dir", lambda: cache)
+    monkeypatch.setattr(heavy_deps, "_prefetching", False)
+    monkeypatch.setattr(
+        heavy_deps,
+        "_progress",
+        {"state": "idle", "done": 0, "total": 0, "files": 0, "filesTotal": 0, "detail": ""},
+    )
+
+    report = heavy_deps.repair()
+    assert report["ready"] is True
+    assert report["started"] is False
+    assert report["state"] == "ok"
+    assert heavy_deps.progress()["state"] == "ok"
+
+
+def test_repair_restarts_the_download_when_files_are_missing(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """缺文件时按下去 = 起一轮后台补齐（`force` 绕过失败退避）。"""
+    payload = b"ok"
+    digest = hashlib.sha256(payload).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps({"files": {"a.bin": digest, "b.bin": digest}, "bytes": 4}), encoding="utf-8"
+    )
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "a.bin").write_bytes(payload)     # b.bin 缺失
+    monkeypatch.setenv(heavy_deps.MANIFEST_ENV, str(manifest))
+    monkeypatch.setattr(heavy_deps, "cache_dir", lambda: cache)
+    monkeypatch.setattr(heavy_deps, "_prefetching", False)
+    monkeypatch.setattr(
+        heavy_deps,
+        "_progress",
+        {"state": "idle", "done": 0, "total": 0, "files": 0, "filesTotal": 0, "detail": ""},
+    )
+    calls: list[dict] = []
+    monkeypatch.setattr(heavy_deps, "start_prefetch", lambda **kw: calls.append(kw) or True)
+
+    report = heavy_deps.repair()
+    assert report["started"] is True
+    assert report["state"] == "running"
+    assert report["missing"] == ["b.bin"]
+    assert calls and calls[0].get("force") is True
+    assert heavy_deps.progress()["state"] == "running"
+
+
+def test_repair_endpoint_reports_what_it_found(client, monkeypatch) -> None:  # noqa: ANN001
+    """接口面：按下去要给出**结论**，不能只回一句"收到了"。
+
+    `start_prefetch` 在这里被挡住 —— 用例绝不该真的去下 146M。
+    """
+    from app import heavy_deps
+
+    monkeypatch.setattr(
+        heavy_deps,
+        "verify",
+        lambda directory=None: {
+            "ready": False,
+            "checked": 0,
+            "total": 2,
+            "manifest": 2,
+            "missingCount": 2,
+            "missing": ["a.bin", "b.bin"],
+            "detail": "2 个文件缺失或损坏",
+            "cache": "/tmp/nowhere",
+        },
+    )
+    monkeypatch.setattr(heavy_deps, "prefetching", lambda: False)
+    monkeypatch.setattr(heavy_deps, "start_prefetch", lambda **_kw: False)
+
+    response = client.post("/api/heavy/repair")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["missingCount"] == 2
+    # 起不来时不许谎报"正在下载"
+    assert body["state"] == "failed"
 
 
 # 2026-11-07：内测通道（`beta_active` / `is_beta` / `ai_beta_enabled`）整块删除。

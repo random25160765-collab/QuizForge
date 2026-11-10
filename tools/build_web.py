@@ -111,9 +111,8 @@ PAGE_JS = {
     # 设置页：全屏页面（2026-11-07 起，不再是浮窗）。表单由 QF.settings.build()
     # 从 shell.js 取，这一份只管版式；不依赖题库，所以不带 boot.js。
     "settings": ["settings.js"],
-    # 新设备引导（2026-11-09）：AI → 同步 → 数据密码。自己启动，不加载 boot.js
-    #（它不该因为题库没拉下来就卡住 —— 引导本身要能在空库上跑完）。
-    "welcome": ["welcome.js"],
+    # 2026-11-10：新设备引导页（AI → 同步 → 数据密码）已删除 —— 用户把
+    # "那三个引导用户输入数据的页面"整个去掉了，配置都落在设置页里。
     # 主页：只放"今天的状态"（精力带 + 睡眠打卡，从日程页挪过来的）。
     # 外壳由 home.js 挂（活动栏 / 状态栏），正文内容见 runtime/home.js。
     "workbench": ["home.js"],
@@ -136,7 +135,6 @@ PAGE_TITLE = {
     "chat": "QFStudio · 对话",
     "library": "QFStudio · 资料",
     "settings": "QFStudio · 设置",
-    "welcome": "QFStudio · 开始使用",
     "workbench": "QFStudio · 主页",
     "schedule": "QFStudio · 日程",
 }
@@ -148,7 +146,6 @@ PAGE_BODY = {
     "chat": "chat.body.html",
     "library": "library.body.html",
     "settings": "settings.body.html",
-    "welcome": "welcome.body.html",
     "workbench": "workbench.body.html",
     "schedule": "schedule.body.html",
 }
@@ -160,7 +157,6 @@ PAGE_CSS = {
     "chat": ["chat.css"],
     "library": ["library.css"],
     "settings": ["settings.css"],
-    "welcome": ["welcome.css"],
     # 主页：只剩"今天的状态"一张卡片，样式单开一份（几十行，不值得进共用包）
     "workbench": ["home.css"],
     # 日程：三栏布局 + 日历网格 + 事件块，样式量与图谱页相当，单开一份

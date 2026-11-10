@@ -21,11 +21,10 @@
 **不落这里**；滤镜记录（`lens` / 旧名 `skills`）是**数据**，住 `lens_records` 表。
 名单见 `app/settings_store.py` 的 `LOCAL_ONLY`。
 
-**同步口令也住这里**（`syncPassphrase`，2026-11-09 用户："snapshot.key 与
-settings.local.json 不要存两份"）：原先它在 `config/snapshot.key`，本机的凭据
-散在两个文件里，复制设置 JSON 时还得另外拷一份钥匙。现在它跟着设置文件走，
-但**只在这份文件里**（`FILE_ONLY`）—— 不进 `app_settings`、不随设置上云：
-"钥匙和锁一起上云"等于没有端到端加密。
+**2026-11-10 起不再有 `syncPassphrase`**：端到端加密的钥匙由 turso 的
+地址 + 令牌推导（见 `app/sync.py` 的 `_derived_passphrase`），不落任何文件。
+老设备设置文件里残留的那一串会被忽略，导出设置时也会被丢掉
+（`FILE_ONLY` 里保留这个键名只为兜住旧文件）。
 
 **任何来源都过 `complete()`**（2026-11-09）：手改的文件、从剪贴板粘进来的半份 JSON、
 另一台机器拷来的旧文件，都可能缺键或带着废键。骨架写在 `DEFAULTS`，

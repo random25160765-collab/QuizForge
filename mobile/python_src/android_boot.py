@@ -48,19 +48,22 @@ def configure(data_dir: str, web_dir: str) -> None:
     # 设置文件的默认路径是「仓库根/config/settings.local.json」；在 APK 里那个根是
     # 只读的 AssetFinder，必须显式指到数据目录，否则设置页写不进去。
     os.environ["QF_SETTINGS_FILE"] = str(data / "config" / "settings.local.json")
-    # 对话同步的端到端口令：有就带上（由 BootHelper 从 assets 拷来），没有就只在
-    # 启用同步时报错 —— 与桌面端"没有口令时拒绝同步"是同一条规则。
-    # 口令文件固定在**可写的数据目录**，不管现在有没有：手机没有文件管理器，
-    # 口令只能从设置页填进来；而 `_key_file()` 的默认值会落到只读的 AssetFinder 根上。
-    os.environ.setdefault("QF_SYNC_KEY_FILE", str(data / "snapshot.key"))
-    # 手机上不预取 Pyodide（146M），用到了再说；失败也只是"跑 Python"这一项不可用。
-    os.environ.setdefault("QF_HEAVY_PREFETCH", "0")
+    # 对话同步的端到端密钥（2026-11-10 起）**由 Turso 的地址 + 令牌推导**，
+    # 手机上没有任何要保管的口令文件 —— 这里不再设 `QF_SYNC_KEY_FILE`。
+    # 手机上**首启就取** Pyodide（146M）：用户 2026-11-10 明确"大的依赖不该让它在
+    # 背后自己下，首次安装时显示进度条"。启动页（SplashActivity）会轮询
+    # `/api/heavy/status` 把百分比画出来；取不到也只影响"跑 Python"这一项。
+    os.environ.setdefault("QF_HEAVY_PREFETCH", "1")
     # 校验清单（3KB）由 BootHelper 从 assets 拷到数据目录。**没有它就不下载**：
     # Chaquopy 里 `heavy_deps` 按 `__file__` 推出来的 ROOT 与仓库不同，推不到
     # 仓库里那份 `build/pyodide-manifest.json`，必须显式指过去。
     manifest = data / "config" / "pyodide-manifest.json"
     if manifest.is_file():
         os.environ.setdefault("QF_HEAVY_MANIFEST", str(manifest))
+    # 随包的"补丁"文件（清单里有、CDN 上没有，例如自带的 schemdraw）：首启从这里拷
+    bundle = data / "config" / "pyodide-bundle"
+    if bundle.is_dir():
+        os.environ.setdefault("QF_HEAVY_BUNDLE", str(bundle))
     # 正文**懒加载**：同步只落条目与切片坐标，点开哪片才从云端取哪块
     # （31.7MB 切片正文不再整包落地，见 `app/slice_cloud.py`）。
     os.environ.setdefault("QF_LAZY_BODIES", "1")

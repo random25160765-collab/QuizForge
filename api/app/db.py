@@ -77,8 +77,22 @@ def _configure_sqlite(engine: Engine) -> None:
     def _on_connect(dbapi_conn, _record) -> None:  # noqa: ANN001
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
-        cursor.execute("PRAGMA journal_mode=WAL")
+        # **`journal_mode` 不在这里设。**
+        # 它是**持久化在库文件头里**的属性：设过一次就一直是 WAL，之后的连接自动继承。
+        # 而每设一次都要去要一把排他锁 —— 后台同步正在批量写时，一条新连接就会卡在
+        # `busy_timeout` 上干等（用户 2026-11-10 实测：`read_material` 偶发 10–20 秒，
+        # 而同样的调用在空闲进程里只要 1 毫秒；15 秒的等锁正好对上）。
+        # 改成启动时用一条一次性连接设好，见函数末尾。
+        cursor.execute("PRAGMA busy_timeout=15000")
         cursor.close()
+
+    # WAL 只设一次（见上面 `_on_connect` 的说明）。用一条一次性连接：
+    # 这时还没有并发请求，拿锁不会等。
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+    except Exception:  # noqa: BLE001 - 设不上就按默认模式跑（单用户可用，只是并发差些）
+        logging.getLogger("quizforge").warning("开 WAL 失败：按默认 journal 模式运行")
 
 
 def _run(conn, sql: str):  # noqa: ANN001, ANN202

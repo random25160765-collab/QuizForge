@@ -312,7 +312,14 @@ TOOL_DISCIPLINE = (
     # 读起来就是"先宣布结论、再去读"。这类完成式声称最难被用户发现，所以点名禁掉。
     "**不许用完成式宣称你读过 / 看过 / 查过**（\"我读完了\"\"全文两段都到了\"\"我已经确认过\"）："
     "只有**这一轮**的工具结果已经在手上时才能这么说。没读就直说\"我还没读\"；"
-    "要读就**先调工具、再说话** —— 顺序反了（先宣布、再去读）会让人以为你在编。"
+    "要读就**先调工具、再说话** —— 顺序反了（先宣布、再去读）会让人以为你在编。\n"
+    # 2026-11-10 用户点出的第二例：他让它查资料，那一次**因为配置 bug 返回了错误**；
+    # 他修好之后说"再验证一下 web"，模型**一次工具都没调**（库里那条 parts 只有 text），
+    # 却写"这次我也没先检查配置，就直接再试了一次，结果还是一样" —— 它把上一轮的
+    # **错误回执**当成了这一轮的结果。错误回执在上下文里与普通结果同形，所以要点名：
+    "**报错不等于查过了**：`error` 只说明那一次没查成、什么都没拿到 —— 它**不是结果**，"
+    "不能拿它复述\"还是不通 / 和上次一样\"。要结论就**这一轮重新调用**一次，"
+    "或者直说没查到；你上一轮说过的结论也只是那一刻的。"
 )
 
 # 极简：没有任何工具，连"这个应用是干什么的"都不告诉它 —— 否则它就会猜。
@@ -759,6 +766,16 @@ HISTORY_RUN_CHARS = 1600
 # 4000 字是"给模型看一次够用"，这里要的是"一直背着也不贵"。
 HISTORY_TOOL_CHARS = 700
 
+# 失败的工具调用回放时补的一句话（2026-11-10 用户点出来的）。
+# 没有这句时，`{"error": ...}` 在上下文里跟普通结果长得一样：模型读到"联网搜索没有配
+# 服务商"，记成"我查过了"，于是下一次一次工具都不调，还照着上一轮的错误复述
+# "情况与上次一样"。所以错误回执必须**显式**说明它不是结果。
+FAILED_CALL_NOTE = (
+    "\n（这是一条**错误回执**，**不是查询结果**：它只说明那次调用什么都没拿到。"
+    "别把它当成查到的内容，也别拿它复述「还是不通 / 和上次一样」—— "
+    "要么换个说法**这一轮重新调用**一次，要么直说这次没查到。）"
+)
+
 # 边收边写的间隔：用户停下时，他屏幕上已经出现的字必须已经在库里。
 # 值取 1.5 秒 —— 比一次 UPDATE 的成本重要得多的是「停下就留住了」。
 SPILL_SECONDS = 1.5
@@ -1151,6 +1168,23 @@ def _attachment_block(db: DbSession, message: Message, *, model: str = "", visio
     return "\n\n".join(blocks)
 
 
+def _call_failed(part: dict, output: str) -> bool:
+    """这一次工具调用是不是**什么都没拿到**。
+
+    两道判据都得看，因为 `ok` 说的不是这件事：它只说"工具跑了、没抛异常"
+    （查不到、没配服务商这些都以 `return {"error": ...}` 正常返回，见 `tools.call`
+    与 `test_point_detail_carries_line_ranges`）。所以真正要认的是回执本身。
+    回执不是 JSON 就按成功处理：那多半是 `output_text` 吐的正文。
+    """
+    if part.get("ok") is False:
+        return True
+    try:
+        parsed = json.loads(output)
+    except Exception:  # noqa: BLE001
+        return False
+    return isinstance(parsed, dict) and bool(parsed.get("error"))
+
+
 def _history(db: DbSession, messages: list[Message], *, vision: bool = False, model: str = "") -> list[dict]:  # noqa: ANN001
     """把当前分支转成上游要的 messages。
 
@@ -1273,6 +1307,10 @@ def _history(db: DbSession, messages: list[Message], *, vision: bool = False, mo
                     "\n（这是**回放**：上面只带了前 %d 字。要后面的内容，请**重新调用这个"
                     "工具**读一次 —— 不要当成已经读过全文。）" % HISTORY_TOOL_CHARS
                 )
+            # 失败的回执要**说出来**（2026-11-10）：不标注的话，`{"error": ...}` 与普通
+            # 结果在上下文里同形 —— 模型把"没配服务商"读成"我查过了"，下一轮干脆不调。
+            if _call_failed(part, raw):
+                output = (output or "（这次调用没有返回内容）") + FAILED_CALL_NOTE
             out.append(
                 {
                     "role": "tool",

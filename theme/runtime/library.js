@@ -746,7 +746,9 @@
     if (QF.swipe) {
       QF.swipe.bind({
         edge: 'left',
-        enabled: function () { return narrow.matches; },
+        // 与对话页同一口径：**不按宽度筛**，平板横屏也能划（用户 2026-11-10）。
+        // 宽屏里左栏是常驻列，`closed` 时整列滑走（见 library.css 的 data-aside 那几条）。
+        enabled: function () { return true; },
         isOpen: function () { return asideOpen; },
         set: setAside,
       });

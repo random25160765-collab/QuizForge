@@ -22,6 +22,8 @@
     { key: 'sync', label: '同步', hint: 'Turso 跨机器' },
     { key: 'calendar', label: '日历', hint: '课表 / iCalendar 订阅' },
     { key: 'health', label: '作息与健康', hint: '入睡 / 精力 / 门禁' },
+    // 与 shell.js `buildSettings()` 的段序一一对应：runtimeForm 在 dataForm 之前
+    { key: 'runtime', label: '运行环境', hint: '依赖下载与校验' },
     { key: 'data', label: '数据', hint: '导入 / 导出 / 清空' },
   ];
 

@@ -6,6 +6,7 @@
 #   bash mobile/scripts/build-apk.sh --debug         # debug（debug 签名，最快）
 #   bash mobile/scripts/build-apk.sh --with-sync     # 顺带把 Turso 配置打进包（含密钥！）
 #   bash mobile/scripts/build-apk.sh --skip-web      # 前端没改时省一次构建
+#   bash mobile/scripts/build-apk.sh --to-desktop    # 打完拷一份到 Windows 桌面（手机装的那个）
 #
 # 每一步为什么这么做写在对应脚本的头部；这里只负责顺序与失败即停。
 set -euo pipefail
@@ -16,12 +17,14 @@ ANDROID="$ROOT/mobile/android"
 BUILD_TYPE="release"
 WITH_SYNC=0
 SKIP_WEB=0
+TO_DESKTOP=0
 for arg in "$@"; do
   case "$arg" in
     --debug) BUILD_TYPE="debug" ;;
     --release) BUILD_TYPE="release" ;;
     --with-sync) WITH_SYNC=1 ;;
     --skip-web) SKIP_WEB=1 ;;
+    --to-desktop) TO_DESKTOP=1 ;;
     *) echo "未知参数：$arg" >&2; exit 2 ;;
   esac
 done
@@ -65,6 +68,14 @@ fi
 mkdir -p "$ANDROID/app/src/main/assets/runtime"
 cp "$ROOT/build/pyodide-manifest.json" "$ANDROID/app/src/main/assets/runtime/pyodide-manifest.json"
 
+# 清单里有、CDN 上没有的文件：pyodide 0.26.4 的发行版不带 schemdraw 0.23
+# （实测 404）。149K，跟着包走；否则手机下到 22/27 就失败，前面 171M 全白下。
+echo "→ 运行时补丁（schemdraw）→ assets/runtime/pyodide-bundle"
+BUNDLE="$ANDROID/app/src/main/assets/runtime/pyodide-bundle"
+rm -rf "$BUNDLE"
+mkdir -p "$BUNDLE"
+cp "$ROOT"/vendor/pyodide/schemdraw-*.whl "$BUNDLE"/
+
 # TikZJax 的载荷必须是 `.gz`（引擎里写死 `fetch('core.dump.gz')`），但 AGP 在
 # mergeAssets 时会把 assets 里的 `.gz` **解压并去掉后缀** —— 实测 core.dump.gz
 # 变成 160MB 的 core.dump、633 个 tex_files/*.gz 全失去后缀，引擎一个都取不到，
@@ -89,6 +100,12 @@ fi
 if [ "$WITH_SYNC" = "1" ]; then
   echo "→ 同步配置（含密钥，仅自用包）"
   "$ROOT/api/.venv/bin/python" "$ROOT/mobile/scripts/inject-sync-assets.py"
+else
+  # **不带 --with-sync 就必须清干净**：assets/sync 里是 Turso 令牌与对话口令，
+  # 上次注入的文件留着不管会被 Gradle 原样打进包 —— 默认构建悄悄带上密钥，
+  # 这正是 2026-11-10 那个桌面包发生的事。
+  echo "→ 同步配置：不带（清掉上一次注入的）"
+  rm -rf "$ANDROID/app/src/main/assets/sync"
 fi
 
 echo "→ Gradle assemble${BUILD_TYPE^}"
@@ -105,3 +122,26 @@ if [ "$BUILD_TYPE" = "release" ]; then
 fi
 echo
 echo "安装：adb install -r $APK"
+
+if [ "$TO_DESKTOP" = "1" ]; then
+  # 桌面指 **Windows 桌面**：WSL 的 /home/rd/Desktop 在资源管理器里不好找，
+  # 而 APK 的去处是"拷到手机"。用 %USERPROFILE% 取而不是写死用户名 ——
+  # 换 Windows 用户、或在真 Linux 上跑都能给出正确的提示。
+  PROFILE="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+  DESKTOP=""
+  if [ -n "$PROFILE" ]; then
+    DESKTOP="$(wslpath -u "$PROFILE\\Desktop" 2>/dev/null || true)"
+  fi
+  if [ -n "$DESKTOP" ] && [ -d "$DESKTOP" ]; then
+    VERSION="$(sed -nE 's/.*versionName "([^"]+)".*/\1/p' "$ANDROID/app/build.gradle" | head -1)"
+    TARGET="$DESKTOP/QFStudio-${VERSION:-0}-$(date +%F).apk"
+    cp -f "$APK" "$TARGET"
+    echo
+    echo "已放到桌面：$TARGET"
+    echo "md5：$(md5sum "$TARGET" | cut -d' ' -f1)"
+  else
+    # 拷不过去不算构建失败：包已经出好了，只是没送到桌面
+    echo
+    echo "（没找到 Windows 桌面，APK 仍在上面那个路径）" >&2
+  fi
+fi

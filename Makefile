@@ -574,6 +574,7 @@ help:
 	@echo "              四步：dispatch → worker → promote --apply → rework --apply（drive 已含）"
 	@echo "  校验        make check（密钥扫描 + 题库校验）· make test · make graph-check"
 	@echo "  构建发布    make web（前端 → api/web/）· make package / dist-linux（单文件）"
+	@echo "              make apk（Android，打完拷到 Windows 桌面）· make dist（Windows 安装包）"
 	@echo "  跨机器同步  make sync（Turso 推拉一次）· make sync ARGS=status（看状态）"
 	@echo "  数据快照    make db-restore（本机快照 → data/quizforge.db，解压即用）"
 	@echo "              make db-snapshot（冷备份 / 换机手动拷贝）· 数据不进 git，日常用 make sync"
@@ -585,8 +586,11 @@ help:
 # ============================================================================
 .PHONY: apk apk-debug apk-sync apk-toolchain apk-keystore
 
+# 出 APK 并拷一份到 **Windows 桌面**（`QFStudio-<版本>-<日期>.apk`）：
+# 手机上装的就是这份，手敲这一条就够。只想拿产物路径、不想碰桌面时用
+# `bash mobile/scripts/build-apk.sh`。
 apk:
-	@bash mobile/scripts/build-apk.sh
+	@bash mobile/scripts/build-apk.sh --to-desktop
 
 apk-debug:
 	@bash mobile/scripts/build-apk.sh --debug

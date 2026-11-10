@@ -17,7 +17,7 @@
 | 插件 | 负责 | 依赖 |
 | --- | --- | --- |
 | `quizforge-bridge` | QF ↔ 本地文件（文件信箱） | 无 |
-| `quizforge-sync` | 本地文件 ↔ 云端（Turso） | 网络 + Turso token + 口令 |
+| `quizforge-sync` | 本地文件 ↔ 云端（Turso） | 网络 + Turso token（钥匙由它推导） |
 
 它们**没有代码调用关系**，只通过"文件"与 vault 事件间接配合：bridge 写进来的改动，
 sync 当普通编辑推上云；sync 拉下来的改动落成文件，bridge 读得到。
@@ -67,10 +67,13 @@ DateTime 读它，格式不对会读成字符串而不是时间。
 与 `api/app/sync.py` 完全相同，**不要各自发挥**：
 
 ```text
-口令（`config/settings.local.json` 的 `syncPassphrase`）
+口令 = base64(HMAC-SHA256(key=token, msg="quizforge-sync-key-v1:" + url))
+       ← 2026-11-10 起没有"人手口令"：钥匙由 turso 的地址 + 令牌推导
   → scrypt(口令, salt, N=2^15, r=8, p=1, dkLen=32) → key
 salt 来自云端 qf_sync_meta 的 salt（base64），首次由先同步的一方写入 16 字节随机值
 校验：check = base64(HMAC-SHA256(key, "quizforge-sync-v1"))
+     （只在 qf_sync_meta.key == "turso-v1" 之后才用它判"是不是同一个库"；
+       旧库第一次同步会重写 check，云端旧密文作废、由后端重推）
 封装：v1: + base64(nonce(12) + AES-256-GCM 密文 + tag(16))
 AAD ：quizforge-sync:v1:notes:<pk>      ← pk 是 JSON 数组字符串，不是路径
 明文：紧凑 JSON（ensure_ascii=False, separators=(",",":")）
@@ -132,7 +135,8 @@ SELECT pk, at, deleted, enc, payload FROM qf_sync_rows
   能推的部分；几百篇通常一轮内完成）。
 - 第二台设备：先拉。云端有、本地没有 → 新建；两边都有但内容不同 → 冲突副本
   （**保守，不猜谁新**）。
-- 盐与口令：先到的一方写 `salt`/`check`，后来者必须用同一口令，否则明确报错。
+- 盐与凭据：先到的一方写 `salt`/`check`；后来者用同一组 `(url, token)` 推出同一个
+  key，否则 `check` 对不上、明确报错（说明填的是另一个库）。
 
 ## 六、触发与失败
 

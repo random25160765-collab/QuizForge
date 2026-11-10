@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -58,6 +59,39 @@ def build() -> dict:
     要比题库指纹，不能拿来轮询。
     """
     return _build_info()
+
+
+@router.get("/heavy/status")
+def heavy_status() -> dict:
+    """重型运行时（Pyodide）的取用进度 —— **首次安装的启动页**靠它画进度条。
+
+    用户 2026-11-10："大的依赖还是不该让它在背后自己下，在首次安装的时候显示
+    进度条，表示正在下载必要的依赖中。" 所以进度必须是**可查的**，不是只写日志。
+
+    不鉴权：启动页在后端刚起来、账号还没配的时候就要读它。
+    字段：`state`（idle/running/ok/failed）、`done`/`total`（字节）、
+    `files`/`filesTotal`、`detail`（一句人话）。
+    """
+    from .. import heavy_deps  # noqa: PLC0415 —— 按需导入，别拖慢健康检查
+
+    return heavy_deps.progress()
+
+
+@router.post("/heavy/repair")
+def heavy_repair() -> dict:
+    """设置页的「重新下载并校验」：核对本机缓存，缺什么补什么。
+
+    为什么需要它：启动页在下载依赖时可以「跳过」，下载也可能中途失败/被系统
+    掐断；那时用户唯一的补救办法不该是重装应用（用户 2026-11-10 提的）。
+    这一条做的是**同一份钉死版本**的校验与补齐：逐个文件对 sha256，
+    只重下缺失或损坏的那几个。
+
+    不鉴权，与 `/heavy/status` 同一条理由：它不读不写任何用户数据，
+    且设置页在后端刚起来时就要能用。
+    """
+    from .. import heavy_deps  # noqa: PLC0415
+
+    return heavy_deps.repair(log=logging.getLogger("quizforge").info)
 
 
 @router.get("/health")

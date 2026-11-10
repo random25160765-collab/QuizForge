@@ -5689,7 +5689,12 @@
     if (QF.swipe) {
       QF.swipe.bind({
         edge: 'left',
-        enabled: function () { return NARROW_ASIDE.matches; },
+        // **不按宽度筛**：平板（含横屏）也要能用手把左栏划出来、划回去
+        //（用户 2026-11-10："平板那边也给它加一个左滑右滑，控制的是左栏"）。
+        // 宽屏里左栏是常驻列，`closed` 时整列 `translateX(-100%)` 滑走、主区跟着扩，
+        // 所以同一个手势在两种布局里都成立。防误触不靠宽度，靠 swipe.js 那三条：
+        // 边缘 24px、横向压过纵向 1.2 倍、行程 48px。
+        enabled: function () { return true; },
         isOpen: function () { return asideOpen; },
         set: setAside,
       });
@@ -11021,6 +11026,27 @@
               var blocks = (d.blocks || []).filter(function (tex) {
                 return QF.latex.kind(tex);
               });
+              /* **回执有预算，8 秒没编完就先放行。**
+               *
+               * 服务端停在这一步等我们（`agent_loop._verify_figures`），SSE 的 `finish`
+               * 因此还没发 —— 界面上就是"消息一直卡着"。等它是为了"当场改错"，但
+               * **不能拿消息的收尾去陪一张编不出来的图**（用户原话："如果 latex 图
+               * 正在编译，消息不应该等待完成；现在如果 latex 图一直不编译出来，消息就
+               * 一直卡着"）。
+               *
+               * 超时回的是**空失败表**（不是"编不出来"）：编好了照样自己出现在正文里，
+               * 只是这一次不再请模型重画 —— 那属于"没验到"，不是"验出错误"。
+               * 正常图几秒内就完成（引擎冷启动也就两三秒），8 秒只掐真正卡住的那种
+               * （引擎自己有 15 秒自限，`latex.js` 的父窗口看门狗是 90+4 秒）。 */
+              var FIGURE_REPLY_MS = 8000;
+              var replied = false;
+              var budget = null;
+              var reply = function (rows) {
+                if (replied) return;
+                replied = true;
+                if (budget) window.clearTimeout(budget);
+                api.post('/chat/figures/' + d.id, { fails: rows.filter(Boolean) }).catch(function () {});
+              };
               Promise.all(
                 blocks.map(function (tex) {
                   return QF.latex.render(tex).then(
@@ -11036,9 +11062,10 @@
                     }
                   );
                 })
-              ).then(function (rows) {
-                api.post('/chat/figures/' + d.id, { fails: rows.filter(Boolean) }).catch(function () {});
-              });
+              ).then(reply);
+              budget = window.setTimeout(function () {
+                reply([]);
+              }, FIGURE_REPLY_MS);
             },
             tool: function (d) {
               if (!state.live || !d) return;

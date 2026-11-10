@@ -90,6 +90,11 @@ MANIFEST_FILE = ROOT / "build" / "pyodide-manifest.json"
 #: 这正是 2026-11-09 之前的状态。
 MANIFEST_ENV = "QF_HEAVY_MANIFEST"
 
+#: 随包的"补丁"目录：清单里有、但 CDN 上拿不到的文件放这儿（例如 quizforge
+#: 自带的 `schemdraw-0.23-...whl` —— pyodide 0.26.4 的发行版里没有这一版，
+#: 实测 404）。首启先从这个目录拷，剩下的才联网下。
+BUNDLE_ENV = "QF_HEAVY_BUNDLE"
+
 #: `pyodide.js` 是入口：没有它这份副本就是没用的
 ENTRY = "pyodide.js"
 
@@ -104,6 +109,37 @@ _lock = threading.Lock()
 #: 给 `run_python` 用 —— 「在取」与「取不到」必须能分开说。
 _failure: dict[str, object] = {"detail": "", "at": 0.0}
 
+#: 下载进度：给**首次安装的启动页**画进度条用（用户 2026-11-10："大的依赖还是
+#: 不该让它在背后自己下，在首次安装的时候显示进度条，表示正在下载必要的依赖中"）。
+#: 键名与 `/api/heavy/status` 的响应一致：`done`/`total` 是**字节**，
+#: `files`/`filesTotal` 是文件个数，进度条拿 done/total 算百分比。
+_progress: dict[str, object] = {
+    "state": "idle",  # idle | running | ok | failed
+    "done": 0,
+    "total": 0,
+    "files": 0,
+    "filesTotal": 0,
+    "detail": "",
+}
+
+
+def _mark(**fields: object) -> None:
+    """更新进度。不加锁：单线程写、HTTP 只读，CPython 的 dict.update 足够原子。"""
+    _progress.update(fields)
+
+
+def progress() -> dict:
+    """进度快照（`/api/heavy/status` 原样返回它）。
+
+    `percent` 按**文件数**算，不按字节：清单里的 `bytes` 是打包时统计的近似值
+    （实测 152M，真下 171M），按它画条会先跑满再卡住。文件数单调、不撒谎。
+    """
+    snapshot = dict(_progress)
+    files = int(snapshot.get("files") or 0)
+    files_total = int(snapshot.get("filesTotal") or 0)
+    snapshot["percent"] = int(files * 100 / files_total) if files_total else 0
+    return snapshot
+
 
 def cache_dir() -> Path:
     """缓存落在应用数据目录下（跟着用户的库走，能被一起备份/搬走）。"""
@@ -116,8 +152,8 @@ def manifest_path() -> Path:
     return Path(override) if override else MANIFEST_FILE
 
 
-def manifest() -> dict[str, str]:
-    """`文件名 → sha256`。清单不在（比如没打全的检出）就返回空字典。"""
+def _manifest_payload() -> dict:
+    """整份清单（`files` + `bytes`）。读不动就当空。"""
     path = manifest_path()
     if not path.is_file():
         return {}
@@ -125,8 +161,23 @@ def manifest() -> dict[str, str]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def manifest() -> dict[str, str]:
+    """`文件名 → sha256`。清单不在（比如没打全的检出）就返回空字典。"""
+    data = _manifest_payload()
     files = data.get("files") if isinstance(data, dict) else None
     return {str(k): str(v) for k, v in (files or {}).items()}
+
+
+def manifest_total() -> int:
+    """清单里所有文件的总字节数（进度条的分母）。"""
+    raw = _manifest_payload().get("bytes")
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _sha256(path: Path) -> str:
@@ -162,6 +213,45 @@ def is_ready(directory: Path | None = None) -> bool:
     return bool((target / ENTRY).is_file() and not _missing_in(target, manifest()))
 
 
+def verify(directory: Path | None = None) -> dict:
+    """逐个文件核对哈希，回答**缺了什么**（`is_ready()` 只回答"行不行"）。
+
+    设置页那颗「重新下载并校验」按下去要能把话说清楚：是齐的、还是缺三个、
+    缺的是哪几个。判据只有哈希 —— 文件在、名字对、大小对都不算数
+    （下载被打断时正是这种"看起来有"的状态）。用户 2026-11-10："如果安装的时候
+    没有下载好或者出问题，那么可以通过这个按钮重新下载并校验资源完整性。"
+    """
+    target = directory or cache_dir()
+    expected = manifest()
+    missing: list[str] = []
+    if expected:
+        for name, want in sorted(expected.items()):
+            path = target / name
+            if not path.is_file() or _sha256(path) != want:
+                missing.append(name)
+    elif not (target / ENTRY).is_file():
+        missing.append(ENTRY)
+
+    total = len(expected) if expected else (0 if not missing else 1)
+    if not expected:
+        detail = "没有校验清单，只核对了入口文件"
+    elif missing:
+        detail = f"{len(missing)} 个文件缺失或损坏"
+    else:
+        detail = "全部文件与清单一致"
+    return {
+        "ready": not missing,
+        "checked": max(0, total - len(missing)),
+        "total": total,
+        "manifest": len(expected),
+        "missingCount": len(missing),
+        # 只带前几个名字：清单有上百个文件，全列出来会把响应和界面都撑坏
+        "missing": missing[:8],
+        "detail": detail,
+        "cache": str(target),
+    }
+
+
 def file_path(name: str) -> Path | None:
     """按名字取缓存里的文件（**只认清单里的名字**，顺带挡住路径穿越）。"""
     expected = manifest()
@@ -189,14 +279,38 @@ def _download(log: Callable[[str], None]) -> bool:
     expected = manifest()
     if not expected:
         log("运行时：没有清单文件，不敢下载（无法校验）")
+        _mark(state="failed", detail="没有校验清单，取不到运行时")
         return False
     target = cache_dir()
     target.mkdir(parents=True, exist_ok=True)
-    total_bytes = 0
+    total_bytes = manifest_total()
+    done_bytes = 0
+    _mark(
+        state="running",
+        done=0,
+        total=total_bytes,
+        files=0,
+        filesTotal=len(expected),
+        detail="正在下载必要的依赖",
+    )
+    # 先从随包目录补齐 CDN 拿不到的那几个（校验同一份哈希，不做例外）
+    bundled = Path(os.environ.get(BUNDLE_ENV, "").strip()) if os.environ.get(BUNDLE_ENV) else None
+    if bundled and bundled.is_dir():
+        for name, want in expected.items():
+            source = bundled / name
+            destination = target / name
+            if not source.is_file():
+                continue
+            if destination.is_file() and _sha256(destination) == want:
+                continue
+            if _sha256(source) == want:
+                shutil.copy2(source, destination)
+                log(f"运行时：从随包副本拷入 {name}")
     for index, (name, want) in enumerate(sorted(expected.items()), start=1):
         destination = target / name
         if destination.is_file() and _sha256(destination) == want:
-            total_bytes += destination.stat().st_size
+            done_bytes += destination.stat().st_size
+            _mark(done=done_bytes, files=index)
             continue
         url = CDN_BASE + name
         log(f"运行时：下载 {name}（{index}/{len(expected)}）")
@@ -204,19 +318,32 @@ def _download(log: Callable[[str], None]) -> bool:
         try:
             with urllib.request.urlopen(url, timeout=120) as response:  # noqa: S310
                 with temporary.open("wb") as handle:
-                    shutil.copyfileobj(response, handle)
+                    # 自己读块而不是 copyfileobj：进度条要的是**过程中的字节数**
+                    while True:
+                        chunk = response.read(256 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        done_bytes += len(chunk)
+                        _mark(done=done_bytes)
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             temporary.unlink(missing_ok=True)
-            log(f"运行时：下载失败（{name}）—— {exc}")
+            message = f"下载失败（{name}）—— {exc}"
+            log(f"运行时：{message}")
+            _mark(state="failed", detail=message)
             return False
         got = _sha256(temporary)
         if got != want:
             temporary.unlink(missing_ok=True)
-            log(f"运行时：{name} 校验不过（期望 {want[:12]}… 实际 {got[:12]}…）")
+            message = f"{name} 校验不过（期望 {want[:12]}… 实际 {got[:12]}…）"
+            log(f"运行时：{message}")
+            _mark(state="failed", detail=message)
             return False
         temporary.replace(destination)
-        total_bytes += destination.stat().st_size
-    log(f"运行时：下载完成（{total_bytes / 1024 / 1024:.1f} MB）→ {target}")
+        done_bytes += destination.stat().st_size
+        _mark(files=index)
+    log(f"运行时：下载完成（{done_bytes / 1024 / 1024:.1f} MB）→ {target}")
+    _mark(state="ok", detail="依赖已就绪")
     return True
 
 
@@ -251,17 +378,20 @@ def ensure(*, allow_download: bool = True, log: Callable[[str], None] | None = N
     with _lock:
         if is_ready():
             _remember(True, "")
+            _mark(state="ok", detail="本地已有运行时")
             return True, "本地已有运行时"
 
         if _copy_from_vendor(say):
             bad = _missing_in(cache_dir(), manifest())
             if not bad:
                 _remember(True, "")
+                _mark(state="ok", detail="从仓库 vendor/ 拷入（未联网）")
                 return True, "从仓库 vendor/ 拷入（未联网）"
             say(f"运行时：vendor 副本校验不过（{', '.join(bad[:3])}）")
 
         if not allow_download:
             _remember(False, "离线且没有本地副本")
+            _mark(state="failed", detail="离线且没有本地副本")
             return False, "离线且没有本地副本 —— 跑 Python 这一项暂时不可用"
 
         if _download(say):
@@ -272,6 +402,7 @@ def ensure(*, allow_download: bool = True, log: Callable[[str], None] | None = N
         # "取不到"四个字有用得多，而且它就是 `run_python` 接下来要讲给用户的那句。
         reason = notes[-1] if notes else "取不到运行时（没网或下载失败）"
         _remember(False, reason)
+        _mark(state="failed", detail=reason)
         return False, f"{reason} —— 跑 Python 这一项暂时不可用"
 
 
@@ -289,7 +420,11 @@ def start_prefetch(log: Callable[[str], None] | None = None, *, force: bool = Fa
     """
     global _prefetching
     with _lock:
-        if _prefetching or is_ready():
+        if is_ready():
+            # 已经在本机（升级上来的老用户）—— 启动页看到 ok 就直接放行
+            _mark(state="ok", detail="本地已有运行时")
+            return False
+        if _prefetching:
             return False
         failed_at = float(_failure["at"] or 0.0)
         if not force and failed_at and (time.monotonic() - failed_at) < FAIL_BACKOFF_SECONDS:
@@ -308,6 +443,50 @@ def start_prefetch(log: Callable[[str], None] | None = None, *, force: bool = Fa
 
     threading.Thread(target=_work, name="qf-heavy-prefetch", daemon=True).start()
     return True
+
+
+def repair(log: Callable[[str], None] | None = None) -> dict:
+    """设置页那颗「重新下载并校验」：先全量校验，缺什么补什么。**幂等**。
+
+    为什么不直接 `start_prefetch(force=True)`：缓存完整时它只返回 False，
+    调用方分不清"不用修"与"没起来"，而用户按这个按钮要的正是那句结论
+    （用户 2026-11-10："安装的时候没有下载好或者出问题，可以通过这个按钮
+    重新下载并校验资源完整性"）。所以先 `verify()` 拿到明细，再决定是否起下载。
+
+    返回 `verify()` 的字段，外加 `started`（这轮真的起了后台下载吗）与
+    `state`（`ok`/`running`/`failed`，前端据此决定要不要轮询 `/api/heavy/status`）。
+    """
+    report = verify()
+    if report["ready"]:
+        _mark(state="ok", detail="本地已有运行时")
+        return {**report, "started": False, "state": "ok"}
+
+    if prefetching():
+        return {**report, "started": False, "state": "running"}
+
+    if not report["manifest"]:
+        # 没有清单就不能下（下了也校验不了）—— 如实说，别起一轮注定失败的下载
+        detail = "没有校验清单，不敢下载（无法校验）"
+        _mark(state="failed", detail=detail)
+        return {**report, "started": False, "state": "failed", "detail": detail}
+
+    # 先把"校验中发现的那几个"算进进度起点：界面上不该从 0/152 重新数，
+    # 因为绝大多数文件其实是对的，只补缺的那几个。
+    _mark(
+        state="running",
+        done=0,
+        total=manifest_total(),
+        files=report["checked"],
+        filesTotal=report["total"],
+        detail="正在校验并补齐依赖",
+    )
+    started = start_prefetch(log=log, force=True)
+    if not started and not prefetching():
+        # 竞态兜底：判完不完整到这里，另一轮可能刚好收尾（或已经就绪）
+        now = verify()
+        _mark(state="ok" if now["ready"] else "failed", detail=now["detail"])
+        return {**now, "started": False, "state": "ok" if now["ready"] else "failed"}
+    return {**report, "started": started, "state": "running"}
 
 
 def base_url() -> str | None:

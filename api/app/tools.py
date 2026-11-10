@@ -1482,8 +1482,23 @@ PYODIDE_PACKAGE_URL = {"numpy": "https://pyodide.org/en/stable/usage/packages-in
 
 
 def _demo_kit_ready() -> bool:
-    """套件是否已就位（`make vendor` 取回、构建拷进 /assets/demo-kit/）。"""
-    for directory in (DEMO_SERVED_KIT, DEMO_VENDOR_KIT):
+    """套件是否已就位（`make vendor` 取回、构建拷进 /assets/demo-kit/）。
+
+    **不能只按 `__file__` 推**：Android 上 Python 源在 Chaquopy 的 `AssetFinder`
+    里，`parents[1]` 指向 `AssetFinder/`，而真正被服务的那份 `web/` 在
+    `filesDir/quizforge/web`（`Settings.web_dir`）。于是套件明明躺在安装包里，
+    手机上却一直判成"未就绪" —— `artifact` 于是**不注入任何套件脚本**，
+    模型交上来的 `QFKit` 页面打开就是一片空白（2026-11-10 用户实测）。
+    """
+    candidates: list[Path] = []
+    try:
+        from .config import get_settings  # noqa: PLC0415 —— 避免顶部多一条依赖
+
+        candidates.append(get_settings().web_dir / "assets" / "demo-kit")
+    except Exception:  # noqa: BLE001 —— 读不到设置就退回仓库布局
+        pass
+    candidates.extend([DEMO_SERVED_KIT, DEMO_VENDOR_KIT])
+    for directory in candidates:
         if (directory / "react.js").is_file() and (directory / "qf-kit.js").is_file():
             return True
     return False
@@ -2863,8 +2878,12 @@ def attach_material(db, args, ctx=None) -> dict:  # noqa: ANN001
     抽出来是乱码也照实说 —— 那种情况（实测 `Trefethen-Bau.pdf`）让模型别硬引。
     """
     from . import attachments as attachments_mod  # noqa: PLC0415
-    from . import library as lib  # noqa: PLC0415
-    from .routers.library import _meta_dir, _text_dir, roots_for  # noqa: PLC0415
+    # 材料库那一套函数在 `material_files` 里（模块从 `library.py` 改名之后这里没跟上，
+    # 于是 `attach_material` **每次调用都 ImportError** —— 用户看到的"attach material
+    # 出错 / 工具内部的导入错误"就是它，8ms 就返回失败）。
+    from . import material_files as lib  # noqa: PLC0415
+    # 路由也改过名（`routers/library.py` → `routers/material.py`）。
+    from .routers.material import _meta_dir, _text_dir, roots_for  # noqa: PLC0415
 
     want = str(args.get("citekey") or args.get("name") or "").strip()
     if not want:

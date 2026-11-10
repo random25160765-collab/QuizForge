@@ -75,6 +75,11 @@ final class BootHelper {
         copyAssetIfPresent(context.getAssets(), "runtime/pyodide-manifest.json",
                 new File(dataDir(context), "config/pyodide-manifest.json"));
 
+        // 清单里有、CDN 上拿不到的文件（自带的 schemdraw wheel）：149K，跟着包走。
+        // 少了它，手机会在下到 22/27 时失败，前面那 171M 全白下。
+        copyAssetDirIfPresent(context.getAssets(), "runtime/pyodide-bundle",
+                new File(dataDir(context), "config/pyodide-bundle"));
+
         return fresh ? "已释放前端资源" : "资源已是最新";
     }
 
@@ -94,6 +99,17 @@ final class BootHelper {
             return;
         }
         copyAsset(assets, from, to);
+    }
+
+    /** assets 下的一个目录：有就整个拷（覆盖目标），没有就跳过。 */
+    private static void copyAssetDirIfPresent(AssetManager assets, String from, File to) throws IOException {
+        String[] names = assets.list(from);
+        if (names == null || names.length == 0) {
+            return;
+        }
+        for (String name : names) {
+            copyAsset(assets, from + "/" + name, new File(to, name));
+        }
     }
 
     private static void copyAssetDir(AssetManager assets, String from, File to) throws IOException {

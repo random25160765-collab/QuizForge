@@ -67,8 +67,24 @@ def write(body: dict, db: DbSession) -> dict:
     # 合并路会把旧文件里的状态键带出来，一起剔掉 —— 下一次写入就顺手把文件洗干净
     data = settings_store.normalize(data)
 
+    before = settings_file.load()
     target = settings_file.save(data)
     # 镜像到数据库：别的读 `settings_store.row()` 的老路径照样能看到（row 本身以文件为准）。
     # 传 None = 删键：库里那份以前存过本机状态，这里一并清掉。
     settings_store.put(db, **data, **{key: None for key in settings_store.LOCAL_ONLY})
-    return {"ok": True, "file": str(target), "settings": data}
+
+    # 同步配置一落地就立刻跑一轮（用户 2026-11-10：复制/粘进去应该马上开始同步，
+    # 不该等他再去点一次「立即同步」）。判据是**真的变了**：改主题之类不该触发。
+    old_turso = before.get("turso") if isinstance(before.get("turso"), dict) else {}
+    new_turso = data.get("turso") if isinstance(data.get("turso"), dict) else {}
+    turso_changed = any(
+        str(old_turso.get(key) or "") != str(new_turso.get(key) or "")
+        for key in ("url", "token", "enabled")
+    )
+    started = False
+    if turso_changed:
+        from .. import sync as sync_mod  # noqa: PLC0415 —— 别让设置读写拖上加密依赖
+
+        if sync_mod.turso_enabled() and sync_mod.turso_configured():
+            started = sync_mod.run_in_background()
+    return {"ok": True, "file": str(target), "settings": data, "syncStarted": started}

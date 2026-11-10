@@ -698,7 +698,8 @@
 
   var theme = {
     current: function () {
-      return document.documentElement.dataset.theme || 'dark';
+      // 默认浅色（2026-11-10 用户："首次进去是暗色，改成亮色"）
+      return document.documentElement.dataset.theme || 'light';
     },
     set: function (value) {
       applyTheme(value);
@@ -714,7 +715,8 @@
       theme.set(theme.current() === 'dark' ? 'light' : 'dark');
     },
     init: function () {
-      applyTheme(readStoredSettings().theme || 'dark');
+      // 没有存过就浅色 —— 与 `<head>` 内联脚本里那一句保持一致
+      applyTheme(readStoredSettings().theme || 'light');
     },
   };
 

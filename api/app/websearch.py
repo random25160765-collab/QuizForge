@@ -546,6 +546,25 @@ def _normalize(raw: dict, *, source: str) -> dict | None:
     }
 
 
+def _borrow_from_ai(db) -> dict | None:  # noqa: ANN001
+    """聊天配的就是 DeepSeek 时，借它那把 key 当搜索密钥（同一平台、同一把 key）。
+
+    只在 `baseUrl` 确实是 DeepSeek 时才借：第三方中转的密钥不该被拿去打官方
+    搜索端点（打过去要么 401、要么花的是别人的额度）。没配 AI 或配的是别家
+    就返回 `None`，让调用方照旧报"去设置里选一家"。
+    """
+    try:
+        from . import ai_gateway  # noqa: PLC0415 - 它要读设置，导入期还没就位
+        conf = ai_gateway.resolve_config(db)
+    except Exception:  # noqa: BLE001 - 没填密钥 / AI 关着：借不到就是借不到
+        return None
+    base = str(conf.get("baseUrl") or "")
+    key = str(conf.get("apiKey") or "").strip()
+    if not key or "deepseek" not in base.lower():
+        return None
+    return _normalize({"kind": "deepseek", "apiKey": key}, source="ai")
+
+
 def resolve(db) -> dict:  # noqa: ANN001
     """这次该用哪套搜索配置：
 
@@ -570,6 +589,18 @@ def resolve(db) -> dict:  # noqa: ANN001
         found = _normalize(mine, source="user")
         if found:
             return found
+
+    # **回落：聊天用 DeepSeek 时，直接借它的 key 去搜。**
+    #
+    # 文档一直写着"与聊天同一把 key、同一个平台"，但 `resolve` 只看 `search`
+    # 那一块 —— 用户配好了聊天（`deepseek-flash`）、能正常对话，搜索却报
+    # "没有配服务商"（2026-11-10 原话："明明我配了 deepseek API，能正常对话，
+    # 但是没法 web 搜索；deepseek 的 API 是有搜索功能的"）。
+    # 实测：同一把 key 打 `https://api.deepseek.com/v1/tools/search` 回 200 与结果，
+    # 所以这里按 AI 配置回落一次。
+    borrowed = _borrow_from_ai(db)
+    if borrowed:
+        return borrowed
 
     raise SearchUnavailable(
         "联网搜索没有配服务商：去「设置 → 联网搜索」选一家、填一把密钥"

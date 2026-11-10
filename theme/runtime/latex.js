@@ -660,13 +660,40 @@
     // 于是"排不出来"表现为**一句明确的失败**，不是无限卡住（实测如此）。
     // `raw` = **模型原来写的那份**（下面的改写是给引擎看的；要请模型重画时，得把它原样还回去）
     var raw = String(tex == null ? '' : tex);
+    // **缓存命中就直接给，别再跑一遍引擎。**
+    //
+    // `figures`（见 chat.js）会把这一轮正文里的图**再交回来编一遍**，而正文里那些
+    // 刚才就已经编过、躺在缓存里了。原先这里不看缓存，同一张图要编两遍 —— 每遍几百个
+    // `tex_files/*.gz` 请求加 TeX 本身，服务端停在 `_verify_figures` 等回执的那几十秒
+    // 就是这么来的（用户："如果 latex 图一直不编译出来，消息就一直卡着"）。
+    // 键用 `raw`，与 `compileInto` 里的 `cacheKey(place.__qfTex)` 同一份。
+    var known = readCache(cacheKey(raw));
+    if (known && known.failed) {
+      // 已经确定编不出来的：**不再编一遍**（用户 2026-11-10）。回执也走这条路 ——
+      // 服务端因此几毫秒就拿到"失败"，不会为一张死图把一整轮等满预算。
+      return Promise.reject(new Error(String(known.html || '').split('\n')[0]));
+    }
+    if (known) return Promise.resolve(known.html);
     tex = withCJK(rewriteUnsupported(stripPreamble(raw)));
     return new Promise(function (resolve, reject) {
       queue.push({
         tex: tex,
         raw: raw,
-        ok: resolve,
+        ok: function (html) {
+          // 成功也留档（与失败对称）：`figures` 走的是 `render` 直调，不经过
+          // `compileInto`，只在那边写缓存的话，同一条回执路径永远命不中。
+          cachePut(cacheKey(raw), html);
+          resolve(html);
+        },
         fail: function (err) {
+          // **失败也留档**（见 `readCache`）：下一次同一段源码直接判失败、不再跑引擎。
+          // 写在这里而不是只写在 `compileInto`：`figures` 那条路（`QF.latex.render`
+          // 直接调用）也走这里，只在 `compileInto` 写的话，回执路径永远碰不到缓存。
+          cachePut(
+            cacheKey(raw),
+            '这段 LaTeX 没编出来：' + ((err && err.message) || '未知原因') + '\n' + raw,
+            true
+          );
           reject(err);
         },
       });
@@ -801,11 +828,19 @@
     ensureFonts();
 
     var key = cacheKey(tex);
-    var hit = cacheGet(key);
-    if (hit) {
+    var known = readCache(key);
+    if (known && known.failed) {
+      // **已经确定编不出来的：别再编。** 刷新、重开对话、滚回来都直接摆失败文案 ——
+      // 从前这里不留失败记录，每打开一次对话就把同一张死图重跑一遍引擎（慢，还可能
+      // 再卡一次看门狗）。用户 2026-11-10 明确要这一条。
+      place.className = 'diagram-wrap is-failed';
+      place.textContent = known.html;
+      return;
+    }
+    if (known) {
       // 命中：同步摆上，刷新页面时图是"一打开就在"（不闪、不跑 WASM）
       place.className = 'diagram-wrap';
-      place.innerHTML = hit;
+      place.innerHTML = known.html;
       return;
     }
 
@@ -814,15 +849,18 @@
       function (html) {
         place.className = 'diagram-wrap';
         place.innerHTML = html;
-        cachePut(key, html);
+        // 缓存由 `render` 自己写（成功/失败都写，见那里的说明），这里不重复。
       },
       function (err) {
-        place.className = 'diagram-wrap is-failed';
-        place.textContent =
+        var text =
           '这段 LaTeX 没编出来：' +
           ((err && err.message) || '未知原因') +
           String.fromCharCode(10) +
           tex;
+        place.className = 'diagram-wrap is-failed';
+        place.textContent = text;
+        // 失败也留档：下次打开不再重跑（见上面 `readCache` 的说明）
+        cachePut(key, text, true);
       }
     );
   }
@@ -838,11 +876,13 @@
         place.removeAttribute('data-latex');
         place.__qfTex = tex;
 
-        // 缓存命中就不必等视口：直接摆，代价是一次 innerHTML
-        var hit = cacheGet(cacheKey(tex));
-        if (hit) {
-          place.className = 'diagram-wrap';
-          place.innerHTML = hit;
+        // 缓存命中就不必等视口：直接摆，代价是一次 innerHTML。
+        // **失败的也直接摆**（文案已经存着了）：不必再进观察器、再跑一次 `compileInto`。
+        var known = readCache(cacheKey(tex));
+        if (known) {
+          place.className = known.failed ? 'diagram-wrap is-failed' : 'diagram-wrap';
+          if (known.failed) place.textContent = known.html;
+          else place.innerHTML = known.html;
           place.__qfTex = undefined;
           return;
         }
@@ -936,6 +976,9 @@
 
   var CACHE_CHARS = 1500000; /* 或总字符上限，先到先弃 */
 
+  /** 失败记录最多认多久（见 `readCache`）：七天。 */
+  var FAIL_TTL = 7 * 24 * 3600 * 1000;
+
   /**
    * 键 = **两个独立哈希 + 长度**。
    *
@@ -965,14 +1008,30 @@
   }
 
 
-  function cacheGet(key) {
+  /** 读一条缓存原样：`{html, failed}`。`null` = 没有 / 坏了。
+   *
+   * 失败也进缓存（`failed: true`，`html` 就是那段失败文案）：一张确定编不出来的图
+   * 不该在每次打开对话时重跑一遍引擎 —— 那既慢，还可能再卡一次看门狗（用户
+   * 2026-11-10："已经确定编译不出来，下次打开对话就不要把编不出来的图再编译一遍"）。
+   */
+  function readCache(key) {
     try {
       var raw = window.localStorage.getItem(key);
       if (!raw) return null;
-      return JSON.parse(raw).html || null;
+      var one = JSON.parse(raw) || {};
+      // 失败记录**有期限**：引擎补了宏包之后同一段源码是能编出来的，永久记死就再也
+      // 试不了。七天足够挡住"每次打开都重跑"，又不至于变成一句永远翻不了案的判决。
+      if (one.failed && Date.now() - (one.at || 0) > FAIL_TTL) return null;
+      return { html: String(one.html || ''), failed: !!one.failed };
     } catch (err) {
       return null; // 存不下/坏了都当没有，别拦住这次渲染
     }
+  }
+
+  /** 只取**编成功**的那份 HTML（失败条目不算命中）。 */
+  function cacheGet(key) {
+    var one = readCache(key);
+    return one && !one.failed ? one.html : null;
   }
 
   /** 超量就按时间淘汰（localStorage 可枚举，不用另存索引）。 */
@@ -1013,15 +1072,16 @@
   }
 
 
-  function cachePut(key, html) {
+  function cachePut(key, html, failed) {
+    var row = JSON.stringify({ at: Date.now(), html: html, failed: !!failed });
     try {
-      window.localStorage.setItem(key, JSON.stringify({ at: Date.now(), html: html }));
+      window.localStorage.setItem(key, row);
       sweep();
     } catch (err) {
       // 配额满了：清一轮再来一次，还不行就算了
       sweep();
       try {
-        window.localStorage.setItem(key, JSON.stringify({ at: Date.now(), html: html }));
+        window.localStorage.setItem(key, row);
       } catch (again) {
         /* 放弃缓存，不影响本次渲染 */
       }

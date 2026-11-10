@@ -117,37 +117,15 @@
 
   /* ---------------------------------------------------------------- 装载 */
 
-  /** 题库为空时这一页还能不能起来。
-   *
-   *  对话**不依赖题库** —— "新对话"是一段聊天，不是一道题。而打包版的首次启动里
-   *  数据目录还是空的（题库要另外导入），若把它也拦在门外，用户第一眼看到的就是
-   *  一片空白（原话："chat 页面还是纯白的，至少要有那个新对话的界面"）。
-   *  练习中心 / 错题本靠题库吃饭，那里照旧把"去导入题库"摆出来。
-   */
-  function worksWithoutBank() {
-    return page === 'chat';
-  }
-
   function loadBank() {
     return api.get('/bank').then(function (bank) {
-      var empty = !bank || !bank.questions || !bank.questions.length;
-      if (empty && !worksWithoutBank()) {
-        replaceState({
-          icon: 'book',
-          title: '题库还没有题目',
-          message:
-            '服务端已经连上了，但库里一道题也没有。桌面包用的是它自己的数据目录'
-            + '（Windows：%USERPROFILE%\\quizforge），和你开发机上那份不是同一个库 ——'
-            + '题目得先导进来，这一页才有东西可练。',
-          code:
-            'python -m app.cli.import_bank        # 在仓库里：从 questions/ 导进库\n'
-            + '# 桌面包要这些题：把导好的 data/quizforge.db 拷到 %USERPROFILE%\\quizforge\\',
-          actions: [{ label: '刷新', onClick: function () { location.reload(); } }],
-        });
-        return false;
-      }
-      // 空题库也要**装进去**：对话页本身只看会话与进度，但它会读题库的元信息
-      // （`QF.data.meta` / `QF.data.topics`）来画侧栏 —— 没装过就一个都没有。
+      // 空题库**不是故障**，不拦页面（用户 2026-11-10："题库里没有题目，应该正常
+      // 显示 0 题而不是这种页面"）。这一屏原先会把练习 / 组卷 / 错题本整页换掉，
+      // 连顶栏和导航都一起没了 —— 而"0 题"本来就是这些页面该画出来的空状态。
+      // 只保留真正起不来时才用的 `showState`（连不上服务 / 启动失败）。
+      //
+      // 空题库也要**装进去**：页面会读题库的元信息（`QF.data.meta` /
+      // `QF.data.topics`）来画侧栏 —— 没装过就一个都没有。
       if (!bank) bank = { questions: [] };
       // 公共题库打上来源标记。
       //
@@ -241,7 +219,9 @@
   //: 错误页挂上之后，还隔多久自己再试一次。让"把服务起起来"这件事不必由人来告诉它。
   var BOOT_POLL_MS = 5000;
 
-  /** 试一次完整的启动读取。返回 `false` = 界面已经说清了（题库空之类），不必重试。 */
+  /** 试一次完整的启动读取。返回 `false` = 界面已经说清了，不必再往下走。
+   *
+   *  题库为空**不再**走这条（见 `loadBank`）：空库是正常状态，页面自己画 0 题。 */
   function startAttempt() {
     return loadBank().then(function (ok) {
       if (!ok) return false;

@@ -25,31 +25,13 @@
   var ai = QF.ai;
   var D = QF.data;
 
-  /* ---- 新设备的引导（2026-11-09） ----
+  /* ---- 新设备不再有引导页（2026-11-10） ----
    *
-   * 只看**这一个标记**：`onboarding.done`。没有它就去 `welcome.html` 把三件事配完
-   * （AI / 同步 / 数据密码）。
-   *
-   * 从前判据是"有密钥或有同步地址就放行"，那是个洞：填完第一步就跑掉的人，
-   * 这辈子不会再被请回来补口令 —— 而缺口令的症状要到读旧对话时才炸。
-   * 现在填一半不算，必须走完（用户 2026-11-09：不可以跳过引导，必须要先输入）。
-   * 老设备升级也会走一次引导，但那三步都是预填好的（口令认 `keyReady`），点三下就完。
-   *
-   * 放在这里而不是各页 boot：所有页面都加载 shell.js，而它在页面脚本之前执行 ——
-   * 跳转时那些脚本还没跑，不会先白渲染一帧再跳走。
+   * 用户把"那三个引导用户输入数据的页面"整个删了：AI 的 key、同步的地址与令牌
+   * 都在**设置页**里填（也能从剪贴板粘一份设置 JSON），端到端加密的钥匙由后端
+   * 从数据库凭据推导 —— 用户没有要保管的东西，也就没有"三步必须走完"这件事。
+   * 所以这里不再拦截任何页面。
    */
-  (function maybeOnboard() {
-    try {
-      var rootEl = document.getElementById('app-root');
-      var page = rootEl ? rootEl.getAttribute('data-page') : '';
-      if (page === 'welcome') return;
-      var settings = (store && store.settings && store.settings()) || {};
-      if (settings.onboarding && settings.onboarding.done) return;
-      window.location.replace('welcome.html');
-    } catch (err) {
-      /* 读设置失败就别拦路：正常进页面，比困在引导里强 */
-    }
-  })();
 
   /* ------------------------------------------------------------ 主导航 */
   /* 这四个是**视图**（刷题页内部的四种状态），不是四个页面。
@@ -797,7 +779,7 @@
       var native = window.QFNative;
       if (native && native.writeClipboard) {
         native.writeClipboard(text);
-        ui.toast('设置已复制（含同步口令，不含阅读位置等本机状态）', 'ok');
+        ui.toast('设置已复制（不含阅读位置等本机状态）', 'ok');
         return;
       }
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
@@ -805,28 +787,22 @@
         return;
       }
       navigator.clipboard.writeText(text).then(function () {
-        ui.toast('设置已复制（含同步口令，不含阅读位置等本机状态）', 'ok');
+        ui.toast('设置已复制（不含阅读位置等本机状态）', 'ok');
       }, function () {
         ui.toast('复制失败：浏览器不给剪贴板权限', 'error');
       });
     }
 
     function copySettings() {
-      // 口令借一次塞进这份 JSON（`syncPassphrase`）：新设备粘一次就把
-      // AI / 同步 / 密码都带走。它不会写回设置；服务端上传前也会抹掉这个键。
-      api.get('/sync/plugin-config').then(function (conf) {
-        var data = store.fileSettings();
-        if (conf && conf.passphrase) data.syncPassphrase = conf.passphrase;
-        writeSettingsJson(data);
-      }).catch(function () {
-        writeSettingsJson(store.fileSettings());   // 没配同步也照样能复制设置
-      });
+      // 只带**设置文件**那一层：AI / 同步 / 界面偏好。
+      // 没有口令这一项了（2026-11-10）：端到端加密的钥匙由数据库凭据推导，
+      // 换机器粘一份地址 + 令牌就够，不需要再背一串密码过来。
+      writeSettingsJson(store.fileSettings());
     }
 
     function importSettings() {
       var native = nativeClip();
       var reading;
-      var passphrase = '';
       if (native) {
         reading = Promise.resolve(String(native.readClipboard() || ''));
       } else if (navigator.clipboard && navigator.clipboard.readText) {
@@ -838,21 +814,22 @@
         if (!String(text || '').trim()) throw new Error('剪贴板是空的');
         var data = JSON.parse(text);
         if (!data || typeof data !== 'object') throw new Error('不是 JSON 对象');
-        // 口令不留在设置里：取出来、删掉，落到本机 key 文件（见下面的 /sync/passphrase）
-        passphrase = String(data.syncPassphrase || '').trim();
+        // 老版本导出的 JSON 里可能还带 `syncPassphrase`：**丢掉**。
+        // 新模型的钥匙由数据库凭据推导，这串东西对谁都没用了。
         delete data.syncPassphrase;
         var imported = store.fileSettings(data);
-        if (!Object.keys(imported).length && !passphrase) {
+        if (!Object.keys(imported).length) {
           throw new Error('里面只有本机状态，没有可导入的设置');
         }
         store.adoptSettings(data, { merge: true });   // 半份导入：没提到的键保持原样
         // 导入是**整份替换**（与平时的 patch 合并区分开），但只替换设置那部分
         return api.put('/settings', { settings: store.fileSettings(), replace: true });
-      }).then(function () {
-        if (!passphrase) return null;
-        return api.post('/sync/passphrase', { passphrase: passphrase });
-      }).then(function () {
-        ui.toast(passphrase ? '已导入设置与同步口令' : '已用剪贴板里的设置覆盖', 'ok');
+      }).then(function (res) {
+        // 后端在配置变化时会自己起同步；这里只是把这件事说出来
+        ui.toast(
+          res && res.syncStarted ? '已导入，正在同步' : '已用剪贴板里的设置覆盖',
+          'ok'
+        );
         window.setTimeout(function () { window.location.reload(); }, 400);
       }).catch(function (err) {
         ui.toast('导入失败：' + ((err && err.message) || err), 'error');
@@ -892,40 +869,8 @@
       },
     });
 
-    /* 口令**不存设置**（设置会同步到云，而口令是端到端加密的钥匙）：
-     * 只 POST 给本机后端，写进 data/snapshot.key。手机没有文件管理器，
-     * 这是新设备唯一的入口（2026-11-09 用户："手机只能看到对话列表"）。 */
-    var syncPassInput = h('input.input.input--mono', {
-      type: 'password',
-      autocomplete: 'off',
-      placeholder: '••••••••（与旧设备同一份）',
-    });
-    var syncPassNote = h('div');
-
-    function savePass() {
-      var value = String(syncPassInput.value || '').trim();
-      if (!value) {
-        ui.toast('先把口令填上', 'error');
-        return;
-      }
-      ui.clear(syncPassNote);
-      syncPassNote.appendChild(h('div.statline', null,
-        h('span.spinner'), h('span', { text: '正在保存…' })));
-      api.post('/sync/passphrase', { passphrase: value }).then(function (res) {
-        syncPassInput.value = '';
-        ui.clear(syncPassNote);
-        var text = res && res.envOverride
-          ? '已写入文件，但本机用环境变量里的口令（文件不生效）。'
-          : '口令已保存，正在重跑同步。';
-        syncPassNote.appendChild(h('div.statline', { style: { color: 'var(--ok)' } },
-          h('span', { text: text })));
-        pollSync(Date.now() + 10 * 60 * 1000);
-      }).catch(function (err) {
-        ui.clear(syncPassNote);
-        syncPassNote.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
-          h('span', { text: '保存失败：' + ((err && err.message) || err) })));
-      });
-    }
+    /* 口令输入框已经删除（2026-11-10）：钥匙由地址 + 令牌推导，用户不用知道，
+     * 也不用保管。设置页只剩地址与令牌两栏。 */
 
     function paintSync(st) {
       if (!st) {
@@ -951,8 +896,8 @@
       }
       bits.push(
         st.keyReady
-          ? '加密口令：有'
-          : '加密口令：没有（对话 / 记忆 / 计划书不会上传）'
+          ? '加密：密钥已就绪（由数据库令牌推导）'
+          : '加密：等数据库地址与令牌'
       );
       var last = st.last;
       if (last && last.ok) {
@@ -1008,8 +953,8 @@
     /* ---- 笔记云同步：给 Obsidian 的**第二个**插件复制配置 ----
      *
      * 两个插件分工不同（bridge 管 QF ↔ 本地文件，sync 管本地文件 ↔ 云端），
-     * 所以这里只给 sync 那三样：地址、token、口令。口令来自 snapshot.key，
-     * 平时不显示；按下按钮才请求一次（与 token 同权限，不落日志）。
+     * 所以这里只给 sync 那两样：地址、token（端到端加密的钥匙由插件自己从
+     * 这两样推导，与后端同一套算法）。按下按钮才请求一次，不落日志。
      */
     var pluginNote = h('div');
     function copyPluginConfig() {
@@ -1020,12 +965,11 @@
         var text = [
           '地址：' + (conf.url || '（还没填 Turso 地址）'),
           'token：' + (conf.token || '（还没填 Turso token）'),
-          '口令：' + (conf.passphrase || '（没有 config/snapshot.key）'),
         ].join('\n');
         var done = function () {
           ui.clear(pluginNote);
           pluginNote.appendChild(h('div.statline', { style: { color: 'var(--ok)' } },
-            h('span', { text: '已复制。粘到 Obsidian → 设置 → QFStudio Sync 的三栏里。' })));
+            h('span', { text: '已复制。粘到 Obsidian → 设置 → QFStudio Sync 的两栏里（密钥插件自己推导）。' })));
         };
         var native = window.QFNative;
         if (native && native.writeClipboard) {
@@ -1051,8 +995,8 @@
       h('div.form__sectiontitle', { text: '同步（Turso）' }),
       h('p', {
         text: 'Turso 是云上共享副本，本地 SQLite 是工作副本，两边自动对齐。'
-          + '对话、分组、消息、附件、全局记忆、计划书端到端加密（两台机器用同一份 snapshot.key），'
-          + '其余数据明文。',
+          + '对话、分组、消息、附件、全局记忆、计划书端到端加密 —— 钥匙由下面的地址与令牌推导，'
+          + '不用记也不用填；其余数据明文。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       syncStatusLine,
@@ -1063,13 +1007,6 @@
       h('div.form__grid', { style: { marginTop: '12px' } },
         field('数据库地址', null, syncUrlInput),
         field('数据库令牌', '在 Turso 控制台生成。', syncTokenInput)),
-      h('div.form__grid', { style: { marginTop: '12px' } },
-        field('同步口令',
-          '对话 / 记忆 / 计划书的端到端加密钥匙。新设备从旧设备的「复制给插件」里取，填一次即可。',
-          syncPassInput)),
-      h('div.btnrow', null,
-        h('button.btn', { type: 'button', onClick: savePass }, '保存口令')),
-      syncPassNote,
       h('div.btnrow', { style: { marginTop: '12px' } },
         h('button.btn', {
           type: 'button',
@@ -1515,6 +1452,126 @@
       function () {}
     );
 
+    /* 运行环境：Python 运行时（Pyodide，约 146M）不在安装包里，首启取一次。
+     * 启动页可以「跳过」，下载也可能中途失败 —— 这里是补救入口（用户 2026-11-10）：
+     * 重新核对每个文件的 sha256，只补缺失或损坏的那几个，不用重装应用。 */
+    var runtimeState = h('b', { text: '读取中…' });
+    var runtimeNote = h('p.form__hint', {
+      text: 'Python 运行时（约 146M）不进安装包，首启自动取一次。'
+        + '这里会重新核对每个文件的哈希，只补缺失或损坏的那几个。',
+    });
+    var runtimeTimer = 0;
+    var runtimeTries = 0;
+
+    function stopRuntimePoll() {
+      if (runtimeTimer) {
+        window.clearTimeout(runtimeTimer);
+        runtimeTimer = 0;
+      }
+    }
+
+    function showRuntime(short, note) {
+      runtimeState.textContent = short;
+      if (note) runtimeNote.textContent = note;
+    }
+
+    function pollRuntime() {
+      stopRuntimePoll();
+      if (runtimeTries++ > 900) {   // 15 分钟还没完：别把定时器留到天荒地老
+        showRuntime('还没就绪', '下载还在跑，稍后回来看看（或再点一次）。');
+        runtimeBtn.disabled = false;
+        return;
+      }
+      api.get('/heavy/status').then(function (state) {
+        state = state || {};
+        if (state.state === 'ok') {
+          showRuntime('已就绪', '全部文件与校验清单一致。');
+          runtimeBtn.disabled = false;
+          return;
+        }
+        if (state.state === 'failed') {
+          showRuntime('没就绪', '没取成：' + (state.detail || '原因未知') + '。连上网后再点一次。');
+          runtimeBtn.disabled = false;
+          return;
+        }
+        if (state.state === 'running') {
+          showRuntime(
+            '正在下载 ' + (state.percent || 0) + '%',
+            '已取 ' + (state.files || 0) + '/' + (state.filesTotal || 0) + ' 个文件'
+              + (state.detail ? ' · ' + state.detail : '')
+          );
+        }
+        runtimeTimer = window.setTimeout(function () {
+          // 表单重画过 / 已经离开这一页：这一份节点不在文档里了，别再轮询
+          if (runtimeState.isConnected) pollRuntime();
+        }, 1000);
+      }, function () {
+        showRuntime('读取失败', '本地服务连不上 —— 稍后再试。');
+        runtimeBtn.disabled = false;
+      });
+    }
+
+    function repairRuntime() {
+      runtimeBtn.disabled = true;
+      runtimeTries = 0;
+      showRuntime('正在校验…', '逐个文件核对哈希，缺什么补什么。');
+      api.post('/heavy/repair', {}).then(function (res) {
+        res = res || {};
+        if (res.ready) {
+          showRuntime('已就绪', '全部文件与校验清单一致（' + (res.total || 0) + ' 个）。');
+          runtimeBtn.disabled = false;
+          return;
+        }
+        if (res.state === 'running') {
+          if (res.missingCount) {
+            var names = (res.missing || []).slice(0, 3).join('、');
+            showRuntime('正在下载 0%', '缺 ' + res.missingCount + ' 个文件'
+              + (names ? '（' + names + (res.missingCount > 3 ? '…' : '') + '）' : '')
+              + '，正在补。');
+          }
+          pollRuntime();
+          return;
+        }
+        showRuntime('没就绪', res.detail || '没取成，稍后再试。');
+        runtimeBtn.disabled = false;
+      }, function (err) {
+        showRuntime('没就绪', '请求失败：' + ((err && err.message) || '未知错误'));
+        runtimeBtn.disabled = false;
+      });
+    }
+
+    var runtimeBtn = h('button.btn', {
+      type: 'button',
+      onClick: repairRuntime,
+    }, h('span', { html: ui.icon('download', 15) }), h('span', { text: '重新下载并校验' }));
+
+    // 进来先看一眼现状：**正在下载**（启动页那轮）就接着看，别显示成"还没取过"
+    api.get('/heavy/status').then(function (state) {
+      state = state || {};
+      if (state.state === 'running') {
+        runtimeTries = 0;
+        pollRuntime();
+        return;
+      }
+      if (state.state === 'ok') {
+        showRuntime('已就绪', '');
+        return;
+      }
+      if (state.state === 'failed') {
+        showRuntime('没就绪', (state.detail || '上次没取成') + ' —— 点下面这个按钮重来一次。');
+        return;
+      }
+      showRuntime('还没取过', '');
+    }, function () {
+      showRuntime('读取失败', '本地服务连不上 —— 稍后再试。');
+    });
+
+    var runtimeForm = h('div.form__section', null,
+      h('div.form__sectiontitle', { text: '运行环境' }),
+      h('div.statline', null, h('span', { text: 'Python 运行时' }), runtimeState),
+      runtimeNote,
+      h('div.btnrow', { style: { marginTop: '10px' } }, runtimeBtn));
+
     var dataForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '数据' }),
       h('div.statline', null, h('span', { text: '本地数据体积' }), h('b', { text: ui.fmtBytes(stats.storageBytes) })),
@@ -1573,7 +1630,7 @@
         }, h('span', { html: ui.icon('trash', 15) }), h('span', { text: '清空进度' }))));
 
   return h('div.form', null, aiForm, memoryForm, searchForm, obsForm, appearanceForm, syncForm,
-    calendarForm, healthForm, dataForm);
+    calendarForm, healthForm, runtimeForm, dataForm);
   }
 
   /* 数据被导入或清空之后广播一次：页面各自的反应不一样

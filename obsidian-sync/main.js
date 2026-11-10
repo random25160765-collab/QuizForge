@@ -71,6 +71,16 @@ function sqlTime(date = new Date()) {
   return date.toISOString().replace('T', ' ').replace('Z', '');
 }
 
+/** 与 QF 后端同一套（2026-11-10）：钥匙由地址 + 令牌推导，用户没有可填的口令。
+ *
+ *  `HMAC-SHA256(key=token, msg="quizforge-sync-key-v1:" + url)` → base64，
+ *  再交给 scrypt(salt) 当 passphrase。两边任意一处改了都会读不出密文。
+ */
+function derivePassphrase(url, token) {
+  const material = 'quizforge-sync-key-v1:' + String(url || '').replace(/\/+$/, '');
+  return createHmac('sha256', String(token || '')).update(material, 'utf8').digest('base64');
+}
+
 function deriveKey(passphrase, salt) {
   return scryptSync(String(passphrase), Buffer.from(salt), 32, {
     N: 32768,
@@ -144,7 +154,6 @@ const SETTINGS_VERSION = 2;
 const DEFAULTS = {
   url: '',
   token: '',
-  passphrase: '',
   device: '',
   interval: 60,
   cursor: 0,
@@ -320,7 +329,7 @@ module.exports = class QFStudioSync extends Plugin {
   }
 
   configured() {
-    return Boolean(this.settings.url && this.settings.token && this.settings.passphrase);
+    return Boolean(this.settings.url && this.settings.token);
   }
 
   setStatus(text, bad = false) {
@@ -377,8 +386,8 @@ module.exports = class QFStudioSync extends Plugin {
   /** 读远端盐、派生 key、核对 check；远端还没有盐时由本插件首次写入。 */
   async ensureKey(remote) {
     let meta = await this.remoteMeta(remote);
-    const passphrase = String(this.settings.passphrase || '');
-    if (!passphrase) throw new Error('还没填口令（config/snapshot.key 里那一串）');
+    const passphrase = derivePassphrase(this.settings.url, this.settings.token);
+    if (!passphrase) throw new Error('还缺 Turso 地址或令牌');
 
     let saltB64 = meta.salt || '';
     if (!saltB64) {
@@ -397,8 +406,10 @@ module.exports = class QFStudioSync extends Plugin {
 
     const salt = Buffer.from(saltB64, 'base64');
     const key = deriveKey(passphrase, salt);
-    if (meta.check && meta.check !== keyCheck(key)) {
-      throw new Error('口令与远端不是同一份（校验值对不上）');
+    // 只在远端已标到新算法之后才拿 check 判"是不是同一个库"：旧库的 check 是
+    // 按人手口令算的，QL 那边第一次同步会重写它（旧密文作废）。
+    if (meta.check && meta.key === 'turso-v1' && meta.check !== keyCheck(key)) {
+      throw new Error('两台机器连的不是同一个库（校验值对不上）');
     }
     return key;
   }
@@ -685,17 +696,11 @@ class SyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('口令')
-      .setDesc('与 QF 的 config/snapshot.key 同一串；派生出的密钥只在本机内存里')
-      .addText((text) => {
-        text.inputEl.type = 'password';
-        text
-          .setValue(this.plugin.settings.passphrase)
-          .onChange(async (value) => {
-            this.plugin.settings.passphrase = value.trim();
-            await this.plugin.saveSettings();
-          });
-      });
+      .setName('加密')
+      .setDesc(
+        '对话 / 记忆 / 计划书 / 笔记的端到端密钥由上面的地址 + 令牌推导，不用填口令。' +
+          '换令牌会让历史密文作废。'
+      );
 
     new Setting(containerEl)
       .setName('同步间隔（秒）')
