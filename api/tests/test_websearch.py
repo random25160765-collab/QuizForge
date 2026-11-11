@@ -415,6 +415,19 @@ def test_read_page_refuses_local_and_inner_addresses():
         assert "读" in str(err.value), url
 
 
+def test_a_proxy_fake_ip_is_not_mistaken_for_an_inner_address(monkeypatch):
+    """开着 Clash 类代理时，本机 DNS 对**所有**域名都回 `198.18.x.x`（fake-ip）。
+
+    真实目标由代理 / TUN 去解析 —— 照常按"保留地址"拦掉，就等于"只要开着代理
+    一个网页都读不了"（实测：每次 0.05 秒报"指向本机 / 内网"，而浏览器里同一页
+    是通的）。`198.18.0.0/15` 本来也是基准测试保留段，不是内网服务地址。
+    """
+    monkeypatch.setattr(
+        websearch, "_resolve", lambda host, port: [(2, 1, 6, "", ("198.18.0.68", port))]
+    )
+    assert websearch._guard_url("https://alma.now/docs/zh/features/").hostname == "alma.now"
+
+
 def test_read_page_extracts_the_text(monkeypatch):
     html_body = (
         "<html><head><title>页面标题</title></head><body>"

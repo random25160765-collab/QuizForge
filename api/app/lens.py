@@ -53,6 +53,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import sys
@@ -61,6 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from sqlalchemy import select
 
 from . import REPO_ROOT
 
@@ -195,11 +197,123 @@ def _load() -> tuple[Lens, ...]:
     return _cache["items"]
 
 
-def all_lenses() -> tuple[Lens, ...]:
-    return _load()
+def _digest(text: str) -> str:
+    """md 原文的指纹：判断"磁盘上这份"与"库里这份"是不是同一份。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def find(word: str) -> Lens | None:
+def _from_row(row) -> Lens:  # noqa: ANN001
+    return Lens(
+        key=row.key,
+        label=row.label,
+        kind=row.kind,
+        hint=row.hint or "",
+        prompt=row.prompt or "",
+        source=f"{row.key}.md",
+    )
+
+
+def _db_items(db) -> tuple[Lens, ...]:  # noqa: ANN001
+    from .models import LensDef  # noqa: PLC0415 - 延迟导入：lens 是热点模块
+
+    rows = db.scalars(select(LensDef).where(LensDef.deleted.is_(False))).all()
+    out = [_from_row(one) for one in rows]
+    out.sort(key=lambda item: (KINDS.index(item.kind) if item.kind in KINDS else len(KINDS), item.key))
+    return tuple(out)
+
+
+def sync_folder(db) -> None:  # noqa: ANN001
+    """文件 ↔ `lenses` 表：两边对齐（每次读之前跑，稳态下不写库）。
+
+    **规则只有一条：文件优先。** 文件被手改过（digest 与库不同）就以文件为准写库 ——
+    直接编辑文件是最强的意图表达，这条是原来"改完存盘即生效"的延续。
+
+    反方向也要走：库里多出来的行（**别的设备同步来的**）落成文件，于是
+    `ls <数据目录>/lens` 看得见、编辑器和备份都拿得到。墓碑（`deleted`）负责
+    "删掉的不许被磁盘上的残留文件带回来" —— 没有它，远端一删、本地一启动就复活。
+    """
+    from .models import LensDef  # noqa: PLC0415
+
+    home = folder()
+    seed_presets()
+    on_disk: dict[str, tuple[Lens, str]] = {}
+    if home.is_dir():
+        try:
+            files = list(home.glob("*.md"))
+        except OSError:
+            files = []
+        for one in files:
+            try:
+                text = one.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            lens = _parse(text, one.name)
+            if lens is not None:
+                on_disk[lens.key] = (lens, _digest(text))
+
+    rows = {one.key: one for one in db.scalars(select(LensDef)).all()}
+    changed = False
+
+    # 文件 → 库
+    for key, (lens, stamp) in on_disk.items():
+        row = rows.get(key)
+        if row is None:
+            db.add(
+                LensDef(
+                    key=lens.key,
+                    label=lens.label,
+                    kind=lens.kind,
+                    hint=lens.hint,
+                    prompt=lens.prompt,
+                    digest=stamp,
+                )
+            )
+            changed = True
+        elif row.deleted:
+            continue  # 删过了：磁盘上这份是残留，不导回
+        elif row.digest != stamp:
+            row.label, row.kind, row.hint = lens.label, lens.kind, lens.hint
+            row.prompt, row.digest = lens.prompt, stamp
+            changed = True
+
+    # 库 → 文件
+    for key, row in rows.items():
+        path = home / f"{key}.md"
+        if row.deleted:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            continue
+        if key in on_disk:
+            continue
+        text = _render(row.key, row.label, row.kind, row.hint or "", row.prompt or "")
+        try:
+            home.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        except OSError:
+            continue
+        row.digest = _digest(text)
+        changed = True
+
+    if changed:
+        db.commit()
+        _cache["stamp"] = None
+
+
+def all_lenses(db=None) -> tuple[Lens, ...]:  # noqa: ANN001
+    """全部滤镜。给了 `db` 就以表为准（并把文件对齐），没给就退回去读文件。
+
+    为什么还留文件这条路：启动体检（`startup._resource_step`）拿不到会话，
+    只想知道"有几条"；那时读目录最省事。
+    """
+    if db is None:
+        return _load()
+    sync_folder(db)
+    return _db_items(db)
+
+
+def find(word: str, db=None) -> Lens | None:  # noqa: ANN001
     """一个词 → 一条 lens（认 key 也认中文名，大小写不敏感）。
 
     只按 key / 名字认。**没有 `/` 前缀那回事**了（2026-11-06 起界面不再有命令）。
@@ -207,17 +321,17 @@ def find(word: str) -> Lens | None:
     raw = str(word or "").strip()
     if not raw:
         return None
-    for one in _load():
+    for one in all_lenses(db):
         if one.key.lower() == raw.lower() or one.label == raw:
             return one
     return None
 
 
-def catalog() -> list[dict]:
+def catalog(db=None) -> list[dict]:  # noqa: ANN001
     """给界面的一份清单（药丸里那份列表照它渲染）。**不带 `prompt`** —— 那是服务端的事。"""
     return [
         {"key": one.key, "label": one.label, "kind": one.kind, "hint": one.hint, "source": one.source}
-        for one in _load()
+        for one in all_lenses(db)
     ]
 
 
@@ -230,6 +344,33 @@ def _render(key: str, label: str, kind: str, hint: str, prompt: str) -> str:
     return "---\n" + head + "\n---\n\n" + prompt.strip() + "\n"
 
 
+def _store(db, one: Lens) -> None:  # noqa: ANN001
+    """把一条写进 `lenses`（含清墓碑）。digest 与刚写下去的**那份文件**对齐。
+
+    不这么做的话，下一次 `sync_folder` 会把它当成"文件被手改过"再导一遍 ——
+    内容一样，但 `updated_at` 变了，等于每次启动都白推一次同步。
+    """
+    from .models import LensDef  # noqa: PLC0415
+
+    text = _render(one.key, one.label, one.kind, one.hint, one.prompt)
+    row = db.get(LensDef, one.key)
+    if row is None:
+        db.add(
+            LensDef(
+                key=one.key,
+                label=one.label,
+                kind=one.kind,
+                hint=one.hint,
+                prompt=one.prompt,
+                digest=_digest(text),
+            )
+        )
+    else:
+        row.label, row.kind, row.hint = one.label, one.kind, one.hint
+        row.prompt, row.digest, row.deleted = one.prompt, _digest(text), False
+    db.commit()
+
+
 def save(
     *,
     key: str = "",
@@ -237,6 +378,7 @@ def save(
     kind: str,
     hint: str = "",
     prompt: str,
+    db=None,  # noqa: ANN001
 ) -> Lens:
     """新增 / 改一条（界面里的"保存"）。
 
@@ -271,11 +413,19 @@ def save(
     tmp.write_text(_render(name, clean_label, clean_kind, clean_hint, clean_prompt), encoding="utf-8")
     tmp.replace(path)
     _cache["stamp"] = None
-    return Lens(name, clean_label, clean_kind, clean_hint, clean_prompt, path.name)
+    one = Lens(name, clean_label, clean_kind, clean_hint, clean_prompt, path.name)
+    if db is not None:
+        _store(db, one)
+    return one
 
 
-def delete(key: str) -> bool:
-    """删一条。**只删文件** —— 挂在链上的记录留着（引用了不存在的 key 会被忽略）。"""
+def delete(key: str, db=None) -> bool:  # noqa: ANN001
+    """删一条。**挂在链上的记录留着**（引用了不存在的 key 会被忽略）。
+
+    库里留一行墓碑（`deleted=True`）而不是物理删：这张表跟着 Turso 同步，
+    物理删只能表达"本机删了"；墓碑才能让别的设备也删、并且保证磁盘上的
+    残留文件不会在下次启动时把它导回来。
+    """
     name = str(key or "").strip().lower()
     if not _KEY_RE.match(name or ""):
         return False
@@ -285,6 +435,25 @@ def delete(key: str) -> bool:
     except OSError:
         return False
     _cache["stamp"] = None
+    if db is not None:
+        from .models import LensDef  # noqa: PLC0415
+
+        row = db.get(LensDef, name)
+        if row is None:
+            db.add(
+                LensDef(
+                    key=name,
+                    label=name,
+                    kind=KINDS[0],
+                    hint="",
+                    prompt="",
+                    digest="",
+                    deleted=True,
+                )
+            )
+        else:
+            row.deleted = True
+        db.commit()
     return True
 
 
@@ -458,9 +627,11 @@ def resolve(db, conv, node) -> list[Lens]:  # noqa: ANN001
         for one in by_uid.get(uid, []):
             decided[one["key"]] = one["on"]
 
-    order = {one.key: index for index, one in enumerate(_load())}
-    live = [find(key) for key, on in decided.items() if on]
-    live = [one for one in live if one is not None]
+    # 一次读齐（`find()` 每条都会走一遍 sync_folder + 查询 —— 每轮生成都这么做太亏）
+    current = all_lenses(db)
+    order = {one.key: index for index, one in enumerate(current)}
+    by_key = {one.key: one for one in current}
+    live = [by_key[key] for key, on in decided.items() if on and key in by_key]
     live.sort(key=lambda one: order.get(one.key, 0))
     return live
 

@@ -15,16 +15,21 @@
 * 只数仓库里自己写的源码。**不算**：`vendor/`（第三方库、字体、Pyodide）、
   `api/web`（前端构建产物）、`api/var`（用户附件）、`data/`、`db/`、`build/dist`、
   `reference/`（仓库外的只读软链）、`.git-rewrite/`（整份仓库的副本）、
-  `mobile/android/app/build`（Gradle/Chaquopy 的构建树，进去就是整套 Python 运行时）、
+  `mobile/android/{app/build,build}`（Gradle/Chaquopy 的构建树，进去就是整套 Python 运行时）、
+  `mobile/android/capacitor-cordova-android-plugins`（`npx cap sync` 生成的插件工程）、
   `mobile/android/app/src/main/{python,assets}`（`api/app` 与 `api/web` 的同步副本）、
   仓库根的 `share-*.html`（`make share` 的产物）—— 列在 `SKIP_PATHS` /
   `SKIP_FILE_GLOBS` / `SKIP_NAMES` 里。**判断依据是"人写的还是生成的"**，
   不是"在不在 git 里"（`meta/topics.yaml` 在 git 里但只是配置，默认不数）。
+  **排除规则按仓库相对路径判断**，所以 `--path mobile` 这种子树扫描同样生效
+  （这条以前是坏的：按扫描起点算路径，`--path mobile` 把构建树全数了进去）。
 * 空行不计；**整行注释**不计（`#`、`//`、`/* */`、`<!-- -->`）。
 * **行尾注释不单算**：`x = 1  # 解释` 仍是代码行。逐行去注释要解析语法，
   收益不值那个代价（要精确就得用各语言的解析器，那是另一件事）。
 * **三引号文档字符串算代码行**（与 cloc 同口径）。本仓库 `.py` 的文件头说明很长，
   想知道它占多少，看 `--by-dir` 里 `pipeline` 那几行的规模即可。
+* 安卓壳那几份 Activity/启动器是**人写的**，`.java` / `.kt` 与其它源码一起数；
+  `AndroidManifest.xml`、`build.gradle`、混淆规则这类属于配置，只在 `--all` 里出现。
 * `.pyc`、字体、数据、图片本来就不在后缀表里，走不到读文件那一步。
 
 ## 用法
@@ -33,7 +38,7 @@
     python3 tools/loc.py --by-dir         # 按目录汇总（默认两层：theme/runtime、api/app …）
     python3 tools/loc.py --by-dir --depth 1
     python3 tools/loc.py --path api       # 只看 api/ 这棵子树
-    python3 tools/loc.py --all            # 连配置文件（json / yaml / toml / ini）一起数
+    python3 tools/loc.py --all            # 连配置文件（json / yaml / toml / ini / gradle / xml）一起数
     python3 tools/loc.py --json           # 给程序读（结构与打印无关）
 """
 
@@ -65,6 +70,10 @@ SUFFIX_LANG: dict[str, tuple[str, str]] = {
     ".html": ("HTML", HTMLC),
     ".sh": ("Shell", HASH),
     ".vbs": ("VBScript", QUOTE),
+    # 安卓壳（`mobile/android/.../java`）：这三份是**人写的** Activity 与启动器，
+    # 不是 Chaquopy 的产物 —— 以前后缀表里没有 .java，整棵 mobile/ 只数到 9 个脚本
+    ".java": ("Java", SLASH),
+    ".kt": ("Kotlin", SLASH),
 }
 
 #: 无后缀的文件按名字认（`Makefile` 是仓库里唯一一个）。
@@ -80,6 +89,10 @@ CONFIG_SUFFIX: dict[str, tuple[str, str]] = {
     ".toml": ("TOML", HASH),
     ".ini": ("INI", HASH),
     ".cfg": ("INI", HASH),
+    ".gradle": ("Gradle", SLASH),
+    ".kts": ("Kotlin", SLASH),
+    ".xml": ("XML", HTMLC),
+    ".pro": ("ProGuard", SLASH),
 }
 
 #: 按**名字**跳过的目录（任何层级）：缓存与虚拟环境，里面没有自写源码。
@@ -92,6 +105,7 @@ SKIP_NAMES = {
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",
+    ".gradle",   # Gradle 的缓存目录（`mobile/android/.gradle`），不是源码
 }
 
 #: 按**仓库相对路径**跳过的目录：第三方、构建产物、数据、仓库外的软链、工具的运行状态。
@@ -119,6 +133,8 @@ SKIP_PATHS = (
     # 实测漏掉这四条时，一次 `make loc` 数出 2,738 个 Python 文件 / 138 万行 ——
     # 全是 Chaquopy 把 pip、sqlalchemy、pydantic 装进 build/ 之后再数一遍。
     "mobile/android/app/build",             # Gradle + Chaquopy 的构建树（含整套 Python 运行时）
+    "mobile/android/build",                 # Gradle 的中间产物（报告、缓存）
+    "mobile/android/capacitor-cordova-android-plugins",  # `npx cap sync` 生成出来的插件工程
     "mobile/android/app/src/main/python",   # `api/app` 的同步副本（`scripts/inject-sync-assets.py` 拷过来的）
     "mobile/android/app/src/main/assets",   # 前端构建产物（`api/web` 的拷贝）+ Cordova 胶水脚本
     "mobile/wheels",                        # 第三方 wheel
@@ -223,14 +239,21 @@ def dir_key(rel: Path, depth: int) -> str:
 
 
 def scan(root: Path, *, depth: int, include_config: bool) -> tuple[dict[str, Stat], dict[str, Stat]]:
-    """走一遍 root → (按语言, 按目录)。"""
+    """走一遍 root → (按语言, 按目录)。
+
+    **排除规则按仓库相对路径判断**（`SKIP_PATHS` 里写的是 `mobile/android/app/build`
+    这种全路径），所以哪怕从 `--path mobile` 这样的子树起步，也要换算回仓库根再比对。
+    这里曾经直接用"相对扫描起点"的路径去比，于是 `--path mobile` 把 Gradle 构建树里
+    的 2,909 个文件全数了进来 —— 数字大得离谱，还怪不到规则头上。
+    """
     by_lang: dict[str, Stat] = {}
     by_dir: dict[str, Stat] = {}
     for dirpath, dirnames, filenames in os.walk(root):
         here = Path(dirpath)
-        rel_dir = here.relative_to(root)
+        rel_dir = here.relative_to(root)     # 分组用：--path api 时显示 app/、tests/…
+        repo_dir = here.relative_to(ROOT)    # 排除用：规则写的是仓库相对路径
         # 就地裁剪：跳过的目录连进都不进（reference/ 是仓库外的软链，走进去就是灾难）
-        dirnames[:] = sorted(d for d in dirnames if not skipped(rel_dir / d))
+        dirnames[:] = sorted(d for d in dirnames if not skipped(repo_dir / d))
         for name in filenames:
             found = language_of(name, include_config=include_config)
             if found is None:
@@ -298,7 +321,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="数一数仓库里自写代码的行数（只读）")
     parser.add_argument("--by-dir", action="store_true", help="按目录汇总而不是按语言")
     parser.add_argument("--depth", type=int, default=2, help="--by-dir 归到第几层（默认 2）")
-    parser.add_argument("--all", action="store_true", help="连配置文件（json / yaml / toml / ini）一起数")
+    parser.add_argument("--all", action="store_true",
+                        help="连配置文件（json / yaml / toml / ini / gradle / xml）一起数")
     parser.add_argument("--path", metavar="SUBDIR", help="只看这个子树（相对仓库根）")
     parser.add_argument("--json", action="store_true", help="输出 JSON，给程序读")
     args = parser.parse_args()
@@ -346,7 +370,7 @@ def main() -> int:
     print("口径：只数仓库里自写的源码（vendor/ 与构建产物不算）；不计空行与整行注释；"
           "行尾注释不单算，三引号文档字符串算代码。")
     if not args.all:
-        print("      配置类（json / yaml / toml / ini）默认不数，要连它们一起看加 --all。")
+        print("      配置类（json / yaml / toml / ini / gradle / xml）默认不数，要连它们一起看加 --all。")
     return 0
 
 

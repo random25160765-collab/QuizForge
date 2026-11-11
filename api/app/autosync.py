@@ -68,13 +68,22 @@ def _seconds(name: str, default: float, floor: float) -> float:
 
 
 def poll_seconds() -> float:
-    """探测间隔：本地一眼 + 远端一行，5 秒足够勤，又不至于把电量吃光。"""
-    return _seconds("QF_SYNC_POLL", 5.0, 1.5)
+    """探测间隔：30 秒。
+
+    原来是 5 秒。手机上那是**每 5 秒一次 HTTPS**，射频一直被叫醒 —— 待机掉电
+    的主因（2026-11-11 用户报"移动端耗电"）。现在"刚改完就要同步"由页面下拉
+    （`theme/runtime/pullsync.js`）负责，自动节拍只管兜底，没必要这么勤。
+    """
+    return _seconds("QF_SYNC_POLL", 30.0, 1.5)
 
 
 def interval_seconds() -> float:
-    """兜底整轮的间隔：只为了发现**整包**（材料 / 题库）的变化。"""
-    return _seconds("QF_SYNC_INTERVAL", 60.0, 15.0)
+    """兜底整轮的间隔：只为了发现**整包**（材料 / 题库）的变化。
+
+    5 分钟一轮。整包会走数据库事务 + 上传下载，比行级探测重得多；下拉同步与
+    `run_now` 都会把它顺带跑掉，平时不需要每分钟来一次。
+    """
+    return _seconds("QF_SYNC_INTERVAL", 300.0, 15.0)
 
 
 def _first_delay() -> float:

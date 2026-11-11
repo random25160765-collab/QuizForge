@@ -469,7 +469,9 @@ html[data-theme='light'] .sch-root {
 .sch-item__check.is-done {
   border-color: var(--sch-ok);
   background: var(--sch-ok);
-  color: #fff;
+  /* 与同文件里 `--pri` 实心那颗（`.sch-...` 的新建按钮）同一档墨色：
+   * 白字挂在 #4fb39d 上只有 2.6:1 */
+  color: var(--btn-primary-ink);
 }
 
 .sch-item__text {

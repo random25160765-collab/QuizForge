@@ -13,7 +13,7 @@
 | 题库 | 读不到题 = 界面空着（但还能用） |
 | 前端产物 | 页面拿不到 = 白屏（**接口却是好的**，最难查） |
 | 密钥（内测/自带） | 没有 = 对话那一项用不了，别的照常 |
-| 重型运行时 | 没就绪 = 跑 Python 那一项暂时不可用（会自己取） |
+| 重型运行时 | 没就绪 = 跑 Python 那一项暂时不可用（首启下载时启动页停在这儿画进度） |
 
 `fail` 会挡住"可以开始用"，`warn` 只提示 —— 因为后面几条都属于"少一个能力"，
 不该把人拦在门外。
@@ -108,6 +108,27 @@ def _resource_step() -> Step:
     return Step("assets", "只读资源", OK, f"pipeline 可用 · 演示套件在 · 滤镜 {lenses} 条")
 
 
+def _heavy() -> tuple[dict, bool]:
+    """重型运行时的进度快照，外加"这一轮还在取吗"。
+
+    启动页在下载期间每秒问一次，所以这里要短、要稳：导入或取状态都可能炸
+    （模块缺失、设置读不出来），而这一条失败只该是"跑 Python 暂时不可用"，
+    不该让整张启动页 500。
+    """
+    try:
+        from . import heavy_deps  # noqa: PLC0415
+
+        snapshot = heavy_deps.progress()
+    except Exception:  # noqa: BLE001
+        return {}, False
+
+    state = str(snapshot.get("state") or "")
+    # 已经有结果的两种状态不算"还在取"：`_prefetching` 要等 `ensure()` 返回之后
+    # 才落下来，中间那一瞬会被轮询撞上 —— 那时进度已是 100%，再画成"下载中"会倒退。
+    busy = state == "running" or (heavy_deps.prefetching() and state not in ("ok", "failed"))
+    return snapshot, busy
+
+
 def checks() -> list[Step]:
     """跑一遍启动检查。**每次都重新算**（除了表结构那一条，它是进程内不会变的）。"""
     from .config import get_settings  # noqa: PLC0415
@@ -179,15 +200,25 @@ def checks() -> list[Step]:
     else:
         steps.append(Step("ai", "模型通道", WARN, "要在设置里填自己的密钥"))
 
-    # 重型运行时（Pyodide）：没就绪只影响"跑 Python"，而且它会自己在后台取
+    # 重型运行时（Pyodide）：首启**当着一面**取（146M），启动页要停在这儿画进度 ——
+    # 用户 2026-11-10："大的依赖还是不该让它在背后自己下，在首次安装的时候显示进度条"。
     try:
         from . import heavy_deps  # noqa: PLC0415
 
-        if heavy_deps.is_ready():
+        snapshot, busy = _heavy()
+        state = str(snapshot.get("state") or "")
+        if busy:
+            # 顺序要紧：下载中**不调** `is_ready()` —— 它会把已经落盘的每个文件
+            # 重算一遍 sha256，而启动页在下载期间每秒问一次。
+            steps.append(Step("heavy", "Python 运行时", WARN, "正在下载必要的依赖"))
+        elif heavy_deps.is_ready():
             steps.append(Step("heavy", "Python 运行时", OK, "已在本机缓存里"))
         elif not heavy_deps.manifest():
             # 没有清单 = 连下载都不敢（校验不了）—— 这不是"稍后会好"，要如实说
             steps.append(Step("heavy", "Python 运行时", WARN, "没有校验清单，跑 Python 这一项不可用"))
+        elif state == "failed":
+            reason = str(snapshot.get("detail") or "").strip() or "原因未知"
+            steps.append(Step("heavy", "Python 运行时", WARN, f"{reason} —— 跑 Python 这一项暂时不可用"))
         else:
             steps.append(Step("heavy", "Python 运行时", WARN, "首次跑到 Python 时取一次（约 146M），之后离线可用"))
     except Exception:  # noqa: BLE001
@@ -199,9 +230,17 @@ def checks() -> list[Step]:
 def report() -> dict:
     """给启动页用的整份报告（含进度）。"""
     steps = checks()
-    done = sum(1 for step in steps if step.status in (OK, WARN, FAIL))
+    snapshot, busy = _heavy()
+    if busy:
+        # 下载占住启动页时，进度条画的就是它：其余检查都在毫秒级完成，按"检查条数"
+        # 算会一上来就停在 n-1/n，然后几十兆的下载里一动不动。
+        progress = min(0.99, int(snapshot.get("percent") or 0) / 100)
+    else:
+        done = sum(1 for step in steps if step.status in (OK, WARN, FAIL))
+        progress = round(done / len(steps), 3) if steps else 1.0
     return {
         "ok": all(step.status != FAIL for step in steps),
-        "progress": round(done / len(steps), 3) if steps else 1.0,
+        "progress": progress,
+        "downloading": busy,
         "steps": [step.as_dict() for step in steps],
     }

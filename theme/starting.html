@@ -1,53 +1,77 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark light">
+  <meta name="color-scheme" content="light">
   <meta name="generator" content="QFStudio">
   <link rel="icon" type="image/svg+xml" href="mark.svg?v=2">
   <link rel="stylesheet" href="starting.css">
-  <script>
-    // 跟着用户上次选的深浅色走（与 shell.html 读同一份设置）
-    try {
-      var saved = JSON.parse(localStorage.getItem('quizforge.v1.settings') || '{}');
-      if (saved && saved.theme) document.documentElement.dataset.theme = saved.theme;
-    } catch (err) { /* 读不出来就用默认（深色） */ }
-  </script>
   <title>QFStudio</title>
 </head>
 <body>
-  <!-- 只有三样东西：标、名、进度。没有清单、没有百分比、没有"仍然进入"——
+  <!-- 三样东西：标、名、一句状态。**进度不另起一条线** —— 标外面那一圈就是刻度：
+       首次安装要取 146M 的运行时，细线绕着图标长满，长满即进入。
        检查没通过就停在这儿并说明是哪一项，不给人绕过检查的入口。 -->
   <main class="stage">
-    <img class="mark" src="icon.svg" width="64" height="64" alt="">
-    <h1 class="name">QFStudio</h1>
-    <div class="track" id="track" role="progressbar" aria-labelledby="status"
+    <div class="mark" id="mark" role="progressbar" aria-labelledby="status"
          aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-      <div class="track__fill" id="fill"></div>
+      <img class="mark__tile" src="icon-splash.svg" width="96" height="96" alt="">
+      <!-- 从**顶边中点**开始顺时针画：<rect> 的路径起点在左上圆角之后，
+           看上去像线从边上"半路"冒出来，所以这里手写一条同形状的路径。 -->
+      <svg class="mark__ring" viewBox="0 0 112 112" aria-hidden="true">
+        <path class="mark__track"
+              d="M56 0.75H80.25A31 31 0 0 1 111.25 31.75V80.25A31 31 0 0 1 80.25 111.25H31.75A31 31 0 0 1 0.75 80.25V31.75A31 31 0 0 1 31.75 0.75H56"/>
+        <path class="mark__bar" id="bar"
+              d="M56 0.75H80.25A31 31 0 0 1 111.25 31.75V80.25A31 31 0 0 1 80.25 111.25H31.75A31 31 0 0 1 0.75 80.25V31.75A31 31 0 0 1 31.75 0.75H56"
+              pathLength="100"/>
+      </svg>
     </div>
+    <h1 class="name">QFStudio</h1>
     <p class="status" id="status" role="status" aria-live="polite">正在准备</p>
+    <p class="figure" id="figure" hidden><span id="pct">0</span><span class="figure__sign">%</span></p>
     <p class="detail" id="detail" hidden></p>
     <button class="retry" id="retry" type="button" hidden>重试</button>
   </main>
 
   <script>
     (function () {
-      var fill = document.getElementById('fill');
-      var track = document.getElementById('track');
+      var mark = document.getElementById('mark');
+      var bar = document.getElementById('bar');
       var status = document.getElementById('status');
+      var figure = document.getElementById('figure');
+      var pct = document.getElementById('pct');
       var detail = document.getElementById('detail');
       var retry = document.getElementById('retry');
       var settled = false;
       var misses = 0;
+      var wait = 400;
+      var wasLive = false;
+      var finishing = false;
+      var shown = -1;
 
       function paint(payload) {
-        var percent = Math.round((payload.progress || 0) * 100);
-        fill.style.width = percent + '%';
-        track.setAttribute('aria-valuenow', String(percent));
-
+        var percent = Math.max(0, Math.min(100, Math.round((payload.progress || 0) * 100)));
+        var downloading = !!payload.downloading;
         var failures = (payload.steps || []).filter(function (s) { return s.status === 'fail'; });
+
+        // 那一圈就是进度：细线绕着图标长满，页面上没有第二条进度线。
+        // `finishing` 是"下载刚收尾"那一帧：留住过渡，让圈长满再进主界面。
+        finishing = !downloading && wasLive && percent >= 100;
+        wasLive = downloading;
+        bar.style.strokeDashoffset = String(100 - percent);
+        mark.setAttribute('aria-valuenow', String(percent));
+        mark.classList.toggle('mark--live', downloading || finishing);
+        mark.classList.toggle('mark--bad', failures.length > 0);
+
+        figure.hidden = !downloading;
+        if (downloading && shown !== percent) {
+          pct.textContent = String(percent);
+          shown = percent;
+        }
+
         if (failures.length) {
+          wait = 400;
           status.textContent = failures.map(function (s) { return '「' + s.label + '」'; }).join('') + '没通过';
           status.classList.add('status--bad');
           detail.textContent = failures.map(function (s) { return s.detail; }).filter(Boolean).join('；');
@@ -56,10 +80,14 @@
           return false;
         }
 
-        status.textContent = percent >= 100 ? '就绪' : '正在准备';
+        // 首次安装：146M 的运行时正在取（服务端把下载进度折算进 progress），
+        // 这一轮的等待全在它身上 —— 要说出来，而不是一直"正在准备"。
+        status.textContent = downloading ? '正在下载必要的依赖' : (percent >= 100 ? '就绪' : '正在准备');
         status.classList.remove('status--bad');
         detail.hidden = true;
         retry.hidden = true;
+        // 下载要几十秒到几分钟：问得太勤只是让服务端反复跑一遍启动检查
+        wait = downloading ? 1000 : 400;
         return percent >= 100;
       }
 
@@ -76,7 +104,8 @@
             if (paint(payload)) {
               if (!stay) {
                 settled = true;
-                location.replace('workbench.html');
+                // 下载刚收尾：给这一圈长满留一拍，进主界面不显得被"掐断"
+                setTimeout(function () { location.replace('workbench.html'); }, finishing ? 760 : 0);
               }
               return;
             }
@@ -87,7 +116,7 @@
             if (misses >= 12) status.textContent = '正在等待本机服务';
           })
           .then(function () {
-            if (!settled) setTimeout(tick, 400);
+            if (!settled) setTimeout(tick, wait);
           });
       }
 

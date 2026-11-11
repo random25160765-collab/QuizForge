@@ -164,6 +164,9 @@ PRIVATE_TABLES: frozenset[str] = frozenset(
         # 笔记正文（2026-11-09）：手机端没有 Obsidian，读改都落在这张表。
         # 它装的是用户自己写的东西，与对话正文同一档 —— 只让云看见密文。
         "notes",
+        # 滤镜定义（2026-11-11）：用户自己写的提示词，可能带着他的表达习惯与
+        # 私事（"用我女儿的名字举例"这种）。与笔记同一档。
+        "lenses",
     }
 )
 
@@ -189,6 +192,8 @@ PULL_ORDER: tuple[str, ...] = (
     "conversation_folders",
     "messages",
     "attachments",
+    # 滤镜定义（2026-11-11 从文件搬进库）：没有外键，先落它，挂载记录随后。
+    "lenses",
     # 滤镜挂载记录（2026-11-09 从设置搬出来）：外键指对话，消息只用 uid 软引用，
     # 所以排在 messages 之后就行。
     "lens_records",
@@ -335,6 +340,94 @@ class SyncNotConfigured(SyncError):
     """设置里还没有 Turso 的地址/令牌。"""
 
 
+class SyncOfflineError(SyncError):
+    """**网络层**就没通：DNS / 连接 / TLS / 超时。
+
+    与"服务器回了错"必须分开（2026-11-11 用户要求）：前者的下一步是检查网络，
+    后者的下一步是检查令牌或稍后再试。糊成一句"同步失败"等于让人两边乱试。
+    """
+
+
+class SyncHTTPError(SyncError):
+    """服务器**回了响应**，但状态码不是 2xx。`status` 带原始码，供界面分诊。"""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = int(status)
+
+
+def _classify_error(exc: BaseException) -> str:
+    """失败 → 一个给界面用的类别（见前端 `syncFailText`）。
+
+    值：`offline`（网络没通）/ `auth`（令牌被拒）/ `server`（对面 5xx）/
+    `request`（对面 4xx，请求本身有问题）/ `config`（本机没配）/ `other`（剩下的）。
+
+    **没有 `key` 这一类**（2026-11-11 用户："加密应该是秘密进行的"）：密钥相关的
+    失败不该有独立文案，界面上也不该出现"加密"两个字 —— 它落进 `other`，
+    文案就是那条中性的事故说明。
+    """
+    if isinstance(exc, SyncNotConfigured):
+        return "config"
+    if isinstance(exc, SyncOfflineError):
+        return "offline"
+    if isinstance(exc, SyncHTTPError):
+        if exc.status in (401, 403):
+            return "auth"
+        return "server" if exc.status >= 500 else "request"
+    # 传输层错误可能被外面又包了一层（`raise ... from exc`）：`__cause__` 也要看
+    cause = exc.__cause__ or exc.__context__
+    if isinstance(exc, httpx.TransportError) or isinstance(cause, httpx.TransportError):
+        return "offline"
+    text = _error_text(exc)
+    if "连不上 Turso" in text:
+        return "offline"
+    if "Turso 返回 401" in text or "Turso 返回 403" in text:
+        return "auth"
+    return "other"
+
+
+def _error_text(exc: BaseException) -> str:
+    """异常 → 给用户看的一句话。
+
+    **不能只有 `str(exc)`**（2026-11-11 实测）：网络层抛上来的
+    `httpx.ConnectError` 有时 `str()` 是空的，界面于是显示
+    「连不上 Turso（https://…）：」—— 冒号后面什么都没有，等于没说。
+    空的时候退回异常类型名，至少让人知道是哪一层坏的。
+    """
+    text = str(exc).strip()
+    return text or (type(exc).__name__ + "（底层没有给出细节）")
+
+
+def _record_failure(engine: Engine, exc: BaseException) -> None:
+    """把这一轮失败写进 `last_result`（设置页读的就是它）。
+
+    为什么要独立成函数：有两处需要（`run_once` 的 except、后台线程的兜底），
+    而**兜底那一处是必须的** —— `TursoClient(...)` 的构造曾经在 `run_once` 的
+    try 之外，构造一抛（配置坏了、环境缺依赖），`last_result` 根本不更新，
+    设置页继续显示上一次的「推 0 / 拉 0」，用户以为同步成功了。
+
+    `kind` 写进去是为了让界面能说清**是哪一种失败**（网络 / 令牌 / 对面 5xx /
+    本机没配 / 密钥），而不是笼统一句"同步失败"。
+    """
+    try:
+        with engine.begin() as conn:
+            _state_set(
+                conn,
+                "last_result",
+                json.dumps(
+                    {
+                        "ok": False,
+                        "at": _now_iso(),
+                        "error": _error_text(exc),
+                        "kind": _classify_error(exc),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+    except Exception:  # noqa: BLE001 - 写状态失败不该盖掉真正的错
+        log.warning("同步失败的状态没写进库", exc_info=True)
+
+
 # ============================================================================ 表规格
 
 
@@ -395,6 +488,7 @@ _TIMESTAMPS: dict[str, tuple[str, ...]] = {
     "schedule_runs": ("updated_at",),
     "gate_runs": ("updated_at",),
     "lens_records": ("updated_at", "created_at"),
+    "lenses": ("updated_at", "created_at"),
 }
 
 SPECS: dict[str, TableSpec] = _build_specs()
@@ -682,8 +776,20 @@ def _decrypt(key: bytes, tbl: str, pk: str, payload: str) -> dict:
 
 
 def turso_config() -> dict:
+    """Turso 的地址与令牌。
+
+    **读出来就 trim**（2026-11-11 用户要求）：粘贴令牌时首尾很容易带空格/换行，
+    而它进了 `Authorization: Bearer …` 就是 401 —— 用户对着一段看不见空格的字符串
+    根本查不出来。这里直接修掉，别把这种错留给界面去解释。
+    """
     raw = settings_file.load().get("turso")
-    return dict(raw) if isinstance(raw, dict) else {}
+    if not isinstance(raw, dict):
+        return {}
+    conf = dict(raw)
+    for key in ("url", "token"):
+        if isinstance(conf.get(key), str):
+            conf[key] = conf[key].strip()
+    return conf
 
 
 def turso_configured() -> bool:
@@ -758,10 +864,14 @@ class TursoClient:
                 timeout=self.timeout,
             )
         except httpx.HTTPError as exc:
-            raise SyncError(f"连不上 Turso（{self.endpoint}）：{exc}") from exc
+            raise SyncOfflineError(
+                f"连不上 Turso（{self.endpoint}）：{_error_text(exc)}"
+            ) from exc
         if response.status_code >= 400:
             detail = response.text[:300]
-            raise SyncError(f"Turso 返回 {response.status_code}：{detail}")
+            raise SyncHTTPError(
+                f"Turso 返回 {response.status_code}：{detail}", response.status_code
+            )
         try:
             payload = response.json()
         except ValueError as exc:
@@ -853,9 +963,10 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
     if not salt_b64:
         if not passphrase:
             if need_private:
+                # 不提加密/密钥（2026-11-11 用户："加密应该是秘密进行的"）：
+                # 对人只需要说"缺地址与令牌、去哪填"。
                 raise SyncError(
-                    "要同步对话 / 记忆 / 计划书（端到端加密），得先配好 Turso 的地址与令牌"
-                    " —— 密钥由它们推导，不用另外填口令。\n"
+                    "要同步对话 / 记忆 / 计划书，得先配好 Turso 的地址与令牌。\n"
                     "  在「设置 → 同步」里填上（或写进 config/settings.local.json 的 turso 块）。"
                 )
             return None
@@ -882,8 +993,8 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
     if not passphrase:
         if need_private:
             raise SyncError(
-                "远端已经有加密数据（对话 / 记忆 / 计划书），而本机还缺 Turso 的地址或令牌。\n"
-                "  填上之后密钥会自动推导出来，不需要额外的口令。"
+                "远端已经有对话 / 记忆 / 计划书，而本机还缺 Turso 的地址或令牌。\n"
+                "  在「设置 → 同步」里填上就能对齐。"
             )
         return None
 
@@ -896,8 +1007,8 @@ def _remote_key(remote: Any, *, need_private: bool) -> bytes | None:
         check, _key_check(key)
     ):
         raise SyncError(
-            "两台机器的 Turso 凭据不是同一套（远端校验值对不上）。\n"
-            "  地址和令牌必须指向同一个库；换过令牌的，历史密文已作废。"
+            "两台机器的 Turso 凭据不是同一套。\n"
+            "  地址和令牌必须指向同一个库；换过令牌的，早些时候同步过去的内容读不回来。"
         )
     return key
 
@@ -1402,7 +1513,10 @@ def _apply_page(engine: Engine, rows: list[dict], key: bytes | None, origin: str
             # 否则升级当天就会因为"拿密文的口令去解明文"炸掉。
             if int(remote_row.get("enc") or 0):
                 if key is None:
-                    raise SyncError(f"远端有加密的 {tbl}，而本机没有口令")
+                    raise SyncError(
+                        f"远端的 {tbl} 读不了：两端的同步凭据不是同一套"
+                        "（换回原来那组地址与令牌）"
+                    )
                 try:
                     data = _decrypt(key, tbl, pk, str(payload))
                 except (SyncError, InvalidTag, ValueError):
@@ -2008,10 +2122,13 @@ def run_once(engine: Engine | None = None, remote: Any | None = None) -> dict:
             "还没配 Turso：在设置 →「同步」里填数据库地址与令牌，"
             "或直接改 config/settings.local.json 的 turso 块。"
         )
-    remote = remote or TursoClient(str(conf["url"]), str(conf["token"]))
     origin = _origin(engine)
     started = time.monotonic()
     try:
+        # **构造也必须在 try 里**（2026-11-11）：它要读地址与令牌，配置半坏时会在这
+        # 一步就抛。放在外面的话异常不落库，设置页读到的还是上一次的「推 0 / 拉 0」，
+        # 用户看到的是"同步完成"。
+        remote = remote or TursoClient(str(conf["url"]), str(conf["token"]))
         remote.ensure_schema()
         need_private = _private_needed(engine) or _remote_has_private(remote)
         key = _remote_key(remote, need_private=need_private)
@@ -2039,13 +2156,8 @@ def run_once(engine: Engine | None = None, remote: Any | None = None) -> dict:
             "origin": origin,
         }
     except Exception as exc:
-        _last_error = str(exc)
-        with engine.begin() as conn:
-            _state_set(
-                conn,
-                "last_result",
-                json.dumps({"ok": False, "at": _now_iso(), "error": str(exc)}, ensure_ascii=False),
-            )
+        _last_error = _error_text(exc)
+        _record_failure(engine, exc)
         raise
     with engine.begin() as conn:
         _state_set(conn, "last_result", json.dumps(result, ensure_ascii=False))
@@ -2106,7 +2218,11 @@ def run_in_background(engine: Engine | None = None) -> bool:
         try:
             run_full(engine)
         except Exception as exc:  # noqa: BLE001 - 后台线程里吞掉，状态里有
-            log.warning("后台同步失败：%s", exc)
+            log.warning("后台同步失败：%s", _error_text(exc))
+            # 兜底再写一次：`run_once` 的 except 已经写过，但**它 try 之外**那几行
+            # （读配置、建客户端）抛出来的异常到不了那里 —— 那种失败必须也留痕，
+            # 否则设置页会继续显示上一次的「推 0 / 拉 0」（2026-11-11 用户报障）。
+            _record_failure(engine or get_engine(), exc)
         finally:
             with _run_lock:
                 _running = False

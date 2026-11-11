@@ -8,25 +8,27 @@
    但**没有它也不该难看**。 */
 
 :root {
-  --qf-bg: #0b1016; /* --bg */
-  --qf-panel: #131a22; /* --bg2 */
-  --qf-panel2: #1e2936; /* --bg3 */
-  --qf-line: #38495a; /* --line */
-  --qf-line2: #4e6478; /* --line-strong */
-  --qf-fg: #e6edf3; /* --fg */
-  --qf-fg2: #9aa7b4; /* --fg2 */
-  --qf-dim: #75838f; /* --fg3 */
-  --qf-pri: #2dd4bf; /* --pri */
-  --qf-pri2: #14b8a6; /* --pri-2 */
-  --qf-pri3: #5eead4; /* --pri-3 */
-  --qf-ok: #34d399; /* --ok */
-  --qf-warn: #fbbf24; /* --amber */
-  --qf-bad: #f87171; /* --bad */
-  --qf-blue: #60a5fa; /* --blue */
+  /* 2026-11-11 与 app 的暗色档重新对齐：上一次暗色重设计只同步了浅色那一块，
+   * 于是演示页还停在旧色板（#0b1016 / #2dd4bf），同一个应用里两种青。 */
+  --qf-bg: #0f1419; /* --bg */
+  --qf-panel: #161c22; /* --bg2 */
+  --qf-panel2: #1e262e; /* --bg3 */
+  --qf-line: #2e3943; /* --line */
+  --qf-line2: #3c4a56; /* --line-strong */
+  --qf-fg: #d4dce4; /* --fg */
+  --qf-fg2: #96a2ae; /* --fg2 */
+  --qf-dim: #78858f; /* --fg3 */
+  --qf-pri: #33b8ab; /* --pri */
+  --qf-pri2: #1f9c91; /* --pri-2 */
+  --qf-pri3: #6ad6c9; /* --pri-3 */
+  --qf-ok: #4fbb8f; /* --ok */
+  --qf-warn: #d9a94e; /* --amber */
+  --qf-bad: #de7272; /* --bad */
+  --qf-blue: #74a2dd; /* --blue */
   --qf-r-sm: 8px; /* --r-sm */
   --qf-r: 12px; /* --r-md */
   --qf-r-lg: 18px; /* --r-lg */
-  --qf-edge: inset 0 1px 0 rgba(255, 255, 255, 0.06); /* --edge-hi */
+  --qf-edge: inset 0 1px 0 rgba(255, 255, 255, 0.045); /* --edge-hi */
   /* 离地高度**只有一档**（app 的 `--shadow-2`）：多一档就变成"谁都在浮"。
      面板本身就贴在这两档之间，别再自己加更重的阴影。 */
   --qf-shadow: 0 12px 32px -18px rgba(0, 0, 0, 0.75); /* --shadow-2 */

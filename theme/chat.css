@@ -619,14 +619,17 @@ body.is-colresize {
   min-height: 0;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: var(--line-strong) transparent;
+  /* 颜色与全局那条（app.css 的 `::-webkit-scrollbar-thumb`）同源：
+   * 原先这里用实心的 --line-strong，边框色当滑块使，比别处重一档。
+   * 两处都写同一个 mix —— Chromium 认 `scrollbar-color` 时就不走伪元素了。 */
+  scrollbar-color: color-mix(in srgb, var(--fg3) 26%, transparent) transparent;
 }
 
 .chat__list::-webkit-scrollbar { width: 6px; }
 .chat__list::-webkit-scrollbar-track { background: transparent; }
 .chat__list::-webkit-scrollbar-thumb {
   border-radius: 999px;
-  background: var(--line-strong);
+  background: color-mix(in srgb, var(--fg3) 26%, transparent);
 }
 
 .chatlist {
@@ -919,6 +922,31 @@ body.is-colresize {
   user-select: none;
 }
 
+/* 手机上不挂署名（用户："手机端的 chat UI，把消息栏左边的头像去掉 —— 在手机上
+ * 不协调"）。窄屏里那枚圆头像孤零零站在左边，还把整条正文推开 42px（30 的格子
+ * + 12 的列距）—— 手机上一行字本来就没几个，这 42px 花得最不值。
+ *
+ * 断点与 `.chat__scrim` / `.chat__sheet` 那组手机专用版式一致（600）：宽屏照旧
+ * 保留署名，那是"谁在说话"的锚点，桌面不嫌它占地方。 */
+@media (max-width: 600px) {
+  .chatmsg,
+  .chatmsg.has-margin {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chatmsg__who {
+    display: none;
+  }
+
+  /* 原来那 30 + 12 的左边距是头像那一列撑出来的。头像撤掉之后正文会顶到屏幕边
+   * （用户："对话内容和两边的间距变得特别窄，舒展一点"）—— 两侧各留 16。
+   * 底部那 16 不动：它和输入区的负外边距是一对（见 `.chat__thread` 的注释）。 */
+  .chat__thread {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
 /* 动作行里的图标与第一行正文左对齐。
    按钮是 28px 的点击区、图标 16px 居中，所以**按钮的**左边框与文字齐了，
    **图标本身**还差 6px（半边留白）—— 抵消掉才是视觉上的一条线。 */
@@ -1080,24 +1108,78 @@ body.is-colresize {
   color: var(--fg3);
 }
 
-/* 推理：折起来、颜色压低 —— 它是过程，不是结论 */
-.chatmsg__think > summary {
+/* 推理：折起来**一行**（箭头 + 标题 + 第一句预览），点开才是全文。
+ * 只有"思考过程"四个字的一行是纯噪音 —— 一条回复里出现七八次，
+ * 所以折起来时带一句内容，扫一眼就知道它在想什么（用户 2026-11-11 给的那张图）。 */
+.chatmsg__thinkrow {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-height: 24px;
+  /* 左边**不留内距**：箭头盒的左边缘就是正文的左边缘（用户 2026-11-12：
+   * "这个 > 需要和下面正文第一个字的边界对齐"）。 */
+  padding: 2px 8px 2px 0;
   cursor: pointer;
   font-size: 12px;
-  color: var(--fg3);
   list-style: none;
 }
 
-.chatmsg__think > summary::-webkit-details-marker {
+.chatmsg__thinkrow::-webkit-details-marker {
   display: none;
 }
 
-.chatmsg__think > summary::before {
-  content: '▸ ';
+/* 悬停**不给底色块**（用户 2026-11-12："hover 的时候不要出现圆角矩形"）：
+ * 一整块浅灰压在句子上，比可点这件事本身抢眼。改让箭头提亮一档 —— 
+ * 与 Finder / Xcode 的 disclosure 同一个做法。 */
+.chatmsg__thinkrow:hover .chatmsg__thinkcaret {
+  color: var(--fg2);
 }
 
-.chatmsg__think[open] > summary::before {
-  content: '▾ ';
+/* 三种折叠行（思考 / 工具 / 一整段过程链）**共用同一个箭头**：
+ *
+ *   * 12px 的 SVG chevron，不是字符 `›` —— 字符的字形在盒子里并不居中，
+ *     `rotate(90deg)` 绕盒子中心转，展开那一刻箭头就歪到一边（用户 2026-11-12：
+ *     "这个 > 的旋转中心和文字不对齐"）。`chevronR` 那条路径按 (12,12) 校正过
+ *     （见 ui.js 的图标表），盒子中心 = 笔画中心，转多少度都正。
+ *   * 盒子 12px、`align-self: center`：中心对齐，不走基线（SVG 按基线排会整块
+ *     浮在字上）。于是**盒中心 = 笔画中心 = 下面那道竖线的位置（10px）** ——
+ *     用户："和竖线没有对齐"。见 `.chatmsg__think .md` 那组 margin-left。
+ */
+.chatmsg__thinkcaret,
+.chatmsg__toolcaret,
+.chatmsg__runcaret {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  color: var(--fg3);
+  transition: transform .15s var(--ease);
+}
+
+.chatmsg__think[open] .chatmsg__thinkcaret {
+  transform: rotate(90deg);
+}
+
+.chatmsg__thinklabel {
+  flex: none;
+  color: var(--fg2);
+}
+
+.chatmsg__thinkpeek {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg3);
+}
+
+/* 展开后预览就重复了，收掉 */
+.chatmsg__think[open] .chatmsg__thinkpeek {
+  display: none;
 }
 
 /* 思考内容**比正文更轻**（用户："思考内容的字体样式 —— 颜色变灰，然后字体调小"）：
@@ -1108,125 +1190,190 @@ body.is-colresize {
  * 返回的字符串自带一个 `.md`，曾经外面再套一个 —— 见 `thinkNode`，已修），
  * 只写 `>` 的话内层那个 `.md` 会用它自己的 15px / 正常前景色把段落整个截走。 */
 .chatmsg__think .md {
-  margin-top: 6px;
-  padding-left: 10px;
-  border-left: 2px solid var(--line);
+  /* 与折叠行同一条网格：**竖线穿过箭头中心（6px）**，正文文字与标题同列（19px）。
+   * 6 = 箭头盒 12 的一半（行已无左内距）；19 = 12 + gap 7 —— 两处都是算出来的，
+   * 不是凑的（箭头从 9px 的字符换成 12px 的 SVG、行左内距归零之后，网格跟着变）。 */
+  margin: 2px 0 6px 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
   color: var(--fg3);
   font-size: 12.5px;
   line-height: 1.7;
 }
 
-/* 工具调用：一行摘要 + 可展开的结果 */
+/* 工具调用：**一行一件**（用户 2026-11-11："工具调用的这个卡，我觉得太大了。
+ * 反复的工具调用和思考页比较占空间"）。折起来 24px 高、没有卡片边框，
+ * 参数太长就省略号；点这一行才展开输出。 */
 .chatmsg__tool {
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg2);
-  font-size: 12.5px;
-  /* 参数再长也不许把卡片撑破（窄屏实测：args 溢出到卡片外，右边框被顶歪） */
-  overflow: hidden;
+  font-size: 12px;
+  color: var(--fg3);
 }
 
-.chatmsg__tool.is-bad {
-  border-color: var(--bad);
+/* 连着的一串过程行贴在一起：它们是一次动作接一次动作，不是几张卡 */
+.chatmsg__parts > .chatmsg__tool + .chatmsg__tool,
+.chatmsg__parts > .chatmsg__tool + .chatmsg__think,
+.chatmsg__parts > .chatmsg__think + .chatmsg__tool,
+.chatmsg__parts > .chatmsg__think + .chatmsg__think {
+  margin-top: 0;
 }
 
-.chatmsg__toolhead {
+.chatmsg__toolrow {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
+  align-items: baseline;
+  gap: 7px;
+  min-height: 24px;
+  /* 同 `.chatmsg__thinkrow`：箭头盒与正文左边缘齐 */
+  padding: 2px 8px 2px 0;
+  list-style: none;
+  cursor: pointer;
+}
+
+.chatmsg__toolrow::-webkit-details-marker {
+  display: none;
+}
+
+.chatmsg__toolrow:hover .chatmsg__toolcaret {
+  color: var(--fg2);
+}
+
+/* 没有输出：点开也没东西 —— 不给手型、不画箭头 */
+.chatmsg__tool.is-plain .chatmsg__toolrow {
+  cursor: default;
+}
+
+.chatmsg__tool.is-plain .chatmsg__toolcaret {
+  visibility: hidden;
+}
+
+.chatmsg__tool[open] .chatmsg__toolcaret {
+  transform: rotate(90deg);
 }
 
 .chatmsg__toolname {
+  flex: none;
   font-family: var(--font-mono);
-  color: var(--pri);
+  color: var(--fg2);
+}
+
+.chatmsg__tool.is-bad .chatmsg__toolname {
+  color: var(--bad);
 }
 
 .chatmsg__toolargs {
-  font-family: var(--font-mono);
-  color: var(--fg3);
-  overflow-wrap: anywhere;
-  /* 允许收缩：flex 子项默认 min-width:auto，长参数会把整行顶宽 */
   flex: 1 1 0;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--fg3);
+}
+
+.chatmsg__toolstate,
+.chatmsg__toolms {
+  flex: none;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
 }
 
 .chatmsg__toolms {
-  margin-left: auto;
-  color: var(--fg3);
+  font-size: 11.5px;
 }
 
-/* 窄屏：摘要改成两行网格 —— 第一行「工具名 + 耗时（右）」，第二行参数。
-   原来挤成一行时，长参数把卡片顶变形，耗时也被挤到行尾外面（用户截图）。 */
-@media (max-width: 860px) {
-  .chatmsg__toolhead {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 2px 8px;
-    align-items: baseline;
-  }
-
-  .chatmsg__toolname {
-    grid-column: 1;
-    grid-row: 1;
-  }
-
-  .chatmsg__toolms {
-    grid-column: 2;
-    grid-row: 1;
-    margin-left: 0;
-  }
-
-  .chatmsg__toolargs {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    white-space: normal;
-  }
+.chatmsg__tooltag {
+  flex: none;
+  color: var(--bad);
 }
 
-.chatmsg__toolwait {
-  margin-top: 4px;
-  color: var(--fg3);
-}
-
-.chatmsg__toolout > summary {
-  margin-top: 4px;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--fg2);
-  list-style: none;
-}
-
-.chatmsg__toolout > summary::-webkit-details-marker {
-  display: none;
-}
-
-.chatmsg__toolout > summary::before {
-  content: '▸ ';
-}
-
-.chatmsg__toolout[open] > summary::before {
-  content: '▾ ';
-}
-
-.chatmsg__toolpre:empty {
-  display: none;
+/* 展开：左侧一道细线，输出就贴在上面那行下面 —— 不再套一层卡片。
+ * 6 / 12 与 `.chatmsg__think .md` 同一条网格（竖线在箭头中心，文字与标题同列） */
+.chatmsg__toolbody {
+  margin: 2px 0 6px 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
 }
 
 .chatmsg__toolpre {
-  margin: 6px 0 0;
-  padding: 8px;
-  max-height: 260px;
+  margin: 0;
+  padding: 6px 8px;
+  max-height: 300px;
   overflow: auto;
-  border-radius: var(--r-sm);
-  background: var(--bg);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
   color: var(--fg2);
   font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 11.5px;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* 一段「思考 / 工具」交替的链条：整段收进一个抽屉（用户 2026-11-12：
+ * "这一大串玩意要可以收起来 —— 共同的特征是思考和工具交替"）。
+ * 收起就一行；展开后里面还是原来的"一行一件"，只是缩进一道细线里 ——
+ * 尺寸与 `.chatmsg__thinkrow` / `.chatmsg__toolrow` 逐项相同（24px 行、
+ * 12px 箭头、7px 间距、悬停只提亮箭头），它只是那一行的"容器版"。 */
+.chatmsg__run {
+  font-size: 12px;
+  color: var(--fg3);
+}
+
+.chatmsg__runrow {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-height: 24px;
+  /* 同样不留左内距：这一段的箭头要与它下面那段正文的第一个字齐 */
+  padding: 2px 8px 2px 0;
+  list-style: none;
+  cursor: pointer;
+}
+
+.chatmsg__runrow::-webkit-details-marker {
+  display: none;
+}
+
+.chatmsg__runrow:hover .chatmsg__runcaret {
+  color: var(--fg2);
+}
+
+.chatmsg__run[open] .chatmsg__runcaret {
+  transform: rotate(90deg);
+}
+
+.chatmsg__runlabel {
+  flex: none;
+  color: var(--fg2);
+}
+
+.chatmsg__runpeek {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg3);
+}
+
+.chatmsg__runcount {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 展开：与 think / tool 展开后同一道左侧细线、同一条网格
+ *（竖线在整段那个箭头的中心 6px，里面的行从文字列 19px 起） */
+.chatmsg__runbody {
+  margin: 2px 0 6px 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line);
+}
+
+/* 里面是一次动作接一次动作，不是几张卡 —— 贴紧（同 `.chatmsg__parts` 里
+ * 那组相邻规则，只是这里没有那组选择器可用） */
+.chatmsg__runbody > * + * {
+  margin-top: 0;
 }
 
 /* 工件清单（顶栏那颗按钮弹出来的浮层）：
@@ -1893,9 +2040,13 @@ body.is-colresize {
   border-bottom: 1px solid var(--line);
 }
 
-/* 关闭键推到最右边：标题在左、关闭在右 —— 这是所有浮层的通例，
- * 挨在标题屁股后面会让人以为它是标题的一部分（用户："这个 X 放到右边"）。 */
-.chatdemo__head .chaticon {
+/* 动作组推到最右边：标题在左，下载与关闭在右 —— 这是所有浮层的通例，
+ * 挨在标题屁股后面会让人以为它是标题的一部分（用户："这个 X 放到右边"）。
+ * 组里不再给单个按钮 `margin-left: auto`：两个按钮各吃一份剩余空间会被扯开。 */
+.chatdemo__acts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
 }
 
@@ -2200,6 +2351,16 @@ body.is-colresize {
 
 .chatmsg__action:hover {
   color: var(--pri);
+}
+
+/* 手机行是**单列**（头像那一列撤了，见 `.chatmsg__who` 下面那段窄屏规则）：
+ * 这条必须写在这里（更晚）而且更具体 —— 上面那条 `grid-column: 2` 会赢过
+ * 早先媒体查询里同样特异性的规则，于是隐式多建一列，气泡和这排图标并排挤在
+ * 一行里（用户截图："明显是你改完以后元素错位了"）。 */
+@media (max-width: 600px) {
+  .chatmsg .chatmsg__useractions {
+    grid-column: 1;
+  }
 }
 
 /* 就地编辑 */
@@ -3747,7 +3908,8 @@ body.is-colresize {
   border: 1px solid transparent;
   border-radius: 999px;
   background: var(--pri);
-  color: #fff;
+  /* 白字在 #33B8AB 上只有 2.5:1 —— 与 `.btn--primary` 同一条规矩：实心主色上用墨色 */
+  color: var(--btn-primary-ink);
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
@@ -3892,7 +4054,7 @@ body.is-colresize {
   /* 运行壳 iframe 用绝对定位藏起来，所以这里必须是它的定位祖先 */
   position: relative;
   margin: 8px 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-card);
   border-left: 3px solid var(--fg3);
   border-radius: 8px;
   background: var(--bg2);
@@ -4050,7 +4212,7 @@ details[open] > .pyrun__outsum::before {
   max-width: min(100%, 460px);
   max-height: 320px;
   object-fit: contain;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-card);
   border-radius: var(--r-sm);
   background: #fff;
   cursor: zoom-in;
@@ -4914,6 +5076,18 @@ body.is-colresize .panes__host > .chat {
   pointer-events: none;
 }
 
+/* 缩到 0.45 倍以下（阈值见 `applyTreeView`）：把节点上的字收起来。
+ * 一棵 158 个节点的树有上千个 SVG 元素，绝大多数是文字 —— 拖动、缩放时每帧重绘的
+ * 正是它们；这个比例下字高只剩五六个像素，本来也读不出来。图钉的名字另有规则
+ *（`.chattree__pins.is-tight`：停在某一枚上时浮出来）。 */
+.chattree__layer.is-far .ctnode__who,
+.chattree__layer.is-far .ctnode__fork,
+.chattree__layer.is-far .ctnode__mode,
+.chattree__layer.is-far .ctnode__line,
+.chattree__layer.is-far .ctnode__more {
+  display: none;
+}
+
 /* ⚠️ 出生动画只能落在**里层**：外层 `group` 的 transform 是定位用的（translate 属性），
  * 同一个元素上再写一条 CSS transform 会把它整个顶掉 —— 节点会跳到原点去。 */
 .ctnode__ink {
@@ -5216,7 +5390,9 @@ body.is-colresize .panes__host > .chat {
 .chattree__legend {
   position: absolute;
   left: 14px;
-  bottom: 34px;
+  /* 18px：原先 34 离底边太远，悬在半空（用户 2026-11-12："这个往下挪一点"）。
+   * 顶栏那排按钮距顶 12px，底部比它稍松一点才不显得贴边。 */
+  bottom: 18px;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -5255,10 +5431,6 @@ body.is-colresize .panes__host > .chat {
 
 .chattree__legendpin .ctpin2__n {
   font-size: 9px;
-}
-
-.chattree__legendtext.is-dim {
-  color: color-mix(in srgb, var(--fg3) 78%, transparent);
 }
 
 /* 树上那几颗"图标 + 字"的键（书签 / 轨迹 / 播放）：同一套排布 */
@@ -5753,92 +5925,74 @@ body.is-colresize .panes__host > .chat {
  * （连同 `prefers-reduced-motion` 的静止），见上方「选择栏」那一节。 */
 
 
-/* 思考强度的拖动条（见 chat.js 的 paintThinkPick）。
+/* 思考强度：四档**分段控件**（见 chat.js 的 thinkPickNode）。
  *
- * 这里的两条都是被投诉过才改成这样的：
+ * 上一版是 `input[type=range]` 拖动条，被换掉的原因不是难看，是**不对**：
+ * 四档是离散的四选一，而滑轨的有效行程比轨道两端各短半个球 —— 下面那排标签
+ * 无论怎么摆都对不到球心上；手机上拿 13px 的球去对四档更是对不准。
  *
- *   * **必须小**：从前写的是 `width: 100%`，而面板默认跟正文一样宽（≈880px）——
- *     拖一次要横扫半个屏幕（用户："拖动条弄小一点！！！现在要拖半个屏幕"）。
- *     现在条子 176px，装在右键菜单里（菜单自己会定位、点外面就关）。
- *   * **配色得是自己的**：别用浏览器默认那套（灰槽 + 蓝球），也别指望
- *     `accent-color` 在两个引擎里长得一样。轨道与滑块都自己画：左边"已调到多强"
- *     用品牌色、右边用边框色，球带一圈面板底色的描边（像是从轨道里切出来的）。
- *     已选那一段 Chromium 的 range 不会自己画，所以进度由 JS 写进 `--fill`
- *     （见 paintThinkPick 里的 paintFill），这里用一条渐变画出来。 */
+ * 于是换成四段等宽：位置就是档位，点哪段是哪档。两处刻意的地方：
+ *
+ *   * **槽比浮层暗一档**（`--bg` 对 `--bg2`）：深色下是个凹槽，浅色下是灰槽，
+ *     选中段用浮层自己的底色浮起来 + `--shadow-1` —— 两档主题都不用另配颜色。
+ *   * **宽度 288px 写在内容上**（不是 `width: 100%`）：浮层 `.modepick` 最宽 340px，
+ *     但正文那侧宽到 880px；从前写 100% 时拖动条横扫半个屏幕
+ *     （用户："拖动条弄小一点！！！现在要拖半个屏幕"）。288 够放下四段 + 一行说明。 */
 .chatthink {
-  padding: 10px 12px 9px;
+  /* 四段英文（最长的是 `Medium`）要放得下：264 − 16(内距) − 4(槽内距) − 6(三段缝)
+   * = 238，每段 59.5px，减掉左右 4px 还有 51.5 —— 12.5px 的 `Medium` 约 48px。 */
+  width: 264px;
+  padding: 8px;
 }
 
-.chatthink__row {
-  margin-bottom: 6px;
+.chatthink__seg {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--bg);
+  /* 凹槽的那一点"陷下去"：两档主题都靠这一道内影，不写死成深色 */
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .18);
 }
 
-.chatthink__now {
-  color: color-mix(in srgb, var(--pri) 88%, var(--fg));
-  font-size: 13px;
-}
-
-.chatthink__bar {
-  -webkit-appearance: none;
-  appearance: none;
-  display: block;
-  width: 176px;
-  height: 16px;
-  margin: 0;
+.chatthink__segitem {
+  height: 26px;
+  padding: 0 4px;
+  /* 四段等宽、四个两字/三字词，字不许被挤成两行 */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  border: 0;
+  border-radius: 7px;
   background: none;
-  cursor: ew-resize;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color .15s var(--ease), background .15s var(--ease), box-shadow .15s var(--ease);
 }
 
-.chatthink__bar::-webkit-slider-runnable-track {
-  height: 6px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--pri) var(--fill, 50%), var(--line) var(--fill, 50%));
+.chatthink__segitem:hover {
+  color: var(--fg);
 }
 
-.chatthink__bar::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 13px;
-  height: 13px;
-  margin-top: -3.5px;
-  border: 2px solid var(--bg);
-  border-radius: 50%;
-  background: var(--pri);
+/* 选中的那一段：品牌色的一层淡底（混进浮层自己的底色，所以深浅两档都不会
+ * 露出一块死白/死黑），文字用品牌色 —— 与那颗「深度思考」药丸同一个色。 */
+.chatthink__segitem.is-on {
+  background: color-mix(in srgb, var(--pri) 16%, var(--bg2));
+  color: var(--pri);
+  box-shadow: var(--shadow-1);
 }
 
-.chatthink__bar::-moz-range-track {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--line);
+.chatthink__segitem:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--pri) 55%, transparent);
+  outline-offset: -1px;
 }
 
-.chatthink__bar::-moz-range-progress {
-  height: 6px;
-  border-radius: 999px;
-  background: var(--pri);
-}
-
-.chatthink__bar::-moz-range-thumb {
-  width: 13px;
-  height: 13px;
-  border: 2px solid var(--bg);
-  border-radius: 50%;
-  background: var(--pri);
-}
-
-.chatthink__bar:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--pri) 60%, transparent);
-  outline-offset: 2px;
-  border-radius: 999px;
-}
-
-.chatthink__scale {
-  display: flex;
-  width: 176px;
-  justify-content: space-between;
-  margin-top: 4px;
-  color: var(--fg3);
-  font-size: 11px;
-}
+/* 没有标题、没有说明 —— 四段就是全部（用户 2026-11-12："不要有文字叙述"）。 */
 
 /* 演示的**离屏运行位**（见 chat.js 的 `demoRunner`）：看不见，但必须是**真尺寸**。
  * 用"移出视野"而不是 `display:none` —— 隐藏元素量出来是 0，WebGL 也拿不到真正的

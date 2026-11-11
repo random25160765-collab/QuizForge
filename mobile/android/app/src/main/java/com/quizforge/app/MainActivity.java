@@ -107,13 +107,27 @@ public class MainActivity extends BridgeActivity {
 
         @JavascriptInterface
         public void shareHtml(String name, String base64) {
+            shareFile(name, "text/html", base64);
+        }
+
+        /**
+         * 把一份字节写进 cache，再弹系统分享（可以存到文件）。
+         *
+         * `mime` 由页面按工件形态给：`.md` → `text/markdown`、`.py` → `text/x-python`。
+         * 分享面板按类型筛应用，写死 `text/html` 时 `.md` 会被当成网页。
+         *
+         * 页面里 `a[download]` 在 WebView 里不会落盘（没有 DownloadListener），
+         * 所以下载走这里（见 `NativeBridge` 头注释）。
+         */
+        @JavascriptInterface
+        public void shareFile(String name, String mime, String base64) {
             try {
                 byte[] bytes = Base64.decode(base64, Base64.DEFAULT);
                 File dir = new File(getCacheDir(), "share");
                 if (!dir.isDirectory() && !dir.mkdirs()) {
                     throw new IllegalStateException("建不出分享目录");
                 }
-                String safe = (name == null || name.trim().isEmpty()) ? "chat.html" : name.trim();
+                String safe = (name == null || name.trim().isEmpty()) ? "artifact.bin" : name.trim();
                 File file = new File(dir, safe);
                 try (FileOutputStream out = new FileOutputStream(file)) {
                     out.write(bytes);
@@ -121,10 +135,15 @@ public class MainActivity extends BridgeActivity {
                 Uri uri = FileProvider.getUriForFile(
                         MainActivity.this, getPackageName() + ".fileprovider", file);
                 Intent send = new Intent(Intent.ACTION_SEND);
-                send.setType("text/html");
+                // `setType` 不收参数段：页面给的是 `text/markdown;charset=utf-8`，
+                // 带着 `;` 去筛应用会一个都匹配不上
+                String type = mime == null ? "" : mime.trim();
+                int semi = type.indexOf(';');
+                if (semi > 0) type = type.substring(0, semi);
+                send.setType(type.isEmpty() ? "application/octet-stream" : type);
                 send.putExtra(Intent.EXTRA_STREAM, uri);
                 send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(Intent.createChooser(send, "分享对话"));
+                startActivity(Intent.createChooser(send, "保存或分享"));
             } catch (Exception err) {
                 Toast.makeText(MainActivity.this, "分享失败：" + err.getMessage(), Toast.LENGTH_LONG).show();
             }

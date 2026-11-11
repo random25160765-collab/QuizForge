@@ -276,3 +276,66 @@ def test_records_live_in_a_table_not_in_the_settings_file(client, db_session) ->
 
     db_session.expire_all()
     assert [one.key for one in lens.resolve(db_session, conv, root)] == []
+
+
+def _isolated_folder(tmp_path, monkeypatch):  # noqa: ANN001, ANN202
+    """把滤镜目录挪到 tmp，并且**不拷仓库那十条预置**。
+
+    不隔离的话，跑用例会往开发机真实的 `data/lens/` 里写东西，
+    预置还会被当成"用户已有的"混进断言。
+    """
+    monkeypatch.setattr(lens, "folder", lambda: tmp_path / "lens")
+    monkeypatch.setattr(lens, "seed_presets", lambda: 0)
+    return tmp_path / "lens"
+
+
+def test_a_lens_lives_in_the_table_after_saving(db_session, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """2026-11-11：滤镜定义**属于用户数据** —— 存库，文件只是镜像。
+
+    用户原话：「把我的 lens 导入一下数据库，它属于我的用户数据」。
+    在那之前它只是数据目录里的一堆 md：不同步、不进用户包。
+    """
+    from app.models import LensDef
+
+    home = _isolated_folder(tmp_path, monkeypatch)
+    one = lens.save(label="费曼", kind="flow", hint="你讲我听", prompt="让我讲一遍。", db=db_session)
+
+    assert lens.find(one.key, db_session) is not None
+    assert (home / f"{one.key}.md").exists(), "文件镜像要同时写出来，ls 得到、备份拿得到"
+
+    row = db_session.get(LensDef, one.key)
+    assert row is not None and row.deleted is False
+    assert row.prompt == "让我讲一遍。"
+
+
+def test_a_lens_from_the_cloud_is_written_back_as_a_file(db_session, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """别的设备同步来的行要落成 md —— 否则手机上加了滤镜，电脑这边只能用不能看。"""
+    from app.models import LensDef
+
+    home = _isolated_folder(tmp_path, monkeypatch)
+    db_session.add(
+        LensDef(key="cloud", label="云端来的", kind="tone", hint="", prompt="说话简短。")
+    )
+    db_session.flush()
+
+    assert [one.key for one in lens.all_lenses(db_session)] == ["cloud"]
+    path = home / "cloud.md"
+    assert path.exists() and "说话简短" in path.read_text(encoding="utf-8")
+
+
+def test_a_deleted_lens_does_not_come_back_from_a_leftover_file(db_session, tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """删掉要留**墓碑**：远端删了、本地文件还在时，下次启动不许把它导回来。
+
+    没有墓碑的话，`sync_folder` 会把残留文件当成"用户新写的"重新入库 ——
+    删了又冒出来，而且会再同步回所有设备。
+    """
+    home = _isolated_folder(tmp_path, monkeypatch)
+    one = lens.save(label="临时", kind="flow", prompt="临时用。", db=db_session)
+    path = home / f"{one.key}.md"
+    text = path.read_text(encoding="utf-8")
+
+    assert lens.delete(one.key, db_session) is True
+    assert all(item.key != one.key for item in lens.all_lenses(db_session))
+
+    path.write_text(text, encoding="utf-8")  # 模拟文件残留
+    assert all(item.key != one.key for item in lens.all_lenses(db_session)), "墓碑没挡住残留文件"

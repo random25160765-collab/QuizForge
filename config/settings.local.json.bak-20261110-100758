@@ -1,0 +1,31 @@
+{
+  "theme": "light",
+  "fontScale": 0.9,
+  "maxWidth": 860,
+  "shuffle": false,
+  "pinnedTopics": [],
+  "ai": {
+    "baseUrl": "https://api.deepseek.com/v1",
+    "model": "deepseek-flash",
+    "apiKey": "sk-d035fa6896284d8c9eb770c9e17b0653",
+    "timeoutMs": 90000,
+    "temperature": 0.2,
+    "jsonMode": true,
+    "fallbackSelfRate": true,
+    "strictRubric": true
+  },
+  "search": {},
+  "obsidian": {
+    "vaultPath": "/mnt/f/Vaults/Math"
+  },
+  "places": [],
+  "stations": [],
+  "tool_mode": "study",
+  "notes": [],
+  "turso": {
+    "url": "libsql://qf-rdrdrd.aws-ap-southeast-1.turso.io",
+    "token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTQxMDAwODIsImlkIjoiMDFhMWI4YjEtZjcwMS03MzdlLTk3OTQtODg3NzM2MGEzYmExIiwia2lkIjoiTnU3LXh1RGFaTk5BMFZuOFNXX2d1cjhLNFRGM0VMNVJTSlBtaGhkUk1rcyIsInJpZCI6IjNmNmJhNmI0LTBlMjItNGFjMS1iOWY4LWY5NjNmNTAzOTc3NyJ9.ODFF5OheI_ijfAd3xydShB0uOYRLJlbfphXl7JWMCgJ75Lwkbm5Pd91NQIyPntGbQuqNaiXLg84-oG5EsXfABA",
+    "enabled": true
+  },
+  "syncPassphrase": "Z-62PvMCZylN7vXbko5_CQXXTHXNCq2GmmrRan3e8JY"
+}

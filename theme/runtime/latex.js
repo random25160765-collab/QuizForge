@@ -911,17 +911,55 @@
   var MINIMAL_TEX = '\\begin{tikzpicture}\\draw (0,0) -- (0.02,0);\\end{tikzpicture}';
   var prewarmed = false;
 
+  /* 预热收工的通知：成功、失败、被计费网络挡掉都算。
+   * 谁在等它 —— `chat.js` 的 Python 预热（见 `whenWarm` 的注释）。 */
+  var warmWaiters = [];
+  var warmDone = false;
+
+  function warmSettled() {
+    if (warmDone) return;
+    warmDone = true;
+    var waiting = warmWaiters.splice(0);
+    waiting.forEach(function (fn) {
+      try {
+        fn();
+      } catch (err) {
+        /* 等的人自己出错，不该影响引擎 */
+      }
+    });
+  }
+
+  /**
+   * 等引擎热完（`ms` 是超时上限，到点也放行）。
+   *
+   * 与 Pyodide 那条预热错峰用：两条都是"趁空闲先备好"，但叠在同一段时间里时，
+   * 低端机上打开会话的前十秒全是掉帧（用户 2026-11-11 报的就是这个）。
+   * 小的（TeX，3 秒起）先热，大的（Python）等它收工再起。
+   */
+  function whenWarm(ms) {
+    if (warmDone) return Promise.resolve();
+    return new Promise(function (resolve) {
+      warmWaiters.push(resolve);
+      if (ms) window.setTimeout(resolve, ms);
+    });
+  }
+
   function prewarm() {
     if (prewarmed) return;
     prewarmed = true;
     var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) return;
+    if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) {
+      // 这次不热，但"等的人"必须能走 —— 否则 Python 那边白白等到超时
+      warmSettled();
+      return;
+    }
     ensureFonts(); // 顺手把字体表挂上（正文那边迟早要，而且是同一次下载）
     // 记时间是为了**能量出来**：上一轮我只能证明"机制在跑"，说不出省了多少
     // （DOM 上探不到预热那一次什么时候完工 —— 见 chat.js 里 Python 那边同理）。
     var t0 = window.performance.now();
     var done = function () {
       /* 成功的产物我们不要；失败也不用管（真要用的那一刻会自己再编） */
+      warmSettled();
     };
     render(MINIMAL_TEX).then(
       function () {
@@ -1112,6 +1150,6 @@
 
   /** 把 `root` 里的占位换成真图（异步）。 */
 
-  QF.latex = { kind: kind, render: render, slot: slot, fill: fill, prewarm: prewarm };
+  QF.latex = { kind: kind, render: render, slot: slot, fill: fill, prewarm: prewarm, whenWarm: whenWarm };
 })();
 

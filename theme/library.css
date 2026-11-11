@@ -391,7 +391,8 @@ body.is-colresize .libgrip::after { opacity: 0.5; }
 .libstep.is-done .libstep__dot {
   border-color: var(--ok);
   background: var(--ok);
-  color: #fff;
+  /* 白字在 --ok 上深色档只有 1.9:1（浅色档 3.8:1）—— 填色上的字一律走墨色 */
+  color: var(--btn-primary-ink);
 }
 
 .libstep.is-done .libstep__label { color: var(--fg2); }
@@ -444,10 +445,12 @@ body.is-colresize .libgrip::after { opacity: 0.5; }
   white-space: nowrap;
 }
 
-.libjob.is-running .libjob__stage { background: color-mix(in srgb, #2f6fed 15%, transparent); color: #2f6fed; }
-.libjob.is-done .libjob__stage { background: color-mix(in srgb, #3f9d6b 15%, transparent); color: #3f9d6b; }
-.libjob.is-failed .libjob__stage { background: color-mix(in srgb, #b4544a 15%, transparent); color: #b4544a; }
-.libjob.is-canceled .libjob__stage { background: color-mix(in srgb, #888 16%, transparent); color: var(--fg3); }
+/* 四种阶段色走功能色令牌（原先写死 #2f6fed / #3f9d6b / #b4544a：
+ * 深色档下红那条只有 3.8:1，而令牌已经是按两档各调过的一对） */
+.libjob.is-running .libjob__stage { background: color-mix(in srgb, var(--blue) 15%, transparent); color: var(--blue); }
+.libjob.is-done .libjob__stage { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.libjob.is-failed .libjob__stage { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+.libjob.is-canceled .libjob__stage { background: color-mix(in srgb, var(--fg3) 16%, transparent); color: var(--fg3); }
 
 .libjob__btn {
   border: 0;

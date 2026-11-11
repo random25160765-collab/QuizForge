@@ -2,30 +2,28 @@
  *
  * 它**刻意不依赖 app.css**：这一页要在"什么都还没准备好"的时候就能显示出来，
  * 依赖越少越稳（令牌是照抄的，不是 import 的）。
- * 深浅色跟着 localStorage 里那份设置走（与 shell.html 同源）。
  *
- * 版式只有一列：标 → 名 → 一道细线 → 一个词。
- * 不加卡片、不加外框、不加清单 —— 首屏的每一行字都得挣来自己的位置。
+ * 版式只有一列：标 → 名 → 一句状态。
+ * **固定浅色**（用户 2026-11-11："白底为基础的背景更合适"）——
+ * 不跟系统深色走：这一页只有几秒，白底 + 墨色的标最干净。
+ * 进度**不另起一条线**：标外面那一圈就是刻度 —— 圆角方框是图标自己的形状，
+ * 细线绕它长满，长满即进入。不加卡片、不加外框、不加清单。
  */
 
 :root {
-  --pri: #2DD4BF;
-  --bg: #0B1016;
-  --fg: #E6EDF3;
-  --fg2: #8A94A0;
-  --bad: #F87171;
-  --elev: 0 12px 30px -20px rgba(0, 0, 0, .8);
+  /* 照抄 app.css 的浅色档（启动页不 import 它，所以**两边改要一起改**） */
+  --ink: #17203A;              /* 标里的墨色：进度线跟着它，整页只有墨 + 一点青 */
+  --bg: #F7F9FB;
+  --bg-top: #FCFDFE;
+  --bg-bottom: #EEF2F6;
+  --fg: #0F1A24;
+  --fg2: #4A5A68;
+  --bad: #DC2626;
+  /* 颗粒：大面积浅色渐变也有色带，盖一层几乎看不见的噪点兜住（不是装饰） */
+  --grain: .018;
+  --elev: 0 0 0 1px rgba(15, 26, 36, .05), 0 18px 44px -26px rgba(15, 26, 36, .3);
   --font-sans: 'Source Han Sans SC', 'Noto Sans CJK SC', '思源黑体', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
-}
-
-html[data-theme='light'] {
-  --pri: #14B8A6;
-  --bg: #F9FAFB;
-  --fg: #0F1A24;
-  --fg2: #77828E;
-  --bad: #DC2626;
-  --elev: 0 12px 30px -20px rgba(15, 26, 36, .4);
 }
 
 * { box-sizing: border-box; }
@@ -36,13 +34,25 @@ html, body {
 }
 
 body {
-  background: var(--bg);
+  /* 一张浅灰的纸，中央被一盏白光晕开：页面不是一块死白，标也落得住 */
+  background:
+    radial-gradient(56% 42% at 50% 37%, #FFFFFF 0%, rgba(255, 255, 255, 0) 72%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
   color: var(--fg);
   font: 400 13px/1.6 var(--font-sans);
   display: grid;
   place-items: center;
   padding: 24px;
   -webkit-font-smoothing: antialiased;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: var(--grain);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 /* --------------------------------------------------------------- 标 + 名 */
@@ -56,43 +66,68 @@ body {
 }
 
 .mark {
-  width: 64px;
-  height: 64px;
-  border-radius: 16px;
+  position: relative;
+  width: 96px;
+  height: 96px;
+  border-radius: 23px;
   box-shadow: var(--elev);
 }
 
-.name {
-  margin: 20px 0 0;
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.2;
-  letter-spacing: .02em;
-}
-
-/* ---------------------------------------------------------------- 进度线 */
-
-.track {
-  width: 112px;
-  height: 2px;
-  margin-top: 24px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--fg) 12%, transparent);
-  overflow: hidden;
-}
-
-.track__fill {
-  width: 0;
+.mark__tile {
+  display: block;
+  width: 100%;
   height: 100%;
   border-radius: inherit;
-  background: var(--pri);
-  transition: width 320ms cubic-bezier(.4, 0, .2, 1);
+}
+
+/* 一圈细线，比图标大 8px：**形状照抄图标**（圆角方框），不是常见的圆环。
+   从顶边中点开始顺时针长满；长满那一刻就是"可以进了"。 */
+.mark__ring {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  width: 112px;
+  height: 112px;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.mark__track,
+.mark__bar {
+  fill: none;
+  stroke-width: 1.25;
+}
+
+/* 轨道只是"这条线会绕一圈"的一点暗示，不参与读数 ——
+   压低到几乎看不见，否则白底上就是第二道边框 */
+.mark__track { stroke: color-mix(in srgb, var(--ink) 7%, transparent); }
+
+.mark__bar {
+  stroke: var(--ink);
+  stroke-linecap: round;
+  /* `pathLength="100"` 让 dash 的单位就是百分比，不用在这里算周长 */
+  stroke-dasharray: 100;
+  stroke-dashoffset: 100;
+}
+
+/* 只有下载时才动，而且只动这一件事：线绕着标长。
+   没有第二层发光、没有呼吸 —— 一个进度只要一个动作。 */
+.mark--live .mark__bar { transition: stroke-dashoffset 450ms linear; }
+
+.mark--bad .mark__bar { stroke: var(--bad); }
+
+.name {
+  margin: 24px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: .04em;
 }
 
 /* ------------------------------------------------------------ 一行状态 */
 
 .status {
-  margin: 12px 0 0;
+  margin: 22px 0 0;
   min-height: 18px;
   font-size: 12px;
   line-height: 1.5;
@@ -102,11 +137,25 @@ body {
 
 .status--bad { color: var(--bad); }
 
+/* 下载时的小读数：等宽数字，像仪表而不是口号 */
+.figure {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in srgb, var(--fg2) 76%, transparent);
+}
+
+.figure__sign {
+  font-size: 12px;
+  opacity: .5;
+}
+
 /* 失败时多出来的那两行：一句原因（鼠标停上去看全）和一个重试。
    只在这一刻出现 —— 正常启动的路上不占版面。 */
 .detail {
   max-width: 260px;
-  margin: 6px 0 0;
+  margin: 10px 0 0;
   font-size: 11px;
   line-height: 1.5;
   color: var(--fg2);
@@ -137,5 +186,5 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .stage { animation: none; }
-  .track__fill { transition: none; }
+  .mark__bar { transition: none; }
 }

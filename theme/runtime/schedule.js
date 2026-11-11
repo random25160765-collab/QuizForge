@@ -1839,6 +1839,8 @@
   function boot() {
     QF.shell.mount({});
     bindBar();
+    // 左栏顶上往下拉 = 立刻同步（自动节拍已放宽到 30 秒，见 pullsync.js）
+    if (QF.pullSync) QF.pullSync.attach(document.getElementById('sch-side'), { onDone: load });
     load();
     // 跨过 600px 要换一套排法（七列 ↔ 议程、单行 ↔ 两行），不然转屏后还站在原地
     if (NARROW && NARROW.addEventListener) {

@@ -1471,6 +1471,40 @@ class LensRecord(Base):
     )
 
 
+class LensDef(Base):
+    """一条滤镜的**定义本体**（提示词）。
+
+    2026-11-11 用户：「把我的 lens 导入一下数据库，它属于我的用户数据」。
+    在那之前它只是 `<数据目录>/lens/*.md` 一堆文件 —— 不在同步里、不进用户包，
+    换台机器就没了（与 `lens_records` 那种"挂载记录"是两个东西）。
+
+    文件仍然保留，但降级成**镜像**：`lens.sync_folder()` 在启动时把两边对齐，
+    界面里的增删改写库的同时也写文件（`ls` 得到、备份得到、手改也还认）。
+
+    `digest` 是那份 md 原文的 sha256，用来判断"文件被手改过没有"：
+    两边不一致时文件优先（人直接编辑文件是最强的意图表达），再同步回库。
+    """
+
+    __tablename__ = "lenses"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: flow / tone / discipline（合法值见 `lens.KINDS`）
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    hint: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: md 原文的 sha256；空串 = 还没和文件对齐过
+    digest: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    #: 删掉的留墓碑：否则"远端删了、本地文件还在"会在下次启动时被导回来
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class Note(Base):
     """一份笔记的**云副本**：vault 里那份 Markdown 在库里的镜像。
 

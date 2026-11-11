@@ -30,40 +30,56 @@
 }
 
 :root {
-  /* 品牌色 */
-  --pri: #2DD4BF;
-  --pri-2: #14B8A6;
-  --pri-3: #5EEAD4;
+  /* 原生控件的配色档：`<select>` 弹出的列表、日期框、取色器、复选框都由 UA 画，
+   * 不声明就一直按浅色画 —— 暗色界面里点开一个纯白菜单（实测未声明时正是如此）。
+   * 这一条不换任何颜色，只告诉浏览器"这一页是深色的"。 */
+  color-scheme: dark;
+  /* 品牌色：暗色底上把主色**降一档饱和**（#2DD4BF → #33B8AB）。
+   * 原来那个青绿在近黑底上是 10.3:1，大面积做实心、描边或文字时像在发光 ——
+   * 用户 2026-11-11："暗色模式十分辣眼睛"。色相不变，只收它的亮与艳。 */
+  --pri: #33B8AB;
+  --pri-2: #1F9C91;
+  --pri-3: #6AD6C9;
 
-  /* 背景阶梯 */
-  --bg: #0B1016;
-  --bg2: #131A22;
-  --bg3: #1E2936;
-  --bg-glass: color-mix(in srgb, #131A22 78%, transparent);
+  /* 背景阶梯：画布抬离纯黑一档（#0B1016 → #0F1419）。
+   * 近黑底 + 近白字是最大的亮度反差，夜间阅读最累；三层之间只差 3~4% 亮度，
+   * 层次交给边框与阴影。 */
+  --bg: #0F1419;
+  --bg2: #161C22;
+  --bg3: #1E262E;
+  --bg-glass: color-mix(in srgb, #161C22 80%, transparent);
 
-  /* 文本阶梯 */
-  --fg: #E6EDF3;
-  --fg2: #9AA7B4;
-  --fg3: #75838F;
+  /* 文本阶梯：正文从 16.2:1 收到 13.4:1，次级 7.1:1，三级 4.9:1（AA 小字） */
+  --fg: #D4DCE4;
+  --fg2: #96A2AE;
+  --fg3: #78858F;
 
-  /* 功能色 */
-  --ok: #34D399;
-  --bad: #F87171;
-  --amber: #FBBF24;
-  --blue: #60A5FA;
+  /* 功能色：同样降饱和 —— 原来的 #F87171 / #34D399 在深色里比正文还抢眼 */
+  --ok: #4FBB8F;
+  --bad: #DE7272;
+  --amber: #D9A94E;
+  --blue: #74A2DD;
   /* 赭红：滤镜药丸与它那份清单的指认色（用户："滤镜这个药丸换个颜色。换成赭红色吧。"）。
    * 深浅两套各一份 —— 深色底上要够亮才看得清，浅色底上要够沉才压得住白。 */
-  --ochre: #CC6650;
+  --ochre: #C06C58;
 
   /* 三个模式的指认色**不在这里**：色号只有一处来源 —— 后端 `mounts.py` 的
    * `Mode.color`（设置里的 `mode_colors` 可覆盖），由 mounts.js 注入成
    * `--mode-<key>`。用户："注意不要硬编码颜色 —— 未来如果我想改颜色呢？那应该是一键式的。" */
-  /* 边框：深色下必须看得见轮廓。原先 #1F2A35 与底色 #131A22 的对比度只有 1.21:1，
-     视觉上等于没有边框；现在 --line 约 1.84:1、--line-strong 约 2.6:1。 */
-  --line: #38495A;
-  --line-strong: #4E6478;
+  /* 边框：深色下必须看得见轮廓，但不能反过来变成一圈亮线。
+     原先 #1F2A35 与底色只差 1.21:1（等于没有），后来提到 1.84:1 又偏亮；
+     现在 --line 约 1.57:1、--line-strong 约 2.0:1，靠层级差补足。 */
+  --line: #2E3943;
+  --line-strong: #3C4A56;
+  /* 容器的轮廓（卡片、运行块、表格框）。与 `--line` 是两种东西：
+   * `--line` 是**分隔线** —— 在大的面上划一道，几乎看不见才是对的；
+   * 它是**盒子的边** —— 一条 908px 宽的 1px 细线若只有 1.46:1，盒子就不存在了
+   *（用户 2026-11-11："这些线框都太浅了，在暗色模式下难以辨认"；实测
+   *  .chatmsg__tool 的描边对卡片底只有 1.46:1，远低于 WCAG 非文本对比度 3:1）。
+   * 现在 2.18:1（卡片底）/ 2.35:1（画布底）：认得出，但还是一条暗线。 */
+  --line-card: #46535F;
   /* 卡片顶部的一线微高光，用来强化轮廓而不加重阴影 */
-  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.045);
 
   /* 排版 */
   --font-sans: 'Source Han Sans SC', 'Noto Sans CJK SC', '思源黑体', 'PingFang SC', 'Hiragino Sans GB',
@@ -76,9 +92,23 @@
   --r-md: 12px;
   --r-lg: 18px;
   --r-xl: 24px;
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-2: 0 12px 32px -18px rgba(0, 0, 0, 0.75);
-  --shadow-3: 0 28px 60px -30px rgba(0, 0, 0, 0.85);
+  /* 画布抬高一档之后阴影才看得出来：加深 alpha，让浮层真的"沉下去" */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-2: 0 14px 34px -18px rgba(0, 0, 0, 0.85);
+  --shadow-3: 0 30px 64px -30px rgba(0, 0, 0, 0.9);
+
+  /* 背景那两团光晕：深色下 12% 会变成屏幕上的绿斑，收到 5% / 3% */
+  --glow-1: color-mix(in srgb, var(--pri) 5%, transparent);
+  --glow-2: color-mix(in srgb, var(--blue) 3%, transparent);
+
+  /* 主按钮：实心青绿的渐变与主色发光阴影也收掉，
+   * 改成"深一档的青绿 + 中性投影"——按钮在深色里不该是一块光源。 */
+  --btn-primary-bg: linear-gradient(140deg, #33B8AB, #26958B);
+  /* 实心填充上的**墨色**。名字里带 btn，用法不止按钮：凡是"有色底 + 一堆字"的
+   * 小面（主按钮、对答案、勾选点）都用它 —— 白字在 --pri / --ok 这类中亮度色上
+   * 只有 2.5:1 左右，属于"看得见但读不清"。 */
+  --btn-primary-ink: #05201C;
+  --btn-primary-shadow: 0 10px 26px -18px rgba(0, 0, 0, 0.75);
   --ease: cubic-bezier(0.2, 0.8, 0.3, 1);
   --dur: 0.18s;
 
@@ -96,10 +126,12 @@
   --shell-gutter: max(var(--shell-pad), calc((100% - var(--shell-max)) / 2 + var(--shell-pad)));
   /* 下拉框的小箭头：原生箭头在深色里又大又抢眼，统一换成这个 chevron。
      颜色取自各主题的 --fg3（data URI 里没法写 var，所以每个主题各存一份）。 */
-  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2375838F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
+  --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2378858F' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
 }
 
 html[data-theme='light'] {
+  /* 与 `:root` 那条对称：浅色档要让原生控件回到浅色 */
+  color-scheme: light;
   --bg: #F7F9FB;
   --bg2: #FFFFFF;
   --bg3: #EDF1F5;
@@ -109,6 +141,8 @@ html[data-theme='light'] {
   --fg3: #6F7F8E;
   --line: #D2DCE6;
   --line-strong: #B3C1CE;
+  /* 浅色档不动：深色那档才需要把盒子"提"出来（白底上本来就看得出边） */
+  --line-card: var(--line);
   --edge-hi: inset 0 1px 0 rgba(255, 255, 255, 0.9);
   --ok: #059669;
   --bad: #DC2626;
@@ -122,6 +156,12 @@ html[data-theme='light'] {
   --shadow-1: 0 1px 2px rgba(15, 26, 36, 0.12);
   --shadow-2: 0 12px 30px -20px rgba(15, 26, 36, 0.4);
   --shadow-3: 0 26px 56px -30px rgba(15, 26, 36, 0.45);
+  /* 浅色档保持原样：那一档是"能看"的，深色重设计不该把它一起带跑 */
+  --glow-1: color-mix(in srgb, var(--pri) 12%, transparent);
+  --glow-2: color-mix(in srgb, var(--blue) 8%, transparent);
+  --btn-primary-bg: linear-gradient(140deg, var(--pri), var(--pri-2));
+  --btn-primary-ink: #04211C;
+  --btn-primary-shadow: 0 10px 26px -16px color-mix(in srgb, var(--pri) 95%, transparent);
   --select-arrow: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236F7F8E' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
 }
 
@@ -141,8 +181,8 @@ body {
   margin: 0;
   background: var(--bg);
   background-image:
-    radial-gradient(1100px 520px at 8% -12%, color-mix(in srgb, var(--pri) 12%, transparent), transparent 70%),
-    radial-gradient(900px 460px at 100% 0%, color-mix(in srgb, var(--blue) 8%, transparent), transparent 70%);
+    radial-gradient(1100px 520px at 8% -12%, var(--glow-1), transparent 70%),
+    radial-gradient(900px 460px at 100% 0%, var(--glow-2), transparent 70%);
   background-attachment: fixed;
   color: var(--fg);
   font-family: var(--font-sans);
@@ -159,7 +199,7 @@ a { color: inherit; text-decoration: none; }
 
 button { font-family: inherit; font-size: inherit; }
 
-::selection { background: color-mix(in srgb, var(--pri) 34%, transparent); }
+::selection { background: color-mix(in srgb, var(--pri) 26%, transparent); }
 
 /* 触控：不要系统那层半透明蓝色方块。
  *
@@ -187,7 +227,7 @@ button { font-family: inherit; font-size: inherit; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--fg3) 34%, transparent);
+  background: color-mix(in srgb, var(--fg3) 26%, transparent);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: content-box;
@@ -468,13 +508,13 @@ body[data-sb='on'] .view {
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 .btn--primary {
-  background: linear-gradient(140deg, var(--pri), var(--pri-2));
+  background: var(--btn-primary-bg);
   border-color: transparent;
-  color: #04211C;
+  color: var(--btn-primary-ink);
   font-weight: 600;
-  box-shadow: 0 10px 26px -16px color-mix(in srgb, var(--pri) 95%, transparent);
+  box-shadow: var(--btn-primary-shadow);
 }
-.btn--primary:hover { color: #04211C; filter: brightness(1.07); }
+.btn--primary:hover { color: var(--btn-primary-ink); filter: brightness(1.07); }
 .btn--ghost { background: transparent; border-color: var(--line); color: var(--fg2); }
 .btn--ghost:hover { color: var(--pri); }
 .btn--danger { background: transparent; border-color: color-mix(in srgb, var(--bad) 42%, transparent); color: var(--bad); }
@@ -2541,3 +2581,40 @@ body[data-topbar='off'] .topbar { display: none; }
 }
 
 .ngraph__foot { padding: 8px 12px 12px; }
+
+/* ---------------------------------------------------------- 下拉同步
+ *
+ * 提示条固定在屏幕顶部居中：手势发生在列表上，但**不动列表布局** ——
+ * 长列表被推动一下就要整屏重排，比同步本身还贵。
+ * 位置由 `pullsync.js` 按拉动距离写成 transform（`-56px` 是收起态）。
+ */
+.pullsync {
+  position: fixed;
+  left: 50%;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  z-index: 90;
+  max-width: calc(100vw - 32px);
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg2) 96%, transparent);
+  box-shadow: 0 6px 18px -12px rgba(15, 26, 36, 0.45);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translate(-50%, -56px);
+  opacity: 0;
+  transition: transform 180ms var(--ease, ease-out), opacity 160ms linear;
+  pointer-events: none;
+}
+
+.pullsync.is-on { opacity: 1; }
+.pullsync.is-ok { color: var(--ok); }
+.pullsync.is-bad { color: var(--bad); }
+
+@media (prefers-reduced-motion: reduce) {
+  .pullsync { transition: none; }
+}

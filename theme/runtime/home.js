@@ -59,6 +59,14 @@
     );
 
     root.appendChild(h('div.home', null, inner));
+    // 主页没有列表，这一页期待同步的是"今天的状态"（打卡与精力带）
+    if (QF.pullSync) {
+      QF.pullSync.attach(inner, {
+        onDone: function () {
+          if (QF.wellbeing && QF.wellbeing.refresh) QF.wellbeing.refresh();
+        },
+      });
+    }
 
     if (QF.wellbeing && QF.wellbeing.mount) QF.wellbeing.mount(slot);
   }

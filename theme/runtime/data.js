@@ -161,7 +161,8 @@
   }
 
   function topicColor(key) {
-    return (topicMap[key] && topicMap[key].color) || '#2DD4BF';
+    /* 兜底色与 `--pri` 同值：没有配色的知识点不该冒出一个旧版的青 */
+    return (topicMap[key] && topicMap[key].color) || '#33B8AB';
   }
 
   function groupName(key) {

@@ -816,6 +816,8 @@
     bindActions();
     bindViews();
     applyView();
+    // 资料看板顶上往下拉 = 立刻同步（自动节拍已放宽到 30 秒，见 pullsync.js）
+    if (QF.pullSync) QF.pullSync.attach(document.querySelector('.libmain'), { onDone: load });
 
     api.get('/library/roots').then(function (res) {
       var roots = (res && res.roots) || [];

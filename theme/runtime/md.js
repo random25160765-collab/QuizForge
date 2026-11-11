@@ -524,8 +524,19 @@
   var CACHE_LIMIT = 400;
 
   function cachedHtml(source) {
-    if (Object.prototype.hasOwnProperty.call(htmlCache, source)) return htmlCache[source];
-    return null;
+    if (!Object.prototype.hasOwnProperty.call(htmlCache, source)) return null;
+    /* 命中就算"刚用过"，挪到队尾。
+     *
+     * 纯 FIFO 在这里会出大事：流式回答的最后一块每帧都在变长，每帧都是一个新 key ——
+     * 400 条名额被同一段回答的各个前缀占满，前面那些稳定块（工具卡、引用、旧消息）
+     * 全被挤出去，于是"每画一帧都重跑一遍 KaTeX"。流式那块现在走 `noCache`
+     *（见 chat.js 的 makeLive），LRU 再兜住其余场景。 */
+    var at = cacheKeys.indexOf(source);
+    if (at >= 0 && at !== cacheKeys.length - 1) {
+      cacheKeys.splice(at, 1);
+      cacheKeys.push(source);
+    }
+    return htmlCache[source];
   }
 
   function putCache(source, html) {
@@ -554,8 +565,10 @@
     // 缓存存的是渲染那一刻的 innerHTML —— 那份快照里往往还是"正在画图…"的占位。
     // （这条规矩与 TeX 那条同因；实测卡住的就是缓存命中那条路，见 `fill` 的注释。）
     var hasMermaid = /(^|\n)[ \t]*```+[ \t]*mermaid\b/.test(source);
+    /* `noCache`：这一块**还在长**（流式的最后一段）。每帧的源码都是新的，
+     * 写进缓存等于用它的前缀把名额灌满 —— 只读缓存，不写。 */
     var cacheable =
-      (!options || !options.macros) &&
+      (!options || (!options.macros && !options.noCache)) &&
       !(window.QF && QF.latex && QF.latex.kind(source)) &&
       !hasMermaid;
 

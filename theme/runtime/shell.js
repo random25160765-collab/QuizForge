@@ -779,7 +779,7 @@
       var native = window.QFNative;
       if (native && native.writeClipboard) {
         native.writeClipboard(text);
-        ui.toast('设置已复制（不含阅读位置等本机状态）', 'ok');
+        ui.toast('设置已复制', 'ok');
         return;
       }
       if (!navigator.clipboard || !navigator.clipboard.writeText) {
@@ -787,7 +787,7 @@
         return;
       }
       navigator.clipboard.writeText(text).then(function () {
-        ui.toast('设置已复制（不含阅读位置等本机状态）', 'ok');
+        ui.toast('设置已复制', 'ok');
       }, function () {
         ui.toast('复制失败：浏览器不给剪贴板权限', 'error');
       });
@@ -808,7 +808,7 @@
       } else if (navigator.clipboard && navigator.clipboard.readText) {
         reading = navigator.clipboard.readText();
       } else {
-        reading = Promise.reject(new Error('这个浏览器读不了剪贴板：直接改设置文件更快'));
+        reading = Promise.reject(new Error('剪贴板无法阅读，请直接修改设置文件'));
       }
       reading.then(function (text) {
         if (!String(text || '').trim()) throw new Error('剪贴板是空的');
@@ -819,7 +819,7 @@
         delete data.syncPassphrase;
         var imported = store.fileSettings(data);
         if (!Object.keys(imported).length) {
-          throw new Error('里面只有本机状态，没有可导入的设置');
+          throw new Error('没有可导入的设置');
         }
         store.adoptSettings(data, { merge: true });   // 半份导入：没提到的键保持原样
         // 导入是**整份替换**（与平时的 patch 合并区分开），但只替换设置那部分
@@ -862,7 +862,7 @@
     var syncTokenInput = h('input.input.input--mono', {
       type: 'password',
       autocomplete: 'off',
-      placeholder: 'Turso 数据库令牌（存在本机，不会上传）',
+      placeholder: 'Turso 数据库令牌',
       value: syncConf.token || '',
       onInput: function (event) {
         store.saveSettings({ turso: { token: event.target.value.trim() } });
@@ -874,15 +874,15 @@
 
     function paintSync(st) {
       if (!st) {
-        syncStatusLine.textContent = '读不到同步状态。';
+        syncStatusLine.textContent = '无法读取同步状态。';
         return;
       }
       if (!st.enabled) {
-        syncStatusLine.textContent = '已关闭 —— 打开下面的开关才会同步。';
+        syncStatusLine.textContent = '已关闭。';
         return;
       }
       if (!st.configured) {
-        syncStatusLine.textContent = '还没配置 —— 填上数据库地址与令牌就能用。';
+        syncStatusLine.textContent = '未配置 —— 请填入数据库地址和令牌。';
         return;
       }
       var bits = ['已配置', '待推送 ' + (st.pending || 0) + ' 行'];
@@ -894,11 +894,7 @@
       } else {
         bits.push('自动同步：未启动');
       }
-      bits.push(
-        st.keyReady
-          ? '加密：密钥已就绪（由数据库令牌推导）'
-          : '加密：等数据库地址与令牌'
-      );
+
       var last = st.last;
       if (last && last.ok) {
         bits.push('上次 ' + last.at + ' · 推 ' + (last.pushed || 0) + ' / 拉 ' + (last.pulled || 0));
@@ -909,13 +905,54 @@
             + (lib.materials ? '（' + lib.materials + ' 份材料）' : ''));
         }
       } else if (last && !last.ok) {
-        bits.push('上次失败：' + last.error);
+        // 类别 + 具体原因：只有"失败"两个字，人不知道该去查网络还是查令牌
+        bits.push('上次失败（' + syncKindLabel(last.kind) + '）：' + last.error);
       } else if (st.lastError) {
         bits.push('上次失败：' + st.lastError);
       } else {
-        bits.push('还没同步过');
+        bits.push('尚未同步');
       }
       syncStatusLine.textContent = bits.join(' · ');
+    }
+
+    /* ---- 同步失败的**分诊**（2026-11-11 用户要求）----
+     *
+     * 后端在 `last_result.kind` 里已经分好类（见 `sync._classify_error`）。
+     * 为什么不能笼统说"同步失败"：网络不通要去查 Wi-Fi / 代理，令牌被拒要去设置页
+     * 换令牌，对面 5xx 只能等，本机没配要去填地址 —— 四件事，四种下一步。
+     * 混成一句，人只能瞎试。
+     */
+    var SYNC_KIND_LABEL = {
+      offline: '网络不通',
+      auth: '令牌被拒',
+      server: '服务器出错',
+      request: '请求被拒',
+      config: '没配置',
+    };
+
+    function syncKindLabel(kind) {
+      return SYNC_KIND_LABEL[kind] || '原因不明';
+    }
+
+    /** 失败那一段话：说清是哪一类、下一步做什么，最后附原始信息。 */
+    function syncFailLine(kind, detail) {
+      var tail = detail ? '（' + detail + '）' : '';
+      if (kind === 'offline') {
+        return '与服务器断开联系：请检查 Wi-Fi / 代理。' + tail;
+      }
+      if (kind === 'auth') {
+        return '令牌被拒绝：数据库令牌错误或已失效。' + tail;
+      }
+      if (kind === 'server') {
+        return '同步服务器出错，请稍后再试。' + tail;
+      }
+      if (kind === 'request') {
+        return '同步请求被服务器拒绝：' + (detail || '未知原因');
+      }
+      if (kind === 'config') {
+        return '请填入数据库地址与令牌。' + tail;
+      }
+      return '同步失败：' + (detail || '未知原因');
     }
 
     function refreshSync() {
@@ -924,24 +961,50 @@
       });
     }
 
-    function pollSync(deadline) {
+    /** 轮询到这一轮结束。
+     *
+     * `baseline` 是**点下去那一刻**的 `last.at`，用来判断"这一轮有没有写新记录"：
+     * 不分的话，断网时会把上一次成功（推 0 拉 0）当成本轮结果，显示「同步完成」
+     * （2026-11-11 用户报障）。
+     *
+     * 但 `fresh` 只能说明"记录变没变"，**不能**说明"后台跑没跑"：本来就没有改动时，
+     * 本地与云端都不变，这一轮也可能不刷新记录。所以有失败记录就按失败说；
+     * 成功且没新记录，只能说"没有改动" —— 不臆断成"线程没起来"。
+     */
+    function pollSync(deadline, baseline) {
       api.get('/sync/status').then(function (st) {
         paintSync(st);
         if (st && st.running && Date.now() < deadline) {
-          window.setTimeout(function () { pollSync(deadline); }, 1500);
+          window.setTimeout(function () { pollSync(deadline, baseline); }, 1500);
           return;
         }
         ui.clear(syncResult);
         var last = st && st.last;
-        if (last && last.ok) {
+        var fresh = !baseline || !!(last && last.at && last.at !== baseline);
+        if (st && st.running) {
+          // 不是失败，是还没跑完：轮询到了 10 分钟上限它仍在跑
+          syncResult.appendChild(h('div.statline', null,
+            h('span.spinner'),
+            h('span', { text: '正在同步（已超过 10 分钟）' })));
+        } else if (last && !last.ok) {
+          // 失败就说失败：这一轮写了新记录最好，没写（`!fresh`）也说明"最近一次是失败的"
+          syncResult.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
+            h('span', { html: ui.icon('warn', 15) }),
+            h('span', { text: syncFailLine(last.kind, last.error) })));
+        } else if (last && last.ok && fresh) {
           syncResult.appendChild(h('div.statline', { style: { color: 'var(--ok)' } },
             h('span', { html: ui.icon('check', 15) }),
             h('span', { text: '同步完成 · 推 ' + (last.pushed || 0) + ' 行 · 拉 '
               + (last.pulled || 0) + ' 行 · ' + (last.seconds || 0) + ' 秒' })));
+        } else if (last && last.ok) {
+          // 记录没变、也没报错 —— 最常见、最无辜的解释就是**本来没有改动**：
+          // 本地没新增，云端也没新东西，推 0 拉 0。不能反过来断定"线程没起来"。
+          syncResult.appendChild(h('div.statline', { style: { color: 'var(--fg3)' } },
+            h('span', { html: ui.icon('check', 15) }),
+            h('span', { text: '没有需要同步的改动。' })));
         } else {
-          syncResult.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },
-            h('span', { html: ui.icon('warn', 15) }),
-            h('span', { text: '同步失败：' + ((last && last.error) || '未知原因') })));
+          syncResult.appendChild(h('div.statline', { style: { color: 'var(--fg3)' } },
+            h('span', { text: '未同步：点击「立即同步」' })));
         }
       }).catch(function (err) {
         ui.clear(syncResult);
@@ -994,9 +1057,9 @@
     var syncForm = h('div.form__section', null,
       h('div.form__sectiontitle', { text: '同步（Turso）' }),
       h('p', {
+        // 不写加密细节（2026-11-11 用户："加密应该是秘密进行的"）
         text: 'Turso 是云上共享副本，本地 SQLite 是工作副本，两边自动对齐。'
-          + '对话、分组、消息、附件、全局记忆、计划书端到端加密 —— 钥匙由下面的地址与令牌推导，'
-          + '不用记也不用填；其余数据明文。',
+          + '填同一组地址与令牌，多台设备就共用这一份。',
         style: { margin: '-2px 0 8px', fontSize: '12px', lineHeight: '1.6', color: 'var(--fg3)' },
       }),
       syncStatusLine,
@@ -1018,7 +1081,9 @@
                 ui.clear(syncResult);
                 syncResult.appendChild(h('div.statline', { text: '已经有一次同步在跑，等它结束。' }));
               }
-              pollSync(Date.now() + 10 * 60 * 1000);
+              // 基线 = 点下去那一刻的 last.at；轮询结束时用它判断"这一轮有没有留下结果"
+              var base = res && res.status && res.status.last && res.status.last.at;
+              pollSync(Date.now() + 10 * 60 * 1000, base || null);
             }).catch(function (err) {
               ui.clear(syncResult);
               syncResult.appendChild(h('div.statline', { style: { color: 'var(--bad)' } },

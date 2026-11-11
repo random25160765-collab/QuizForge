@@ -33,6 +33,7 @@ import json
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from . import ai_gateway as gateway
 from . import runs
@@ -630,6 +631,76 @@ def run(  # noqa: ANN001
         if thoughts:
             turn_message["reasoning_content"] = "".join(thoughts)
         messages.append(turn_message)
+
+        # **只读调用并发跑**（2026-11-11 用户："查询和搜索，还是只能串行"）。
+        #
+        # 模型一口气要查五六处地方时，串行就是五六个往返叠着等 —— 而它们之间没有
+        # 依赖，只是"问几处"。前提是**这一轮全是 `read`**：写 / 执行 / 提案
+        # （`write` / `exec` / `propose`）一律串行 —— 它们改库、动沙箱，顺序可预期比快
+        # 重要；`run_python` 还要等页面回执，混进并发会把那段等待逻辑搞乱。
+        #
+        # 每个任务**独立 session**：SQLAlchemy 的 session 不是线程安全的，共用等于
+        # 两个线程踩同一个事务。`tool_context` 里只有一个 conversationId（只读），共享无碍。
+        if len(calls) > 1 and all(
+            tools.access_of(call["name"]) == "read" and call["name"] not in drop
+            for call in calls
+        ):
+            from .db import get_session_factory  # noqa: PLC0415 - 只有这条快路径要用
+
+            prepared = [(call, _parse_args(call["arguments"])) for call in calls]
+            for index, (call, args) in enumerate(prepared):
+                yield {
+                    "kind": "tool_start",
+                    "callId": call["id"] or "call_" + str(index),
+                    "name": call["name"],
+                    "args": args,
+                }
+
+            # **同一个调用只做一次**：模型一轮里常把同一个网址读两遍（它不记得刚发过），
+            # 而抓一页是几百毫秒到十几秒。按（名字 + 参数）去重，结果复用给每个 callId。
+            def _key(call: dict, args: dict) -> str:
+                return call["name"] + "\x00" + json.dumps(args, sort_keys=True, ensure_ascii=False)
+
+            unique: dict[str, int] = {}
+            jobs: list[tuple[dict, dict]] = []
+            for call, args in prepared:
+                key = _key(call, args)
+                if key not in unique:
+                    unique[key] = len(jobs)
+                    jobs.append((call, args))
+
+            def _one(call: dict, args: dict) -> tuple[bool, dict, int]:
+                started = time.perf_counter()
+                with get_session_factory()() as own:
+                    ok_, payload_ = tools.call(
+                        own, call["name"], args, tool_context, mounts=mounts, allow=allow
+                    )
+                return ok_, payload_, gateway.elapsed_ms(started)
+
+            # **别把上限卡在 4**：一次发 5 个时第 5 个会排在队尾，它排队的时间还照算进
+            # 自己的 `ms`（实测见过 26 秒 —— 前 15 秒其实一个字都没开始抓）。只读、以
+            # 网络 / 磁盘等待为主，8 路够用。
+            with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+                outcomes = list(pool.map(lambda pair: _one(*pair), jobs))
+
+            # 结果仍**按模型给的顺序**发：界面按 callId 认，但同一批里顺序稳定，
+            # 读日志的人不必在几条之间来回对。
+            for index, (call, args) in enumerate(prepared):
+                call_id = call["id"] or "call_" + str(index)
+                ok, payload, elapsed = outcomes[unique[_key(call, args)]]
+                text = clip(tools.output_text(payload))
+                yield {
+                    "kind": "tool_result",
+                    "callId": call_id,
+                    "name": call["name"],
+                    "args": args,
+                    "ok": ok,
+                    "ms": elapsed,
+                    "output": text,
+                    "payload": payload,
+                }
+                messages.append({"role": "tool", "tool_call_id": call_id, "content": text})
+            continue
 
         for index, call in enumerate(calls):
             call_id = call["id"] or "call_" + str(index)

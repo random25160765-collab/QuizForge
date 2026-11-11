@@ -88,7 +88,8 @@ def mounts_state(db: DbSession) -> dict:
     那颗药丸的勾选清单**不用自己抄一份名字**：加了新滤镜，界面自动就有（抄成两份必然漂，这条吃过）。
     """
     out = mounts.describe(db)
-    out["lens"] = lens_lib.catalog()
+    # 定义从 `lenses` 表读（2026-11-11 起；文件只是镜像，见 `lens.sync_folder`）
+    out["lens"] = lens_lib.catalog(db)
     # 挂载记录跟着一起来：输入区那颗药丸的勾选框要立刻有状态（存在 `lens_records` 表，
     # 随对话同步；老数据第一次读时从设置里搬过来）。
     out["lensRecords"] = lens_lib.records(db)

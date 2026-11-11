@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 14 228 228" role="img"
+     aria-label="QFStudio">
+  <rect x="14" y="14" width="228" height="228" rx="55" fill="#F0F4F8"/>
+  <defs>
+    <!-- 右下角的缺口（圆角矩形）：环在这里断开（Q 的尾巴） -->
+    <mask id="notch" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <rect x="143.96" y="143.96"
+            width="79.8" height="79.8"
+            rx="23.275" fill="#000"/>
+    </mask>
+  </defs>
+  <g mask="url(#notch)">
+    <circle cx="128" cy="128" r="85.12" fill="#17203A"/>
+    <circle cx="128" cy="128" r="53.2" fill="#F0F4F8"/>
+    <circle cx="128" cy="128" r="47.215" fill="#17203A"/>
+  </g>
+  <circle cx="167.235" cy="167.235" r="23.275" fill="#2DD4BF"/>
+</svg>

@@ -28,9 +28,9 @@ router = APIRouter(prefix="/api/lens", tags=["lens"])
 
 
 @router.get("")
-def list_lenses() -> dict:
+def list_lenses(db: DbSession) -> dict:
     """药丸里那份清单。**不带正文**（提示词是服务端的实现细节，界面只要名字与说明）。"""
-    return {"items": lens_lib.catalog()}
+    return {"items": lens_lib.catalog(db)}
 
 
 def _conversation(db: DbSession, raw: object) -> Conversation:
@@ -101,20 +101,20 @@ def save_record(body: dict, db: DbSession) -> dict:
 
 
 @router.get("/{key}")
-def read_lens(key: str) -> dict:
+def read_lens(key: str, db: DbSession) -> dict:
     """一条滤镜的**全文**（含提示词正文）—— 编辑时要把它填进输入框。
 
     清单（`GET /api/lens`）里刻意没有正文：那是服务端的实现细节，
     但"点开编辑"要看的正是正文，所以单开这一条。
     """
-    one = lens_lib.find(key)
+    one = lens_lib.find(key, db)
     if one is None:
         raise HTTPException(status_code=404, detail="没有这条滤镜")
     return {"item": {"key": one.key, "label": one.label, "kind": one.kind, "hint": one.hint, "prompt": one.prompt}}
 
 
 @router.put("/{key}")
-def save_lens(key: str, body: dict) -> dict:
+def save_lens(key: str, body: dict, db: DbSession) -> dict:
     """新建或整条替换一条。
 
     `key` 放在路径里而不是正文里：它是**文件名**，与"这条是什么"分开写，
@@ -128,6 +128,7 @@ def save_lens(key: str, body: dict) -> dict:
             kind=str(body.get("kind") or ""),
             hint=str(body.get("hint") or ""),
             prompt=str(body.get("prompt") or ""),
+            db=db,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -135,7 +136,7 @@ def save_lens(key: str, body: dict) -> dict:
 
 
 @router.post("")
-def create_lens(body: dict) -> dict:
+def create_lens(body: dict, db: DbSession) -> dict:
     """新建（key 由服务端起）。界面里"新建"走这个，不用先想一个英文 key。"""
     try:
         one = lens_lib.save(
@@ -143,6 +144,7 @@ def create_lens(body: dict) -> dict:
             kind=str(body.get("kind") or ""),
             hint=str(body.get("hint") or ""),
             prompt=str(body.get("prompt") or ""),
+            db=db,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -150,7 +152,7 @@ def create_lens(body: dict) -> dict:
 
 
 @router.delete("/{key}")
-def delete_lens(key: str) -> dict:
-    if not lens_lib.delete(key):
+def delete_lens(key: str, db: DbSession) -> dict:
+    if not lens_lib.delete(key, db):
         raise HTTPException(status_code=404, detail="没有这条滤镜")
     return {"ok": True}

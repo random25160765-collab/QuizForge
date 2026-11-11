@@ -44,21 +44,21 @@ window.QFKit = (function () {
    * 拿不到（比如套件在别处被引用）就退回下面那份深色 fallback，不至于变成空色。
    */
   var TOKEN_FALLBACK = {
-    bg: '#0b1016', // --bg
-    panel: '#131a22', // --bg2
-    panel2: '#1e2936', // --bg3
-    line: '#38495a', // --line
-    line2: '#4e6478', // --line-strong
-    fg: '#e6edf3', // --fg
-    fg2: '#9aa7b4', // --fg2
-    dim: '#75838f', // --fg3
-    pri: '#2dd4bf', // --pri
-    pri2: '#14b8a6', // --pri-2
-    pri3: '#5eead4', // --pri-3
-    ok: '#34d399', // --ok
-    warn: '#fbbf24', // --amber
-    bad: '#f87171', // --bad
-    blue: '#60a5fa', // --blue
+    bg: '#0f1419', // --bg
+    panel: '#161c22', // --bg2
+    panel2: '#1e262e', // --bg3
+    line: '#2e3943', // --line
+    line2: '#3c4a56', // --line-strong
+    fg: '#d4dce4', // --fg
+    fg2: '#96a2ae', // --fg2
+    dim: '#78858f', // --fg3
+    pri: '#33b8ab', // --pri
+    pri2: '#1f9c91', // --pri-2
+    pri3: '#6ad6c9', // --pri-3
+    ok: '#4fbb8f', // --ok
+    warn: '#d9a94e', // --amber
+    bad: '#de7272', // --bad
+    blue: '#74a2dd', // --blue
   };
 
   /** 读当前主题下的一个 token（`pri` → `--qf-pri`）。 */

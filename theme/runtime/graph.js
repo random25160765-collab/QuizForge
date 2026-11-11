@@ -165,9 +165,9 @@
   // 也就不会出现「切了主题还有一块颜色停在旧主题里」的情况。
   function tokens() {
     return {
-      fg: css('--fg', '#E6EDF3'), fg2: css('--fg2', '#9AA7B4'), fg3: css('--fg3', '#75838F'),
-      line: css('--line', '#2A3846'), lineStrong: css('--line-strong', '#3E5163'),
-      pri: css('--pri', '#2DD4BF'), warn: css('--amber', '#FBBF24'), bg: css('--bg', '#0B1016'),
+      fg: css('--fg', '#D4DCE4'), fg2: css('--fg2', '#96A2AE'), fg3: css('--fg3', '#78858F'),
+      line: css('--line', '#2E3943'), lineStrong: css('--line-strong', '#3C4A56'),
+      pri: css('--pri', '#33B8AB'), warn: css('--amber', '#D9A94E'), bg: css('--bg', '#0F1419'),
     };
   }
   var TOK = tokens();

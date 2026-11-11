@@ -89,6 +89,7 @@ RUNTIME_ORDER = [
     "wellbeing.js",     # 首页那条精力带与打卡（只画，不算：曲线在 app/wellbeing/）
     "mounts.js",        # 顶栏的挂载开关：亮度＝AI 能调哪几块
     "qview.js",
+    "pullsync.js",      # 列表顶上下拉同步：自动同步放慢（30 秒）之后的"立刻"入口
     "router.js",
 ]
 
@@ -526,7 +527,7 @@ def build(out_dir: Path, log, *, api_base: str = "/api", with_pyodide: bool = Fa
     # 的 `logoMark()`）。
     # 源文件由 `python3 tools/make_icons.py` 生成（Pillow 画的，构建期依赖）。
     icon_count = 0
-    for name in ("icon.svg", "mark.svg", "icon-256.png"):
+    for name in ("icon.svg", "mark.svg", "icon-256.png", "icon-splash.svg"):
         source = THEME_DIR / "assets" / name
         if source.is_file():
             shutil.copy2(source, out_dir / name)

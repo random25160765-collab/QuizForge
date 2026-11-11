@@ -55,6 +55,7 @@
   var anchorSaveTimer = 0;
   var noticeEl = null;
   var jumpBtn = null;
+  var jumpRaf = 0;
   //: **传送球**（回溯的门）：贴在正文区边上的一颗圆球，拖动可挪、点开是一列带序号的
   //: 回溯点，点一枚就传过去。一个回溯点都没有时它整个不出现（见 `renderStations`）。
   var stationsEl = null;
@@ -324,9 +325,26 @@
     return modeKeys(prev).join(',') !== modeKeys(message).join(',');
   }
 
-  /** 这一条节点上要写的那行模式说明（没变化就是空串） */
+  /** 这一条节点上要写的那行模式说明（没变化就是空串）。
+   *
+   * 写**模式名**（学习 / 查询 / 极简），不是它挂的那几组工具 ——
+   * 用户 2026-11-12（对话树截图里一行"模式：笔记 + 资料 + 图谱 + 出题 + 沙箱 +
+   * 联网 + 对话树 + 计划 + 记忆"）："这个是什么模式，这么长？只是学习模式而已啊"。
+   * 那九组是"学习"这个名字的**展开**，节点上要回答的是"这一轮换了什么"，
+   * 一个词就够；展开的清单在气泡那颗灯的 title 里（要细看的人去那儿看）。
+   *
+   * 对不上任何预设（`custom`）时才退回列组 —— 那种情况**没有名字**，
+   * 列出来恰恰是唯一说得清的方式。 */
   function modeNote(message) {
-    return modeChanged(message) ? '◆ 模式：' + modeLabel(modeKeys(message)) : '';
+    if (!modeChanged(message)) return '';
+    var key = modeKeyOf(message);
+    var table = (QF.mounts && QF.mounts.state && QF.mounts.state.modes) || [];
+    var named = null;
+    table.forEach(function (one) {
+      if (one.key === key) named = one;
+    });
+    if (named) return '◆ 模式：' + (named.label || named.key);
+    return '◆ 模式：' + modeLabel(modeKeys(message));
   }
 
   /** 一条消息的预览文字：内容为空时退到"（题卡 · 附件）"这类占位。
@@ -1706,16 +1724,19 @@
 
     svg.appendChild(layer);
     host.appendChild(svg);
+    treeLayerEl = layer;
     // **地图上的图钉**：挂在画布上的**一层 HTML**，不跟着 SVG 缩放。
     // 地点是地图坐标（`node.x/node.y`），图钉是屏幕坐标，两者在 `applyTreeView` 里换算。
     // 这么分的理由就是用户那句话（"太小太不明确。想象你要在一张地图上标记某个地点"）：
     // 图钉得**始终认得出来**，而地图可以缩到 0.3 倍去装下 158 个节点。
-    host.appendChild(treePinsLayer(model));
+    treePinsEl = treePinsLayer(model);
+    pinsScale = null; // 新的一层钉子：还没按任何比例摆过
+    host.appendChild(treePinsEl);
     host.appendChild(treeLegend());
     host.appendChild(
       // 提示语要把**双指**写进去：触屏上没有滚轮，只写"滚轮缩放"等于告诉手机
       // 用户"这棵树不能放大"（原来就是这么写的，而他确实找不到怎么放大）。
-      h('div.chattree__hint', { text: '双指或滚轮缩放 · 拖动平移 · 点图钉去那个地点' })
+      h('div.chattree__hint', { text: '' })
     );
 
     // 适应窗口：算完 bbox 再定缩放与偏移
@@ -1804,7 +1825,10 @@
         cy: two.cy - box.top,
         x0: TREE.view.x,
         y0: TREE.view.y,
-        k0: TREE.view.k
+        k0: TREE.view.k,
+        // 手势期间画布的位置不会变：把 rect 量一次存住，
+        // 别在每一帧的 `pointermove` 里再强制一次布局
+        box: box
       };
     }
 
@@ -1819,13 +1843,13 @@
     function applyPinch() {
       var two = pinchPair();
       if (!pinch || !two) return;
-      var box = svg.getBoundingClientRect();
+      var box = pinch.box || svg.getBoundingClientRect();
       var k = clampK(pinch.k0 * (two.d / pinch.d0));
       var ratio = k / pinch.k0;
       TREE.view.x = (two.cx - box.left) - (pinch.cx - pinch.x0) * ratio;
       TREE.view.y = (two.cy - box.top) - (pinch.cy - pinch.y0) * ratio;
       TREE.view.k = k;
-      applyTreeView(svg);
+      scheduleTreeView(svg);
     }
 
     /** 一次滚轮走多远：**按 delta 的大小**算，不按它的符号。
@@ -1883,7 +1907,7 @@
       if (!TREE.drag) return;
       TREE.view.x = TREE.drag.vx + (event.clientX - TREE.drag.x);
       TREE.view.y = TREE.drag.vy + (event.clientY - TREE.drag.y);
-      applyTreeView(svg);
+      scheduleTreeView(svg);
     });
 
     var endDrag = function (event) {
@@ -1898,43 +1922,76 @@
     svg.addEventListener('pointercancel', endDrag);
   }
 
+  var treeViewRaf = 0;
+
+  /** 高频手势（拖动、双指）合并到下一帧再应用。
+   *
+   * 一次触摸移动会连发好几个 `pointermove`：每个都改一次整层 transform、再逐个摆钉子，
+   * 中间那几次浏览器根本画不出来 —— 低端机上就是它们在抢主线程。 */
+  function scheduleTreeView(svg) {
+    if (treeViewRaf) return;
+    treeViewRaf = window.requestAnimationFrame(function () {
+      treeViewRaf = 0;
+      if (svg.isConnected) applyTreeView(svg);
+    });
+  }
+
+  /** 把一枚钉子摆到它的锚点上（地图坐标 × 当前缩放）。
+   *
+   * 第一个 translate 只把钉子放到**地图坐标**上的锚点（缩放后的像素），平移由外层容器
+   * 一次写掉；后一个 translate 是**相对自身**的：把尖头（元素底边中点）落在锚点上。
+   * 再后一个把同一地点上的第 2、3 枚抬起来（`PIN_STEP`）—— 这一句必须在**屏幕坐标**里做：
+   * 锚点会跟着地图缩放，缩到 0.066 倍时 26px 只剩 1.7px，两枚钉子又叠回去了（第一版栽过）。
+   *
+   * **单独成一个函数**，是因为"你在这儿"那枚的锚点会**在缩放比不变的情况下**换到另一个
+   * 节点上（滚动正文时 `markReading` 一路跟着走）。原先这段只写在 `pinsScale !== k` 那个
+   * 分支里 —— 比例没变就整段跳过，于是 `dataset.ax/ay` 改了却没人重新摆，那枚钉子**停在
+   * 旧节点上**（用户 2026-11-12："这个'我在这里'的光标会乱跳"）。
+   */
+  function placePin(el, k) {
+    var ax = Number(el.dataset.ax);
+    var ay = Number(el.dataset.ay);
+    if (!isFinite(ax) || !isFinite(ay)) return;
+    var slot = Number(el.dataset.slot) || 0;
+    el.style.transform =
+      'translate(' + (ax * k) + 'px,' + (ay * k) + 'px) translate(-50%, -100%)' +
+      (slot ? ' translate(0,' + -slot * PIN_STEP + 'px)' : '');
+  }
+
   function applyTreeView(svg) {
-    var layer = svg.querySelector('.chattree__layer');
+    var layer = treeLayerEl || svg.querySelector('.chattree__layer');
+    var k = TREE.view.k;
+    var ox = TREE.view.x;
+    var oy = TREE.view.y;
     if (layer) {
-      layer.setAttribute(
-        'transform',
-        'translate(' + TREE.view.x + ',' + TREE.view.y + ') scale(' + TREE.view.k + ')'
-      );
+      layer.setAttribute('transform', 'translate(' + ox + ',' + oy + ') scale(' + k + ')');
+      /* 缩到看不清字时把节点上的字收掉：一棵 158 个节点的树有上千个 SVG 元素，
+       * 其中绝大多数是文字 —— 拖动/缩放时每帧重绘的正是它们。0.45 倍以下字高只剩
+       * 五六个像素，收掉不丢信息（这个比例下名字本来也读不出来，图钉的 `is-tight`
+       * 规则负责在停下来的那一枚上把名字浮出来）。 */
+      layer.classList.toggle('is-far', k < 0.45);
     }
     // 图钉：**用户坐标 → 屏幕坐标**，在这一处换算（滚轮、拖动、适应窗口最后都落到这里）。
     // 图钉自己不缩放，所以不能放进 SVG —— 它是地图上的 POI：地点跟着地图动，
     // 图钉始终是那个大小、那个字号。
-    var pins = svg.parentNode ? svg.parentNode.querySelector('.chattree__pins') : null;
+    var pins = treePinsEl || (svg.parentNode ? svg.parentNode.querySelector('.chattree__pins') : null);
     if (!pins) return;
-    var k = TREE.view.k;
-    var ox = TREE.view.x;
-    var oy = TREE.view.y;
     // 缩到看不清字的时候（0.45 倍以下）只留图钉、收起名字：一屏几十个名字会互相压，
     // 反而谁也读不出来。鼠标停在某一枚上，它自己的名字照旧浮出来（CSS 里那两条规则）。
     pins.classList.toggle('is-tight', k < 0.45);
     // 再远一档：连钉帽也收小一点。一屏几十枚 22px 的圆会糊成一片
     //（这条长对话适配窗口后 k 只有 0.066，实测就是那么糊）。
     pins.classList.toggle('is-small', k < 0.16);
-    var items = pins.querySelectorAll('.ctpin2');
-    for (var i = 0; i < items.length; i++) {
-      var el = items[i];
-      var ax = Number(el.dataset.ax);
-      var ay = Number(el.dataset.ay);
-      if (!isFinite(ax) || !isFinite(ay)) continue;
-      // 后一个 translate 是**相对自身**的：把尖头（元素底边中点）落在锚点上。
-      // 再后一个把同一地点上的第 2、3 枚抬起来（`PIN_STEP`）—— 这一句必须在**屏幕
-      // 坐标**里做：锚点会跟着地图缩放，缩到 0.066 倍时 26px 只剩 1.7px，两枚钉子
-      // 又叠回去了（第一版就是这么栽的）。
-      var slot = Number(el.dataset.slot) || 0;
-      el.style.transform =
-        'translate(' + (ax * k + ox) + 'px,' + (ay * k + oy) + 'px) translate(-50%, -100%)' +
-        (slot ? ' translate(0,' + -slot * PIN_STEP + 'px)' : '');
+    /* **拖动时 k 不变**：每一枚钉子的落点 (ax*k, ay*k) 一个字都不用改，整层平移就够。
+     * 一棵大树几十枚钉子，每帧逐个写 `style.transform` 都要重算一次样式 ——
+     * 这是按住拖动时卡顿的主要来源之一。缩放时才逐个摆一次。 */
+    if (pinsScale !== k) {
+      pinsScale = k;
+      var items = pins.querySelectorAll('.ctpin2');
+      for (var i = 0; i < items.length; i++) placePin(items[i], k);
     }
+    // 整层的平移交给容器（一次写入，浏览器只需要挪这一层）
+    pins.style.transform = 'translate(' + ox + 'px,' + oy + 'px)';
   }
 
   /* ------------------------------------------------------------ 分支 */
@@ -3101,13 +3158,119 @@
    *   * **点了旧标记也给"加"**：缺的那几种摆出来，目标就是它自己那一段 ——
    *     否则"先高亮、再回来加删除线"要先取消、再重新划一遍，划线不该比改主意更费力。
    */
+  /* ---- 触屏上"选完了再弹"（2026-11-11 用户报障）----
+   *
+   * 现场：平板上一长按，选区才刚起来（还没有手柄可拖），批注栏就跳出来，把旁边的字挡住。
+   * 原因是 Android Chrome 把**长按**直接派发成 `contextmenu`，而菜单是在那个事件里弹的 ——
+   * 那一刻用户是"准备拖动选中"，不是"选好了"。
+   *
+   * 改成：触屏上 `contextmenu` 只记账（`markMenuTouch`）不弹；等**手指松开**、并且选区
+   * 静下来 380ms 之后才弹。按住选择手柄拖动的整段时间（`markMenuTouching`）一直不弹。
+   * 桌面不加这个延迟：鼠标右键本身就是"选完再点"，多等一下只会显得迟钝。
+   */
+  var coarsePointer = window.matchMedia ? window.matchMedia('(pointer: coarse)') : null;
+  var markMenuTimer = 0;
+  //: 触屏上"待弹"的记账：`{x, y}`；空 = 这一轮没有等着要弹的菜单
+  var markMenuTouch = null;
+  //: 手指此刻正按着（长按或拖手柄）。按着的时候一律不弹 —— 那正是挡住视线的时刻。
+  var markMenuTouching = false;
+
+  function isCoarsePointer() {
+    return !!(coarsePointer && coarsePointer.matches);
+  }
+
+  /** 触屏的待弹记账还在不在（`touchend` 与 `selectionchange` 都要看它）。 */
+  function markMenuPending() {
+    return !!markMenuTouch;
+  }
+
+  /** 选区尾端的屏幕坐标：菜单贴着"手指松开的那一带"弹，而不是长按的起点。 */
+  function markMenuAnchor() {
+    var sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+    var rect = sel.getRangeAt(0).getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)) return null;
+    return { x: rect.right, y: rect.bottom };
+  }
+
+  function scheduleMarkMenu(delay) {
+    if (!markMenuTouch) return;
+    clearTimeout(markMenuTimer);
+    markMenuTimer = window.setTimeout(function () {
+      if (markMenuTouching) return;          // 还按着 = 正在拖手柄，等松手
+      var pick = selectionMark();
+      if (!pick) {                           // 只长按出了光标，没选到字
+        markMenuTouch = null;
+        return;
+      }
+      var anchor = markMenuAnchor();
+      var started = markMenuTouch;
+      markMenuTouch = null;
+      showMarkMenu(pick, null, anchor ? anchor.x : started.x, anchor ? anchor.y : started.y);
+    }, delay);
+  }
+
+  var touchSelectionBound = false;
+
+  /** 触屏上那四个监听：只绑一次（聊天组件会重建，重复绑会攒下一堆闭包）。
+   *
+   * 用 `document` 而不是 `threadEl`：选择手柄可以拖到正文外面，那时 `touchstart`
+   * 的 target 不一定是线程里的元素，挂在线程上会漏掉"手指又按下去了"这件事。
+   */
+  function bindTouchSelection() {
+    if (touchSelectionBound) return;
+    touchSelectionBound = true;
+
+    document.addEventListener(
+      'touchstart',
+      function () {
+        markMenuTouching = true;
+      },
+      { passive: true, capture: true }
+    );
+    document.addEventListener(
+      'touchend',
+      function () {
+        markMenuTouching = false;
+        // 松手才是"选完了"。给 380ms 让选区定下来，也躲开双击选词那一下
+        if (markMenuPending()) scheduleMarkMenu(380);
+      },
+      { passive: true, capture: true }
+    );
+    document.addEventListener(
+      'touchcancel',
+      function () {
+        markMenuTouching = false;
+      },
+      { passive: true, capture: true }
+    );
+    // 拖手柄时选区一直在变：每变一次就重新计时，稳定之后才弹
+    document.addEventListener('selectionchange', function () {
+      if (markMenuPending()) scheduleMarkMenu(380);
+    });
+  }
+
   function onMarkContextMenu(event) {
     var pick = selectionMark();
     var hit = pick || !event.target || !event.target.closest ? null : event.target.closest('.chatmark');
     if (!hit && !pick) return;   // 既没选中也没点在标记上：让浏览器自己的菜单出来
+
+    if (isCoarsePointer() && pick) {
+      // 触屏有选区：这是"长按开始选"。只记账，等松手 + 选区稳定
+      event.preventDefault();
+      markMenuTouch = { x: event.clientX, y: event.clientY };
+      scheduleMarkMenu(380);
+      return;
+    }
+
     event.preventDefault();
-    chatMenuX = event.clientX;
-    chatMenuY = event.clientY;
+    showMarkMenu(pick, hit, event.clientX, event.clientY);
+  }
+
+  /** 真正把菜单摆出来（桌面立刻走这里；触屏由 `scheduleMarkMenu` 稍后调）。 */
+  function showMarkMenu(pick, hit, x, y) {
+    chatMenuX = x;
+    chatMenuY = y;
 
     var items = [];
     // 这一段（选区的那一段，或点中的那枚标记自己那一段）上盖着的标记
@@ -4625,8 +4788,7 @@
       h('span.chattree__legendtext', { text: '回溯 · 快速跳转（' + backs + '/5）' }),
       // 地图上第三枚钉子：不是地点，是"你读到哪儿了"（见 markReading / herePin）
       h('i.chattree__legendpin.is-here', null, h('i.ctpin2__pulse')),
-      h('span.chattree__legendtext', { text: '你在这儿 · 正文读到哪一条' }),
-      h('span.chattree__legendtext.is-dim', { text: '右键图钉可写描述' })
+      h('span.chattree__legendtext', { text: '当前位置' })
     );
   }
 
@@ -4752,10 +4914,10 @@
     if (!places.length) {
       list.appendChild(
         h('div.chatmarks__empty', {
+          // 只说"空"，不教怎么标 —— 丝带就在消息尾部、右键菜单里也有，
+          // 一段操作指引占着空状态的整个版面（用户 2026-11-12："这句话删掉"）。
           // 说"树上"不说"图上"：手机上这棵树是大纲列表，没有图钉可找
-          text:
-            '这棵树上还没有标记。回到对话里，在消息尾部点那枚丝带（或右键 →「加书签」）——' +
-            '标过的地方就会挂在树上，同时列在这里。书签是永久的，数量不限。',
+          text: '这棵树上还没有标记。',
         })
       );
     }
@@ -5435,6 +5597,8 @@
     asideEl = h('aside.chat__aside');
     asideHeadEl = h('div.chat__asidehead');
     listEl = h('div.chat__list');
+    // 左栏顶上往下拉 = 立刻同步（自动节拍已放宽到 30 秒，见 pullsync.js）
+    if (QF.pullSync) QF.pullSync.attach(listEl, { onDone: loadList });
     // 批量操作条：多选时才挂进头部（见 renderPickBar），平时不占地方
     pickEl = h('div.chatlist__pick');
     asideEl.appendChild(asideHeadEl);
@@ -5463,6 +5627,7 @@
     // 滚上去就露出「回到最新」（见 refreshJump）
     // 在回答里选中一段 → 右键 → 三种标记（见 onMarkContextMenu）
     threadEl.addEventListener('contextmenu', onMarkContextMenu);
+    bindTouchSelection();
     // 旁批卡片的 top 是"它标的那一行在哪"的函数，而那是**版式的结果**：线程一换
     // 尺寸（窗口缩放、收起会话栏、面板开合）就得重算一次（见 relayoutMargins）。
     // 盯线程自己而不是 window：工作台把这一套挂进窗格时，窗口尺寸根本不变。
@@ -5583,7 +5748,7 @@
             null,
             pendingEl,
             (jumpBtn = iconButton('down', '回到最新', function () {
-              scrollToEnd(true);
+              smoothToEnd();
             }, '.chat__jump')),
             h(
               'div.chat__box',
@@ -7069,6 +7234,12 @@
   var lastReadMid = '';
   var readMarkTimer = 0;
   var herePinEl = null; //: 地图上"你在这儿"那枚钉子（见 treePinsLayer / moveHerePin）
+  /* 地图两层节点的缓存：`applyTreeView` 在拖动/缩放的每一帧都要用它们。
+   * 每帧 `querySelector` 一遍整张图（上千个 SVG 元素）纯属白扔 —— 树只在重画时换。 */
+  var treeLayerEl = null;
+  var treePinsEl = null;
+  /* 上一次按哪个 `k` 摆过图钉。拖动时 `k` 不变，整层平移就够，不必逐个重写。 */
+  var pinsScale = null;
 
   /** 把"你在这儿"挪到当前读到的那一条上（地图没开就什么都不做）。 */
   function markReading() {
@@ -7114,7 +7285,12 @@
     // **认准地图那张 svg**（`.chattree__svg`）：工具栏里的图标也是 svg，写成 `querySelector('svg')`
     // 就会抓到它们 —— 那样 `applyTreeView` 找不到图钉层、原样返回，钉子就停在左上角了（实测踩过）。
     var svg = treeEl.querySelector('.chattree__svg');
-    if (svg) applyTreeView(svg);
+    if (svg) {
+      // 锚点换了但缩放比没变：`applyTreeView` 会因为 `pinsScale === k` 跳过整层重摆，
+      // 所以这一枚得自己摆一次（见 `placePin` 的说明）
+      placePin(herePinEl, TREE.view.k);
+      applyTreeView(svg);
+    }
   }
 
   /** 滚动时每帧最多算一次（滚一下要量几十行 rect，别在 scroll 事件里直接干）。 */
@@ -7321,7 +7497,11 @@
     } else {
       // 正文是投影，零件才是真相：旧消息没有 parts 时按正文兜一个
       body.appendChild(
-        partsNode(m.parts && m.parts.length ? m.parts : [{ type: 'text', text: m.content || '' }])
+        partsNode(m.parts && m.parts.length ? m.parts : [{ type: 'text', text: m.content || '' }], {
+          // 过程抽屉的开合按「消息 + 段起点」记（见 `runNode`）：发来的历史
+          // 一律收起，人展开过的那一段在重画之后仍开着
+          msgKey: String(m.id || ''),
+        })
       );
     }
     // **消息框右上角那盏信号灯**：这一条输入用的是哪个模式。
@@ -7766,6 +7946,17 @@
     if (shell.el) return;
     var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) return;
+    /* **错峰**：TeX 引擎那条预热（`latex.js`，空闲 3 秒起）与这里抢同一个渲染线程。
+     * 两条重活叠在一起时，低端安卓机上打开会话的前十秒全是掉帧（用户 2026-11-11）。
+     * 让小的先热完、大的再起；引擎没热、被计费网络挡掉或超出上限，按超时放行 ——
+     * 后一条不该被前一条无限拖住。 */
+    if (QF.latex && QF.latex.whenWarm) {
+      var go = function () {
+        if (!shell.el) shellBoot();
+      };
+      QF.latex.whenWarm(10000).then(go, go);
+      return;
+    }
     shellBoot();
   }
 
@@ -8037,23 +8228,15 @@
           },
         })
       ),
-      // 跑出来的输出直接摆在这儿 —— 不必点开面板才知道它跑成什么样。
-      // 它同时也是回填给服务端的那一份（见 message 监听里的回填）。
-      // 判据同 `pythonRun`：有 run 就摆（哪怕 `text` 是空的 —— 演示常常只画图、
-      // 一个字不打印，按 `text` 判的话那块会整块不出现）。
-      part.run && (part.run.text || (part.run.images || []).length)
+      // **运行结果整块不摆**（2026-11-11 用户："这个图就是冗余的，明明可以进去看，
+      // 为什么还要弄两份"）：`run.text` 是写给模型的观察，`run.images` 是模型读不到
+      // WebGL 画面时补的一帧 —— 两样都是给模型的，而人点「打开工件」就能看活的页面。
+      // 界面只留一句最短的失败提示（跑不起来时"打开工件"是空的，得说一声）。
+      part.run && part.run.ok === false
         ? h(
-            'div.chatdemo__inline' + (part.run.ok === false ? '.is-bad' : ''),
+            'div.chatdemo__inline.is-bad',
             null,
-            h('div.chatdemo__inlinelabel', {
-              text: part.run.ok === false ? '沙箱报错（已回填给模型）' : '沙箱输出（已回填给模型）',
-            }),
-            h('pre.chatdemo__inlinepre', { text: part.run.text || '（没有输出）' }),
-            // **把跑出来的图也摆上**：那是模型当时看到的画面（运行壳收回来存在 `run.images`）。
-            // 从前这里只摆文字 —— 于是"应用不在场"时（分享页发到另一台机器、或本机应用没开），
-            // 一条**只画图、不打印**的演示就什么都看不见（2026-09-29 用户报障：
-            // "导出的对话里，所有的 demo 都看不到也无法运行"）。
-            figsNode(part.run.images)
+            h('div.chatdemo__inlinelabel', { text: '工件没跑起来' })
           )
         : null
     );
@@ -8203,42 +8386,28 @@
       });
   });
 
+  /** 面板底部的输出区：**平时不显示**（2026-11-11 用户：图是冗余的）。
+   *
+   * 面板里跑的就是那个活的页面，人直接看得到；再摆一张运行截图等于同一件事两份证据。
+   * 只有"跑不起来"时露一行 —— 那时页面是空的，不说一声会让人以为在加载。
+   */
   function paintDemoRun() {
     if (!demoRunEl) return;
     ui.clear(demoRunEl);
+    demoRunEl.hidden = true;
     if (!state.demo || !state.demo.runId) return;
 
     var run = state.demo.run;
-    if (!run) {
+    if (run && run.ok === false) {
+      demoRunEl.hidden = false;
       demoRunEl.appendChild(
-        h('div.chatdemo__runwait', { text: '沙箱还在跑…（跑完这里会显示输出）' })
-      );
-      return;
-    }
-
-    demoRunEl.appendChild(
-      h(
-        'div.chatdemo__runhead',
-        null,
-        h('span.chatdemo__runlabel' + (run.ok ? '' : '.is-bad'), {
-          text: (run.ok ? '沙箱输出' : '沙箱报错') + ' · 已回填给模型',
-        }),
         h(
-          'button.chatdemo__runcopy',
-          {
-            type: 'button',
-            onClick: function () {
-              copyText(run.text || '', '输出已复制');
-            },
-          },
-          '复制'
+          'div.chatdemo__runhead',
+          null,
+          h('span.chatdemo__runlabel.is-bad', { text: '工件没跑起来' })
         )
-      )
-    );
-    demoRunEl.appendChild(h('pre.chatdemo__runtxt', { text: run.text || '（没有输出）' }));
-    // 面板里也把图摆上（同卡片那条理由：只画图的演示，光有文字等于没有）
-    var demoFigs = figsNode(run.images);
-    if (demoFigs) demoRunEl.appendChild(demoFigs);
+      );
+    }
   }
 
   /* ---- 沙箱面板的展开 / 收起动效 ----------------------------------- */
@@ -8334,11 +8503,16 @@
    * 标题 / 表格 / `$$` 公式 / ```mermaid 都认），`html` 起沙箱 iframe。
    */
   function openArtifact(part, full) {
+    // 三种形态（html / markdown / python）在面板里长得不一样，下载时的扩展名也不同 ——
+    // 这里把 `kind` 记下来，渲染与下载都读它，别再各自猜一遍
+    var kind = part.kind === 'markdown' ? 'markdown' : part.kind === 'python' ? 'python' : 'html';
     // runId 要带过来：沙箱跑完会把输出 postMessage 回来，靠它认领到这次运行
     state.demo = {
       title: part.title || '工件',
-      markdown: part.kind === 'markdown' ? String(part.markdown || '') : '',
-      html: part.kind === 'markdown' ? '' : String(part.html || ''),
+      kind: kind,
+      code: kind === 'python' ? String(part.code || '') : '',
+      markdown: kind === 'markdown' ? String(part.markdown || '') : '',
+      html: kind === 'markdown' ? '' : String(part.html || ''),
       runId: part.kind === 'markdown' ? '' : String(part.runId || ''),
       // 有本次会话里跑出来的就用它；否则**用随零件存下来的那份**（`part.run`）——
       // 分享页、刷新之后 `demoRuns` 都是空的，不认存下来的那份，面板一开只会写
@@ -8352,6 +8526,62 @@
   /** 卡片上那颗按钮：半页。 */
   function openDemo(part) {
     openArtifact(part, false);
+  }
+
+  /** 工件落盘时的扩展名与类型（见 `state.demo.kind`）。 */
+  function artifactFileMeta(kind) {
+    if (kind === 'markdown') return { ext: '.md', mime: 'text/markdown;charset=utf-8' };
+    if (kind === 'python') return { ext: '.py', mime: 'text/x-python;charset=utf-8' };
+    return { ext: '.html', mime: 'text/html;charset=utf-8' };
+  }
+
+  /** 标题 → 文件名：给眼睛看的字要能落到硬盘上，路径分隔符与 Windows 保留字符换掉。 */
+  function artifactFileName(title, ext) {
+    var name = String(title || '工件').replace(/[\\/:*?"<>|\s]+/g, ' ').trim().slice(0, 60);
+    return (name || '工件') + ext;
+  }
+
+  /**
+   * 面板右上角的「下载」。
+   *
+   * 页面形态要把 `__ORIGIN__` 换成本机地址（那是装配时留的占位，见 `withCsp`）——
+   * 但**不带 CSP**：那是"在我们的面板里跑"的约束，落到硬盘上的文件不该带着它。
+   *
+   * 手机上 `a[download]` 在 WebView 里不会落盘（没有 DownloadListener，见
+   * `MainActivity` 头注释），有 `QFNative` 就把字节交给原生：`shareFile` 写进
+   * cache 再弹系统分享（可存到文件）；旧包只有 `shareHtml`，退回它。
+   */
+  function downloadArtifact() {
+    if (!state.demo) return;
+    var meta = artifactFileMeta(state.demo.kind);
+    var body;
+    if (state.demo.kind === 'markdown') {
+      body = String(state.demo.markdown || '');
+    } else if (state.demo.kind === 'python') {
+      body = String(state.demo.code || '');
+    } else {
+      body = String(state.demo.html || '').split('__ORIGIN__').join(shareOrigin());
+    }
+    var name = artifactFileName(state.demo.title, meta.ext);
+    var blob = new Blob([body], { type: meta.mime });
+    var native = window.QFNative;
+    if (native && (native.shareFile || native.shareHtml)) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var base64 = String(reader.result).replace(/^data:[^,]*,/, '');
+        if (native.shareFile) native.shareFile(name, meta.mime, base64);
+        else native.shareHtml(name, base64);
+      };
+      reader.readAsDataURL(blob);
+      return;
+    }
+    var url = URL.createObjectURL(blob);
+    var link = h('a', { href: url, download: name });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    ui.toast('已下载 ' + name);
   }
 
   /**
@@ -8406,7 +8636,9 @@
             'div.chatdemo__head',
             null,
             h('span.chatdemo__title', { text: state.demo.title }),
-            iconButton('close', '关闭（Esc）', close)
+            h('div.chatdemo__acts', null,
+              iconButton('download', '下载工件', downloadArtifact),
+              iconButton('close', '关闭（Esc）', close))
           ),
           markdown
             ? h('div.chatdemo__doc', null, QF.md.render(markdown))
@@ -9897,16 +10129,125 @@
    * （它在想什么、它查了什么、它引了哪几行、它说了什么），
    * 前端按类型各画各的，而不是拿一段字符串去猜。
    */
-  function partsNode(parts) {
-    var box = h('div.chatmsg__parts');
-    (parts || []).forEach(function (part) {
-      var node = partNode(part);
-      if (node) box.appendChild(node);
+  /* -------------------------------------------- 过程链条：一整串收进一个抽屉
+   *
+   * 用户 2026-11-12（截图：一屏十几行「思考过程 / search_material / web_search /
+   * 思考过程 / read_web_page / …」）："这一大串玩意要可以收起来 —— 共同的特征
+   * 是思考和工具交替。"
+   *
+   * 所以判据不是"连续的过程零件"：纯思考、纯工具各自已经有自己的样子（前者折
+   * 一行带预览，后者一行一件），再套一层抽屉只是多点一次。要收的是**一整段里
+   * 两类都出现过**的那种交替链 —— 它整段进一个 `<details>`，收起时只剩一行：
+   *
+   *      › 思考与工具   read_web_page                    6 步
+   *
+   * 长相与 `.chatmsg__think` / `.chatmsg__tool` 是同一套（同一行高、同一个箭头、
+   * 展开后同样一道左侧细线），区别只是它**装的是好几行**。
+   *
+   * 开合：默认"流式中展开、收尾后收起"—— 跑的时候得看得见它在干什么，跑完了
+   * 就别占版面。人手动点过就按他的，记在 `runFold` 里，键是「消息 + 段起点」；
+   * `parts` 只追加不重排，这个键稳得住。
+   */
+  var runFold = {};
+
+  function isRunPart(part) {
+    var t = part && part.type;
+    return t === 'think' || t === 'tool_call';
+  }
+
+  /** 从 `from` 起的一段过程链，返回终点（不含）；不是"交替链"就返回 0。
+   *
+   * 两道门槛：
+   *   * **两类都得出现** —— 纯思考 / 纯工具不是这个形状；
+   *   * **至少三件** —— 两件的"想一下、调一次"收起来只省下一行，却要多点一次。
+   */
+  function runEnd(parts, from) {
+    var to = from;
+    var think = false;
+    var tool = false;
+    while (to < parts.length && isRunPart(parts[to])) {
+      if (parts[to].type === 'think') think = true;
+      else tool = true;
+      to += 1;
+    }
+    if (!think || !tool || to - from < 3) return 0;
+    return to;
+  }
+
+  /** 收起那一行右侧"最后在干什么"：思考取第一句，工具取名字。 */
+  function runPeek(part) {
+    if (!part) return '';
+    if (part.type === 'tool_call') return part.name || '工具';
+    return previewLine(part.text, 40);
+  }
+
+  function runNode(items, from, opts) {
+    var key = ((opts && opts.msgKey) || '') + '|' + from;
+    var known = Object.prototype.hasOwnProperty.call(runFold, key);
+    var open = known ? !!runFold[key] : !!(opts && opts.streaming);
+    var kids = items.map(function (one) {
+      return partNode(one, opts);
     });
+    var node = h(
+      'details.chatmsg__run',
+      { dataset: { from: String(from) }, open: open },
+      h(
+        'summary.chatmsg__runrow',
+        null,
+        // SVG 而不是字符 `›`：字符的字形在盒子里并不居中，`rotate(90deg)` 绕的是
+        // 盒子中心 —— 展开那一刻箭头会歪到一边（用户 2026-11-12："这个 > 的旋转
+        // 中心和文字不对齐"）。`chevronR` 的路径按 (12,12) 校正过（见 ui.js 的
+        // 图标表），盒子中心就是笔画中心，转多少度都还是正的。
+        h('span.chatmsg__runcaret', { html: ui.icon('chevronR', 12) }),
+        h('span.chatmsg__runlabel', { text: '思考与工具' }),
+        h('span.chatmsg__runpeek', { text: runPeek(items[items.length - 1]) }),
+        h('span.chatmsg__runcount', { text: items.length + ' 步' })
+      ),
+      h('div.chatmsg__runbody', null, kids)
+    );
+    // `details` 的 toggle 在**程序**改 open 时也会发（异步），写回的正是当前值，无害
+    node.addEventListener('toggle', function () {
+      runFold[key] = node.open;
+    });
+    return { el: node, kids: kids };
+  }
+
+  /** 这一段还在长：只换摘要行那两处文字，`<summary>` 本身不重建 ——
+   * 理由同 `thinkNode` 里的频闪（每 100ms 换一个 summary，点击永远差半拍）。 */
+  function refreshRunHead(node, items) {
+    if (!node || !items || !items.length) return;
+    var peek = node.querySelector('.chatmsg__runpeek');
+    var count = node.querySelector('.chatmsg__runcount');
+    var tail = items[items.length - 1];
+    if (peek) {
+      var text = runPeek(tail);
+      if (peek.textContent !== text) peek.textContent = text;
+    }
+    if (count) {
+      var label = items.length + ' 步';
+      if (count.textContent !== label) count.textContent = label;
+    }
+  }
+
+  function partsNode(parts, opts) {
+    var box = h('div.chatmsg__parts');
+    var list = parts || [];
+    var at = 0;
+    while (at < list.length) {
+      var to = runEnd(list, at);
+      if (to) {
+        box.appendChild(runNode(list.slice(at, to), at, opts).el);
+        at = to;
+        continue;
+      }
+      var node = partNode(list[at], opts);
+      if (node) box.appendChild(node);
+      at += 1;
+    }
     return box;
   }
 
-  function partNode(part) {
+  function partNode(part, opts) {
     var type = part && part.type;
     if (type === 'text') {
       // **正文永远是正文**：服务端已经按通道分好了（`content` → text 零件，
@@ -9914,9 +10255,9 @@
       // （原来这一行是 `part.process ? thinkNode(part) : …`：紧跟工具调用的正文
       // 会被折成"过程"块，用户的原话是"正文被吞到思考里面了"。现在连库里已经
       // 存下的老标记也一起不认 —— 刷新一下，那些被折走的正文回到正文里。）
-      return QF.md.render(String(part.text || ''));
+      return QF.md.render(String(part.text || ''), opts);
     }
-    if (type === 'think') return thinkNode(part);
+    if (type === 'think') return thinkNode(part, opts);
     if (type === 'tool_call') return toolNode(part);
     if (type === 'card') return questionCard(part);
     if (type === 'draft') return draftCard(part);
@@ -9937,17 +10278,41 @@
    * 折进过程"的猜测（`demoteProcess`）已删：模型自己早就用通道分好了
    * （思维链是英文的推理，正文是对用户说的话），不用我们再按位置猜。
    */
-  function thinkNode(part) {
+  /** 折起来时那一行预览：取第一句，去掉 markdown 的壳，长了就省略。
+   *
+   * 只有"思考过程"四个字的一行是纯噪音（一条回复里会出现七八次）——
+   * 用户 2026-11-11 给的那张图里，折叠行带一句内容（"思考 · Need -k probe_fsetp.ge."），
+   * 扫一眼就知道它在想什么，不用点开。 */
+  function previewLine(text, max) {
+    var first = String(text || '')
+      .split('\n')
+      .map(function (line) { return line.trim(); })
+      .filter(Boolean)[0] || '';
+    first = first
+      .replace(/^[#>\-*+\s]+/, '')
+      .replace(/[`*_]/g, '')
+      .replace(/\s+/g, ' ');
+    return first.length > max ? first.slice(0, max) + '…' : first;
+  }
+
+  function thinkNode(part, opts) {
+    var peek = previewLine(part.text, 64);
     var node = h(
       'details.chatmsg__think',
       null,
-      h('summary', { text: part.label || '思考过程' }),
+      h(
+        'summary.chatmsg__thinkrow',
+        null,
+        h('span.chatmsg__thinkcaret', { html: ui.icon('chevronR', 12) }),
+        h('span.chatmsg__thinklabel', { text: part.label || '思考过程' }),
+        peek ? h('span.chatmsg__thinkpeek', { text: peek }) : null
+      ),
       // 直接放 `render` 的元素（它自带 `.md`）。原来这里是
       // `h('div.md', { html: QF.md.renderToString(…) })` —— 而 `renderToString`
       // 就是 `render(…).outerHTML`，字符串**本身已经是一个 `.md`**：两层一叠，
       // 内层那个 `.md` 有它自己的字号与前景色，把外层的"灰 + 小"整个顶掉
       //（用户："这个思考内容样式没变啊"）。
-      QF.md.render(String(part.text || ''))
+      QF.md.render(String(part.text || ''), opts)
     );
     if (state.showThink) {
       node.open = true;
@@ -10069,28 +10434,49 @@
     renderBar();
   }
 
-  /** 工具调用：一行摘要 + 可展开的结果。调用中与调用完是同一条，只是结果填进来了。 */
+  /** 耗时：四位数毫秒读起来费劲，过一千就换成秒 */
+  function msText(ms) {
+    var n = Number(ms) || 0;
+    if (n < 1000) return n + ' ms';
+    if (n < 10000) return (n / 1000).toFixed(1) + ' s';
+    return Math.round(n / 1000) + ' s';
+  }
+
+  /** 工具调用：**一行一件**，点开才看输出。
+   *
+   * 用户 2026-11-11（截图：一屏全是工具卡片）："工具调用的这个卡，我觉得太大了。
+   * 反复的工具调用和思考页比较占空间。" —— 所以折起来只有一行：工具名 + 参数
+   *（长了省略号）+ 耗时，结果收在下面。与 `.chatmsg__think` 同一条规矩：
+   * 过程不占正文的版面。没有输出时不给手型、不画箭头（点开也没东西）。
+   */
   function toolNode(part) {
-    var head = h(
-      'div.chatmsg__toolhead',
-      null,
-      h('span.chatmsg__toolname', { text: part.name || '工具' }),
-      h('span.chatmsg__toolargs', { text: compactArgs(part.args) }),
-      part.ms ? h('span.chatmsg__toolms', { text: part.ms + ' ms' }) : null,
-      part.ok === false ? h('span.chatmsg__tag.is-bad', { text: '失败' }) : null
-    );
     // **只有空白的结果不算结果**：原先判的是 `part.output` 的真假，一个 `"\n"`
     // 也会渲染出一个空的 `pre` —— 窄屏截图里那块白色空框就是它。
     var hasOut = part.output != null && String(part.output).trim() !== '';
-    var tail = hasOut
-      ? h(
-          'details.chatmsg__toolout',
-          null,
-          h('summary', { text: '结果' }),
-          h('pre.chatmsg__toolpre', { text: part.output })
-        )
-      : h('div.chatmsg__toolwait', { text: part.ms ? '（没有输出）' : '调用中…' });
-    return h('div.chatmsg__tool' + (part.ok === false ? '.is-bad' : ''), null, head, tail);
+    var note = !part.ms ? '调用中…' : (hasOut ? '' : '没有输出');
+
+    var node = h(
+      'details.chatmsg__tool' +
+        (part.ok === false ? '.is-bad' : '') +
+        (hasOut ? '' : '.is-plain'),
+      null,
+      h(
+        'summary.chatmsg__toolrow',
+        null,
+        h('span.chatmsg__toolcaret', { html: ui.icon('chevronR', 12) }),
+        h('span.chatmsg__toolname', { text: part.name || '工具' }),
+        h('span.chatmsg__toolargs', { text: compactArgs(part.args) }),
+        note ? h('span.chatmsg__toolstate', { text: note }) : null,
+        part.ms ? h('span.chatmsg__toolms', { text: msText(part.ms) }) : null,
+        part.ok === false ? h('span.chatmsg__tooltag', { text: '失败' }) : null
+      )
+    );
+    if (hasOut) {
+      node.appendChild(
+        h('div.chatmsg__toolbody', null, h('pre.chatmsg__toolpre', { text: part.output }))
+      );
+    }
+    return node;
   }
 
   /**
@@ -10399,7 +10785,9 @@
         nodes[parts.length - 1].parentNode
       ) {
         var slot = nodes[parts.length - 1];
-        var fresh = partNode(last);
+        // 这一块每帧都在长：只读缓存、不写（见 md.js 的 `noCache`）——
+        // 否则它的每个前缀都占一条名额，把稳定块的缓存全挤掉。
+        var fresh = partNode(last, { noCache: true });
         if (fresh) {
           if (fresh.tagName === slot.tagName) {
             // **留着节点、只换里面的内容**。这里原来是 `replaceChild`（连节点
@@ -10418,6 +10806,18 @@
               var oldBody = slot.querySelector('.md');
               var newBody = fresh.querySelector('.md');
               if (oldBody && newBody) oldBody.innerHTML = newBody.innerHTML;
+              // 它要是长在一段过程链里，摘要行那两处（最后在干什么 / 几步）跟着长
+              var runBody = slot.parentNode;
+              if (
+                runBody &&
+                runBody.classList &&
+                runBody.classList.contains('chatmsg__runbody') &&
+                runBody.parentNode
+              ) {
+                var from = parseInt(runBody.parentNode.dataset.from, 10) || 0;
+                var to = runEnd(parts, from) || from;
+                refreshRunHead(runBody.parentNode, parts.slice(from, to));
+              }
             } else {
               slot.innerHTML = fresh.innerHTML;
             }
@@ -10432,11 +10832,28 @@
         ui.clear(body);
         var box = h('div.chatmsg__parts');
         nodes = [];
-        parts.forEach(function (part) {
-          var node = partNode(part);
-          nodes.push(node);
-          if (node) box.appendChild(node);
-        });
+        // 与 `partsNode` 同一套分组，只是这里还要把**每个零件自己的节点**记进
+        // `nodes`（与 `parts` 同下标）—— 下一帧要靠它只换最后一块。抽屉里的
+        // 零件同样一一登记，所以"最后一块在不在抽屉里"这件事对 patch 透明。
+        var at = 0;
+        while (at < parts.length) {
+          var to = runEnd(parts, at);
+          if (to) {
+            var run = runNode(parts.slice(at, to), at, {
+              msgKey: row.dataset.id || '',
+              // 只有**最后一段**算"还在跑"（它默认展开）；前面那些跑完的收起
+              streaming: to === parts.length,
+            });
+            for (var k = 0; k < run.kids.length; k++) nodes[at + k] = run.kids[k];
+            box.appendChild(run.el);
+            at = to;
+            continue;
+          }
+          var partEl = partNode(parts[at]);
+          nodes[at] = partEl;
+          if (partEl) box.appendChild(partEl);
+          at += 1;
+        }
         body.appendChild(box);
         caret = null;
       }
@@ -11353,11 +11770,15 @@
 
   //: 四档的说明。**口径要和后端那几句提示词对得上**（见 `chat.py` 的 `_THINKING_LINES`）——
   //: 这里写"遇到分叉才多想一步"，后端就得是同一句话；两边不一致，他选的东西就不是他以为的。
+  /* `label` 是**界面上的那个词**，只有四个英文档位（用户 2026-11-12："你就
+   * Low/Medium/High/Max 四档就可以。不要有文字叙述"）—— 中文那套（不想 / 省着点 /
+   * 常规 / 使劲）连同下面那行解释一起删了：一个小浮层里，四个词就是全部信息。
+   * `hint` 只留给 toast（点选了要说话时用得上），界面上不再出现。 */
   var THINK_LEVELS = [
-    { key: 'off', label: '不想', hint: '直接给答案，也不展开推理（简单问题用它）' },
-    { key: 'low', label: '省着点', hint: '先给答案，遇到分叉才多想一步' },
-    { key: 'normal', label: '常规', hint: '默认：该怎么想怎么想' },
-    { key: 'high', label: '使劲', hint: '前提、边界、反例都过一遍' },
+    { key: 'off', label: 'Low', hint: '直接给答案，也不展开推理（简单问题用它）' },
+    { key: 'low', label: 'Medium', hint: '先给答案，遇到分叉才多想一步' },
+    { key: 'normal', label: 'High', hint: '默认：该怎么想怎么想' },
+    { key: 'high', label: 'Max', hint: '前提、边界、反例都过一遍' },
   ];
 
   /* 清单是**浮层**了：与模式选择栏同一个 `.modepick` 长相，打开时挂到 body 上、
@@ -11703,78 +12124,80 @@
   }
 
   /**
-   * 思考强度的拖动条 —— 右键那颗「深度思考」药丸弹出来（见 openThinkMenu）。
+   * 思考强度 —— 右键那颗「深度思考」药丸弹出来（见 openThinkMenu）。
    *
-   * 为什么是拖动条：这四档是**一路上坡**的一条线（不想 → 省着点 → 常规 → 使劲），
-   * 摆成列表就像四个互不相干的开关。为什么搬到这里：它跟那颗药丸本来就是同一件事
-   * 的两面 —— 药丸管"这一轮带不带思考"，这里管"带多强"。
+   * **分段控件**，不是列表、也不是拖动条：
+   *
+   *   * 列表把"一路上坡"的四个档拆成四个互不相干的开关，看不出往哪边更强；
+   *   * 拖动条（上一版）拿一个 13px 的球去对四档，手机上对不准；而且滑轨的
+   *     有效行程与下面那排标签根本不在同一套刻度上（两端各差半个球），
+   *     四档本来是**离散的四选一**，用一个连续量去表示，既不精确也不诚实。
+   *
+   * 分段控件两点都占：四段等宽 —— 位置就是档位，点哪段是哪档，往右就是更强。
+   * 选中段浮起来（品牌色的一层淡底 + 一道极轻的影），没有标题也没有说明。
    */
-  function thinkSliderNode() {
-    var index = 0;
+  function thinkPickNode() {
     var current = state.think || (state.deepThink ? 'normal' : 'off');
+    var items = [];
+
+    function mark(index) {
+      items.forEach(function (one, i) {
+        var on = i === index;
+        one.classList.toggle('is-on', on);
+        one.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    var seg = h('div.chatthink__seg', { role: 'group', 'aria-label': '思考强度' });
+
     THINK_LEVELS.forEach(function (one, i) {
-      if (one.key === current) index = i;
+      var btn = h(
+        'button.chatthink__segitem',
+        {
+          type: 'button',
+          'aria-pressed': 'false',
+          onClick: function () {
+            mark(i);
+            // 点一下就是那一档：不弹 toast —— 选中的那段自己就是回执。
+            // **菜单不收**（用户 2026-11-12："选中之后不应该立刻消失，而是点击其他
+            // 地方才消失"）：这一层是用来比较的，选完还想再看一眼别的档、或者
+            // 换个档试试；收起由点外面 / Esc 负责。
+            applyThink(one.key, { quiet: true });
+          },
+          onKeyDown: function (ev) {
+            if (ev.key === 'Escape') {
+              ev.stopPropagation();
+              closeChatMenu();
+            }
+          },
+        },
+        one.label
+      );
+      items.push(btn);
+      seg.appendChild(btn);
     });
-    var now = h('span.chatthink__now', { text: THINK_LEVELS[index].label });
-    var bar = h('input.chatthink__bar', {
-      type: 'range',
-      min: '0',
-      max: String(THINK_LEVELS.length - 1),
-      step: '1',
-      value: String(index),
-      'aria-label': '思考强度',
-      onInput: function (ev) {
-        // 拖动时**实时**生效（还没松手，药丸就跟着走了）……
-        var one = THINK_LEVELS[Number(ev.target.value)] || THINK_LEVELS[0];
-        applyThink(one.key, { quiet: true });
-        now.textContent = one.label;
-        now.parentNode.setAttribute('title', one.hint);
-        paintFill(ev.target.value);
-      },
-      onChange: function (ev) {
-        // ……松手才算"定下来"：提示一句，菜单收起来
-        var one = THINK_LEVELS[Number(ev.target.value)] || THINK_LEVELS[0];
-        applyThink(one.key);
-        closeChatMenu();
-      },
-      onKeyDown: function (ev) {
-        if (ev.key === 'Escape') {
-          ev.stopPropagation();
-          closeChatMenu();
-        }
-      },
+
+    var at = 0;
+    THINK_LEVELS.forEach(function (one, i) {
+      if (one.key === current) at = i;
     });
-    // 已选那一段得自己画（Chromium 的 range 不会），进度写进 CSS 变量交给渐变
-    var paintFill = function (value) {
-      bar.style.setProperty('--fill', (Number(value) / (THINK_LEVELS.length - 1)) * 100 + '%');
-    };
-    paintFill(index);
+    mark(at);
+    // 焦点落在**当前那一档**上：键盘进来就能改，Tab 一下又能出去
     window.setTimeout(function () {
-      if (bar.focus) bar.focus();
+      if (items[at]) items[at].focus();
     }, 0);
-    return h(
-      'div.chatthink',
-      {},
-      h('div.chatthink__row', { title: THINK_LEVELS[index].hint }, now),
-      bar,
-      h(
-        'div.chatthink__scale',
-        {},
-        THINK_LEVELS.map(function (one) {
-          return h('span.chatthink__tick', { text: one.label });
-        })
-      )
-    );
+
+    return h('div.chatthink', {}, seg);
   }
 
-  /** 右键「深度思考」那颗药丸：弹出强度菜单（一根拖动条）。 */
+  /** 右键「深度思考」那颗药丸：弹出强度菜单（四档分段控件）。 */
   function openThinkMenu(ev) {
     if (ev) {
       ev.preventDefault();
       chatMenuX = ev.clientX;
       chatMenuY = ev.clientY;
     }
-    showChatMenu([{ node: thinkSliderNode() }]);
+    showChatMenu([{ node: thinkPickNode() }]);
   }
 
   /**
@@ -12004,6 +12427,21 @@
     inputEl.style.height = Math.min(inputEl.scrollHeight, 220) + 'px';
   }
 
+  /**
+   * 直接落到底（不用平滑滚动）。
+   *
+   * `scroll-behavior: smooth` 在这里是反效果：流式里每画一帧都写一次 `scrollTop`，
+   * 每次写入都会重新开始一段动画 —— 低端机上表现为"追不上 + 一直在重绘"。
+   * 跟随时要的是**落位**，动画只该留给用户自己点「回到最新」。
+   */
+  function settleBottom() {
+    var previous = threadEl.style.scrollBehavior;
+    threadEl.style.scrollBehavior = 'auto';
+    threadEl.scrollTop = threadEl.scrollHeight;
+    if (previous) threadEl.style.scrollBehavior = previous;
+    else threadEl.style.removeProperty('scroll-behavior');
+  }
+
   function scrollToEnd(force) {
     if (!threadEl) return;
     if (force) {
@@ -12012,7 +12450,7 @@
       // **这是一次"我要到底"**（发消息、点「回到最新」…）：把"刚恢复的阅读位置"那根缰绳松掉，
       // 否则接下来 12 秒里内容一变高，`keepAnchor` 会把人拽回他进来时的位置（见 keepAnchor）。
       heldAnchor = null;
-      threadEl.scrollTop = threadEl.scrollHeight;
+      settleBottom();
       refreshJump();
       return;
     }
@@ -12027,7 +12465,16 @@
     //
     // 现在只看 `stickBottom`：他往上翻过就停手，直到自己滚回贴底处
     //（那条 scroll 监听会把状态改回来）。
-    if (stickBottom) threadEl.scrollTop = threadEl.scrollHeight;
+    if (stickBottom) settleBottom();
+    refreshJump();
+  }
+
+  /** 用户自己按「回到最新」：这一段值得一段动画（程序性的落位走 `settleBottom`）。 */
+  function smoothToEnd() {
+    if (!threadEl) return;
+    stickBottom = true;
+    heldAnchor = null;
+    threadEl.scrollTop = threadEl.scrollHeight;   // CSS 的 smooth 会让它滑过去
     refreshJump();
   }
 
@@ -12039,9 +12486,15 @@
    * 所以只在**离开底部**时显形，贴着底的时候不占视线。
    */
   function refreshJump() {
-    if (!jumpBtn || !threadEl) return;
-    var gap = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight;
-    jumpBtn.classList.toggle('is-on', gap > 160);
+    /* **一帧只量一次**：流式每画一帧都会调它，而 `scrollHeight` 是强制布局。
+     * 合并到 rAF 里，按钮晚一帧出现/消失看不出来，省下的是一次同步布局。 */
+    if (jumpRaf) return;
+    jumpRaf = window.requestAnimationFrame(function () {
+      jumpRaf = 0;
+      if (!jumpBtn || !threadEl) return;
+      var gap = threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight;
+      jumpBtn.classList.toggle('is-on', gap > 160);
+    });
   }
 
   function ensureConversation() {

@@ -1053,3 +1053,58 @@ def test_settings_never_ship_the_passphrase() -> None:
     assert "syncPassphrase" not in out
     assert out["ai"]["apiKey"] == ""
     assert out["theme"] == "light"
+
+
+def test_sync_failures_are_diagnosed_into_kinds() -> None:
+    """失败要**分诊**，不能只写一句"同步失败"（2026-11-11 用户要求）。
+
+    四类失败的下一步完全不同：网络不通要查 Wi-Fi / 代理；令牌被拒要去设置页换令牌；
+    对面 5xx 只能等；本机没配要去填地址。后端把类别写进 `last_result.kind`，
+    界面按它说话（见 `theme/runtime/shell.js` 的 `syncFailLine`）。
+    """
+    import httpx
+
+    assert sync._classify_error(sync.SyncNotConfigured("还没配")) == "config"
+    assert sync._classify_error(sync.SyncOfflineError("连不上 Turso（x）：boom")) == "offline"
+
+    # 被包过一层也要认出来：`pipeline` 用的是 `raise ... from exc`
+    wrapped = sync.SyncError("包了一层")
+    wrapped.__cause__ = httpx.ConnectError("boom")
+    assert sync._classify_error(wrapped) == "offline"
+
+    assert sync._classify_error(sync.SyncHTTPError("401", 401)) == "auth"
+    assert sync._classify_error(sync.SyncHTTPError("403", 403)) == "auth"
+    assert sync._classify_error(sync.SyncHTTPError("503", 503)) == "server"
+    assert sync._classify_error(sync.SyncHTTPError("429", 429)) == "request"
+    assert sync._classify_error(ValueError("说不清")) == "other"
+
+
+def test_a_failure_before_the_sync_starts_is_still_recorded(engine) -> None:  # noqa: ANN001
+    """**构造阶段**的失败也必须落库（2026-11-11 用户报障）。
+
+    现场：断网时点「立即同步」，界面显示「推 0 行 · 拉 0 行」—— 因为那一轮在
+    `TursoClient(...)` 就失败了，而那一行**在 `run_once` 的 try 之外**，
+    `last_result` 根本没被改写，设置页读到的是上一次的成功记录。
+    """
+    _configure("https://example.invalid")
+
+    class Boom:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            raise sync.SyncOfflineError("连不上 Turso（测试）：boom")
+
+    original = sync.TursoClient
+    sync.TursoClient = Boom
+    try:
+        with pytest.raises(sync.SyncError):
+            sync.run_once(engine=engine)
+    finally:
+        sync.TursoClient = original
+
+    with engine.connect() as conn:
+        raw = conn.exec_driver_sql(
+            "SELECT v FROM qf_sync_state WHERE k = 'last_result'"
+        ).fetchone()
+    last = json.loads(raw[0])
+    assert last["ok"] is False
+    assert last["kind"] == "offline"
+    assert "boom" in last["error"]

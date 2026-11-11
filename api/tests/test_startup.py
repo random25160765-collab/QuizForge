@@ -79,3 +79,58 @@ def test_missing_data_dir_is_reported(monkeypatch) -> None:  # noqa: ANN001
     step = startup._data_dir_step()
     assert step.status == "fail"
     assert "写不进去" in step.detail
+
+
+def test_the_first_download_holds_the_startup_page(client, monkeypatch) -> None:  # noqa: ANN001
+    """首启下载 146M 时启动页要停住、把进度画出来（用户 2026-11-10）。
+
+    约定：`downloading` 为真 ⇒ `progress` 严格小于 1（启动页据此不跳转），
+    而且进度按**文件数**折算 —— 清单里的字节数是打包时的近似值，按它画会先跑满再卡住。
+    """
+    from app import heavy_deps
+
+    monkeypatch.setattr(heavy_deps, "progress", lambda: {
+        "state": "running",
+        "done": 0,
+        "total": 0,
+        "files": 3,
+        "filesTotal": 10,
+        "detail": "正在下载必要的依赖",
+        "percent": 30,
+    })
+    monkeypatch.setattr(heavy_deps, "prefetching", lambda: True)
+
+    body = client.get("/api/startup").json()
+    assert body["downloading"] is True
+    assert body["progress"] == 0.3
+    heavy = next(step for step in body["steps"] if step["key"] == "heavy")
+    assert heavy["status"] == "warn", "下载只挡住跳转，不是 fail"
+    assert heavy["detail"] == "正在下载必要的依赖"
+
+
+def test_a_settled_runtime_never_locks_people_out(client, monkeypatch) -> None:  # noqa: ANN001
+    """取完 / 取不到都该放行：146M 是可选能力，不能把人锁在启动页外面。
+
+    失败只把原因写进那一行（设置页那颗「重新下载并校验」还能补），
+    进度照常到 100%，启动页该跳进主界面。
+    """
+    from app import heavy_deps
+
+    monkeypatch.setattr(heavy_deps, "progress", lambda: {
+        "state": "failed",
+        "done": 0,
+        "total": 0,
+        "files": 0,
+        "filesTotal": 10,
+        "detail": "下载失败（pyodide.asm.wasm）—— timed out",
+        "percent": 0,
+    })
+    monkeypatch.setattr(heavy_deps, "prefetching", lambda: False)
+    monkeypatch.setattr(heavy_deps, "is_ready", lambda *args, **kwargs: False)
+
+    body = client.get("/api/startup").json()
+    assert body["downloading"] is False
+    assert body["progress"] == 1.0
+    heavy = next(step for step in body["steps"] if step["key"] == "heavy")
+    assert heavy["status"] == "warn"
+    assert "timed out" in heavy["detail"]

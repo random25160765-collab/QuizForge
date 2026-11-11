@@ -104,6 +104,11 @@
 私有 / 链路本地 / 保留段就拒绝，并且**手动跟重定向、每一跳都重新查一遍**
 （自动跟的话，一个公网网址 302 到内网就绕过去了）。这是"能让模型主动发请求"
 这类工具的必答题，不是可选项。见 `_guard_url`。
+
+唯一的例外是 **fake-ip 段**（`198.18.0.0/15`）：开着 Clash 类代理时，本机 DNS 对
+所有域名都回这一段 —— 真实目标由代理 / TUN 去解析。照常拦就等于"开着代理一个网页
+都读不了"，所以那一段单独放行（它本来的用途是基准测试，不是内网服务），见
+`_FAKE_IP_NET`。
 """
 
 from __future__ import annotations
@@ -166,6 +171,15 @@ SCHOLAR_SNIPPET_CHARS = 1200
 MAX_PAGE_CHARS = 12000
 #: 抽出来的正文少于这个字数就怀疑"抽失败了"（脚本渲染 / 正文在图片里）。
 MIN_GOOD_CHARS = 220
+#: 代理的 **fake-ip** 段（RFC 2544 的基准测试保留段，Clash / mihomo 默认就取这里）。
+#:
+#: 为什么单独拎出来：fake-ip 模式下本机 DNS 对**所有**域名都回 `198.18.x.x`，
+#: 真实目标由代理（HTTP CONNECT）或 TUN 去解析。若照常按"保留地址"拦掉，等于
+#: **只要开着代理就一个网页都读不了** —— 用户 2026-11-11 实测：`read_web_page`
+#: 每次 0.05 秒就报"指向本机 / 内网"，而浏览器里同一页是通的。
+#: 这一段本来就是测试保留段、不是内网服务地址，放行不会让人摸到本机端口 ——
+#: 真正的本机 / 私网地址（127、10、172.16、192.168、169.254）照样拦。
+_FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")
 #: 最多跟几跳重定向。
 MAX_REDIRECTS = 4
 _REDIRECT_CODES = (301, 302, 303, 307, 308)
@@ -960,6 +974,8 @@ def _guard_url(raw) -> ParseResult:  # noqa: ANN001
         mapped = getattr(ip, "ipv4_mapped", None)
         if mapped is not None:  # `::ffff:127.0.0.1` 也是 127.0.0.1
             ip = mapped
+        if ip in _FAKE_IP_NET:  # 代理的 fake-ip：真实目标不在本机，见 `_FAKE_IP_NET`
+            continue
         if (
             ip.is_private or ip.is_loopback or ip.is_link_local
             or ip.is_reserved or ip.is_multicast or ip.is_unspecified

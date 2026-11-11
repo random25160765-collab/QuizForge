@@ -49,7 +49,7 @@ CHECK_PYTHON = $(VENV)/bin/python
         bank-export bank-import user-export user-import user-show sync \
         graph graph-check graph-relate graph-relate-centric \
         graph-export share skills-link embed intake \
-        coverage coverage-gaps drive help cases
+        coverage coverage-gaps drive help cases shot look
 
 vendor:
 	@$(PYTHON) tools/vendor.py
@@ -66,6 +66,25 @@ new:
 
 web:
 	@$(PYTHON) tools/build_web.py --out $(WEB_OUT)
+
+# 看一眼网页：自研工具（见 tools/look.py 顶部"为什么自己写"）。
+#
+#   make look ARGS="open http://127.0.0.1:8100/chat.html?c=2161"
+#   make look ARGS="size 390x844"
+#   make look ARGS="shot /tmp/phone.png"
+#   make look ARGS="eval \"document.querySelectorAll('.chatmsg').length\""
+#   make look ARGS="status"   /   "stop"
+#
+# 浏览器常驻，一条命令只连一次 CDP（几十毫秒）；每一段都有截止时间，
+# 卡住就报错而不是挂着。常用的一条到位：
+#   make shot URL="http://127.0.0.1:8100/chat.html?c=2161"
+look:
+	@$(CHECK_PYTHON) tools/look.py $(ARGS)
+
+shot:
+	@test -n "$(URL)" || { echo '用法：make shot URL="http://127.0.0.1:8100/chat.html?c=<会话id>" [SIZE=390x844] [OUT=/tmp/qf-shot.png] [UNTIL=.chatmsg]'; exit 1; }
+	@$(CHECK_PYTHON) tools/look.py shot $(or $(OUT),/tmp/qf-shot.png) \
+		--url "$(URL)" --size $(or $(SIZE),390x844) $(if $(UNTIL),--until "$(UNTIL)",)
 
 # 图表引擎的回归套件（见 tools/texlab/run_cases.js 的说明）。
 # 规矩：**每加一处兜底，必须在这里带一条用例**；没有用例的改写一律不加。
@@ -238,7 +257,7 @@ search:
 #   make loc                          按语言
 #   make loc ARGS=--by-dir            按目录（默认两层：theme/runtime、api/app…）
 #   make loc ARGS="--path api --depth 1"
-#   make loc ARGS=--all               连配置（json / yaml / toml / ini）一起数
+#   make loc ARGS=--all               连配置（json / yaml / toml / ini / gradle / xml）一起数
 #   make loc ARGS=--json              给程序读
 loc:
 	@$(PYTHON) tools/loc.py $(ARGS)

@@ -43,7 +43,8 @@ html[data-theme='light'] .md {
   flex: none;
   width: 1.05em; height: 1.05em;
   margin-top: 0.32em;
-  border: 1.5px solid var(--line);
+  /* 方框是**控件**：它只有边、没有底，边看不见就等于没有这个复选框 */
+  border: 1.5px solid var(--line-card);
   border-radius: 4px;
   position: relative;
 }
@@ -67,7 +68,8 @@ html[data-theme='light'] .md {
 
 .md__hr { border: 0; border-top: 1px solid var(--line); margin: 1.6em 0; }
 
-.md__tablewrap { overflow-x: auto; margin: 0 0 1em; border-radius: 12px; border: 1px solid var(--line); }
+/* 表格框是**盒子**不是分隔线：用 `--line-card`（浅色档它等于 --line，观感不变） */
+.md__tablewrap { overflow-x: auto; margin: 0 0 1em; border-radius: 12px; border: 1px solid var(--line-card); }
 .md__table { border-collapse: collapse; width: 100%; font-size: 0.95em; }
 .md__table th, .md__table td { padding: 0.55em 0.85em; border-bottom: 1px solid var(--line); text-align: left; }
 .md__table thead th { background: var(--bg3); color: var(--fg2); font-weight: 600; white-space: nowrap; }
