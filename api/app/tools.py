@@ -48,6 +48,7 @@ from . import (
     plan_doc,
     recursion,
     schedule_view,
+    scratch_tags,
     semantic,
     slice_text,
 )
@@ -66,6 +67,7 @@ from .models import (
     QuestionPoint,
     Record,
     ScheduleEvent,
+    Scratch,
 )
 
 
@@ -3192,6 +3194,11 @@ GROUPS: tuple[tuple[str, str, str], ...] = (
     # 与 `quiz` 那组的分界：那边管**题**（推题、判分、掌握度），这边管**什么时候做什么**。
     # 仍然排在末尾，前面几组的既有位置一个都不动。
     ("plan", "计划", "订计划、看日程、把待办排进日历"),
+    # 「碎片」这一组：随手记的一句（`app/routers/scratch.py` 是它的数据面）。
+    # 与 `notes` 的分界：那边是**文档**（有路径、要读全文），这边是**一句话**；
+    # 与 `memory` 的分界：那边是"关于他、要一直记得的结论"，这边是他自己写的原话。
+    # 只有一个只读工具（`read_scratchpad`），所以进查询模式也不越权。
+    ("scratch", "碎片", "翻他随手记的碎片，可按 #标签 找"),
     # 「全局记忆」这一组：跨对话长期带着的、关于他的信息（`app/memory.py`）。
     # 与 `plan` 的分界：那边管"什么时候做什么"，这边管"关于他、要一直记得的事"。
     # 记忆**不进系统提示词**（有需要时自己查），这一组就是它唯一的入口。
@@ -3489,6 +3496,65 @@ def list_plans(db, args=None, ctx=None) -> dict:  # noqa: ANN001
         "plans": out,
         "note": "`dueDate` 是「这天该做」，不代表它已经排进日程；"
         "日程要用 list_schedule 看。",
+    }
+
+
+def read_scratchpad(db, args=None, ctx=None) -> dict:  # noqa: ANN001
+    """读他随手记的**碎片**（Scratchpad，见 `models.Scratch`）。
+
+    只读。碎片是"想到一句就记一句"的东西：一句话一条，没有标题、没有完成态、
+    也没有轻重缓急 —— **别把它整理成待办清单**，那是把他随手写的东西又变成作业。
+
+    用户说"我之前随手记过""碎片里是不是提过 X"，或者你想知道他最近在想什么时用它。
+    要按主题看就传 `tag`（比如 `Books/札记`，含子标签）；`query` 是正文关键词。
+    """
+    wanted = scratch_tags.normalize(str((args or {}).get("tag") or "").strip().lstrip("#"))
+    keyword = str((args or {}).get("query") or "").strip()
+    limit = _clamp((args or {}).get("limit"), 1, 100, 30)
+
+    rows = db.scalars(select(Scratch).order_by(Scratch.created_at.desc())).all()
+    # 标签解析一次、两处用（筛选用它，末尾那份清单也用它）。
+    parsed = [(one, scratch_tags.parse(one.body)) for one in rows]
+
+    counts: dict[str, int] = {}
+    for _one, tags in parsed:
+        for path in tags:
+            counts[path] = counts.get(path, 0) + 1
+
+    matched = 0
+    picked: list[dict] = []
+    for one, tags in parsed:
+        if wanted and not any(scratch_tags.under(wanted, path) for path in tags):
+            continue
+        if keyword and keyword not in one.body:
+            continue
+        matched += 1
+        if len(picked) >= limit:
+            continue
+        body = one.body
+        clipped = len(body) > 800
+        picked.append(
+            {
+                "id": one.id,
+                "at": _iso_at(one.created_at),
+                "tags": tags,
+                "body": body[:800] + ("…" if clipped else ""),
+            }
+        )
+
+    return {
+        "total": len(rows),
+        "matched": matched,
+        # 给模型一份可用的筛选项（最多 40 个）—— 不然它只能靠猜 tag 的名字
+        "tags": [
+            {"tag": path, "count": count}
+            for path, count in sorted(counts.items(), key=lambda one: (-one[1], one[0]))[:40]
+        ],
+        "notes": picked,
+        "note": "这些是他随手记的**原话**（碎片），不是待办、也不是笔记："
+        "没有完成态、没有分类。引用时带上日期（`at`）；"
+        "要说「他最近在想什么」，就看最近几条，别整理成清单。"
+        + (f"还有 {matched - len(picked)} 条没列出来，可以传 tag 或 query 收窄。" if matched > len(picked) else ""),
     }
 
 
@@ -4965,6 +5031,28 @@ REGISTRY = {
                     "type": "string",
                     "description": "active（默认，在用的）/ archived（收起来的）/ all（都要）",
                 },
+            },
+        },
+    },
+    "read_scratchpad": {
+        "access": "read",
+        "group": "scratch",
+        "fn": read_scratchpad,
+        "description": "读他随手记的**碎片**（Scratchpad）：一句话一条，带时间与 #标签。"
+        "它是碎片，不是待办也不是笔记 —— 没有完成态、没有分类，"
+        "**别把它整理成清单**，也别拿它当计划汇报。"
+        "用户说\"我之前随手记过\"\"碎片里是不是提过 X\"\"我最近在想什么\"时用它。"
+        "按主题看传 `tag`（父标签自动含子标签），按关键词找传 `query`；"
+        "返回按时间**从新到旧**（最近的想法在最前面）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tag": {
+                    "type": "string",
+                    "description": "只看这个标签，如 Books/札记（含子标签）；不带 #。可省",
+                },
+                "query": {"type": "string", "description": "正文关键词（可省）"},
+                "limit": {"type": "integer", "description": "最多几条（默认 30，上限 100）"},
             },
         },
     },

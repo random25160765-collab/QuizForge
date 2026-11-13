@@ -395,6 +395,11 @@ class Material(Base):
     subject: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     title: Mapped[str] = mapped_column(Text, default="", nullable=False)
     source_path: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 归一后的正文（PDF/docx 抽出来的纯文本，见 `materials.text_lines`）。
+    #: 空 = 原文件本身就是正文，直接读 `source_path`。
+    #: **两者不能互相顶替**：`source_path` 是"打开原文"要的东西（用户点开就是那份 PDF），
+    #: 而按行读的正文必须是纯文本 —— 拿 PDF 去按行读只会得到 `%PDF` 与压缩流。
+    text_path: Mapped[str] = mapped_column(Text, default="", nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     lines: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     #: 这份资料走到哪一步：`出题`（**信任语料** —— 抽候选点 / 归知识点 / 归概念 /
@@ -1009,6 +1014,19 @@ class Message(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 这一轮**最后一次**上游调用的输入量（看板用，2026-11-12）。
+    #
+    # 与上面的 `prompt_tokens` 不是一回事：那个是**一轮内所有调用的总和**（走三步工具
+    # 就是四次请求、四份输入），拿来算钱对，拿来回答"上下文塞了多满"就高估几倍。
+    # 一次调用的输入量才是窗口里真实的占用 —— 画"上下文随轮次增长"只认它。
+    last_prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # 首字延迟（毫秒）：从**这一轮的上游请求发出**算到它第一次吐字。
+    #
+    # "吐字"包含思考（`think` 增量）：用户看到的"开始动了"是思考气泡先亮起来的，
+    # 只认正文会让开着思考的轮次看起来慢了十几秒。0 = 没记（老消息、或还没吐字就断了）。
+    # **与 `latency_ms` 不是同一起点**（那个从 `_stream` 入口起算，含拼提示词、排队），
+    # 看板上是两个数，不要相减当成"吐字耗时"。
+    first_token_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     # 消息的**真相**：零件数组（正文 / 推理 / 工具调用 / 出处 / 题卡），见 app/parts.py。
     # `content` 是它的正文投影（供列表预览与搜索），方向不能反过来 ——
     # 与「题目是事实、索引是投影」同一条规矩。
@@ -1086,11 +1104,24 @@ class LibraryJob(Base):
     #: 跑完写进来的材料 slug；失败或取消时为空
     material_slug: Mapped[str] = mapped_column(String(160), default="", nullable=False)
     bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # **这两列的默认值必须写在 Python 侧**（2026-11-13 实测）：
+    # 老库里这张表是 `created_at DATETIME NOT NULL` —— 裸的，没有数据库默认。
+    # 它建得很早，后来模型补 `server_default` 时 `create_all` **不会改一张已经
+    # 存在的表**，而表一直空着，谁也没发现。直到用户第一次拖文件进来：
+    # `IntegrityError: NOT NULL constraint failed: library_jobs.created_at`。
+    # 有了 `default=`，INSERT 自己带时间，不用再指望表结构对不对。
     created_at: Mapped[datetime] = mapped_column(
-        UtcDateTime, server_default=func.now(), nullable=False
+        UtcDateTime,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
+        nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+        UtcDateTime,
+        default=lambda: datetime.now(UTC),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
 
@@ -1533,4 +1564,43 @@ class Note(Base):
     size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         UtcDateTime, server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class Scratch(Base):
+    """一条**碎片**：随手记下的一句话（对标 flomo，用户 2026-11-13 要的）。
+
+    它既不是待办也不是笔记：
+
+    * 待办（`plan_items`）有完成态、有日期、会被排进日历 —— 碎片永远不会被"办完"；
+    * 笔记（`notes`）是一份有结构的文档（Obsidian 里的文件、有路径、有 hash 对账）
+      —— 碎片没有标题、没有分类，只有一句话和它是什么时候写的。
+
+    硬塞进任何一边都会把那边的语义弄浑（一份没有文件的笔记？一条永远不勾的待办？），
+    所以它自己一张三列的小表。用户原话："绝对不是什么严肃的笔记"。
+
+    `id` 由**前端**生成并随请求带上（见 `routers/scratch.py` 的幂等）：
+    发送失败重试、两个标签页同时点，都只会落成一行；它是随机串而不是自增整数，
+    所以换台机器也不会撞号 —— 这正是同步需要的稳定身份（别的表要靠 `uid` 补这一课）。
+
+    同步：`datapack.BOUNDARY` 归 `user`（自己写的东西，换机器要还在），
+    正文与对话同一档**加密**上传（`sync.PRIVATE_TABLES`）。
+    """
+
+    __tablename__ = "scratch"
+
+    #: 前端会带上自己的 id（重试幂等）；没带时这里补一个 —— 与计划 / 日程同一套随机串。
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_plan_uid)
+    body: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: 用**微秒精度**的 Python 默认值，不用 `func.now()`（SQLite 的 now 只到秒）：
+    #: 碎片是连着写的，同一秒两条时按秒排序会把先后顺序弄反，
+    #: 而这一页是"聊天记录"的排法 —— 顺序反了比时间差一点更刺眼。
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime,
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
     )

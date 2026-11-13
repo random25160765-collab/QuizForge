@@ -30,6 +30,8 @@ from . import (
     problem,
     progress,
     schedule_ops,
+    # 碎片（Scratchpad）：日程页「计划」右侧那一栏的读写。
+    scratch,
     settings_api,
     sync_api,
 )
@@ -59,6 +61,8 @@ def all_routers() -> list[APIRouter]:
         material.router,
         # 计划与日程：日程页的读写 + 对话凭条确认后落库（`proposalId` 是幂等键）
         plans.router,
+        # 碎片：随手记一句。四个动作，没有搜索 / 标签 / 归档（见 `routers/scratch.py`）
+        scratch.router,
         # 全局记忆：设置页的增删改查。对话里的写入口是 `edit_memory` 工具。
         memory.router,
         # 日程的操作面：健康（打卡 / 档位 / 精力曲线）与自动重排。

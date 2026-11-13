@@ -167,6 +167,9 @@ PRIVATE_TABLES: frozenset[str] = frozenset(
         # 滤镜定义（2026-11-11）：用户自己写的提示词，可能带着他的表达习惯与
         # 私事（"用我女儿的名字举例"这种）。与笔记同一档。
         "lenses",
+        # 碎片（2026-11-13）：随手写的一句话。它是"关于这个人的内容"里最直白的
+        # 一种 —— 想到什么就记什么，不该让云看见明文。与笔记同一档。
+        "scratch",
     }
 )
 
@@ -209,6 +212,9 @@ PULL_ORDER: tuple[str, ...] = (
     # 笔记云副本（2026-11-09）：同样没有外键。手机靠它读笔记，首台设备装不上
     # 就等于新机器一片空白 —— 所以必须在这里。
     "notes",
+    # 碎片（2026-11-13）：没有外键。**也必须在这里** —— `_full_pull` 只逐表读
+    # 这个清单，漏一张就等于那类数据永远到不了新机器（`memories` 当年漏过）。
+    "scratch",
     # 外键先父后子：条目要挂计划，日程要挂条目（虽然删父行是本机显式删的，
     # 但远端按 pk 顺序回放时子行先到会插不进去）。
     "plans",
@@ -723,7 +729,17 @@ _key_cache: dict[tuple[bytes, bytes], bytes] = {}
 
 #: 一个进程共用的 HTTP 连接。Turso 每次同步要发不少条 pipeline；
 #: 每条都新建连接在 WSL 的 loopback 上会撞 40ms 的延迟确认，测试里能差出一倍。
-_http = httpx.Client(follow_redirects=False)
+#:
+#: **空闲连接 20 秒就过期**（2026-11-13 踩的坑）。原先用默认值（永不主动过期），
+#: 于是在 WSL 上开关 Clash / 换代理时，池子里那几条 keepalive 连接会被代理侧
+#: 静默丢掉，而客户端还以为它们活着 —— 之后每一次同步都复用在死连接上，卡满
+#: 45 秒超时后抛 `PoolTimeout`，一坏就是几小时（重启进程才好）。
+#: 同步本身是 30 秒一次的轮询，20 秒过期等于"跨轮一律不复用、同一轮里照样复用"，
+#: 代价是一两次握手，换来的是网络抖一下不会把整个通道永久打死。
+_http = httpx.Client(
+    follow_redirects=False,
+    limits=httpx.Limits(max_keepalive_connections=8, keepalive_expiry=20.0),
+)
 
 
 def _derive_key(passphrase: str, salt: bytes) -> bytes:

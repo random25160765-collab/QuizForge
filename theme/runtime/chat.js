@@ -62,6 +62,10 @@
   var notesEl = null;
   //: 书签抽屉：装"永久标记"那一类（见 `renderMarks`）
   var marksEl = null;
+  //: 看板抽屉：token / 耗时 / 工具（见 `renderStats`）。和书签同一层，互斥
+  var statsEl = null;
+  var statsOpen = false;
+  var statsTimer = 0;
   var problemEl = null;
   var problemBtn = null; // 工具栏那个「大题」按钮：开合要反映在它身上
   var inputEl = null;
@@ -1172,6 +1176,12 @@
       }
       marksOpen = false;
       marksClosing = false;
+      if (statsTimer) {
+        clearTimeout(statsTimer);
+        statsTimer = 0;
+      }
+      statsOpen = false;
+      renderStats();
       TREE.outlineOpen = false;   // 下次打开重新滚到"你在这儿"
       renderMarks();
       stopPlay();   // 地图收起来了，播放也停（计时器不能留着空转）
@@ -1199,7 +1209,11 @@
     // 抽屉装在**画布这一层**里，不是整屏：遮罩只压地图，工具栏还留着 ——
     // 否则开着抽屉时那颗「书签」自己也被压住，点不动了。
     canvas.appendChild(marksEl);
+    // 看板与书签**同层同挂法**：都只压画布，工具栏留着 —— 否则开着抽屉时那颗
+    // 「看板」自己被遮罩压住，点不动、也关不掉。
+    canvas.appendChild(statsPanel());
     renderMarks();
+    renderStats();
   }
 
   /* ---- 手机上的对话树 = 大纲列表 ------------------------------------
@@ -1243,6 +1257,8 @@
     // 否则开着抽屉时那颗「书签」自己也被压住，点不动了）
     shell.appendChild(marksEl);
     renderMarks();
+    statsPanel();
+    renderStats();
     // 一打开就把"你在这儿"标上（手机上没有地图上的图钉，标在行上）
     markReading();
 
@@ -1450,6 +1466,21 @@
       h('span', { text: marks.length ? '书签 · ' + marks.length : '书签' })
     );
 
+    // 看板：与书签**同一层**的第二张浮层（都是"这段对话的另一种读法"）。
+    // 它不放聊天页，就放这儿 —— 轨迹和度量本来就是一件事的两面，
+    // 用户要来回比"第几轮慢"和"那一轮在哪"，隔着一个全屏就没法比。
+    var statsBtn = h(
+      'button.chattree__btn.chattree__statsbtn' + (statsOpen ? '.is-on' : ''),
+      {
+        type: 'button',
+        title: '看板 · 这一支的 token、耗时、工具',
+        'aria-expanded': statsOpen ? 'true' : 'false',
+        onClick: toggleStats,
+      },
+      iconNode('cpu', 14),
+      h('span', { text: '看板' })
+    );
+
     // 手机：那排"形状"开关（横向/纵向、适应窗口、轨迹、播放、速度）全是大屏那张图
     // 才有的操作 —— 列表里没有"视角"，一个都不留。留下的两样是共同的：
     // 节点数（一眼知道这棵树多大）与书签抽屉。
@@ -1519,6 +1550,7 @@
       // 播放：按时间顺序把整棵树放一遍（多久一枚由旁边那颗速度键定）
       h('button.chattree__btn.chattree__playbtn', { type: 'button', onClick: togglePlay }, '▶ 播放'),
       h('button.chattree__btn.chattree__speedbtn', { type: 'button', onClick: cyclePlaySpeed }, '1×'),
+      statsBtn,
       marksBtn,
       iconButton('close', '关闭（Esc）', close)
     );
@@ -4856,6 +4888,7 @@
 
   function openMarks() {
     if (!state.treeOpen) return;   // 抽屉只在树上：它是那张地图的地点清单
+    closeStats();                  // 同一层只开一个（两层遮罩叠起来会互相打架）
     if (marksTimer) {
       clearTimeout(marksTimer);
       marksTimer = 0;
@@ -5011,6 +5044,658 @@
       )
     );
     return item;
+  }
+
+  /* ---------------------------------------------------------------- 看板
+   *
+   * 同一份 `messages` + `parts` 的**第三个投影**（用户 2026-11-12："给每个对话界面
+   * 弄一个可观测看板，监测 token、性能、工具"）：正文回答"说了什么"，对话树回答
+   * "走到哪、分叉在哪"，这里回答"这一轮为什么贵、为什么慢"。
+   *
+   * 三条口径写死在这里，而不是每次临场判断：
+   *   1. **只数当前分支**（`activePath()`）。重答留下的旧分支还在库里，全树求和会让
+   *      "这条对话一共花了多少"随回溯跳动、而且永远偏高 —— 数字一跳，人就不信它了。
+   *   2. **一轮 = 一条 assistant**。`promptTokens` 是那一轮**所有**上游调用的累加
+   *      （走三步工具就是四次请求），拿它算钱对；`lastPromptTokens` 才是"上下文多满"。
+   *      这两个数在界面上必须分开出现，否则"上下文涨了"和"这一轮花了更多"会混成一件。
+   *   3. **耗时拆开说**。`latencyMs` 里除了模型推理和工具，还混着等前端回执（图编译、
+   *      沙箱）—— 所以那一段叫"其余"，不叫"模型"，不替它担这个名。
+   *
+   * 数据全是现成的：打开时按路径扫一遍（O(路径长度 + 零件数)），不监听、不轮询，
+   * 也不为它新增任何接口。
+   */
+
+  /** 数字缩写：1234 → 1.2k。看板上到处是 token，满屏 0 没人读。 */
+  function statNum(n) {
+    n = Number(n) || 0;
+    if (n >= 1000000) return (n / 1000000).toFixed(n >= 10000000 ? 0 : 2) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+    return String(Math.round(n));
+  }
+
+  /** 毫秒的人话：820ms / 3.4s / 1m12s。与 `ui.fmtDuration`（mm:ss）不同 ——
+   *  那个说的是"这场对话多长"，这里说的是"这一次多快"，毫秒级要看得见。 */
+  function statMs(ms) {
+    var n = Math.max(0, Math.round(Number(ms) || 0));
+    if (n < 1000) return n + 'ms';
+    if (n < 60000) return (n / 1000).toFixed(n < 10000 ? 1 : 0) + 's';
+    return Math.floor(n / 60000) + 'm' + Math.round((n % 60000) / 1000) + 's';
+  }
+
+  /** 建 SVG 节点。`h()` 走的是 `createElement`，给 svg 用会造出个 HTML 元素、什么都不画。 */
+  function statSvg(tag, attrs) {
+    var el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    Object.keys(attrs || {}).forEach(function (key) { el.setAttribute(key, attrs[key]); });
+    return el;
+  }
+
+  /** 分位数。样本少时 p95 就是最大值 —— 本来就是这样，不假装它有统计意义。 */
+  function statP95(list) {
+    if (!list || !list.length) return 0;
+    var sorted = list.slice().sort(function (a, b) { return a - b; });
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
+  }
+
+  function statSum(list) {
+    var n = 0;
+    for (var i = 0; i < list.length; i++) n += Number(list[i]) || 0;
+    return n;
+  }
+
+  /** 把当前分支扫成看板要的那一坨数。 */
+  function statsData() {
+    var path = activePath();
+    var turns = [];
+    var tools = {};
+    var order = [];
+    var sumPrompt = 0;
+    var sumCompletion = 0;
+    var sumLatency = 0;
+    var sumToolMs = 0;
+    var retries = 0;
+    //: 上一笔工具调用失败了、而且**还没被别的工具打断** —— 只有这时再调同名工具
+    //: 才算"重试"。失败后换个工具接着干是另一回事，混在一起会把重试数说大。
+    var failName = '';
+
+    path.forEach(function (m) {
+      if (!m || m.role !== 'assistant') return;
+      var parts = m.parts || [];
+      var toolMs = 0;
+      for (var i = 0; i < parts.length; i++) {
+        var part = parts[i];
+        if (!part || part.type !== 'tool_call') continue;
+        var name = String(part.name || '工具');
+        var ms = Number(part.ms) || 0;
+        var ok = part.ok !== false;
+        var one = tools[name];
+        if (!one) {
+          one = tools[name] = { n: 0, fail: 0, ms: [] };
+          order.push(name);
+        }
+        one.n += 1;
+        if (!ok) one.fail += 1;
+        if (ms > 0) one.ms.push(ms);
+        toolMs += ms;
+        if (failName && failName === name) retries += 1;
+        failName = ok ? '' : name;
+      }
+
+      var prompt = Number(m.promptTokens) || 0;
+      var completion = Number(m.completionTokens) || 0;
+      var latency = Number(m.latencyMs) || 0;
+      sumPrompt += prompt;
+      sumCompletion += completion;
+      sumLatency += latency;
+      sumToolMs += toolMs;
+
+      turns.push({
+        prompt: prompt,
+        completion: completion,
+        // 上下文占用：最后一次调用的输入量。老消息没记（0）时退回累加值 ——
+        // 那时候是**偏高**的估计，UI 上标"约"，不装作精确。
+        context: Number(m.lastPromptTokens) || 0,
+        ttft: Number(m.firstTokenMs) || 0,
+        latency: latency,
+        toolMs: toolMs,
+        // 其余 = 上游推理 + 等前端回执（见上面第 3 条）。工具 `ms` 只覆盖 `tools.call`
+        // 本体，可能出现"工具耗时比整轮还长"（并发预取），夹到 0，不画反的条。
+        restMs: Math.max(0, latency - toolMs),
+      });
+    });
+
+    // ---- 树：分叉对账 ------------------------------------------------
+    //
+    // 这一半**不能摊平**。瀑布图（按时间排一串）是线性会话的产物；对话树是
+    // 一次探索，重答三次在三根柱子后面看起来像"模型在第 5、6、7 轮变慢了"，
+    // 其实是同一段话被算了四遍。真正要回答的问题是：**哪些 token 花在了
+    // 不会有人再看的支上**。
+    var all = state.messages || [];
+    var byId = {};
+    var kids = {};
+    all.forEach(function (m) {
+      byId[m.id] = m;
+      var p = String(m.parentId || '');
+      (kids[p] || (kids[p] = [])).push(m);
+    });
+    var pathSet = {};
+    path.forEach(function (m) { pathSet[m.id] = true; });
+
+    var memo = {};
+    function agg(id) {
+      if (memo[id]) return memo[id];
+      var node = byId[id];
+      var box = { turns: 0, tokens: 0, ms: 0, calls: 0, fails: 0 };
+      if (node && node.role === 'assistant') {
+        box.turns = 1;
+        box.tokens = (Number(node.promptTokens) || 0) + (Number(node.completionTokens) || 0);
+        box.ms = Number(node.latencyMs) || 0;
+        (node.parts || []).forEach(function (part) {
+          if (part && part.type === 'tool_call') {
+            box.calls += 1;
+            if (part.ok === false) box.fails += 1;
+          }
+        });
+      }
+      (kids[id] || []).forEach(function (k) {
+        var sub = agg(k.id);
+        box.turns += sub.turns;
+        box.tokens += sub.tokens;
+        box.ms += sub.ms;
+        box.calls += sub.calls;
+        box.fails += sub.fails;
+      });
+      memo[id] = box;
+      return box;
+    }
+
+    function hasPath(id) {
+      if (pathSet[id]) return true;
+      var list = kids[id] || [];
+      for (var i = 0; i < list.length; i++) {
+        if (hasPath(list[i].id)) return true;
+      }
+      return false;
+    }
+
+    var totalTokens = 0;
+    all.forEach(function (m) {
+      if (m && m.role === 'assistant') {
+        totalTokens += (Number(m.promptTokens) || 0) + (Number(m.completionTokens) || 0);
+      }
+    });
+
+    var forks = [];
+    var wasted = 0;
+    var wastedBranches = 0;
+    Object.keys(kids).forEach(function (pid) {
+      var list = kids[pid];
+      // 根（`pid === ''`）上挂几条第一问不算"分叉"——那是用户改了自己的提问，
+      // 不是模型的一次尝试。只数挂在一句真实消息下面的岔口。
+      if (!pid || !list || list.length < 2 || !byId[pid]) return;
+      var onPathFork = !!pathSet[pid];
+      forks.push({
+        at: statExcerpt(byId[pid].content),
+        branches: list.map(function (child) {
+          var sub = agg(child.id);
+          var mine = hasPath(child.id);
+          // 只有**挂在当前路径上的**分叉里那些弃支，才是"因为重答而白花的"；
+          // 更深处的弃支已经算在它所属的那一支里，再数一次就重复了。
+          if (onPathFork && !mine) {
+            wasted += sub.tokens;
+            wastedBranches += 1;
+          }
+          return {
+            turns: sub.turns,
+            tokens: sub.tokens,
+            ms: sub.ms,
+            calls: sub.calls,
+            onPath: mine,
+            excerpt: statExcerpt(child.content),
+          };
+        }),
+      });
+    });
+
+    return {
+      turns: turns,
+      last: turns.length ? turns[turns.length - 1] : null,
+      tools: tools,
+      order: order,
+      sumPrompt: sumPrompt,
+      sumCompletion: sumCompletion,
+      sumLatency: sumLatency,
+      sumToolMs: sumToolMs,
+      retries: retries,
+      context: Number(aiState && aiState.contextTokens) || 0,
+      calls: order.reduce(function (n, k) { return n + tools[k].n; }, 0),
+      fails: order.reduce(function (n, k) { return n + tools[k].fail; }, 0),
+      forks: forks,
+      totalTokens: totalTokens,
+      wasted: wasted,
+      wastedBranches: wastedBranches,
+    };
+  }
+
+  /** 一句话的开头，用来在分叉表里认出"这是哪一次回答"。 */
+  function statExcerpt(text) {
+    var s = String(text == null ? '' : text).replace(/\s+/g, ' ').trim();
+    if (!s) return '（空）';
+    return s.length > 42 ? s.slice(0, 42) + '…' : s;
+  }
+
+  /** 一格里没有数据时的说明。空着留白会让人以为"还没加载出来"。 */
+  function statHint(text) {
+    return h('div.chatstats__sec', null, h('div.chatstats__empty', { text: text }));
+  }
+
+  function statCard(label, value, sub, bar) {
+    var card = h(
+      'div.chatstats__card',
+      null,
+      h('div.chatstats__label', { text: label }),
+      h('div.chatstats__value', { text: value }),
+      h('div.chatstats__sub', { text: sub })
+    );
+    if (bar >= 0) {
+      // 满格才 100%：留 1% 的地板，不然"占 0.3%"画出来是一根看不见的线
+      card.appendChild(
+        h('div.chatstats__bar', null,
+          h('i', { style: { width: Math.max(1, Math.min(100, bar * 100)).toFixed(2) + '%' } })
+        )
+      );
+    }
+    return card;
+  }
+
+  /** 一条横向堆叠条 + 图例。纯 DOM，不引图表库：这里只有两段，画布是杀鸡用牛刀。
+   *
+   *  `ttft` 给一个首字刻度（毫秒）：单看"工具 / 其余"两段，看不出"开头那几秒是它
+   *  在憋第一句话"—— 那正是用户体感最差的一段时间，值得在条上标出来。
+   */
+  function statStack(rows, total, ttft) {
+    var bar = h('div.chatstats__stack');
+    var legend = h('div.chatstats__legend');
+    rows.forEach(function (one) {
+      if (!one.ms) return;
+      bar.appendChild(
+        h('i.' + one.cls, {
+          style: { width: ((one.ms / total) * 100).toFixed(2) + '%' },
+          title: one.label + ' ' + statMs(one.ms),
+        })
+      );
+      legend.appendChild(
+        h('span.chatstats__lg', null,
+          h('i.' + one.cls),
+          h('span', { text: one.label + ' ' + statMs(one.ms) })
+        )
+      );
+    });
+    var split = h('div.chatstats__split', null, bar, legend);
+    if (ttft > 0 && total > 0) {
+      split.appendChild(
+        h('div.chatstats__ttft', {
+          style: { left: Math.max(0, Math.min(100, (ttft / total) * 100)).toFixed(2) + '%' },
+        }, h('span', { text: '首字 ' + statMs(ttft) }), h('i'))
+      );
+    }
+    return split;
+  }
+
+  function statToolRow(name, one, maxMs) {
+    var total = statSum(one.ms);
+    var avg = one.ms.length ? total / one.ms.length : 0;
+    var p95 = statP95(one.ms);
+    return h(
+      'div.chatstats__row',
+      null,
+      h('div.chatstats__rowhead', null,
+        h('span.chatstats__rowname', { text: name }),
+        h('span.chatstats__rownums', {
+          text: one.n + ' 次' + (one.fail ? ' · ' + one.fail + ' 失败' : ''),
+        })
+      ),
+      h('div.chatstats__track', null,
+        h('i', { style: { width: (maxMs ? Math.max(2, (avg / maxMs) * 100) : 0).toFixed(1) + '%' } })
+      ),
+      h('div.chatstats__rowsub', {
+        // 一条耗时都没记下来（老消息 / 调用中）时，别显示"均 0ms" —— 那是假读数
+        text: one.ms.length
+          ? '均 ' + statMs(avg) + ' · p95 ' + statMs(p95) + (one.n > 1 ? ' · 累计 ' + statMs(total) : '')
+          : '没有耗时记录',
+      })
+    );
+  }
+
+  /** 上下文占用环：一圈弧 + 中间那个百分比。
+   *
+   *  用环而不是又一根横条，是因为它回答的是**比例**（窗口还剩多少），
+   *  横条在这个位置上会和下面"本轮时间"那根混成一样的形状。
+   */
+  function statRing(pct, num, sub) {
+    var size = 150;
+    var r = 62;
+    var width = 7;
+    var c = 2 * Math.PI * r;
+    var p = Math.max(0, Math.min(1, pct || 0));
+    var svg = statSvg('svg', { viewBox: '0 0 ' + size + ' ' + size, class: 'chatstats__ring' });
+    svg.appendChild(statSvg('circle', {
+      cx: size / 2, cy: size / 2, r: r, fill: 'none', 'stroke-width': width,
+      class: 'chatstats__ringtrack',
+    }));
+    if (p > 0) {
+      svg.appendChild(statSvg('circle', {
+        cx: size / 2, cy: size / 2, r: r, fill: 'none', 'stroke-width': width,
+        'stroke-linecap': 'round', class: 'chatstats__ringarc',
+        // 弧长 = 周长，offset 是"空掉的那一段"；从 12 点方向起画
+        'stroke-dasharray': c.toFixed(2),
+        'stroke-dashoffset': (c * (1 - p)).toFixed(2),
+        transform: 'rotate(-90 ' + size / 2 + ' ' + size / 2 + ')',
+      }));
+    }
+    return h('div.chatstats__ringwrap', null, svg,
+      h('div.chatstats__ringtext', null,
+        h('div.chatstats__ringnum', { text: num }),
+        h('div.chatstats__ringsub', { text: sub })));
+  }
+
+  /** 逐轮柱状：token 柱（主色）与耗时柱（灰）并排，**各自按自己的最大值归一**。
+   *
+   *  两个量纲硬放在一张图上，只能各归一各的 —— 图例里说明了这一点；
+   *  把毫秒折算成 token 再画才叫撒谎。
+   */
+  function statBars(turns) {
+    var maxTok = 1;
+    var maxMs = 1;
+    turns.forEach(function (t) {
+      if (t.prompt > maxTok) maxTok = t.prompt;
+      if (t.latency > maxMs) maxMs = t.latency;
+    });
+    var box = h('div.chatstats__bars');
+    turns.forEach(function (t, i) {
+      box.appendChild(
+        h('div.chatstats__barpair', { title: '#' + (i + 1) },
+          h('div.chatstats__barcols', null,
+            h('i.is-tok', {
+              style: { height: Math.max(2, (t.prompt / maxTok) * 100).toFixed(1) + '%' },
+              title: '输入 ' + statNum(t.prompt) + ' tokens',
+            }),
+            h('i.is-ms', {
+              style: { height: Math.max(2, (t.latency / maxMs) * 100).toFixed(1) + '%' },
+              title: '耗时 ' + statMs(t.latency),
+            })
+          ),
+          h('span.chatstats__barlabel', { text: String(i + 1) })
+        )
+      );
+    });
+    return box;
+  }
+
+  function statsPanel() {
+    if (statsEl) return statsEl;
+    // **全屏**（用户 2026-11-12："看板应该是全屏"）：挂在 body 上，不是对话树那张画布里 ——
+    // 挂画布就只能铺满右侧那一块，左边会话栏还占着两百多像素，而看板要横着比几列数。
+    // 挂 body + fixed 还有个好处：树被盖住后它不会跟着树重画（`ui.clear(treeEl)` 碰不到它）。
+    statsEl = h('aside.chatstats', null, h('div.chatstats__sheet'));
+    document.body.appendChild(statsEl);
+    return statsEl;
+  }
+
+  function paintStatsBtn() {
+    var btn = treeEl && treeEl.querySelector('.chattree__statsbtn');
+    if (!btn) return;
+    btn.classList.toggle('is-on', statsOpen);
+    btn.setAttribute('aria-expanded', statsOpen ? 'true' : 'false');
+  }
+
+  function statsKeydown(event) {
+    if (event.key !== 'Escape' || !statsOpen) return;
+    // 捕获阶段 + stopPropagation：与书签抽屉同一个理由 —— 不然 Esc 继续冒到地图
+    // 那一层，抽屉和地图一起关掉，人会以为点错了地方。
+    event.preventDefault();
+    event.stopPropagation();
+    closeStats();
+  }
+
+  function toggleStats() {
+    if (statsOpen) closeStats();
+    else openStats();
+  }
+
+  function openStats() {
+    // 看板是全屏的，盖上去之后书签抽屉也看不见了 —— 先收掉，免得关掉看板时
+    // 发现树里还压着一张自己不知道什么时候打开的抽屉
+    closeMarks();
+    statsOpen = true;
+    window.clearTimeout(statsTimer);
+    paintStatsBtn();
+    renderStats();
+  }
+
+  function closeStats() {
+    if (!statsOpen) return;
+    statsOpen = false;
+    paintStatsBtn();
+    document.removeEventListener('keydown', statsKeydown, true);
+    if (!statsEl) return;
+    // `is-open` **先留着**：这个节点靠它才有 `display: flex`，拿掉就是"啪"地消失。
+    // 等 160ms 反向动画播完，再一起摘掉 —— 见书签抽屉那段同样的讲究。
+    statsEl.classList.add('is-closing');
+    window.clearTimeout(statsTimer);
+    statsTimer = window.setTimeout(function () {
+      if (statsEl) statsEl.classList.remove('is-open', 'is-closing');
+      var sheet = statsEl && statsEl.querySelector('.chatstats__sheet');
+      if (sheet) ui.clear(sheet);
+    }, 160);
+  }
+
+  function renderStats() {
+    if (!statsEl) statsPanel();
+    var sheet = statsEl.querySelector('.chatstats__sheet');
+    ui.clear(sheet);
+    if (!statsOpen) return;
+    statsEl.classList.remove('is-closing');
+    statsEl.classList.add('is-open');
+    document.removeEventListener('keydown', statsKeydown, true);
+    document.addEventListener('keydown', statsKeydown, true);
+
+    var d = statsData();
+    var last = d.last;
+    // 环只认 `lastPromptTokens`：累加值是"这一轮买了多少"，不是"窗口占了多满"，
+    // 拿它画环会把占用说高几倍。老消息没这个数就留个空环，不编。
+    var hasCtx = !!(last && last.context);
+    var ctxNow = last ? (hasCtx ? last.context : last.prompt) : 0;
+    var share = hasCtx && d.context ? ctxNow / d.context : -1;
+
+    sheet.appendChild(
+      h('div.chatstats__head', null,
+        // 全屏之后必须有一个"退回去"的出口：它是从对话树点开的，关掉就该回到那张图
+        h('button.chatstats__back', {
+          text: '\u2190 对话树',
+          title: '回到对话树（Esc）',
+          onClick: closeStats,
+        }),
+        h('span.chatstats__title', { text: '看板' }),
+        h('span.chatstats__lead', {
+          text: d.forks.length
+            ? d.turns.length + ' 轮走在当前分支 · 全树 ' + d.forks.length + ' 处分叉'
+            : d.turns.length
+              ? '当前分支 ' + d.turns.length + ' 轮 · 还没分叉'
+              : '还没有回答',
+        }),
+        h('button.chatstats__close', { text: '\u00d7', title: '关闭（Esc）', onClick: closeStats })
+      )
+    );
+
+    // KPI 的**口径是"这一支"与"整棵树"的对照**，不是"最后一轮"。前者回答
+    // "我这次花的钱有没有变成答案"，后者只会回答"最后那一下多快" —— 而用户刚刚
+    // 就撞上了一条没有数据的尾巴（0 tokens / 0ms），那不该是整块屏的主语。
+    var branchTokens = d.sumPrompt + d.sumCompletion;
+    var wastedPct = d.totalTokens ? (d.wasted / d.totalTokens) * 100 : 0;
+    sheet.appendChild(
+      h('div.chatstats__kpi', null,
+        // 说"买进"而不是"上下文"：这个数是**每一轮所有上游调用的累加**，
+        // 同一段历史在每轮里各算一次，所以它天然比"现在窗口里有多少"大好几倍。
+        statCard('累计买进', statNum(branchTokens),
+          d.turns.length + ' 轮 · 入 ' + statNum(d.sumPrompt) + ' 出 ' + statNum(d.sumCompletion), -1),
+        statCard('被弃分支', d.wasted ? statNum(d.wasted) : '0',
+          d.wasted
+            ? d.wastedBranches + ' 支 · 占全树 ' +
+              (wastedPct < 1 ? wastedPct.toFixed(1) : Math.round(wastedPct)) + '%'
+            : '没有重答过', -1),
+        statCard('工具', d.calls + ' 次',
+          d.calls
+            ? (d.fails ? d.fails + ' 次失败' + (d.retries ? ' · 重试 ' + d.retries : '') : '全部成功')
+            : '这一支没调用过', -1),
+        statCard('全树', statNum(d.totalTokens),
+          d.forks.length ? d.forks.length + ' 处分叉' : '还没有分叉', -1)
+      )
+    );
+
+    // 全屏里分两列，是**分工**不是装饰：左列回答"刚才那一下为什么慢、为什么贵"，
+    // 右列回答"从哪一轮开始变慢、变贵"。一列到底的话，这两个问题要上下翻着比。
+    var grid = h('div.chatstats__grid', null, h('div.chatstats__col'), h('div.chatstats__col'));
+    var colLeft = grid.firstChild;
+    var colRight = grid.lastChild;
+    sheet.appendChild(grid);
+
+    // ---- 左列：这一轮（上下文 + 时间去哪了）
+    var ctxPct = hasCtx && d.context ? share : 0;
+    var ringNum = '\u2014';
+    var ringSub = '';
+    if (d.context) {
+      // 环里只放"分母"，不写句子 —— 132px 的圆圈塞两行字会顶出圈外
+      ringSub = '窗口 ' + statNum(d.context);
+      if (hasCtx) {
+        var pctNum = ctxPct * 100;
+        ringNum = (pctNum < 1 ? pctNum.toFixed(1) : Math.round(pctNum)) + '%';
+      }
+    }
+    colLeft.appendChild(
+      h('div.chatstats__sec', null,
+        h('div.chatstats__sechead', null,
+          h('span', { text: '上下文' }),
+          h('span.chatstats__hint', { text: ctxNow ? '本轮 ' + statNum(ctxNow) : '' })
+        ),
+        h('div.chatstats__ctxrow', null,
+          statRing(ctxPct, ringNum, ringSub),
+          h('div.chatstats__ctxnote', null,
+            h('p', {
+              text: hasCtx
+                ? '本轮最后一次上游调用吃掉的输入量。走几步工具就有几次调用，只有最后那次才是窗口里真实的一份。'
+                : '这一轮没记下占用（老消息）—— 上面的数是累加值，只能拿来估大小。',
+            }),
+            d.context ? h('p.chatstats__dim', { text: '窗口 ' + statNum(d.context) + ' tokens' }) : null
+          )
+        )
+      )
+    );
+
+    if (last && last.latency) {
+      colLeft.appendChild(
+        h('div.chatstats__sec', null,
+          h('div.chatstats__sechead', null,
+            h('span', { text: '本轮时间' }),
+            h('span.chatstats__hint', { text: '「其余」= 模型推理 + 等前端回执' })
+          ),
+          statStack([
+            { label: '工具', ms: last.toolMs, cls: 'is-tool' },
+            { label: '其余', ms: last.restMs, cls: 'is-rest' },
+          ], last.latency, last.ttft)
+        )
+      );
+    } else {
+      colLeft.appendChild(statHint('这一支还没有完整的一轮：没有耗时可拆。'));
+    }
+
+    // ---- 右列：树上（分叉对账 → 当前分支的每一轮 → 工具）
+    if (d.forks.length) {
+      var secFork = h('div.chatstats__sec', null,
+        h('div.chatstats__sechead', null,
+          h('span', { text: '分叉对账' }),
+          h('span.chatstats__hint', {
+            text: d.forks.length + ' 处 · 弃 ' + d.wastedBranches + ' 支',
+          })
+        )
+      );
+      d.forks.forEach(function (fork) {
+        var block = h('div.chatstats__fork', null,
+          h('div.chatstats__forkat', { text: fork.at })
+        );
+        fork.branches.forEach(function (b) {
+          // 实心点 = 你现在走的那一支；空心 = 被弃的。只靠颜色深浅区分，
+          // 灰度打印和色弱都还能认出来。
+          block.appendChild(
+            h('div.chatstats__forkrow' + (b.onPath ? '.is-on' : ''), null,
+              h('span.chatstats__forkmark', { text: b.onPath ? '\u25cf' : '\u25cb' }),
+              h('span.chatstats__forktext', { text: b.excerpt }),
+              h('span.chatstats__forknums', {
+                text: b.turns + ' 轮 · ' + statNum(b.tokens) + ' · ' + statMs(b.ms),
+              })
+            )
+          );
+        });
+        secFork.appendChild(block);
+      });
+      colRight.appendChild(secFork);
+    }
+    // 没有分叉就**什么都不放**：顶上的「被弃分支 0 · 没有重答过」已经说明了，
+    // 这里再来一句灰字只是把"每一轮"标题往下推。
+
+    if (d.turns.length) {
+      var secBars = h('div.chatstats__sec', null,
+        h('div.chatstats__sechead', null,
+          // 这里画的**不是上下文**，是"那一轮买进了多少 token"：一轮里每调一次
+          // 工具就再买一次历史，所以柱子高不等于窗口满。环负责"窗口多满"。
+          h('span', { text: '每轮买进' }),
+          h('span.chatstats__hint', { text: '只画你脚下这一条 · 各按最大值归一' })
+        ),
+        statBars(d.turns),
+        h('div.chatstats__legend', null,
+          h('span.chatstats__lg', null, h('i.is-tok'), h('span', { text: '输入 tokens' })),
+          h('span.chatstats__lg', null, h('i.is-ms'), h('span', { text: '耗时' }))
+        )
+      );
+      colRight.appendChild(secBars);
+    } else {
+      colRight.appendChild(statHint('这一支还没有回答。'));
+    }
+
+    if (d.order.length) {
+      var rows = d.order.map(function (k) { return { name: k, one: d.tools[k] }; });
+      var maxMs = 1;
+      rows.forEach(function (r) {
+        var avg = r.one.ms.length ? statSum(r.one.ms) / r.one.ms.length : 0;
+        if (avg > maxMs) maxMs = avg;
+      });
+      // 用得最费时的在前：这张表的用途是"先看谁拖后腿"，不是查字典
+      rows.sort(function (a, b) {
+        var am = a.one.ms.length ? statSum(a.one.ms) / a.one.ms.length : 0;
+        var bm = b.one.ms.length ? statSum(b.one.ms) / b.one.ms.length : 0;
+        return bm - am || b.one.n - a.one.n;
+      });
+      var sec = h('div.chatstats__sec', null,
+        h('div.chatstats__sechead', null,
+          h('span', { text: '工具' }),
+          h('span.chatstats__hint', {
+            text: d.calls + ' 次' + (d.fails ? ' · 失败率 ' + Math.round((d.fails / d.calls) * 100) + '%' : ' · 没有失败'),
+          })
+        )
+      );
+      rows.forEach(function (r) { sec.appendChild(statToolRow(r.name, r.one, maxMs)); });
+      // 工具跟着"量"走（左列），分叉跟着"结构"走（右列）：
+      // 左边回答"这一支花了多少、慢在哪"，右边回答"钱有没有花在废支上"。
+      colLeft.appendChild(sec);
+    } else {
+      colLeft.appendChild(statHint('这一支没有调用过工具 —— 慢的话全在模型那边。'));
+    }
+
+    sheet.appendChild(
+      h('div.chatstats__foot', null,
+        h('span', { text: '累计 ' + statNum(d.sumPrompt) + ' 入 · ' + statNum(d.sumCompletion) + ' 出' }),
+        h('span', { text: d.turns.length + ' 轮 · 共 ' + statMs(d.sumLatency) })
+      )
+    );
   }
 
   /** 一条批注头上的时间（显示态与编辑态都要有）。清单里只有本对话的批注，不必再标"在哪儿"。 */

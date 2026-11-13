@@ -5433,8 +5433,10 @@ body.is-colresize .panes__host > .chat {
   font-size: 9px;
 }
 
-/* 树上那几颗"图标 + 字"的键（书签 / 轨迹 / 播放）：同一套排布 */
+/* 树上那几颗"图标 + 字"的键（书签 / 轨迹 / 播放 / 看板）：同一套排布。
+ * 看板那颗漏在这组外面时，svg 与文字会贴着边问号似的挤在一起 —— 必须在这里。 */
 .chattree__marksbtn,
+.chattree__statsbtn,
 .chattree__trailbtn,
 .chattree__playbtn {
   display: inline-flex;
@@ -5636,11 +5638,603 @@ body.is-colresize .panes__host > .chat {
 }
 
 
+/* ---- 看板（全屏）-----------------------------------------------------
+ *
+ * 用户 2026-11-12："看板应该是全屏" —— 所以它不是书签那种右侧抽屉，而是铺满整个
+ * 窗口的一层（挂在 body 上、`position: fixed`），盖住会话栏与工具栏。理由很实在：
+ * 它要横向摆几列数（本轮 / 本轮时间 / 工具 / 逐轮），430px 的侧栏里一列都摊不开。
+ *
+ * 骨架仍然是那一套：`is-open` 才 display、关闭先播 160ms 反向动画再拆内容
+ * （由 `closeStats` 控制，见 chat.js），`prefers-reduced-motion` 下两段全静。
+ * 颜色只动 `--fg/--fg2/--fg3/--line/--pri`，不写死色值 —— 浅色/深色都成立。
+ */
+.chatstats {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  /* 关着时整个节点不参与布局、也不接事件：它常驻 body，不能留个透明的整屏壳挡点击 */
+  display: none;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.chatstats.is-open {
+  display: flex;
+}
+
+.chatstats__sheet {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: chatstats-in 200ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+.chatstats.is-closing .chatstats__sheet {
+  animation: chatstats-out 160ms ease both;
+}
+
+@keyframes chatstats-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes chatstats-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: translateY(6px); }
+}
+
+/* 头：通栏（分隔线要顶到两边），内容与下面的栅格对齐 */
+.chatstats__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 14px 32px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.chatstats__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--fg3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chatstats__back:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+.chatstats__title {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chatstats__lead {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg3);
+  font-size: 11.5px;
+  text-align: right;
+}
+
+.chatstats__close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg3);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chatstats__close:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+
+/* 四张卡横排。数字用等宽数字，免得 12.3 → 9.8 时那一列左右抖 */
+.chatstats__kpi {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 18px 32px 0;
+}
+
+/* 两列：左"这一轮"，右"一路上"。列内自成一个节奏，不做等高对齐
+ * （左列常常比右列短，强行拉齐会把左边撑出一片空） */
+.chatstats__grid {
+  display: grid;
+  /* 左窄右宽：左边是"这一轮"的定性（环 + 一条时间轴），右边是"一路上"的定量
+   * （柱状 + 工具表）。等宽会让柱状图白丢一半横向量。 */
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 0 48px;
+  align-items: start;
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 32px;
+}
+
+.chatstats__col {
+  min-width: 0;
+}
+
+.chatstats__card {
+  min-width: 0;
+  padding: 13px 15px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+}
+
+.chatstats__label {
+  color: var(--fg3);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.chatstats__value {
+  margin-top: 4px;
+  color: var(--fg);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.chatstats__sub {
+  margin-top: 3px;
+  color: var(--fg3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatstats__bar {
+  margin-top: 7px;
+  height: 3px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  overflow: hidden;
+}
+
+.chatstats__bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--pri);
+}
+
+.chatstats__sec {
+  padding: 18px 0 0;
+}
+
+.chatstats__col > .chatstats__sec:first-child {
+  padding-top: 18px;
+}
+
+/* 一格没数据时的说明：留白会让人以为"还没加载出来" */
+.chatstats__empty {
+  padding: 14px 0;
+  color: var(--fg3);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.chatstats__sechead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--fg2);
+  font-size: 11.5px;
+}
+
+.chatstats__hint {
+  margin-left: auto;
+  color: var(--fg3);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+/* 上下文：左边一圈环，右边两句话。环上只放百分比，绝对量放在旁边的文字里 ——
+ * 环里塞两行字会挤成一坨 */
+.chatstats__ctxrow {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.chatstats__ringwrap {
+  position: relative;
+  flex: none;
+  width: 148px;
+  height: 148px;
+}
+
+.chatstats__ring {
+  width: 148px;
+  height: 148px;
+  display: block;
+}
+
+.chatstats__ringtrack {
+  stroke: color-mix(in srgb, var(--fg) 9%, transparent);
+}
+
+.chatstats__ringarc {
+  stroke: var(--pri);
+  transition: stroke-dashoffset 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.chatstats__ringtext {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.chatstats__ringnum {
+  color: var(--fg);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.chatstats__ringsub {
+  max-width: 84px;
+  color: var(--fg3);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.chatstats__ctxnote {
+  min-width: 0;
+  color: var(--fg2);
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.chatstats__ctxnote p {
+  margin: 0;
+}
+
+.chatstats__ctxnote p + p {
+  margin-top: 6px;
+}
+
+.chatstats__dim {
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+/* 本轮时间：一条两段的横条 + 图例。只有两段，画布是杀鸡用牛刀 */
+.chatstats__split {
+  position: relative;
+  /* 上面留出的空地是给「首字」那条刻度线用的 */
+  padding-top: 20px;
+}
+
+.chatstats__ttft {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.chatstats__ttft > span {
+  color: var(--fg3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* 竖线一直落到横条里：看的是"首字落在整轮的哪个位置" */
+.chatstats__ttft > i {
+  width: 1px;
+  height: 26px;
+  background: color-mix(in srgb, var(--fg) 40%, transparent);
+}
+
+.chatstats__stack {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.chatstats__stack > i {
+  display: block;
+  height: 100%;
+}
+
+.chatstats__stack > i.is-tool {
+  background: var(--pri);
+}
+
+.chatstats__stack > i.is-rest {
+  background: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+
+.chatstats__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 7px;
+  color: var(--fg3);
+  font-size: 11px;
+}
+
+.chatstats__lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chatstats__lg > i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.chatstats__lg > i.is-tool {
+  background: var(--pri);
+}
+
+.chatstats__lg > i.is-rest {
+  background: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+
+/* 工具行：名字与次数一行，平均耗时那根条在中间，p95 在下面 */
+.chatstats__row {
+  padding: 7px 0 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.chatstats__row:last-child {
+  border-bottom: none;
+}
+
+.chatstats__rowhead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.chatstats__rowname {
+  min-width: 0;
+  color: var(--fg);
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatstats__rownums {
+  margin-left: auto;
+  flex: none;
+  color: var(--fg3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chatstats__track {
+  margin-top: 5px;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  overflow: hidden;
+}
+
+.chatstats__track > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--pri) 70%, transparent);
+}
+
+.chatstats__rowsub {
+  margin-top: 4px;
+  color: var(--fg3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 分叉对账：一处岔口一块，底下每一支一行。
+ * 这是看板里**唯一**能说清"钱花在不会有人再看的支上"的地方 ——
+ * 所以它排在右列最上面，逐轮图退到它后面。 */
+.chatstats__fork {
+  padding: 9px 0 11px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.chatstats__fork:last-child {
+  border-bottom: none;
+}
+
+.chatstats__forkat {
+  margin-bottom: 5px;
+  color: var(--fg3);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatstats__forkrow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.chatstats__forkmark {
+  flex: none;
+  width: 9px;
+  color: var(--fg3);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.chatstats__forkrow.is-on .chatstats__forkmark {
+  color: var(--pri);
+}
+
+.chatstats__forktext {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg3);
+  font-size: 12px;
+}
+
+.chatstats__forkrow.is-on .chatstats__forktext {
+  color: var(--fg);
+}
+
+.chatstats__forknums {
+  flex: none;
+  color: var(--fg3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chatstats__forkrow.is-on .chatstats__forknums {
+  color: var(--fg2);
+}
+
+/* 逐轮柱状：每轮两根柱（tokens / 耗时），各自按自己的最大值归一。
+ * 柱子竖起来是为了让"从第几轮开始变高"一眼可见 —— 横条列表要在右端来回扫。 */
+.chatstats__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 200px;
+  padding-top: 6px;
+}
+
+.chatstats__barpair {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.chatstats__barcols {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+}
+
+.chatstats__barcols > i {
+  flex: 1;
+  min-width: 2px;
+  /* 轮次少时柱子别细成筷子；轮次多了 flex 会把它压到 min-width */
+  max-width: 46px;
+  border-radius: 3px 3px 1px 1px;
+  transition: height 320ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.chatstats__barcols > i.is-tok {
+  background: var(--pri);
+}
+
+.chatstats__barcols > i.is-ms {
+  background: color-mix(in srgb, var(--fg) 18%, transparent);
+}
+
+.chatstats__barlabel {
+  padding-top: 6px;
+  color: var(--fg3);
+  font-size: 10px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 底：通栏分隔线，内容与栅格同宽。`margin-top: auto` 让内容少的时候它贴着
+ * 视口底边（全屏里浮在半空的那条线看着像没画完） */
+.chatstats__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  max-width: 1180px;
+  margin: auto auto 0;
+  padding: 12px 32px 22px;
+  border-top: 1px solid var(--line);
+  color: var(--fg3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 窄屏（含手机）：四张卡退成两列，两栏并成一栏 —— 全屏在 390 宽上也只能竖着读 */
+@media (max-width: 860px) {
+  .chatstats__head,
+  .chatstats__kpi,
+  .chatstats__grid,
+  .chatstats__foot {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .chatstats__kpi {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chatstats__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .chatmarks__backdrop,
   .chatmarks__sheet,
   .chatmarkitem,
-  .ctpin2 {
+  .ctpin2,
+  .chatstats__sheet {
     animation: none;
   }
 }

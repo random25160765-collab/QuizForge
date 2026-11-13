@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 import uuid
@@ -480,6 +481,77 @@ def _tool_then_answer():
         yield ("finish", "stop")
 
     return fake, turns
+
+
+def _two_step_stream():
+    """两轮上游调用（中间隔一会儿）：专供看板那两组数。
+
+    第一轮要工具、只报了 15 的输入；第二轮才回答、报 10。两个数**不一样**是重点 ——
+    一样的话"累加"和"最后一次"就分不出对错了。
+    """
+    turns: list[list[dict]] = []
+
+    def fake(conf, messages, *, tools=None, params=None):
+        turns.append(list(messages))
+        if len(turns) == 1:
+            yield ("usage", {"promptTokens": 15, "completionTokens": 2})
+            yield (
+                "tool_calls",
+                [
+                    {
+                        "id": "call_1",
+                        "name": "search_knowledge",
+                        "arguments": json.dumps({"query": "circular"}),
+                    }
+                ],
+            )
+            yield ("finish", "tool_calls")
+            return
+        # 隔一下再吐字：首字延迟要是个能看出来的数（0 和"没记"分不开）
+        time.sleep(0.02)
+        yield ("think", "先想想")
+        yield ("delta", "答完了")
+        yield ("usage", {"promptTokens": 10, "completionTokens": 4})
+        yield ("finish", "stop")
+
+    return fake
+
+
+def test_the_board_sees_the_last_call_not_the_sum(client, monkeypatch) -> None:  # noqa: ANN001
+    """看板的输入量是**最后一次调用**，不是一轮里的累加。
+
+    走一次工具就是两次上游请求。累加值（15+10=25）回答的是"这一轮买了多少 token"，
+    拿来算钱对；最后一次（10）才回答"此刻上下文塞了多满"。拿累加值画占用条，
+    一个三步工具的轮次会显得上下文凭空涨了三倍 —— 这是这组数唯一的用处，不能错。
+    """
+    _ready(client)
+    _stub(monkeypatch, _two_step_stream())
+    cid = _new_conversation(client)
+    done = dict(_events(_send(client, cid, content="队列是什么").text))["done"]
+
+    # 流里先带出去一份：前端画实时那一轮不必再取一次
+    assert done["lastPromptTokens"] == 10
+
+    body = client.get(f"/api/chat/conversations/{cid}").json()
+    last = body["messages"][-1]
+    assert last["promptTokens"] == 25, "累加值照旧是一轮内所有调用的总和"
+    assert last["lastPromptTokens"] == 10, "看板只认最后一次调用"
+    assert last["promptTokens"] == last["lastPromptTokens"] + 15, "两者不能是同一个数"
+
+
+def test_the_first_token_time_is_recorded(client, monkeypatch) -> None:  # noqa: ANN001
+    """首字延迟要落库，而且**思考先到也算**。
+
+    用户看到的"它开始动了"是思考块先亮起来；只认正文，开着思考的轮次会显得慢十几秒。
+    这里第二轮先吐 think，再吐正文 —— 记下来的是 think 那一刻（含上面那 20ms 等待）。
+    """
+    _ready(client)
+    _stub(monkeypatch, _two_step_stream())
+    cid = _new_conversation(client)
+    _send(client, cid, content="队列是什么")
+
+    last = client.get(f"/api/chat/conversations/{cid}").json()["messages"][-1]
+    assert last["firstTokenMs"] >= 15, "首字记的是 think 到达那一刻（至少含那 20ms 等待）"
 
 
 def test_tool_call_shows_up_and_stays_in_the_message(client, monkeypatch) -> None:  # noqa: ANN001

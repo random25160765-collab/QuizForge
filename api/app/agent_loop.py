@@ -422,7 +422,16 @@ def run(  # noqa: ANN001
     # 摆一行，占着间距而用户拿它没有办法）。`dropped` 因此无人使用，接下划线。
     messages, _dropped = build_messages(system, history, budget)
 
-    usage = {"promptTokens": 0, "completionTokens": 0}
+    # `promptTokens` / `completionTokens` 是**一轮内所有调用的累加**（走三步工具就是
+    # 四次请求），拿来算钱对。另外两个是看板要的、从累加值推不出来的量：
+    #   * `lastPromptTokens` —— **最后一次**调用的输入量 = 此刻上下文真实占了多大；
+    #   * `firstTokenMs` —— 这一轮第一次吐字离上游请求发出多久（用户感知的"开始动了"）。
+    usage = {
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "lastPromptTokens": 0,
+        "firstTokenMs": 0,
+    }
     allow_tools = True
     #: 收尾那句"工具收走了，现在交付"只插一次（见循环里那处）
     nudged = False
@@ -499,6 +508,10 @@ def run(  # noqa: ANN001
                 if not pictures and allow_tools and _turn < max_turns - 1:
                     turn_tools = _specs_without(tools.specs(mounts, allow), drop)
                 pictures = False
+                # 首字延迟的**起点**：上游请求就要发出（不是 `_stream` 的入口 ——
+                # 那之前还有拼提示词、查挂载；也不是前端收到第一个字节 —— 那中间
+                # 还隔着代理与缓冲）。放在这次调用紧前面，量的就是"上游多久开始说话"。
+                turn_started = time.perf_counter()
                 for kind, value in gateway.stream_completion(
                     conf,
                     messages,
@@ -516,6 +529,9 @@ def run(  # noqa: ANN001
                                 # 名字被切到下一块了：从被丢掉的正文里再找一眼
                                 leak_name = _leak_tool_name(value)
                             continue  # 这一轮已判定是泄漏：剩下的正文全丢
+                        if not usage["firstTokenMs"]:
+                            # 正文先到：这就是用户看到"它开始说话了"的时刻
+                            usage["firstTokenMs"] = gateway.elapsed_ms(turn_started)
                         hold += value
                         if any(mark in hold for mark in leak_marks):
                             leaked = True
@@ -552,6 +568,10 @@ def run(  # noqa: ANN001
                         # 实测：`deepseek-flash` 裸调就给思维链（思考模式默认开启、
                         # 默认 effort=high），而 `deepseek-chat` 这个遗留名一个字节都不给。
                         # 两种模型共用这条链：攒到就回传、攒不到就不带那个字段。
+                        if not usage["firstTokenMs"]:
+                            # 思考先到也算首字：开着思考时用户看到的"它开始动了"
+                            # 就是思考块亮起来，只认正文会把 TTFT 说慢十几秒
+                            usage["firstTokenMs"] = gateway.elapsed_ms(turn_started)
                         thoughts.append(value)
                         yield {"kind": "think", "text": value}
                     elif kind == "tool_calls":
@@ -559,6 +579,10 @@ def run(  # noqa: ANN001
                     elif kind == "usage":
                         usage["promptTokens"] += int(value.get("promptTokens") or 0)
                         usage["completionTokens"] += int(value.get("completionTokens") or 0)
+                        # **覆盖**写（不是累加）：一轮里每多一步工具就多一次上游调用，
+                        # 只有最后一次的输入量才是"此刻上下文真实占了多大"。累加值
+                        # 回答的是"这一轮一共买了多少 token"，这两件事看板要分开画。
+                        usage["lastPromptTokens"] = int(value.get("promptTokens") or 0)
                     elif kind == "finish":
                         finish = value
                 # 流结束：把按住的那截尾巴放出来（泄漏的话上面已经清空了）

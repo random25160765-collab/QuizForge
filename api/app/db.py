@@ -171,6 +171,12 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 而用户手改过名字的那几条，改名那一刻就会把它置 0，不会被覆盖。
     ("conversations", "title_auto", "BOOLEAN NOT NULL DEFAULT 1"),
     ("messages", "mounts", "TEXT NOT NULL DEFAULT ''"),
+    # 看板（2026-11-12）：上下文占用与首字延迟。
+    # 默认 0 = **未知**（老消息没记过），不是"零 token / 零延迟" —— 看板据此
+    # 不画那两格，而不是画一根空条。所以这两列不需要 `_BACKFILLS`：补不出真值，
+    # 编一个反而有害。
+    ("messages", "last_prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+    ("messages", "first_token_ms", "INTEGER NOT NULL DEFAULT 0"),
     # 跨机器同步的稳定身份（见 `app/sync.py`）。自增 `id` 两台机器会撞号，
     # 同步只认这两列；老行由下面 `_BACKFILLS` 补一个随机串。
     ("messages", "uid", "VARCHAR(32) NOT NULL DEFAULT ''"),
@@ -178,6 +184,10 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # 资料走到哪一步（检索 / 出题）。默认给"检索"是给**以后新来的行**选的，
     # 老行得靠下面那张回填表 —— 见 `_BACKFILLS`。
     ("materials", "depth", "VARCHAR(16) NOT NULL DEFAULT '检索'"),
+    # 归一后的正文（PDF/docx 抽出来的纯文本）：空 = 原文件本身就是正文。
+    # 老行给空串是**正确**的 —— 它们当时也是按文本读的；PDF 进来的那几份本来
+    # 就读不出字，重跑一次入库就有值了，不需要（也没法）回填。
+    ("materials", "text_path", "TEXT NOT NULL DEFAULT ''"),
     # 每份计划配套的 Markdown 计划书（2026-11-09）。计划表早就建出来了，
     # 老行补一列空串 = 还没有文档（打开 / 读写时按需播第一版，见 plan_doc.ensure）。
     ("plans", "doc", "TEXT NOT NULL DEFAULT ''"),

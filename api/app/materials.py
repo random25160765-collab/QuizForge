@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 
@@ -65,6 +67,82 @@ def _lower(path: str) -> tuple[str, ...]:
     return tuple(line.lower() for line in _lines(path))
 
 
+#: 抽一本书的正文要给足时间。`attachments` 的默认 20 秒是给"上传一个文档"用的，
+#: 实测一本 4492 页的书要 32 秒 —— 走默认值会被超时吞成空串，现象是
+#: "这本有文字层的书被判成没有文字层"（`attachments.extract` 的注释里也记着）。
+PARSE_TIMEOUT = 600
+
+#: 一页少于这么多字就当作“没有文字层”。扫描件的封面往往有两三行真文字，
+#: 光判“抽到了没有”会让整本书以封面那五行入库（那是另一种垃圾，更隐蔽）。
+MIN_CHARS_PER_PAGE = 50
+
+
+def text_lines(path: str, *, on_page: Any = None) -> tuple[list[str], bool]:
+    """文件 → 行文本，附带"这是不是抽出来的"。
+
+    **不能一律按 UTF-8 读**：资料库拖进来的常常是 PDF。按文本读一个 PDF，
+    得到的是 `%PDF-1.6` 与压缩流的乱码 —— 2026-11-13 那份 87MB 的教材就这样
+    切出 19740 片"正文"、354 万行，还差点把两小时的向量算完再存进库里
+    （垃圾字节照样能算向量，这才是最坑的地方：全链路不报错）。
+
+    所以按类型走：纯文本直接读原文件；PDF / docx / pptx 交给 `attachments` 抽；
+    **PDF 抽出来每页不到 `MIN_CHARS_PER_PAGE` 字**（扫描件就是这样，别说空串 ——
+    封面那三五行真文字骗得过"抽到了没有"）就走 `ocr.convert` 逐页认一遍；
+    其余的抽不出就**报错** —— 让任务红着停在"解析"，而不是绿着把垃圾入库。
+
+    `on_page(已认页数, 总页数)` 只在 OCR 支路上回调：几百页要跑十几分钟，
+    页面上只有一个"解析"和卡死没有区别。
+
+    第二个返回值：`True` 表示正文是抽出来的，调用方要把它落到正文缓存
+    （见 `ingest._write_text`），之后 `read_lines` 与字面检索读那一份。
+    """
+    from . import attachments  # noqa: PLC0415 - 抽正文是可选依赖，用到才导入
+
+    target = Path(path)
+    kind = attachments.kind_of(target.name, "")
+    if kind == "text":
+        return list(_lines(path)), False
+
+    raw = attachments.extract(target, kind, limit=0, timeout=PARSE_TIMEOUT)
+    if kind == "pdf" and _too_thin(target, raw):
+        # 没有文字层（或只有封面那几行）：走 OCR 支路重来一遍。
+        raw = _ocr_text(target, on_page=on_page)
+    if not raw.strip():
+        raise MaterialError(
+            f"抽不出正文：{target.name}（{kind}）。"
+            "扫描件没有文字层要先 OCR；缺 pdftotext 就先装 poppler-utils。"
+        )
+    return raw.splitlines(), True
+
+
+def _too_thin(pdf: Path, raw: str) -> bool:
+    """抽出来的字够不够“像一本书”。按**每页字数**判，不是按总量。"""
+    from . import ocr  # noqa: PLC0415
+
+    body = len(raw.strip())
+    pages = ocr.pages_of(pdf)
+    if pages >= 5:
+        return body / pages < MIN_CHARS_PER_PAGE
+    return body < 200
+
+
+def _ocr_text(pdf: Path, *, on_page: Any = None) -> str:
+    """扫描件 → Markdown（`## 第 N 页` 分页）。认不出来就抛，**不许绿着入库**。"""
+    from . import ocr  # noqa: PLC0415
+
+    ready, why = ocr.available()
+    if not ready:
+        raise MaterialError(
+            f"抽不出正文：{pdf.name} 没有文字层，而这台机器上的 OCR 不可用（{why}）。"
+        )
+    got = ocr.convert(pdf, on_page=on_page)
+    if not got.get("ok"):
+        raise MaterialError(
+            f"抽不出正文：{pdf.name} 是扫描件，OCR 也没认出来（{got.get('why')}）。"
+        )
+    return str(got.get("md") or "")
+
+
 def _base() -> str:
     """相对路径的基准：**数据目录的上一级**，不是进程的 cwd。
 
@@ -89,8 +167,14 @@ def source_file(material: Material) -> str:
     是**这一批材料在服务端彻底读不出来**：`_checked` 抛错 → 词法检索把它整份跳过
     （`scanned` 里没有它）、检索结果里 `quote`/`text` 全是空的、取原文直接报
     "路径不是绝对路径"。实测就是用户看到的那样：问 zartbot 的博客，四条线上一条都取不到正文。
+
+    **有 `text_path` 就优先用它**：那是从 PDF/docx 归一出来的纯文本（见 `text_lines`）。
+    原文件（`source_path`）是二进制，按行读它只会读到乱码；而用户要的"打开原文"
+    仍然认 `source_path`，两者不能互相顶替。
     """
-    raw = str(getattr(material, "source_path", "") or "")
+    raw = str(getattr(material, "text_path", "") or "") or str(
+        getattr(material, "source_path", "") or ""
+    )
     if not raw or os.path.isabs(raw):
         return raw
     return os.path.join(_base(), raw)

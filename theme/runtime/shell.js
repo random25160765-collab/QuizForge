@@ -62,6 +62,9 @@
     // 日程排在主页之后、对话之前：它是"今天要做什么"那一层，
     // 与"跟 AI 说话"是两条不同的入口（用户："主页之外再加一颗日程图标，主页继续留白"）。
     { href: 'schedule.html', label: '日程', icon: 'calendar', page: 'schedule' },
+    // 碎片（2026-11-13）：随手记一句。它原先挂在日程页右栏，用户说
+    // "和任务放在一起还是不合适"，于是给了自己一个去处。
+    { href: 'scratch.html', label: '碎片', icon: 'note', page: 'scratch' },
     { href: 'chat.html', label: '对话', icon: 'robot', page: 'chat' },
     { href: 'quiz.html', label: '练习中心', icon: 'play', pages: ['quiz', 'graph'],
       hint: '练习 · 组卷 · 复习 · 图谱' },
@@ -98,6 +101,8 @@
     { href: 'library.html', label: '资料', icon: 'book', page: 'library' },
     { href: 'workbench.html', label: '主页', icon: 'grip', page: 'workbench' },
     { href: 'schedule.html', label: '日程', icon: 'calendar', page: 'schedule' },
+    // 第六格（2026-11-13）：碎片。手机上也得进得去 —— 它没有别的入口。
+    { href: 'scratch.html', label: '碎片', icon: 'note', page: 'scratch' },
   ];
 
   function renderTabbar() {

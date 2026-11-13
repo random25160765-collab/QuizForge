@@ -234,12 +234,21 @@ def usage(db: DbSession) -> dict:
     else:
         mode = "user" if has_key else "none"
 
+    model = str(conf.get("model") or "") or gateway.DEFAULT_MODEL
     return {
         "today": gateway.today_usage(db),
         "quota": settings.ai_daily_quota,
         "enabled": mode == "user",
         "mode": mode,
         "label": "你自己的密钥" if has_key else "",
-        "model": str(conf.get("model") or "") or gateway.DEFAULT_MODEL,
+        "model": model,
         "hasKey": has_key,
+        # 看板的分母：这个模型**真正**能用多少上下文（与 `resolve_config` 走同一个
+        # `budget_tokens`，所以它不是抄来的常量，模型一换就跟着变）。
+        # 前端已经把这个响应存在 `aiState` 里，抽屉直接读，不必再发一次请求。
+        "contextTokens": gateway.budget_tokens(
+            str(conf.get("model") or "") or gateway.DEFAULT_MODEL,
+            conf,
+            settings.ai_max_context_tokens,
+        ),
     }

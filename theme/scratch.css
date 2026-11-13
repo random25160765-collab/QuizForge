@@ -1,0 +1,584 @@
+/* ===========================================================================
+ * scratch.css —— 碎片页（只挂这一页，见 tools/build_web.py 的 PAGE_CSS）
+ *
+ * 只用 app.css 的令牌。版式来自用户给的三张参照：QQ 的聊天记录（最新在底下、
+ * 气泡靠右、输入框钉底）+ flomo 的单条排法（时间在上、正文在下、右上角"···"）
+ * + flomo 的标签栏（左栏一棵带条数的树）。
+ *
+ * 左栏的开合与拖动照抄对话页：宽度只落在 `--scratch-aside-w` 上，
+ * 收起时栅格那一列变 0、整栏向左滑走；窄屏变抽屉。理由是那边写过的那条 ——
+ * 一栏的宽窄是人的偏好，不是布局常量。
+ *
+ * 命名：页面骨架 `.scratch__*`，一条记录 `.frag__*`。状态类用 is-*。
+ * ========================================================================= */
+
+body[data-page='scratch'] .view {
+  /* 与对话页同一条高度链：`.view` 定高 → `#app-root` 100% → `.scratch` 100%。
+     滚动交给气泡流自己，输入条永远在视口里。 */
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+  height: calc(100vh - var(--topbar-h) - var(--tabbar-h, 0px));
+  min-height: 0;
+}
+
+body[data-page='scratch'] #app-root {
+  height: 100%;
+  min-height: 0;
+}
+
+.scratch {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  color: var(--fg);
+}
+
+/* ---------------------------------------------------------------- 顶条 */
+
+/* 一条 46 的条：左边是标签栏的开合，右边是"N 条"。
+ * 它横贯整页（含左栏上方），与对话页的顶条同一个位置。 */
+.scratch__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 46px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.scratch__fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm, 6px);
+  background: none;
+  color: var(--fg3);
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.scratch__fold:hover {
+  background: var(--bg3);
+  color: var(--fg);
+}
+
+.scratch__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* 当前筛了哪个标签：左栏收起或在手机上时，它是唯一的线索 */
+.scratch__filter {
+  display: flex;
+  min-width: 0;
+}
+
+.scratch__chip {
+  max-width: min(280px, 42vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--pri) 30%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pri) 10%, transparent);
+  color: var(--pri);
+  font-family: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.scratch__chip:hover {
+  border-color: color-mix(in srgb, var(--pri) 55%, var(--line));
+}
+
+.scratch__count {
+  margin-left: auto;
+  color: var(--fg3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------- 两栏 */
+
+.scratch__body {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--scratch-aside-w, 232px) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  /* 收起时左栏整块滑到列外，要裁掉（与对话页 `.chat` 那条同因） */
+  overflow: hidden;
+  /* 收起/展开要有过程：动的是栅格列（与对话页左栏同一个手法）。
+   * 拖动调宽时由 `body.is-colresize` 关掉 —— 不然宽度会追着手指慢慢爬。 */
+  transition: grid-template-columns 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.scratch__body[data-aside='closed'] {
+  grid-template-columns: 0 minmax(0, 1fr);
+}
+
+body.is-colresize .scratch__body {
+  transition: none;
+}
+
+/* 左栏：标签树。宽度写死（收起时靠 translateX 整栏滑走，不是被压窄重排） */
+.scratch__aside {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: var(--scratch-aside-w, 232px);
+  min-height: 0;
+  padding: 12px 10px;
+  /* 与对话页左栏同一种纸色：比正文浅一层，靠一条线分界，不用阴影 */
+  background: color-mix(in srgb, var(--bg3) 42%, var(--bg2));
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+  transform: translateX(0);
+  transition: transform 180ms var(--ease, ease), visibility 0s;
+}
+
+.scratch__body[data-aside='closed'] .scratch__aside {
+  transform: translateX(-100%);
+  visibility: hidden;
+  pointer-events: none;
+  /* 收进去的方向才需要延迟隐藏，否则滑到一半内容就没了 */
+  transition: transform 180ms var(--ease, ease), visibility 0s linear 180ms;
+}
+
+.scratch__asidehead {
+  display: flex;
+  align-items: center;
+  flex: none;
+  padding: 2px 8px 8px;
+}
+
+.scratch__asideTitle {
+  color: var(--fg3);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.scratch__tags {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 0 6px;
+}
+
+/* 一行标签：caret · # · 名字 · 条数。缩进由 JS 写在 padding-left 上（深度是数据） */
+.scratch__tagrow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--fg2);
+  font-size: 12.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.scratch__tagrow:hover {
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  color: var(--fg);
+}
+
+.scratch__tagrow.is-on {
+  background: color-mix(in srgb, var(--pri) 14%, transparent);
+  color: var(--fg);
+}
+
+.scratch__tagrow.is-on .scratch__hash {
+  color: var(--pri);
+}
+
+.scratch__caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  color: var(--fg3);
+  transition: transform 140ms ease, color 140ms ease;
+}
+
+.scratch__caret.is-open {
+  transform: rotate(90deg);
+}
+
+.scratch__caret.is-empty {
+  visibility: hidden;
+}
+
+.scratch__caret:not(.is-empty):hover {
+  color: var(--fg);
+}
+
+.scratch__hash {
+  flex: none;
+  color: var(--fg3);
+  font-size: 11.5px;
+}
+
+.scratch__hash.is-empty {
+  visibility: hidden;
+}
+
+.scratch__tagname {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scratch__tagcount {
+  margin-left: auto;
+  color: var(--fg3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.scratch__taghint {
+  margin: 10px 8px 0;
+  color: var(--fg3);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+/* 右边那条线可以拖（与对话页左栏同一套：平时隐形，悬停/拖动才亮一道主色） */
+.scratch__grip {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  width: 9px;
+  z-index: 4;
+  cursor: col-resize;
+  background: none;
+  touch-action: none;
+}
+
+.scratch__grip::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: var(--pri);
+  opacity: 0;
+  transition: opacity var(--dur) var(--ease);
+}
+
+.scratch__grip:hover::after,
+body.is-colresize .scratch__grip::after {
+  opacity: 0.5;
+}
+
+/* 窄屏抽屉的遮罩：桌面没有（两栏并排，不需要点外面关闭） */
+.scratch__scrim {
+  display: none;
+}
+
+/* ---------------------------------------------------------------- 正文列 */
+
+.scratch__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 一列 780 是这一页的核心决定：碎片是"一句话"，一行太长会读丢。
+ * 左栏收放只改可用宽度，这一列始终居中。 */
+.scratch__col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+.scratch__stream {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+  padding: 16px 2px 12px;
+  overflow-y: auto;
+}
+
+.scratch__hint {
+  margin: 0;
+  color: var(--fg3);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+/* 状态句（正在读取 / 没读出来）落在中间：一屏空白里，字挂在顶上像报错 */
+.scratch__stream > .scratch__hint {
+  margin: auto 0;
+}
+
+.scratch__empty {
+  /* 空的时候落在中间偏上：视线一进来就看见"这里可以写" */
+  margin: auto 0;
+  padding: 0 2px;
+}
+
+.scratch__empty-line {
+  margin: 0 0 6px;
+  color: var(--fg2);
+  font-size: 12.5px;
+}
+
+/* 垫片：条目少时把气泡推到输入框上方（见 scratch.js 里那处注释） */
+.frag__pad {
+  flex: none;
+  height: 0;
+  margin-top: auto;
+}
+
+/* 一条：时间在上一行，气泡在下一行，整体靠右 */
+.frag {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 5px;
+  max-width: 100%;
+}
+
+/* 这一行**只有时间**参与排版，"···"是绝对定位的 —— 否则它（哪怕不可见）
+ * 也占着 7px，时间就会比气泡右缘缩进去一截（用户 2026-11-13：
+ * "时间要和对话框右边对齐"）。 */
+.frag__meta {
+  position: relative;
+  display: flex;
+  align-items: center;
+  color: var(--fg3);
+  font-size: 10.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* flomo 那个"···"：平时不占视线，悬停 / 键盘聚焦才出来。
+ * 挂在时间左边，所以它的出现不会把时间推走。 */
+.frag__more {
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-right: 4px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--fg3);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: 1px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 140ms ease, color 140ms ease;
+}
+
+.frag:hover .frag__more,
+.frag__more:focus-visible {
+  opacity: 1;
+}
+
+.frag__more:hover {
+  color: var(--fg);
+}
+
+/* 气泡：主色只借一点点（9%）—— 它要读得出"这是我说的"，又不能在暗色里发光。
+ * 右下角收窄一档，是聊天气泡的方向感（尾巴那点意思，不画三角形）。 */
+.frag__bubble {
+  max-width: min(640px, 88%);
+  padding: 9px 13px;
+  border-radius: 14px;
+  border-bottom-right-radius: 5px;
+  background: color-mix(in srgb, var(--pri) 9%, var(--bg2));
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.66;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+/* 正文里的 #标签：与左栏选中态同一种主色，但更淡 —— 它首先是正文 */
+.frag__tag {
+  display: inline;
+  padding: 0 3px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--pri) 15%, transparent);
+  color: var(--pri);
+  cursor: pointer;
+}
+
+.frag__tag:hover {
+  background: color-mix(in srgb, var(--pri) 24%, transparent);
+}
+
+.frag__bubble.is-editing {
+  width: min(640px, 100%);
+  max-width: 100%;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg2);
+}
+
+.frag__edit {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  max-height: 260px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.66;
+  resize: none; /* 高度跟着内容长（见 scratch.js 的 growEdit） */
+  outline: none;
+}
+
+.frag__editfoot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px 4px 2px;
+}
+
+/* ---------------------------------------------------------------- 输入条 */
+
+.scratch__composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex: none;
+  margin: 0 2px 18px;
+  padding: 7px 7px 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg2);
+  transition: border-color 140ms ease;
+}
+
+.scratch__composer:focus-within {
+  border-color: color-mix(in srgb, var(--pri) 55%, var(--line));
+}
+
+.scratch__input {
+  flex: 1;
+  min-width: 0;
+  max-height: 132px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.66;
+  resize: none;
+  outline: none;
+}
+
+.scratch__input::placeholder {
+  color: var(--fg3);
+}
+
+/* 发送：一颗实心圆，与主按钮同一套色（`--btn-primary-ink` 是它上面该用的墨色） */
+.scratch__send {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--pri);
+  color: var(--btn-primary-ink);
+  cursor: pointer;
+  transition: opacity 140ms ease;
+}
+
+.scratch__send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------- 窄屏：左栏变抽屉 */
+
+@media (max-width: 860px) {
+  .scratch__body,
+  .scratch__body[data-aside='closed'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .scratch__aside {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 6;
+    width: min(var(--scratch-aside-w, 248px), 86vw);
+    box-shadow: var(--shadow-2);
+    transition: transform 180ms var(--ease, ease), visibility 0s;
+  }
+
+  .scratch__body[data-aside='open'] .scratch__scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    background: color-mix(in srgb, #000 26%, transparent);
+  }
+
+  /* 抽屉的宽度不拖：拖动是宽屏的习惯，窄屏上没意义 */
+  .scratch__grip {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .scratch__col {
+    padding: 0 14px;
+  }
+
+  .scratch__stream {
+    gap: 16px;
+    padding-top: 12px;
+  }
+
+  .scratch__composer {
+    margin-bottom: 12px;
+  }
+
+  .frag__bubble {
+    max-width: 90%;
+  }
+}

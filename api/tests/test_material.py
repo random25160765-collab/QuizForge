@@ -693,3 +693,33 @@ def test_infer_drops_place_names_from_a_real_signature_block(root: Path) -> None
     assert "Japan" not in " ".join(meta.get("authors", []))
     # 真作者要留住（判据只该挡掉地名，不该把整行都丢掉）
     assert "Kiyoshi Honda" in meta.get("authors", [])
+
+
+def test_the_delete_route_really_deletes(client) -> None:  # noqa: ANN001
+    """`DELETE /api/library/materials/{slug}` 删得掉。
+
+    2026-11-13 实测它是 500（`name 'select' is not defined` —— 函数里少导入了一个名字），
+    页面上表现成"点了没反应"。路由层一直没用例盯着，所以坏得很安静。
+    """
+    import uuid
+
+    from app.db import get_session_factory
+    from app.models import Material
+
+    slug = "delete-me-" + uuid.uuid4().hex[:6]
+    session = get_session_factory()()
+    try:
+        session.add(Material(slug=slug, subject="测试"))
+        session.commit()
+    finally:
+        session.close()
+
+    got = client.delete(f"/api/library/materials/{slug}")
+
+    assert got.status_code == 200, got.text
+    assert got.json()["ok"] is True
+    session = get_session_factory()()
+    try:
+        assert session.query(Material).filter(Material.slug == slug).first() is None
+    finally:
+        session.close()

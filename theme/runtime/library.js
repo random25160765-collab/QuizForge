@@ -70,7 +70,9 @@
       { label: '材料', value: fmtCount(local.materials), unit: '份', hint: '库里的材料数' },
       { label: '切片', value: fmtCount(local.slices), unit: '片', hint: '切分后的段落数' },
       { label: '图', value: fmtCount(local.figures), unit: '张', hint: '材料里的插图' },
-      { label: '向量', value: fmtCount(local.embeddings), unit: '条', hint: '语义检索用' },
+      // **不显示向量**：它是纯派生数据，只在本机（`make embed` 重算），云端那份包里
+      // 没有 —— 摆在「云端」旁边一排，等于暗示"云端也有这么多向量"。要看本机向量
+      // 条数走 `make ops`；流水线里的「向量」那一步仍在，那是本机执行状态。
       { label: '云端', value: fmtCount(cloud.materials), unit: '份', cloud: true,
         hint: '云端包：' + (cloud.reachable ? fmtBytes(cloud.bytes) + ' · ' + fmtWhen(cloud.pushedAt) : '连不上') }
     ].forEach(function (c) {

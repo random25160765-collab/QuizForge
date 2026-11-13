@@ -51,10 +51,14 @@ def slug_for(path: Path, digest: str) -> str:
 
 
 def _lines_of(path: Path) -> list[str]:
-    """本地文件 → 行文本。复用 `materials._lines`（它认得 pdf/docx 那几种）。"""
+    """本地文件 → 行文本。走 `materials.text_lines`（它认得 pdf/docx 那几种）。
+
+    这里原先直接调 `_lines`（纯按 UTF-8 读），PDF 进来就是一屏 `%PDF` 与压缩流 ——
+    与流水线那边是同一个坑，见 `materials.text_lines` 的注释。
+    """
     from . import materials  # noqa: PLC0415 - 避免顶层循环导入
 
-    return materials._lines(path)
+    return materials.text_lines(str(path))[0]
 
 
 def ingest(db: Any, path: Path, *, slug: str = "", title: str = "") -> dict:

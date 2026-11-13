@@ -526,6 +526,22 @@ def _load():
         import onnxruntime  # noqa: PLC0415
         from tokenizers import Tokenizer  # noqa: PLC0415
 
+        # **先把 pip 那份 CUDA 库挂上，再建会话。** pip 的 `nvidia-*-cu12` 把
+        # `libcudnn.so.9` 之类放在 `site-packages/nvidia/*/lib`，那里不在动态库搜索
+        # 路径上；`preload_dlls()` 是唯一能把它们挂进本进程的办法。
+        #
+        # 为什么必须**在这里**、而且必须在**第一个会话之前**：CUDA EP 的 cudnn 句柄
+        # 是进程级的，第一次要它的时候没挂上，ORT 就记住"这个进程没有 cudnn" ——
+        # 之后所有会话（哪怕各自都调过 preload）都拿不到句柄。实测链条：
+        # 应用启动时 `main.lifespan` 的预热线程走到这、建了第一个 CUDA 会话（bge-m3
+        # 没有 Conv，用不到 cudnn，所以它自己不报错），随后 OCR 的检测模型一跑 Conv
+        # 就死在 `RequireCudnnHandle → dlopen failed for libcudnn.so`，
+        # 而报出来的只是一句 `ONNXRuntime inferece failed.`（2026-11-13 实测）。
+        try:
+            onnxruntime.preload_dlls()
+        except Exception:  # noqa: BLE001 - 没有 CUDA 就按 CPU 跑，结果一样只是慢
+            pass
+
         model_file = onnx_file()
         providers = _providers(onnxruntime)
         _session = onnxruntime.InferenceSession(str(files_dir() / model_file), providers=providers)

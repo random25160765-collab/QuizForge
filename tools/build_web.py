@@ -119,6 +119,8 @@ PAGE_JS = {
     "workbench": ["home.js"],
     # 日程：自己启动（像 graph / settings），不依赖题库，所以不带 boot.js
     "schedule": ["schedule.js"],
+    # 碎片（2026-11-13）：随手记一句的独立页，同样自己启动
+    "scratch": ["scratch.js"],
 }
 
 #: 首帧就该是最终态的两个布局属性（见 shell.html 里的说明）：顶栏与底部状态栏
@@ -138,6 +140,7 @@ PAGE_TITLE = {
     "settings": "QFStudio · 设置",
     "workbench": "QFStudio · 主页",
     "schedule": "QFStudio · 日程",
+    "scratch": "QFStudio · 碎片",
 }
 
 PAGE_BODY = {
@@ -149,6 +152,7 @@ PAGE_BODY = {
     "settings": "settings.body.html",
     "workbench": "workbench.body.html",
     "schedule": "schedule.body.html",
+    "scratch": "scratch.body.html",
 }
 
 # 页面专属样式：默认共用合并后的 app.css，只有图谱页、对话页、资料页与设置页要再加一份。
@@ -162,6 +166,8 @@ PAGE_CSS = {
     "workbench": ["home.css"],
     # 日程：三栏布局 + 日历网格 + 事件块，样式量与图谱页相当，单开一份
     "schedule": ["schedule.css"],
+    # 碎片：一列气泡 + 输入条，几十行，单开一份
+    "scratch": ["scratch.css"],
 }
 
 # 应用样式合并成一份，避免每页重复下载

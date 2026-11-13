@@ -815,6 +815,10 @@ def _message_out(m: Message) -> dict:
         "promptTokens": m.prompt_tokens,
         "completionTokens": m.completion_tokens,
         "latencyMs": m.latency_ms,
+        # 上下文占用（最后一次调用的输入量）与首字延迟。0 = 这一轮没记（老消息），
+        # 看板据此**不画**那两格，而不是画一根空条 —— 0 不是一个"读数"。
+        "lastPromptTokens": m.last_prompt_tokens,
+        "firstTokenMs": m.first_token_ms,
         "createdAt": m.created_at.isoformat() if m.created_at else None,
         # 毫秒时间戳与 records.last_at 同一风格：前端的 fmtRelative / fmtTime 直接吃它
         "createdAtMs": int(m.created_at.timestamp() * 1000) if m.created_at else 0,
@@ -2339,6 +2343,10 @@ def _copy_subtree(db, ids: list[int], child: Conversation) -> None:  # noqa: ANN
             prompt_tokens=src.prompt_tokens,
             completion_tokens=src.completion_tokens,
             latency_ms=src.latency_ms,
+            # 这两个跟着复制：不然"把这一支复制成新会话"之后，看板会突然空掉
+            # （那几个数是那一轮真实发生过的，跟着内容走才对）
+            last_prompt_tokens=src.last_prompt_tokens,
+            first_token_ms=src.first_token_ms,
             # 空 idmap = 深拷贝（见 `_remap_parts`）
             parts=_remap_parts(src.parts, {}),
             mounts=src.mounts,
@@ -2503,6 +2511,10 @@ def _finish(  # noqa: ANN001
     assistant.latency_ms = latency_ms
     assistant.prompt_tokens = int(usage.get("promptTokens") or 0)
     assistant.completion_tokens = int(usage.get("completionTokens") or 0)
+    # 看板要的两个量（见 `models.Message` 那两列的注释）。`.get` 兜住"没等到 finish
+    # 事件就被中断"的那条路：那时 `_stream` 里那份初始 usage 还在，两个键可能没有。
+    assistant.last_prompt_tokens = int(usage.get("lastPromptTokens") or 0)
+    assistant.first_token_ms = int(usage.get("firstTokenMs") or 0)
     conv.updated_at = datetime.now(timezone.utc)
     db.commit()
 

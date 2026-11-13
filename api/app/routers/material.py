@@ -827,7 +827,10 @@ def delete_material(slug: str, db: DbSession, file: bool = False) -> dict:
     删的是：材料行、它的切片、切片的向量、图。`file=true` 时连本机原文件一起删。
     云端那份不会自动跟着变 —— 删完记得点「同步到云端」。
     """
-    from sqlalchemy import delete as _delete  # noqa: PLC0415
+    # `select` 也得在这里拿：这个模块顶层没有它（别的路由都是就地导入），
+    # 漏了的话整条删除接口报 `name 'select' is not defined` ——
+    # 用户在页面上看到的是"删不掉"，而不是"代码少了个 import"。
+    from sqlalchemy import delete as _delete, select  # noqa: PLC0415
 
     from ..models import Material, MaterialFigure, MaterialSlice, SliceEmbedding
 

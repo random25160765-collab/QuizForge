@@ -73,7 +73,9 @@ MODES: tuple[Mode, ...] = (
         # **看得见计划与日程，订不了也排不了**（那两个是 propose 档，不会被声明）。
         # `memory` 也只要只读那一半（`list_memory`）：记忆不自动进提示词，
         # 查询模式至少能查到；改它要写档 —— 那留给学习模式。
-        groups=("notes", "library", "graph", "trees", "plan", "memory"),
+        # `scratch`（碎片）同样挂在这里：它只有一个 `read` 档的工具（`read_scratchpad`），
+        # 查询模式里"我随手记过什么"是个正经的查询需求，而且不会改任何东西。
+        groups=("notes", "library", "graph", "trees", "plan", "scratch", "memory"),
         access=("read",),
         color="#3B82F6",  # 蓝：翻找/查看
     ),

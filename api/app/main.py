@@ -32,8 +32,22 @@ def create_app() -> FastAPI:
         配了 Turso 之后，本机一改就推、别的设备一改这边 5 秒内就能发现，
         不再依赖用户去点设置页那颗按钮。测试与离线环境用
         `QF_SYNC_AUTO=0` 关掉（`tests/conftest.py` 已设）。
+
+        同一步也给**资料流水线**收尸（见 `jobs.recover`）：上次进程留下的
+        `running` 与积压的 `queued` 都要有人接着跑，否则重启之后页面就一直
+        停在"向量"，得手点重试。
         """
-        from . import autosync  # noqa: PLC0415 - 避免导入期互相拉扯
+        from . import autosync, jobs  # noqa: PLC0415 - 避免导入期互相拉扯
+
+        recovered = jobs.recover()
+        if recovered["requeued"]:
+            logger.info(
+                "资料流水线：%d 条上次没跑完的任务已重新排队 %s",
+                len(recovered["requeued"]),
+                recovered["requeued"],
+            )
+        if recovered["started"]:
+            logger.info("资料流水线：队列里还有活，worker 已拉起")
 
         if autosync.start():
             logger.info(
